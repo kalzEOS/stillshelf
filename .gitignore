@@ -1,0 +1,45 @@
+# Android / Gradle
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Local SDK and machine-specific config
+local.properties
+keystore.properties
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+.fleet/
+
+# Kotlin / tooling caches
+.kotlin/
+
+# Native / CMake
+.cxx/
+
+# Artifacts
+*.apk
+*.aab
+*.ap_
+
+# Signing / secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+*.env
+*.env.*
+
+# Logs / temp
+*.log
+*.tmp
+*.swp
+*.swo
+captures/
+
+# OS files
+.DS_Store
+Thumbs.db

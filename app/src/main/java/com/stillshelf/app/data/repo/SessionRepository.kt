@@ -1,0 +1,54 @@
+package com.stillshelf.app.data.repo
+
+import com.stillshelf.app.core.model.Library
+import com.stillshelf.app.core.model.BookSummary
+import com.stillshelf.app.core.model.ContinueListeningItem
+import com.stillshelf.app.core.model.HomeFeed
+import com.stillshelf.app.core.model.NamedEntitySummary
+import com.stillshelf.app.core.model.BookDetail
+import com.stillshelf.app.core.model.PlaybackSource
+import com.stillshelf.app.core.model.PlaybackProgress
+import com.stillshelf.app.core.model.SearchResults
+import com.stillshelf.app.core.model.Server
+import com.stillshelf.app.core.model.SessionState
+import com.stillshelf.app.core.util.AppResult
+import kotlinx.coroutines.flow.Flow
+
+interface SessionRepository {
+    fun observeSessionState(): Flow<SessionState>
+    fun observeServers(): Flow<List<Server>>
+    fun observeLibrariesForActiveServer(): Flow<List<Library>>
+    suspend fun setActiveServer(serverId: String): AppResult<Unit>
+    suspend fun setActiveLibrary(libraryId: String): AppResult<Unit>
+    suspend fun signOutActiveSession(): AppResult<Unit>
+    suspend fun addServerAndLogin(
+        serverName: String,
+        baseUrl: String,
+        username: String,
+        password: String
+    ): AppResult<Unit>
+    suspend fun testServerConnection(baseUrl: String): AppResult<String>
+    suspend fun fetchBooksForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<BookSummary>>
+    suspend fun fetchAuthorsForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchNarratorsForActiveLibrary(): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchSeriesForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchCollectionsForActiveLibrary(): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchBookDetail(bookId: String): AppResult<BookDetail>
+    suspend fun fetchPlaybackSource(bookId: String): AppResult<PlaybackSource>
+    suspend fun fetchPlaybackProgress(bookId: String): AppResult<PlaybackProgress?>
+    suspend fun syncPlaybackProgress(
+        bookId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): AppResult<Unit>
+    suspend fun addBookToDefaultCollection(bookId: String): AppResult<String>
+    suspend fun setLastPlayedBookId(bookId: String?): AppResult<Unit>
+    suspend fun searchActiveLibrary(query: String, limit: Int = 60): AppResult<SearchResults>
+    suspend fun fetchMiniPlayerItem(): AppResult<ContinueListeningItem?>
+    suspend fun fetchCachedHomeFeed(): AppResult<HomeFeed?>
+    suspend fun fetchHomeFeed(
+        continueLimit: Int = 10,
+        recentlyAddedLimit: Int = 12
+    ): AppResult<HomeFeed>
+}

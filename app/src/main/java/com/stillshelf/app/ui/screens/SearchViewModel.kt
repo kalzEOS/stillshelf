@@ -35,6 +35,7 @@ class SearchViewModel @Inject constructor(
     private val mutableUiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = mutableUiState.asStateFlow()
     private var searchJob: Job? = null
+    private var searchRequestToken: Long = 0L
 
     init {
         viewModelScope.launch {
@@ -84,18 +85,23 @@ class SearchViewModel @Inject constructor(
 
     private fun search(query: String, debounceMs: Long = 220L) {
         searchJob?.cancel()
+        val requestToken = nextSearchRequestToken()
+        val requestedQuery = query.trim()
+        if (requestedQuery.isBlank()) return
         searchJob = viewModelScope.launch {
             if (debounceMs > 0) delay(debounceMs)
-            val currentQuery = uiState.value.query.trim()
-            if (currentQuery.isBlank()) return@launch
+            if (isStaleSearchRequest(requestToken, requestedQuery)) return@launch
+            val activeQuery = uiState.value.query.trim()
+            if (activeQuery.isBlank()) return@launch
 
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = sessionRepository.searchActiveLibrary(currentQuery)) {
+            when (val result = sessionRepository.searchActiveLibrary(activeQuery)) {
                 is AppResult.Success -> {
-                    val rankedBooks = rankBooks(currentQuery, result.value.books)
-                    val rankedAuthors = rankEntities(currentQuery, result.value.authors)
-                    val rankedSeries = rankEntities(currentQuery, result.value.series)
-                    val rankedNarrators = rankEntities(currentQuery, result.value.narrators)
+                    if (isStaleSearchRequest(requestToken, activeQuery)) return@launch
+                    val rankedBooks = rankBooks(activeQuery, result.value.books)
+                    val rankedAuthors = rankEntities(activeQuery, result.value.authors)
+                    val rankedSeries = rankEntities(activeQuery, result.value.series)
+                    val rankedNarrators = rankEntities(activeQuery, result.value.narrators)
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
@@ -108,6 +114,7 @@ class SearchViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    if (isStaleSearchRequest(requestToken, activeQuery)) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
@@ -121,6 +128,17 @@ class SearchViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun nextSearchRequestToken(): Long {
+        searchRequestToken += 1L
+        return searchRequestToken
+    }
+
+    private fun isStaleSearchRequest(requestToken: Long, expectedQuery: String? = null): Boolean {
+        if (requestToken != searchRequestToken) return true
+        val currentQuery = uiState.value.query.trim()
+        return expectedQuery != null && currentQuery != expectedQuery
     }
 
     private fun rankBooks(

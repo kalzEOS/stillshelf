@@ -41,11 +41,14 @@ class PlaybackController @Inject constructor(
     private var lastSyncedPositionMs: Long = -1L
     private var syncInFlight = false
     private var cachedContinueListeningItem: ContinueListeningItem? = null
+    private var playRequestJob: Job? = null
+    private var playRequestToken: Long = 0L
 
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
 
     fun playBook(bookId: String, startPositionMs: Long? = null) {
         if (bookId.isBlank()) return
+        val requestToken = beginPlayRequest()
         if (currentBookId == bookId && mediaPlayer != null) {
             if (startPositionMs != null) {
                 seekToPosition(startPositionMs)
@@ -55,11 +58,13 @@ class PlaybackController @Inject constructor(
         }
 
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
-        scope.launch {
+        playRequestJob = scope.launch {
             when (val sourceResult = sessionRepository.fetchPlaybackSource(bookId)) {
                 is AppResult.Success -> {
+                    if (isStalePlayRequest(requestToken)) return@launch
                     sessionRepository.setLastPlayedBookId(sourceResult.value.book.id)
                     val progressResult = sessionRepository.fetchPlaybackProgress(sourceResult.value.book.id)
+                    if (isStalePlayRequest(requestToken)) return@launch
                     val serverResumeMs = when (progressResult) {
                         is AppResult.Success -> {
                             ((progressResult.value?.currentTimeSeconds ?: 0.0) * 1000.0).toLong()
@@ -83,6 +88,7 @@ class PlaybackController @Inject constructor(
                         progressPercent = progressPercent,
                         currentTimeSeconds = currentTimeSeconds
                     )
+                    if (isStalePlayRequest(requestToken)) return@launch
                     prepareAndPlay(
                         sourceResult.value.book.id,
                         sourceResult.value.book,
@@ -91,6 +97,7 @@ class PlaybackController @Inject constructor(
                     )
                 }
                 is AppResult.Error -> {
+                    if (isStalePlayRequest(requestToken)) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
@@ -100,6 +107,16 @@ class PlaybackController @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun beginPlayRequest(): Long {
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        return playRequestToken
+    }
+
+    private fun isStalePlayRequest(requestToken: Long): Boolean {
+        return requestToken != playRequestToken
     }
 
     fun playBookFromPosition(bookId: String, startPositionMs: Long) {

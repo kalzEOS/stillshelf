@@ -42,6 +42,9 @@ import com.stillshelf.app.ui.screens.ServersManagementScreen
 import com.stillshelf.app.ui.screens.SeriesDetailScreen
 import com.stillshelf.app.ui.screens.SeriesBrowseScreen
 import com.stillshelf.app.ui.screens.SettingsPlaceholderScreen
+import com.stillshelf.app.ui.screens.auth.AddServerRoute
+import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
+import com.stillshelf.app.ui.screens.auth.LoginRoute
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CollectionsBookmark
@@ -261,7 +264,56 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.SERVERS) {
             ServersManagementScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onAddServerClick = {
+                    navController.navigate(AuthRoute.ADD_SERVER) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+        composable(AuthRoute.ADD_SERVER) {
+            AddServerRoute(
+                onContinue = { serverName, baseUrl ->
+                    navController.navigate(AuthRoute.loginRoute(serverName, baseUrl)) {
+                        launchSingleTop = true
+                    }
+                },
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable(
+            route = AuthRoute.LOGIN_PATTERN,
+            arguments = listOf(
+                navArgument(AuthRoute.SERVER_NAME_ARG) { type = NavType.StringType },
+                navArgument(AuthRoute.BASE_URL_ARG) { type = NavType.StringType }
+            )
+        ) {
+            LoginRoute(
+                onBack = { navController.popBackStack() },
+                onLoginSuccess = {
+                    navController.navigate(AuthRoute.LIBRARY_PICKER) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+        composable(AuthRoute.LIBRARY_PICKER) {
+            LibraryPickerRoute(
+                onLibrarySelected = {
+                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(MainRoute.SERVERS) {
+                            launchSingleTop = true
+                        }
+                    }
+                },
+                onManageServers = {
+                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(MainRoute.SERVERS) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
             )
         }
         composable(MainRoute.CUSTOMIZE) {

@@ -2036,7 +2036,7 @@ private fun SettingsRow(
 @Composable
 fun ServersManagementScreen(
     onBackClick: () -> Unit,
-    onAddServerClick: () -> Unit = {},
+    onAddServerClick: () -> Unit,
     viewModel: ServerManagementViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()

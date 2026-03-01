@@ -16,6 +16,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.stillshelf.app.core.network.authorizationHeaderValue
+import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -29,22 +31,27 @@ private const val TypicalCoverAspectRatio = 0.66f
 fun rememberCoverImageModel(coverUrl: String?): Any? {
     val context = LocalContext.current
     val normalizedCacheKey = remember(coverUrl) { coverUrl?.let(::normalizeCoverCacheKey) }
-    return remember(coverUrl, normalizedCacheKey, context) {
+    val resolvedUrl = remember(coverUrl) { coverUrl?.let(::splitAuthenticatedUrl) }
+    return remember(coverUrl, normalizedCacheKey, resolvedUrl, context) {
         if (coverUrl.isNullOrBlank()) {
             null
         } else {
-            ImageRequest.Builder(context)
-                .data(coverUrl)
-                .memoryCacheKey(normalizedCacheKey)
-                .diskCacheKey(normalizedCacheKey)
-                .crossfade(false)
-                .build()
+            ImageRequest.Builder(context).apply {
+                data(resolvedUrl?.cleanUrl ?: coverUrl)
+                memoryCacheKey(normalizedCacheKey)
+                diskCacheKey(normalizedCacheKey)
+                crossfade(false)
+                resolvedUrl?.authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                    addHeader("Authorization", authorizationHeaderValue(token))
+                }
+            }.build()
         }
     }
 }
 
 private fun normalizeCoverCacheKey(url: String): String {
-    val httpUrl = url.toHttpUrlOrNull() ?: return url
+    val cleanUrl = splitAuthenticatedUrl(url).cleanUrl
+    val httpUrl = cleanUrl.toHttpUrlOrNull() ?: return cleanUrl
     val builder = httpUrl.newBuilder().query(null)
     val queryNames = httpUrl.queryParameterNames.sorted()
     queryNames.forEach { key ->

@@ -1,11 +1,16 @@
 package com.stillshelf.app.playback.controller
 
+import android.content.Context
 import android.media.MediaPlayer
+import android.net.Uri
+import com.stillshelf.app.core.network.authorizationHeaderValue
+import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import kotlin.math.abs
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +36,7 @@ data class PlaybackUiState(
 
 @Singleton
 class PlaybackController @Inject constructor(
+    @param:ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -240,7 +246,12 @@ class PlaybackController @Inject constructor(
         }
 
         runCatching {
-            player.setDataSource(streamUrl)
+            val resolvedStream = splitAuthenticatedUrl(streamUrl)
+            val headers = resolvedStream.authToken
+                ?.takeIf { it.isNotBlank() }
+                ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
+                .orEmpty()
+            player.setDataSource(appContext, Uri.parse(resolvedStream.cleanUrl), headers)
             player.prepareAsync()
         }.onFailure { throwable ->
             mutableUiState.update {

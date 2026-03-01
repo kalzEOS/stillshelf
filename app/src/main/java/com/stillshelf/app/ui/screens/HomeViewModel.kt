@@ -21,6 +21,10 @@ import kotlinx.coroutines.launch
 class HomeViewModel @Inject constructor(
     private val sessionRepository: SessionRepository
 ) : ViewModel() {
+    companion object {
+        private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
+    }
+
     private val mutableUiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = mutableUiState.asStateFlow()
 
@@ -44,7 +48,9 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun loadCachedThenMaybeRefresh() {
-        val cachedResult = sessionRepository.fetchCachedHomeFeed()
+        val cachedResult = sessionRepository.fetchCachedHomeFeed(
+            maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS
+        )
         if (cachedResult is AppResult.Success && cachedResult.value != null) {
             val resolvedRecentSeries = resolveRecentSeries(
                 backendRecentSeries = cachedResult.value.recentSeries,

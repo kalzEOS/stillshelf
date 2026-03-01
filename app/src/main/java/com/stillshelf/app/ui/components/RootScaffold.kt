@@ -27,7 +27,7 @@ fun RootScaffold(
     showMiniPlayer: Boolean = true,
     content: @Composable (PaddingValues) -> Unit
 ) {
-    val contentBottomInset = 0.dp
+    val contentBottomInset = if (showMiniPlayer) 88.dp else 0.dp
 
     Box(modifier = Modifier.fillMaxSize()) {
         Box(

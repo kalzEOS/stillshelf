@@ -20,7 +20,11 @@ object DatabaseModule {
         context,
         AppDatabase::class.java,
         "stillshelf.db"
-    ).build()
+    )
+        // Prevent startup crashes on schema version changes until explicit migrations are added.
+        .fallbackToDestructiveMigration(dropAllTables = true)
+        .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
+        .build()
 
     @Provides
     @Singleton

@@ -2675,7 +2675,7 @@ fun PlayerPlaceholderScreen(
     val speeds = remember { listOf(0.8f, 1.0f, 1.3f, 1.5f, 1.8f, 2.0f) }
     var speedIndex by rememberSaveable { mutableStateOf(2) }
     val speedLabel = "${speeds[speedIndex]}x"
-    val playerTopOffset = 72.dp
+    val playerTopOffset = 8.dp
     val mainPlayButtonContainer = if (immersiveEnabled) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
     } else {
@@ -2777,19 +2777,21 @@ fun PlayerPlaceholderScreen(
             return
         }
 
-        Box(
+        BoxWithConstraints(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
+            val coverWidth = minOf(332.dp, maxWidth)
+            val coverHeight = coverWidth * (320f / 332f)
             Box(
                 modifier = Modifier
-                    .width(332.dp)
-                    .height(320.dp)
+                    .width(coverWidth)
+                    .height(coverHeight)
             ) {
                 BookPoster(
                     book = book,
-                    width = 332.dp,
-                    height = 320.dp,
+                    width = coverWidth,
+                    height = coverHeight,
                     fillMaxWidth = true,
                     shape = RoundedCornerShape(14.dp),
                     contentScale = ContentScale.Fit,
@@ -2812,14 +2814,14 @@ fun PlayerPlaceholderScreen(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(44.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
             Text(
                 text = playerTitle,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 color = primaryTextColor,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -2835,7 +2837,7 @@ fun PlayerPlaceholderScreen(
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
-        Spacer(modifier = Modifier.height(44.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         PlayerProgressBar(
             progress = effectiveProgress,
             activeColor = progressActiveColor,
@@ -2934,7 +2936,7 @@ fun PlayerPlaceholderScreen(
                     .fillMaxWidth()
                     .padding(top = 10.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally)
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 PlayerBottomToolItem(
                     label = "Speed",

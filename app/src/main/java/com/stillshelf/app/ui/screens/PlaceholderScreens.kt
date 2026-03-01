@@ -5,10 +5,14 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -54,6 +58,7 @@ import androidx.compose.material.icons.outlined.FastForward
 import androidx.compose.material.icons.outlined.FastRewind
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Pause
@@ -94,13 +99,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -194,6 +204,7 @@ fun HomePlaceholderScreen(
     onOpenSeries: (String) -> Unit = {},
     onOpenAuthor: (String) -> Unit = {},
     onOpenPlayer: (String?) -> Unit = {},
+    onHomeClick: (() -> Unit)? = null,
     viewModel: HomeViewModel = hiltViewModel(),
     menuViewModel: HomeMenuViewModel = hiltViewModel(),
     customizeViewModel: CustomizeViewModel = hiltViewModel()
@@ -283,11 +294,19 @@ fun HomePlaceholderScreen(
                 ) {
                     Text(
                         text = uiState.libraryName,
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
+                    if (onHomeClick != null) {
+                        CircleActionButton(
+                            icon = Icons.Outlined.Home,
+                            contentDescription = "Home",
+                            onClick = onHomeClick
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
                     CircleActionButton(
                         icon = Icons.Outlined.Search,
                         contentDescription = "Search",
@@ -632,6 +651,7 @@ fun BrowsePlaceholderScreen(
     onBookClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: BooksBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -665,6 +685,7 @@ fun BrowsePlaceholderScreen(
             BackTitle(
                 title = "Books",
                 onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
             )
             Box {
@@ -762,7 +783,7 @@ fun BrowsePlaceholderScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(56.dp))
 
         Box(
             modifier = Modifier
@@ -1000,11 +1021,18 @@ private fun SeriesStackGridItem(
     onClick: () -> Unit
 ) {
     val book = entry.leadBook
-    val posterWidth = StandardGridCoverWidth
-    val posterHeight = StandardGridCoverHeight
-    val layerCount = entry.count.coerceIn(3, 6)
-    val frontOffsetX = 16.dp
-    val frontOffsetY = 8.dp
+    val layerCount = entry.count.coerceIn(2, 3)
+    val frameWidth = StandardGridCoverWidth
+    val frameHeight = StandardGridCoverHeight
+    val stackStepX = 5.dp
+    val stackStepY = 10.dp
+    val totalShiftX = stackStepX * (layerCount - 1)
+    val totalShiftY = stackStepY * (layerCount - 1)
+    val cardWidth = frameWidth - totalShiftX - 3.dp
+    val cardHeight = frameHeight - totalShiftY - 3.dp
+    val baseShiftX = (-4).dp
+    val baseShiftY = 1.dp
+    val layerShape = RoundedCornerShape(8.dp)
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.clickable(onClick = onClick)
@@ -1012,50 +1040,42 @@ private fun SeriesStackGridItem(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(posterHeight + frontOffsetY + 4.dp),
+                .height(frameHeight)
+                .clipToBounds(),
             contentAlignment = Alignment.TopCenter
         ) {
-            repeat(layerCount - 1) { layer ->
-                val depth = (layerCount - 2 - layer)
-                val xOffset = (frontOffsetX - ((depth + 1) * 4).dp).coerceAtLeast(0.dp)
-                val yOffset = (frontOffsetY - ((depth + 1) * 3).dp).coerceAtLeast(0.dp)
-                val alpha = 0.28f + (layer * 0.14f)
+            repeat(layerCount) { layer ->
+                val xOffset = baseShiftX + (stackStepX * layer)
+                val yOffset = baseShiftY + (stackStepY * layer)
+                val alpha = 1f
+                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
                 FramedCoverImage(
                     coverUrl = book.coverUrl,
                     contentDescription = book.title,
                     modifier = Modifier
                         .offset(x = xOffset, y = yOffset)
-                        .width(posterWidth)
-                        .height(posterHeight)
+                        .width(cardWidth)
+                        .height(cardHeight)
+                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
                         .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = layerShape,
                     contentScale = ContentScale.Fit,
                     backgroundBlur = WideCoverBackgroundBlur
                 )
             }
-            FramedCoverImage(
-                coverUrl = book.coverUrl,
-                contentDescription = book.title,
-                modifier = Modifier
-                    .offset(x = frontOffsetX, y = frontOffsetY)
-                    .width(posterWidth)
-                    .height(posterHeight),
-                shape = RoundedCornerShape(8.dp),
-                contentScale = ContentScale.Fit,
-                backgroundBlur = WideCoverBackgroundBlur
+        }
+        Row(
+            modifier = Modifier
+                .width(frameWidth)
+                .align(Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (entry.count == 1) "1 book" else "${entry.count} books",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            text = entry.seriesName,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = if (entry.count == 1) "1 book" else "${entry.count} books",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -1140,21 +1160,34 @@ private fun SeriesStackListItem(
             modifier = Modifier
                 .width(88.dp)
                 .height(88.dp)
+                .clipToBounds()
         ) {
-            val layerCount = entry.books.size.coerceIn(2, 5)
+            val layerCount = entry.books.size.coerceIn(2, 3)
+            val frameSize = 88.dp
+            val stackStepX = 4.dp
+            val stackStepY = 7.dp
+            val totalShiftX = stackStepX * (layerCount - 1)
+            val totalShiftY = stackStepY * (layerCount - 1)
+            val cardWidth = frameSize - totalShiftX - 3.dp
+            val cardHeight = frameSize - totalShiftY - 3.dp
+            val baseShiftX = (-4).dp
+            val baseShiftY = 1.dp
+            val layerShape = RoundedCornerShape(6.dp)
             repeat(layerCount) { layer ->
-                val xOffset = (layer * 3).dp
-                val yOffset = layer.dp
-                val alpha = if (layer == layerCount - 1) 1f else 0.52f + (layer * 0.1f)
+                val xOffset = baseShiftX + (stackStepX * layer)
+                val yOffset = baseShiftY + (stackStepY * layer)
+                val alpha = 1f
+                val layerShadow = if (layer == layerCount - 1) 1.dp else 2.8.dp
                 FramedCoverImage(
                     coverUrl = lead.coverUrl,
                     contentDescription = entry.seriesName,
                     modifier = Modifier
                         .offset(x = xOffset, y = yOffset)
-                        .width(76.dp)
-                        .height(88.dp)
+                        .width(cardWidth)
+                        .height(cardHeight)
+                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
                         .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                    shape = RoundedCornerShape(6.dp),
+                    shape = layerShape,
                     contentScale = ContentScale.Fit,
                     backgroundBlur = 44.dp
                 )
@@ -1225,6 +1258,7 @@ private fun buildBooksGridEntries(
 fun AuthorsBrowseScreen(
     onAuthorClick: (String) -> Unit,
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: AuthorsBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1234,6 +1268,7 @@ fun AuthorsBrowseScreen(
         onRetry = viewModel::refresh,
         onEntityClick = { onAuthorClick(it.name) },
         onBackClick = onBackClick,
+        onHomeClick = onHomeClick,
         showAvatar = true
     )
 }
@@ -1241,6 +1276,7 @@ fun AuthorsBrowseScreen(
 @Composable
 fun CollectionsBrowseScreen(
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: CollectionsBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1248,7 +1284,8 @@ fun CollectionsBrowseScreen(
         title = "Collections",
         uiState = uiState,
         onRetry = viewModel::refresh,
-        onBackClick = onBackClick
+        onBackClick = onBackClick,
+        onHomeClick = onHomeClick
     )
 }
 
@@ -1261,6 +1298,7 @@ fun NarratorsBrowseScreen(viewModel: NarratorsBrowseViewModel = hiltViewModel())
 fun NarratorsBrowseScreen(
     onNarratorClick: (String) -> Unit,
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: NarratorsBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1272,7 +1310,8 @@ fun NarratorsBrowseScreen(
     ) {
         BackTitle(
             title = "Narrators",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
         Spacer(modifier = Modifier.height(10.dp))
         when {
@@ -1359,6 +1398,7 @@ fun NarratorsBrowseScreen(
 fun SeriesBrowseScreen(
     onSeriesClick: (String) -> Unit,
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: SeriesBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1370,7 +1410,8 @@ fun SeriesBrowseScreen(
     ) {
         BackTitle(
             title = "Series",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -1414,29 +1455,40 @@ fun SeriesBrowseScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(234.dp),
+                                    .height(StandardGridCoverHeight)
+                                    .clipToBounds(),
                                 contentAlignment = Alignment.TopCenter
                             ) {
-                                val posterWidth = StandardGridCoverWidth
-                                val posterHeight = StandardGridCoverHeight
-                                val layerCount = 5
-                                val stackStart = 0.dp
-                                val horizontalStep = 9.dp
-                                val verticalStep = 5.dp
+                                val inferredCount = series.subtitle
+                                    .orEmpty()
+                                    .trim()
+                                    .substringBefore(" ")
+                                    .toIntOrNull()
+                                val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
+                                val stackStepX = 5.dp
+                                val stackStepY = 10.dp
+                                val totalShiftX = stackStepX * (layerCount - 1)
+                                val totalShiftY = stackStepY * (layerCount - 1)
+                                val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
+                                val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
+                                val baseShiftX = (-4).dp
+                                val baseShiftY = 1.dp
+                                val layerShape = RoundedCornerShape(8.dp)
                                 repeat(layerCount) { layer ->
-                                    val xOffset = horizontalStep * layer
-                                    val yOffset = verticalStep * layer
-                                    val alpha = if (layer == layerCount - 1) 1f else (0.34f + (layer * 0.16f))
-                                    val layerModifier = Modifier
-                                        .offset(x = stackStart + xOffset, y = yOffset)
-                                        .width(posterWidth)
-                                        .height(posterHeight)
-                                        .graphicsLayer(alpha = alpha.coerceIn(0f, 1f))
+                                    val xOffset = baseShiftX + (stackStepX * layer)
+                                    val yOffset = baseShiftY + (stackStepY * layer)
+                                    val alpha = 1f
+                                    val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
                                     FramedCoverImage(
                                         coverUrl = series.coverUrl,
                                         contentDescription = series.name,
-                                        modifier = layerModifier,
-                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier
+                                            .offset(x = xOffset, y = yOffset)
+                                            .width(cardWidth)
+                                            .height(cardHeight)
+                                            .shadow(elevation = layerShadow, shape = layerShape, clip = false)
+                                            .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
+                                        shape = layerShape,
                                         contentScale = ContentScale.Fit,
                                         backgroundBlur = WideCoverBackgroundBlur
                                     )
@@ -1477,7 +1529,8 @@ fun BrowseSectionPlaceholderScreen(
     title: String,
     emptyMessage: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Outlined.GridView,
-    onBackClick: (() -> Unit)? = null
+    onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1486,7 +1539,8 @@ fun BrowseSectionPlaceholderScreen(
     ) {
         BackTitle(
             title = title,
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
         Box(modifier = Modifier.fillMaxSize()) {
             Column(
@@ -1734,12 +1788,13 @@ private fun SearchEntityRow(
 
 @Composable
 fun DownloadsPlaceholderScreen() {
-    DownloadsPlaceholderScreen(onBackClick = null)
+    DownloadsPlaceholderScreen(onBackClick = null, onHomeClick = null)
 }
 
 @Composable
 fun DownloadsPlaceholderScreen(
-    onBackClick: (() -> Unit)? = null
+    onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1753,6 +1808,7 @@ fun DownloadsPlaceholderScreen(
             BackTitle(
                 title = "Downloaded",
                 onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
             )
             CircleActionButton(
@@ -2039,6 +2095,7 @@ private fun SettingsRow(
 fun ServersManagementScreen(
     onBackClick: () -> Unit,
     onAddServerClick: () -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: ServerManagementViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -2056,6 +2113,7 @@ fun ServersManagementScreen(
             BackTitle(
                 title = "Servers",
                 onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
             )
             Card(
@@ -2139,6 +2197,7 @@ fun BookDetailScreen(
     onBackClick: () -> Unit,
     onStartListening: (String) -> Unit = {},
     onOpenAuthor: (String) -> Unit = {},
+    onHomeClick: (() -> Unit)? = null,
     viewModel: BookDetailViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -2177,6 +2236,14 @@ fun BookDetailScreen(
                     contentDescription = "Back",
                     onClick = onBackClick
                 )
+                if (onHomeClick != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    CircleActionButton(
+                        icon = Icons.Outlined.Home,
+                        contentDescription = "Home",
+                        onClick = onHomeClick
+                    )
+                }
                 Spacer(modifier = Modifier.weight(1f))
                 CircleActionButton(
                     icon = Icons.Outlined.Download,
@@ -2281,20 +2348,46 @@ fun BookDetailScreen(
                 val activeChapterIndex = chapterPositionSeconds
                     ?.let { position -> findActiveChapterIndex(detail.chapters, position) }
                     ?: -1
+                val seriesOrderLabel = resolveSeriesOrderLabel(
+                    seriesSequence = book.seriesSequence,
+                    book.title,
+                    detail.chapters.firstOrNull()?.title
+                )
 
                 item {
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
-                        BookPoster(
-                            book = book,
-                            width = 240.dp,
-                            height = 320.dp,
-                            fillMaxWidth = true,
-                            shape = RoundedCornerShape(10.dp),
-                            contentScale = ContentScale.Fit
-                        )
+                        Box(
+                            modifier = Modifier
+                                .width(240.dp)
+                                .height(320.dp)
+                        ) {
+                            BookPoster(
+                                book = book,
+                                width = 240.dp,
+                                height = 320.dp,
+                                fillMaxWidth = true,
+                                shape = RoundedCornerShape(10.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                            seriesOrderLabel?.let { order ->
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .offset(x = (-4).dp, y = (-4).dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(MaterialTheme.colorScheme.surface)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "#$order",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 item {
@@ -2552,6 +2645,14 @@ fun PlayerPlaceholderScreen(
     } else {
         0f
     }
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubbingProgress by remember { mutableStateOf(progress) }
+    LaunchedEffect(progress, isScrubbing) {
+        if (!isScrubbing) {
+            scrubbingProgress = progress
+        }
+    }
+    val effectiveProgress = if (isScrubbing) scrubbingProgress else progress
     val activeChapterTitle = findActiveChapterTitle(chapters, positionSeconds)
     val playerTitle = if (
         book != null &&
@@ -2562,38 +2663,49 @@ fun PlayerPlaceholderScreen(
     } else {
         book?.title.orEmpty()
     }
-    val immersiveColor = rememberDominantCoverColor(
-        coverUrl = book?.coverUrl,
-        enabled = appearanceUiState.immersivePlayerEnabled
+    val playerSeriesOrderLabel = resolveSeriesOrderLabel(
+        seriesSequence = book?.seriesSequence,
+        book?.title,
+        activeChapterTitle
     )
-    val backgroundModifier = if (appearanceUiState.immersivePlayerEnabled && immersiveColor != null) {
-        Modifier
-            .background(MaterialTheme.colorScheme.background)
-            .background(
-                Brush.verticalGradient(
-                    colorStops = arrayOf(
-                        0.00f to immersiveColor.copy(alpha = 0.62f),
-                        0.22f to immersiveColor.copy(alpha = 0.46f),
-                        0.48f to immersiveColor.copy(alpha = 0.26f),
-                        0.78f to immersiveColor.copy(alpha = 0.10f),
-                        1.00f to Color.Transparent
-                    )
-                )
-            )
-    } else {
-        Modifier.background(MaterialTheme.colorScheme.background)
-    }
+    val immersiveEnabled = appearanceUiState.immersivePlayerEnabled && !book?.coverUrl.isNullOrBlank()
     var dragDistance by remember { mutableStateOf(0f) }
     var bottomMenuExpanded by remember { mutableStateOf(false) }
     var playerInfoMessage by remember { mutableStateOf<String?>(null) }
     val speeds = remember { listOf(0.8f, 1.0f, 1.3f, 1.5f, 1.8f, 2.0f) }
     var speedIndex by rememberSaveable { mutableStateOf(2) }
     val speedLabel = "${speeds[speedIndex]}x"
+    val playerTopOffset = 72.dp
+    val mainPlayButtonContainer = if (immersiveEnabled) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val mainPlayButtonIconTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
+        Color.Black
+    } else {
+        Color.White
+    }
+    val progressActiveColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.92f)
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val progressTrackColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.24f)
+    } else {
+        MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+    }
+    val primaryTextColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+    val secondaryTextColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.72f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .then(backgroundModifier)
             .pointerInput(onBackClick) {
                 detectVerticalDragGestures(
                     onVerticalDrag = { _, dragAmount ->
@@ -2609,8 +2721,44 @@ fun PlayerPlaceholderScreen(
                     onDragCancel = { dragDistance = 0f }
                 )
             }
-            .padding(horizontal = 18.dp, vertical = 12.dp)
     ) {
+        if (immersiveEnabled) {
+            AsyncImage(
+                model = rememberCoverImageModel(book?.coverUrl),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(alpha = 0.98f)
+                    .blur(28.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to Color.Black.copy(alpha = 0.34f),
+                                0.24f to Color.Black.copy(alpha = 0.16f),
+                                0.58f to MaterialTheme.colorScheme.background.copy(alpha = 0.08f),
+                                1.00f to MaterialTheme.colorScheme.background.copy(alpha = 0.24f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 12.dp)
+        ) {
         Box(
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
@@ -2619,7 +2767,7 @@ fun PlayerPlaceholderScreen(
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
         )
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(playerTopOffset))
         if (book == null) {
             CenteredEmptyState(
                 icon = Icons.Outlined.PlayArrow,
@@ -2633,17 +2781,38 @@ fun PlayerPlaceholderScreen(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            BookPoster(
-                book = book,
-                width = 332.dp,
-                height = 320.dp,
-                fillMaxWidth = true,
-                shape = RoundedCornerShape(14.dp),
-                contentScale = ContentScale.Fit,
-                backgroundBlur = WideCoverBackgroundBlur
-            )
+            Box(
+                modifier = Modifier
+                    .width(332.dp)
+                    .height(320.dp)
+            ) {
+                BookPoster(
+                    book = book,
+                    width = 332.dp,
+                    height = 320.dp,
+                    fillMaxWidth = true,
+                    shape = RoundedCornerShape(14.dp),
+                    contentScale = ContentScale.Fit,
+                    backgroundBlur = WideCoverBackgroundBlur
+                )
+                playerSeriesOrderLabel?.let { order ->
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset(x = (-4).dp, y = (-4).dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "#$order",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
         }
-        Spacer(modifier = Modifier.height(30.dp))
+        Spacer(modifier = Modifier.height(44.dp))
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
@@ -2651,6 +2820,7 @@ fun PlayerPlaceholderScreen(
             Text(
                 text = playerTitle,
                 style = MaterialTheme.typography.titleLarge,
+                color = primaryTextColor,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
@@ -2661,15 +2831,26 @@ fun PlayerPlaceholderScreen(
             Icon(
                 imageVector = Icons.Outlined.BookmarkBorder,
                 contentDescription = "Bookmark",
+                tint = secondaryTextColor,
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
-        Spacer(modifier = Modifier.height(30.dp))
-        LinearProgressIndicator(
-            progress = { progress },
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.onSurface,
-            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+        Spacer(modifier = Modifier.height(44.dp))
+        PlayerProgressBar(
+            progress = effectiveProgress,
+            activeColor = progressActiveColor,
+            trackColor = progressTrackColor,
+            onProgressChange = { newProgress ->
+                isScrubbing = true
+                scrubbingProgress = newProgress
+                viewModel.onScrubProgress(newProgress)
+            },
+            onProgressChangeFinished = { finalProgress ->
+                scrubbingProgress = finalProgress
+                viewModel.onScrubProgressFinished(finalProgress)
+                isScrubbing = false
+            },
+            modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(10.dp))
         val remainingSeconds = (durationSeconds - positionSeconds).coerceAtLeast(0.0)
@@ -2680,19 +2861,19 @@ fun PlayerPlaceholderScreen(
             Text(
                 text = formatSecondsAsHms(positionSeconds),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = secondaryTextColor
             )
             Text(
                 text = "${formatDurationHoursMinutes(remainingSeconds)} left · ${(progress * 100).toInt()}% complete",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondaryTextColor,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1f)
             )
             Text(
                 text = "-${formatSecondsAsHms(remainingSeconds)}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = secondaryTextColor
             )
         }
         playerInfoMessage?.let { message ->
@@ -2700,7 +2881,7 @@ fun PlayerPlaceholderScreen(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondaryTextColor,
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center
             )
@@ -2720,23 +2901,27 @@ fun PlayerPlaceholderScreen(
             ) {
                 Seek15Button(
                     forward = false,
+                    tint = primaryTextColor,
                     onClick = viewModel::onRewindClick
                 )
                 Box(
                     modifier = Modifier
-                        .size(62.dp)
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(mainPlayButtonContainer)
                         .clickable(onClick = viewModel::onPlayPauseClick),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = if (playbackUiState.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
                         contentDescription = if (playbackUiState.isPlaying) "Pause" else "Play",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(48.dp)
+                        tint = mainPlayButtonIconTint,
+                        modifier = Modifier.size(36.dp)
                     )
                 }
                 Seek15Button(
                     forward = true,
+                    tint = primaryTextColor,
                     onClick = viewModel::onForwardClick
                 )
             }
@@ -2745,55 +2930,267 @@ fun PlayerPlaceholderScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally)
             ) {
-                Text(
-                    text = speedLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.clickable {
+                PlayerBottomToolItem(
+                    label = "Speed",
+                    valueText = speedLabel,
+                    primaryColor = primaryTextColor,
+                    secondaryColor = secondaryTextColor,
+                    onClick = {
                         speedIndex = (speedIndex + 1) % speeds.size
                         playerInfoMessage = "Speed set to ${speeds[speedIndex]}x."
                     }
                 )
-                Spacer(modifier = Modifier.weight(1f))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { playerInfoMessage = "Sleep timer controls coming soon." }) {
-                        Icon(imageVector = Icons.Outlined.Timer, contentDescription = "Sleep Timer")
-                    }
-                    IconButton(onClick = { playerInfoMessage = "Output controls coming soon." }) {
-                        Icon(imageVector = Icons.Outlined.SettingsVoice, contentDescription = "Output")
-                    }
-                    Box {
-                        IconButton(onClick = { bottomMenuExpanded = true }) {
-                            Icon(imageVector = Icons.Outlined.MoreHoriz, contentDescription = "More")
-                        }
-                        DropdownMenu(
-                            expanded = bottomMenuExpanded,
-                            onDismissRequest = { bottomMenuExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Share") },
-                                onClick = {
-                                    playerInfoMessage = "Share coming soon."
-                                    bottomMenuExpanded = false
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Go to Book") },
-                                onClick = {
-                                    playerInfoMessage = "Already viewing this book."
-                                    bottomMenuExpanded = false
-                                }
-                            )
-                        }
+                PlayerBottomToolItem(
+                    label = "Timer",
+                    imageVector = Icons.Outlined.Timer,
+                    primaryColor = primaryTextColor,
+                    secondaryColor = secondaryTextColor,
+                    onClick = { playerInfoMessage = "Sleep timer controls coming soon." }
+                )
+                PlayerBottomToolItem(
+                    label = "History",
+                    imageVector = Icons.Outlined.Refresh,
+                    primaryColor = primaryTextColor,
+                    secondaryColor = secondaryTextColor,
+                    onClick = { playerInfoMessage = "History controls coming soon." }
+                )
+                PlayerBottomToolItem(
+                    label = "Download",
+                    imageVector = Icons.Outlined.Download,
+                    primaryColor = primaryTextColor,
+                    secondaryColor = secondaryTextColor,
+                    onClick = { playerInfoMessage = "Download controls coming soon." }
+                )
+                Box {
+                    PlayerBottomToolItem(
+                        label = "More",
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        primaryColor = primaryTextColor,
+                        secondaryColor = secondaryTextColor,
+                        onClick = { bottomMenuExpanded = true }
+                    )
+                    DropdownMenu(
+                        expanded = bottomMenuExpanded,
+                        onDismissRequest = { bottomMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Share") },
+                            onClick = {
+                                playerInfoMessage = "Share coming soon."
+                                bottomMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Go to Book") },
+                            onClick = {
+                                playerInfoMessage = "Already viewing this book."
+                                bottomMenuExpanded = false
+                            }
+                        )
                     }
                 }
             }
         }
+        }
+    }
+}
+
+@Composable
+private fun PlayerProgressBar(
+    progress: Float,
+    activeColor: Color,
+    trackColor: Color,
+    onProgressChange: (Float) -> Unit,
+    onProgressChangeFinished: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val clampedProgress = progress.coerceIn(0f, 1f)
+    val thumbSize = 11.dp
+    val barHeight = 5.dp
+    var widthPx by remember { mutableStateOf(0f) }
+    var dragProgress by remember { mutableStateOf(clampedProgress) }
+    var isDragging by remember { mutableStateOf(false) }
+
+    LaunchedEffect(clampedProgress, isDragging) {
+        if (!isDragging) {
+            dragProgress = clampedProgress
+        }
+    }
+
+    fun offsetToProgress(x: Float): Float {
+        if (widthPx <= 0f) return clampedProgress
+        return (x / widthPx).coerceIn(0f, 1f)
+    }
+
+    val draggableState = rememberDraggableState { delta ->
+        if (widthPx <= 0f) return@rememberDraggableState
+        isDragging = true
+        dragProgress = (dragProgress + (delta / widthPx)).coerceIn(0f, 1f)
+        onProgressChange(dragProgress)
+    }
+    val displayProgress = if (isDragging) dragProgress else clampedProgress
+
+    BoxWithConstraints(
+        modifier = modifier
+            .height(thumbSize)
+            .onSizeChanged { widthPx = it.width.toFloat() }
+            .pointerInput(widthPx, clampedProgress) {
+                detectTapGestures { offset ->
+                    val tappedProgress = offsetToProgress(offset.x)
+                    isDragging = false
+                    onProgressChange(tappedProgress)
+                    onProgressChangeFinished(tappedProgress)
+                }
+            }
+            .draggable(
+                state = draggableState,
+                orientation = androidx.compose.foundation.gestures.Orientation.Horizontal,
+                onDragStarted = { offset ->
+                    isDragging = true
+                    dragProgress = offsetToProgress(offset.x)
+                    onProgressChange(dragProgress)
+                },
+                onDragStopped = {
+                    onProgressChangeFinished(dragProgress)
+                    isDragging = false
+                }
+            )
+    ) {
+        val barShape = RoundedCornerShape(999.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(barHeight)
+                .align(Alignment.CenterStart)
+                .clip(barShape)
+                .background(trackColor)
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(displayProgress)
+                .height(barHeight)
+                .align(Alignment.CenterStart)
+                .clip(barShape)
+                .background(activeColor)
+        )
+        val maxOffset = (maxWidth - thumbSize).coerceAtLeast(0.dp)
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset(x = maxOffset * displayProgress)
+                .size(thumbSize)
+                .clip(CircleShape)
+                .background(activeColor)
+        )
+    }
+}
+
+@Composable
+private fun PlayerBottomToolItem(
+    label: String,
+    imageVector: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    valueText: String? = null,
+    primaryColor: Color = MaterialTheme.colorScheme.onSurface,
+    secondaryColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(58.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (!valueText.isNullOrBlank()) {
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                color = primaryColor
+            )
+        } else if (imageVector != null) {
+            Icon(
+                imageVector = imageVector,
+                contentDescription = label,
+                tint = primaryColor,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = secondaryColor,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun Seek15Button(
+    forward: Boolean,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .size(34.dp)
+                .graphicsLayer { scaleX = if (forward) 1f else -1f }
+        ) {
+            val strokeWidth = 2.6.dp.toPx()
+            val inset = 3.dp.toPx()
+            val arcSize = size.minDimension - inset * 2
+            drawArc(
+                color = tint,
+                startAngle = 20f,
+                sweepAngle = 250f,
+                useCenter = false,
+                topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                size = androidx.compose.ui.geometry.Size(arcSize, arcSize),
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+
+            val radius = arcSize / 2f
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val angle = Math.toRadians(270.0)
+            val x = cx + radius * cos(angle).toFloat()
+            val y = cy + radius * sin(angle).toFloat()
+            val head = 5.dp.toPx()
+            drawLine(
+                color = tint,
+                start = androidx.compose.ui.geometry.Offset(x, y),
+                end = androidx.compose.ui.geometry.Offset(x - head, y - head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = tint,
+                start = androidx.compose.ui.geometry.Offset(x, y),
+                end = androidx.compose.ui.geometry.Offset(x - head, y + head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+        Text(
+            text = "15",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            color = tint
+        )
     }
 }
 
@@ -2958,70 +3355,6 @@ private fun findActiveChapterIndex(
 }
 
 @Composable
-private fun Seek15Button(
-    forward: Boolean,
-    onClick: () -> Unit
-) {
-    val tint = MaterialTheme.colorScheme.onSurface
-    Box(
-        modifier = Modifier
-            .size(56.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(
-            modifier = Modifier
-                .size(34.dp)
-                .graphicsLayer { scaleX = if (forward) 1f else -1f }
-        ) {
-            val strokeWidth = 2.6.dp.toPx()
-            val inset = 3.dp.toPx()
-            val arcSize = size.minDimension - inset * 2
-            drawArc(
-                color = tint,
-                startAngle = 20f,
-                sweepAngle = 250f,
-                useCenter = false,
-                topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
-                size = androidx.compose.ui.geometry.Size(arcSize, arcSize),
-                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-            )
-
-            val radius = arcSize / 2f
-            val cx = size.width / 2f
-            val cy = size.height / 2f
-            val angle = Math.toRadians(270.0)
-            val x = cx + radius * cos(angle).toFloat()
-            val y = cy + radius * sin(angle).toFloat()
-            val head = 5.dp.toPx()
-            drawLine(
-                color = tint,
-                start = androidx.compose.ui.geometry.Offset(x, y),
-                end = androidx.compose.ui.geometry.Offset(x - head, y - head * 0.55f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round
-            )
-            drawLine(
-                color = tint,
-                start = androidx.compose.ui.geometry.Offset(x, y),
-                end = androidx.compose.ui.geometry.Offset(x - head, y + head * 0.55f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round
-            )
-        }
-        Text(
-            text = "15",
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold
-            ),
-            color = tint
-        )
-    }
-}
-
-@Composable
 private fun PlayerToolsCard(
     title: String,
     rows: List<String>
@@ -3075,6 +3408,7 @@ private fun DetailTabChip(
 @Composable
 fun CustomizePlaceholderScreen(
     onDone: () -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: CustomizeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -3094,6 +3428,14 @@ fun CustomizePlaceholderScreen(
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.weight(1f)
             )
+            if (onHomeClick != null) {
+                CircleActionButton(
+                    icon = Icons.Outlined.Home,
+                    contentDescription = "Home",
+                    onClick = onHomeClick
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
             CircleActionButton(
                 icon = Icons.Filled.Check,
                 contentDescription = "Done",
@@ -3223,6 +3565,7 @@ private fun EntityBrowseScreen(
     onRetry: () -> Unit,
     onEntityClick: ((com.stillshelf.app.core.model.NamedEntitySummary) -> Unit)? = null,
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     showAvatar: Boolean = false
 ) {
     val refreshState = rememberPullRefreshState(
@@ -3237,7 +3580,8 @@ private fun EntityBrowseScreen(
     ) {
         BackTitle(
             title = title,
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -3385,7 +3729,7 @@ private fun SeriesStackCard(
                 val depth = (layerCount - 2 - layer)
                 val xOffset = (frontOffsetX - ((depth + 1) * 4).dp).coerceAtLeast(0.dp)
                 val yOffset = (frontOffsetY - ((depth + 1) * 3).dp).coerceAtLeast(0.dp)
-                val alpha = 0.28f + (layer * 0.14f)
+                val alpha = 1f
                 FramedCoverImage(
                     coverUrl = book.coverUrl,
                     contentDescription = book.title,
@@ -3668,6 +4012,7 @@ private fun CircleActionButton(
 private fun BackTitle(
     title: String,
     onBackClick: (() -> Unit)?,
+    onHomeClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -3679,6 +4024,14 @@ private fun BackTitle(
                 icon = Icons.AutoMirrored.Outlined.ArrowBack,
                 contentDescription = "Back",
                 onClick = onBackClick
+            )
+            Spacer(modifier = Modifier.width(BackTitleSpacing))
+        }
+        if (onHomeClick != null) {
+            CircleActionButton(
+                icon = Icons.Outlined.Home,
+                contentDescription = "Home",
+                onClick = onHomeClick
             )
             Spacer(modifier = Modifier.width(BackTitleSpacing))
         }
@@ -3761,6 +4114,28 @@ private fun parsePublishedYear(raw: String?): Int {
     raw ?: return Int.MIN_VALUE
     val fourDigits = raw.trim().take(4)
     return fourDigits.toIntOrNull() ?: Int.MIN_VALUE
+}
+
+private fun formatSeriesOrderLabel(seriesSequence: Double?): String? {
+    val sequence = seriesSequence?.takeIf { it > 0.0 } ?: return null
+    return if (sequence % 1.0 == 0.0) {
+        sequence.toInt().toString()
+    } else {
+        sequence.toString()
+    }
+}
+
+private fun extractSeriesOrderLabelFromText(text: String?): String? {
+    if (text.isNullOrBlank()) return null
+    val bookMatch = Regex("(?i)\\bbook\\s*(\\d+(?:\\.\\d+)?)\\b").find(text)
+    if (bookMatch != null) return bookMatch.groupValues.getOrNull(1)
+    val hashMatch = Regex("#(\\d+(?:\\.\\d+)?)").find(text)
+    return hashMatch?.groupValues?.getOrNull(1)
+}
+
+private fun resolveSeriesOrderLabel(seriesSequence: Double?, vararg textCandidates: String?): String? {
+    formatSeriesOrderLabel(seriesSequence)?.let { return it }
+    return textCandidates.firstNotNullOfOrNull { extractSeriesOrderLabelFromText(it) }
 }
 
 private fun splitAuthorNames(raw: String): List<String> {

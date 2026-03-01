@@ -84,6 +84,14 @@ class PlayerViewModel @Inject constructor(
         playbackController.seekBy(deltaMs = 15_000L)
     }
 
+    fun onScrubProgress(progressFraction: Float) {
+        playbackController.seekToProgress(progressFraction = progressFraction, commit = false)
+    }
+
+    fun onScrubProgressFinished(progressFraction: Float) {
+        playbackController.seekToProgress(progressFraction = progressFraction, commit = true)
+    }
+
     fun onDismissPlayer() {
         playbackController.saveProgressSnapshot()
     }

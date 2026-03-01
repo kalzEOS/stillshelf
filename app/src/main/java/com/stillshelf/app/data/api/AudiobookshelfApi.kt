@@ -56,7 +56,8 @@ data class AudiobookshelfNamedEntityDto(
     val id: String,
     val name: String,
     val subtitle: String? = null,
-    val imagePath: String? = null
+    val imagePath: String? = null,
+    val description: String? = null
 )
 
 data class AudiobookshelfSearchDto(
@@ -263,6 +264,10 @@ class AudiobookshelfApi @Inject constructor(
                         subtitle = item.optString("numBooks").takeIf { it.isNotBlank() }?.let { "$it books" },
                         imagePath = item.optString("imagePath")
                             .ifBlank { item.optString("avatarPath") }
+                            .ifBlank { null },
+                        description = item.optString("description")
+                            .ifBlank { item.optString("bio") }
+                            .ifBlank { item.optString("descriptionPlain") }
                             .ifBlank { null }
                     )
                 }

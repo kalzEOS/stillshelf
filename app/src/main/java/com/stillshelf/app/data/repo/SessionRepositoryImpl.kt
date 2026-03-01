@@ -1338,6 +1338,7 @@ class SessionRepositoryImpl @Inject constructor(
             id = id,
             name = name,
             subtitle = subtitle,
+            description = description,
             imageUrl = if (includeAuthorImage) {
                 imagePath?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
                     ?: audiobookshelfApi.buildAuthorImageUrl(baseUrl, id, authToken)

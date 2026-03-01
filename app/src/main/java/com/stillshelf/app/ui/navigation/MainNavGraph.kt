@@ -107,6 +107,18 @@ private fun MainTabsNavHost(
     paddingValues: PaddingValues,
     navController: androidx.navigation.NavHostController
 ) {
+    val onHomeClick: () -> Unit = {
+        if (!navController.popBackStack(MainTab.Home.route, inclusive = false)) {
+            navController.navigate(MainTab.Home.route) {
+                popUpTo(navController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = MainTab.Home.route,
@@ -167,6 +179,7 @@ private fun MainTabsNavHost(
         }
         composable(MainTab.Browse.route) {
             BrowsePlaceholderScreen(
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -203,7 +216,9 @@ private fun MainTabsNavHost(
                 }
             )
         }
-        composable(MainTab.Downloads.route) { DownloadsPlaceholderScreen() }
+        composable(MainTab.Downloads.route) {
+            DownloadsPlaceholderScreen(onHomeClick = onHomeClick)
+        }
         composable(MainTab.Settings.route) {
             SettingsPlaceholderScreen(
                 onBackClick = { navController.popBackStack() },
@@ -269,7 +284,8 @@ private fun MainTabsNavHost(
                     navController.navigate(AuthRoute.ADD_SERVER) {
                         launchSingleTop = true
                     }
-                }
+                },
+                onHomeClick = onHomeClick
             )
         }
         composable(AuthRoute.ADD_SERVER) {
@@ -317,12 +333,16 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainRoute.CUSTOMIZE) {
-            CustomizePlaceholderScreen(onDone = { navController.popBackStack() })
+            CustomizePlaceholderScreen(
+                onDone = { navController.popBackStack() },
+                onHomeClick = onHomeClick
+            )
         }
 
         composable(BrowseRoute.BOOKS) {
             BrowsePlaceholderScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -338,6 +358,7 @@ private fun MainTabsNavHost(
         composable(BrowseRoute.AUTHORS) {
             AuthorsBrowseScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onAuthorClick = { authorName ->
                     navController.navigate(DetailRoute.author(authorName)) {
                         launchSingleTop = true
@@ -348,6 +369,7 @@ private fun MainTabsNavHost(
         composable(BrowseRoute.NARRATORS) {
             NarratorsBrowseScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onNarratorClick = { narratorName ->
                     navController.navigate(DetailRoute.narrator(narratorName)) {
                         launchSingleTop = true
@@ -358,6 +380,7 @@ private fun MainTabsNavHost(
         composable(BrowseRoute.SERIES) {
             SeriesBrowseScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onSeriesClick = { seriesName ->
                     navController.navigate(DetailRoute.series(seriesName)) {
                         launchSingleTop = true
@@ -367,12 +390,14 @@ private fun MainTabsNavHost(
         }
         composable(BrowseRoute.COLLECTIONS) {
             CollectionsBrowseScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
         composable(BrowseRoute.GENRES) {
             GenresBrowseScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onGenreClick = { genreName ->
                     navController.navigate(DetailRoute.genre(genreName)) {
                         launchSingleTop = true
@@ -385,7 +410,8 @@ private fun MainTabsNavHost(
                 title = "Bookmarks",
                 emptyMessage = "Bookmarks you add will appear here.",
                 icon = Icons.Outlined.BookmarkBorder,
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
         composable(BrowseRoute.PLAYLISTS) {
@@ -393,12 +419,14 @@ private fun MainTabsNavHost(
                 title = "Playlists",
                 emptyMessage = "Playlists you create will appear here.",
                 icon = Icons.Outlined.MusicNote,
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
         composable(BrowseRoute.DOWNLOADED) {
             DownloadsPlaceholderScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
 
@@ -412,6 +440,7 @@ private fun MainTabsNavHost(
         ) {
             BookDetailScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onStartListening = { bookId ->
                     navController.navigate(MainRoute.player(bookId)) {
                         launchSingleTop = true
@@ -434,6 +463,7 @@ private fun MainTabsNavHost(
         ) {
             AuthorDetailScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -456,6 +486,7 @@ private fun MainTabsNavHost(
         ) {
             SeriesDetailScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -473,6 +504,7 @@ private fun MainTabsNavHost(
         ) {
             NarratorDetailScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -490,6 +522,7 @@ private fun MainTabsNavHost(
         ) {
             GenreDetailScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true

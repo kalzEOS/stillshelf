@@ -35,7 +35,8 @@ data class NamedEntitySummary(
     val id: String,
     val name: String,
     val subtitle: String? = null,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    val description: String? = null
 )
 
 data class ContinueListeningItem(

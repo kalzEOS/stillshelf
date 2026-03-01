@@ -149,12 +149,19 @@ class PlaybackController @Inject constructor(
         } else {
             (current + deltaMs).coerceAtLeast(0L)
         }
-        runCatching { player.seekTo(target.toInt()) }
-        mutableUiState.update { it.copy(positionMs = target) }
-        syncProgress(force = true, isFinished = false)
+        seekToPosition(targetMs = target, forceSync = true)
     }
 
-    private fun seekToPosition(targetMs: Long) {
+    fun seekToProgress(progressFraction: Float, commit: Boolean) {
+        val player = mediaPlayer ?: return
+        val duration = safeDuration(player)
+        if (duration <= 0L) return
+        val clamped = progressFraction.coerceIn(0f, 1f)
+        val targetMs = (duration.toDouble() * clamped.toDouble()).toLong()
+        seekToPosition(targetMs = targetMs, forceSync = commit)
+    }
+
+    private fun seekToPosition(targetMs: Long, forceSync: Boolean = true) {
         val player = mediaPlayer ?: return
         val duration = safeDuration(player)
         val clamped = if (duration > 0L) {
@@ -164,7 +171,9 @@ class PlaybackController @Inject constructor(
         }
         runCatching { player.seekTo(clamped.toInt()) }
         mutableUiState.update { it.copy(positionMs = clamped) }
-        syncProgress(force = true, isFinished = false)
+        if (forceSync) {
+            syncProgress(force = true, isFinished = false)
+        }
     }
 
     private fun pause() {

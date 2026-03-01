@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -54,6 +56,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
@@ -65,6 +69,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -79,6 +84,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.text.Regex
@@ -88,6 +94,7 @@ data class FacetBooksUiState(
     val title: String = "",
     val books: List<BookSummary> = emptyList(),
     val authorImageUrl: String? = null,
+    val authorAbout: String? = null,
     val errorMessage: String? = null
 )
 
@@ -104,7 +111,7 @@ data class GenresUiState(
     val errorMessage: String? = null
 )
 
-private enum class AuthorLayoutMode {
+enum class AuthorLayoutMode {
     Grid,
     List
 }
@@ -129,26 +136,57 @@ private sealed interface AuthorDisplayEntry {
 @HiltViewModel
 class AuthorDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val authorName = savedStateHandle.get<String>(DetailRoute.AUTHOR_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = authorName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val mutableLayoutMode = MutableStateFlow(AuthorLayoutMode.Grid)
+    val layoutMode: StateFlow<AuthorLayoutMode> = mutableLayoutMode.asStateFlow()
+    private val mutableCollapseSeries = MutableStateFlow(true)
+    val collapseSeries: StateFlow<Boolean> = mutableCollapseSeries.asStateFlow()
 
     init {
+        viewModelScope.launch { restoreUiPreferences() }
         refresh()
+    }
+
+    fun setLayoutMode(value: AuthorLayoutMode) {
+        mutableLayoutMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setAuthorLayoutMode(value.name)
+        }
+    }
+
+    fun toggleCollapseSeries() {
+        val nextValue = !mutableCollapseSeries.value
+        mutableCollapseSeries.value = nextValue
+        viewModelScope.launch {
+            sessionPreferences.setAuthorCollapseSeries(nextValue)
+        }
+    }
+
+    private suspend fun restoreUiPreferences() {
+        val pref = sessionPreferences.state.first()
+        mutableLayoutMode.value = pref.authorLayoutMode
+            ?.let { raw -> enumValueOrNull<AuthorLayoutMode>(raw) }
+            ?: AuthorLayoutMode.Grid
+        mutableCollapseSeries.value = pref.authorCollapseSeries
     }
 
     fun refresh() {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            val authorImageUrl = when (val authorsResult = sessionRepository.fetchAuthorsForActiveLibrary(limit = 400, page = 0)) {
+            val matchedAuthor = when (val authorsResult = sessionRepository.fetchAuthorsForActiveLibrary(limit = 400, page = 0)) {
                 is AppResult.Success -> {
-                    authorsResult.value.firstOrNull { it.name.equals(authorName, ignoreCase = true) }?.imageUrl
+                    authorsResult.value.firstOrNull { it.name.equals(authorName, ignoreCase = true) }
                 }
 
                 is AppResult.Error -> null
             }
+            val authorImageUrl = matchedAuthor?.imageUrl
+            val authorAbout = matchedAuthor?.description?.takeIf { it.isNotBlank() }
 
             when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
                 is AppResult.Success -> {
@@ -159,7 +197,8 @@ class AuthorDetailViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             books = books,
-                            authorImageUrl = authorImageUrl
+                            authorImageUrl = authorImageUrl,
+                            authorAbout = authorAbout
                         )
                     }
                 }
@@ -169,6 +208,7 @@ class AuthorDetailViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             authorImageUrl = authorImageUrl,
+                            authorAbout = authorAbout,
                             errorMessage = result.message
                         )
                     }
@@ -181,14 +221,27 @@ class AuthorDetailViewModel @Inject constructor(
 @HiltViewModel
 class SeriesDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = seriesName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val mutableListMode = MutableStateFlow(true)
+    val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            mutableListMode.value = sessionPreferences.state.first().seriesDetailListMode
+        }
         refresh()
+    }
+
+    fun setListMode(value: Boolean) {
+        mutableListMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setSeriesDetailListMode(value)
+        }
     }
 
     fun refresh() {
@@ -458,12 +511,12 @@ fun AuthorDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: AuthorDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var layoutMode by rememberSaveable { mutableStateOf(AuthorLayoutMode.Grid) }
-    var collapseSeries by rememberSaveable { mutableStateOf(true) }
-    var optionsExpanded by remember { mutableStateOf(false) }
+    val layoutMode by viewModel.layoutMode.collectAsStateWithLifecycle()
+    val collapseSeries by viewModel.collapseSeries.collectAsStateWithLifecycle()
 
     val displayBooks = remember(uiState.books) { uiState.books.sortedBy { it.title.lowercase() } }
     val displayEntries = remember(displayBooks, collapseSeries) {
@@ -472,11 +525,179 @@ fun AuthorDetailScreen(
             collapseSeries = collapseSeries
         )
     }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
-    ) {
+    val aboutText = uiState.authorAbout?.takeIf { it.isNotBlank() }
+        ?: "No author biography is available from this Audiobookshelf server."
+
+    if (layoutMode == AuthorLayoutMode.Grid) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
+            item(span = { GridItemSpan(2) }) {
+                AuthorDetailHeader(
+                    title = uiState.title,
+                    bookCount = displayBooks.size,
+                    authorImageUrl = uiState.authorImageUrl,
+                    aboutText = aboutText,
+                    layoutMode = layoutMode,
+                    collapseSeries = collapseSeries,
+                    onBackClick = onBackClick,
+                    onHomeClick = onHomeClick,
+                    onSetLayoutMode = viewModel::setLayoutMode,
+                    onToggleCollapseSeries = viewModel::toggleCollapseSeries
+                )
+            }
+
+            when {
+                uiState.isLoading -> item(span = { GridItemSpan(2) }) {
+                    Text(
+                        text = "Loading...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null -> item(span = { GridItemSpan(2) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = uiState.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                displayBooks.isEmpty() -> item(span = { GridItemSpan(2) }) {
+                    Text(
+                        text = "No books found.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    gridItems(displayEntries, key = { it.stableKey }) { entry ->
+                        when (entry) {
+                            is AuthorDisplayEntry.BookItem -> {
+                                AuthorGridBookItem(
+                                    book = entry.book,
+                                    onClick = { onBookClick(entry.book.id) }
+                                )
+                            }
+
+                            is AuthorDisplayEntry.SeriesItem -> {
+                                AuthorSeriesGridItem(
+                                    entry = entry,
+                                    onClick = { onSeriesClick(entry.seriesName) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
+            item {
+                AuthorDetailHeader(
+                    title = uiState.title,
+                    bookCount = displayBooks.size,
+                    authorImageUrl = uiState.authorImageUrl,
+                    aboutText = aboutText,
+                    layoutMode = layoutMode,
+                    collapseSeries = collapseSeries,
+                    onBackClick = onBackClick,
+                    onHomeClick = onHomeClick,
+                    onSetLayoutMode = viewModel::setLayoutMode,
+                    onToggleCollapseSeries = viewModel::toggleCollapseSeries
+                )
+            }
+
+            when {
+                uiState.isLoading -> item {
+                    Text(
+                        text = "Loading...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null -> item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = uiState.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                displayBooks.isEmpty() -> item {
+                    Text(
+                        text = "No books found.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    items(displayEntries, key = { it.stableKey }) { entry ->
+                        when (entry) {
+                            is AuthorDisplayEntry.BookItem -> {
+                                AuthorBookRow(
+                                    book = entry.book,
+                                    onClick = { onBookClick(entry.book.id) }
+                                )
+                            }
+
+                            is AuthorDisplayEntry.SeriesItem -> {
+                                AuthorSeriesListRow(
+                                    entry = entry,
+                                    onClick = { onSeriesClick(entry.seriesName) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthorDetailHeader(
+    title: String,
+    bookCount: Int,
+    authorImageUrl: String?,
+    aboutText: String,
+    layoutMode: AuthorLayoutMode,
+    collapseSeries: Boolean,
+    onBackClick: () -> Unit,
+    onHomeClick: (() -> Unit)?,
+    onSetLayoutMode: (AuthorLayoutMode) -> Unit,
+    onToggleCollapseSeries: () -> Unit
+) {
+    var optionsExpanded by remember { mutableStateOf(false) }
+    var aboutExpanded by rememberSaveable(title, aboutText) { mutableStateOf(false) }
+    var aboutCanExpand by remember(title, aboutText) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(
                 onClick = onBackClick,
@@ -488,6 +709,21 @@ fun AuthorDetailScreen(
                     imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = "Back"
                 )
+            }
+            if (onHomeClick != null) {
+                Spacer(modifier = Modifier.width(FacetBackTitleSpacing))
+                IconButton(
+                    onClick = onHomeClick,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Home,
+                        contentDescription = "Home"
+                    )
+                }
             }
             Spacer(modifier = Modifier.weight(1f))
             Box {
@@ -515,7 +751,7 @@ fun AuthorDetailScreen(
                             }
                         },
                         onClick = {
-                            layoutMode = AuthorLayoutMode.Grid
+                            onSetLayoutMode(AuthorLayoutMode.Grid)
                             optionsExpanded = false
                         }
                     )
@@ -536,7 +772,7 @@ fun AuthorDetailScreen(
                             }
                         },
                         onClick = {
-                            layoutMode = AuthorLayoutMode.List
+                            onSetLayoutMode(AuthorLayoutMode.List)
                             optionsExpanded = false
                         }
                     )
@@ -551,7 +787,7 @@ fun AuthorDetailScreen(
                             }
                         },
                         onClick = {
-                            collapseSeries = !collapseSeries
+                            onToggleCollapseSeries()
                             optionsExpanded = false
                         }
                     )
@@ -567,9 +803,9 @@ fun AuthorDetailScreen(
                 .align(Alignment.CenterHorizontally),
             contentAlignment = Alignment.Center
         ) {
-            if (uiState.authorImageUrl.isNullOrBlank()) {
+            if (authorImageUrl.isNullOrBlank()) {
                 Text(
-                    text = uiState.title.split(" ")
+                    text = title.split(" ")
                         .mapNotNull { it.firstOrNull()?.uppercaseChar() }
                         .take(2)
                         .joinToString(""),
@@ -577,8 +813,8 @@ fun AuthorDetailScreen(
                 )
             } else {
                 AsyncImage(
-                    model = rememberCoverImageModel(uiState.authorImageUrl),
-                    contentDescription = uiState.title,
+                    model = rememberCoverImageModel(authorImageUrl),
+                    contentDescription = title,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(CircleShape),
@@ -587,99 +823,42 @@ fun AuthorDetailScreen(
             }
         }
         Text(
-            text = uiState.title,
+            text = title,
             style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
         Text(
-            text = "${displayBooks.size} books",
+            text = "$bookCount books",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
-        Spacer(modifier = Modifier.height(12.dp))
-
-        when {
-            uiState.isLoading -> {
-                Text(
-                    text = "Loading...",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            uiState.errorMessage != null -> {
-                Text(
-                    text = uiState.errorMessage.orEmpty(),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.error
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = viewModel::refresh) {
-                    Text("Retry")
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "About",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Text(
+            text = aboutText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = if (aboutExpanded) Int.MAX_VALUE else 5,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { textLayoutResult ->
+                if (!aboutExpanded) {
+                    aboutCanExpand = textLayoutResult.hasVisualOverflow
                 }
             }
-
-            displayBooks.isEmpty() -> {
-                Text(
-                    text = "No books found.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            else -> {
-                if (layoutMode == AuthorLayoutMode.Grid) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 120.dp)
-                    ) {
-                        gridItems(displayEntries, key = { it.stableKey }) { entry ->
-                            when (entry) {
-                                is AuthorDisplayEntry.BookItem -> {
-                                    AuthorGridBookItem(
-                                        book = entry.book,
-                                        onClick = { onBookClick(entry.book.id) }
-                                    )
-                                }
-
-                                is AuthorDisplayEntry.SeriesItem -> {
-                                    AuthorSeriesGridItem(
-                                        entry = entry,
-                                        onClick = { onSeriesClick(entry.seriesName) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        contentPadding = PaddingValues(bottom = 120.dp)
-                    ) {
-                        items(displayEntries, key = { it.stableKey }) { entry ->
-                            when (entry) {
-                                is AuthorDisplayEntry.BookItem -> {
-                                    AuthorBookRow(
-                                        book = entry.book,
-                                        onClick = { onBookClick(entry.book.id) }
-                                    )
-                                }
-
-                                is AuthorDisplayEntry.SeriesItem -> {
-                                    AuthorSeriesListRow(
-                                        entry = entry,
-                                        onClick = { onSeriesClick(entry.seriesName) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        )
+        if (aboutCanExpand || aboutExpanded) {
+            Text(
+                text = if (aboutExpanded) "Show less" else "Show more",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { aboutExpanded = !aboutExpanded }
+            )
         }
+        Spacer(modifier = Modifier.height(4.dp))
     }
 }
 
@@ -759,9 +938,17 @@ private fun AuthorSeriesGridItem(
     onClick: () -> Unit
 ) {
     val lead = entry.leadBook
-    val layerCount = entry.count.coerceIn(3, 6)
-    val frontOffsetX = 12.dp
-    val frontOffsetY = 6.dp
+    val layerCount = entry.count.coerceIn(2, 3)
+    val frameHeight = StandardGridCoverHeight
+    val stackStepX = 5.dp
+    val stackStepY = 10.dp
+    val totalShiftX = stackStepX * (layerCount - 1)
+    val totalShiftY = stackStepY * (layerCount - 1)
+    val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
+    val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
+    val baseShiftX = (-4).dp
+    val baseShiftY = 1.dp
+    val layerShape = RoundedCornerShape(8.dp)
     Column(
         modifier = Modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -769,50 +956,42 @@ private fun AuthorSeriesGridItem(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(StandardGridCoverHeight + frontOffsetY + 4.dp),
+                .height(frameHeight)
+                .clipToBounds(),
             contentAlignment = Alignment.TopCenter
         ) {
-            repeat(layerCount - 1) { layer ->
-                val depth = layerCount - 2 - layer
-                val xOffset = (frontOffsetX - ((depth + 1) * 3).dp).coerceAtLeast(0.dp)
-                val yOffset = (frontOffsetY - ((depth + 1) * 2).dp).coerceAtLeast(0.dp)
-                val alpha = (0.34f + layer * 0.14f).coerceIn(0f, 1f)
+            repeat(layerCount) { layer ->
+                val xOffset = baseShiftX + (stackStepX * layer)
+                val yOffset = baseShiftY + (stackStepY * layer)
+                val alpha = 1f
+                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
                 FramedCoverImage(
                     coverUrl = lead.coverUrl,
                     contentDescription = entry.seriesName,
                     modifier = Modifier
                         .offset(x = xOffset, y = yOffset)
-                        .width(StandardGridCoverWidth)
-                        .height(StandardGridCoverHeight)
+                        .width(cardWidth)
+                        .height(cardHeight)
+                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
                         .graphicsLayer(alpha = alpha),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = layerShape,
                     contentScale = ContentScale.Fit,
                     backgroundBlur = WideCoverBackgroundBlur
                 )
             }
-            FramedCoverImage(
-                coverUrl = lead.coverUrl,
-                contentDescription = entry.seriesName,
-                modifier = Modifier
-                    .offset(x = frontOffsetX, y = frontOffsetY)
-                    .width(StandardGridCoverWidth)
-                    .height(StandardGridCoverHeight),
-                shape = RoundedCornerShape(8.dp),
-                contentScale = ContentScale.Fit,
-                backgroundBlur = WideCoverBackgroundBlur
+        }
+        Row(
+            modifier = Modifier
+                .width(StandardGridCoverWidth)
+                .align(Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (entry.count == 1) "1 book" else "${entry.count} books",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            text = entry.seriesName,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = if (entry.count == 1) "1 book" else "${entry.count} books",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -892,22 +1071,37 @@ private fun AuthorSeriesListRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
-                modifier = Modifier.size(74.dp),
+                modifier = Modifier
+                    .size(72.dp)
+                    .clipToBounds(),
                 contentAlignment = Alignment.Center
             ) {
-                val layerCount = entry.count.coerceIn(2, 5)
+                val layerCount = entry.count.coerceIn(2, 3)
+                val frameSize = 72.dp
+                val stackStepX = 4.dp
+                val stackStepY = 7.dp
+                val totalShiftX = stackStepX * (layerCount - 1)
+                val totalShiftY = stackStepY * (layerCount - 1)
+                val cardWidth = frameSize - totalShiftX - 3.dp
+                val cardHeight = frameSize - totalShiftY - 3.dp
+                val baseShiftX = (-4).dp
+                val baseShiftY = 1.dp
+                val layerShape = RoundedCornerShape(8.dp)
                 repeat(layerCount) { layer ->
-                    val xOffset = (layer * 3).dp
-                    val yOffset = (layer * 2).dp
-                    val alpha = if (layer == layerCount - 1) 1f else 0.56f + (layer * 0.1f)
+                    val xOffset = baseShiftX + (stackStepX * layer)
+                    val yOffset = baseShiftY + (stackStepY * layer)
+                    val alpha = 1f
+                    val layerShadow = if (layer == layerCount - 1) 1.dp else 2.8.dp
                     FramedCoverImage(
                         coverUrl = lead.coverUrl,
                         contentDescription = entry.seriesName,
                         modifier = Modifier
                             .offset(x = xOffset, y = yOffset)
-                            .size(64.dp)
+                            .width(cardWidth)
+                            .height(cardHeight)
+                            .shadow(elevation = layerShadow, shape = layerShape, clip = false)
                             .graphicsLayer(alpha = alpha),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = layerShape,
                         contentScale = ContentScale.Fit,
                         backgroundBlur = WideCoverBackgroundBlur
                     )
@@ -943,10 +1137,11 @@ private fun AuthorSeriesListRow(
 fun SeriesDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: SeriesDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var listMode by remember { mutableStateOf(true) }
+    val listMode by viewModel.listMode.collectAsStateWithLifecycle()
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
         onRefresh = viewModel::refresh
@@ -1016,6 +1211,21 @@ fun SeriesDetailScreen(
                                         contentDescription = "Back"
                                     )
                                 }
+                                if (onHomeClick != null) {
+                                    Spacer(modifier = Modifier.width(FacetBackTitleSpacing))
+                                    IconButton(
+                                        onClick = onHomeClick,
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.surface)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Home,
+                                            contentDescription = "Home"
+                                        )
+                                    }
+                                }
                                 Spacer(modifier = Modifier.weight(1f))
                                 IconButton(
                                     onClick = {},
@@ -1030,7 +1240,7 @@ fun SeriesDetailScreen(
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 IconButton(
-                                    onClick = { listMode = !listMode },
+                                    onClick = { viewModel.setListMode(!listMode) },
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(CircleShape)
@@ -1053,7 +1263,7 @@ fun SeriesDetailScreen(
                     }
 
                     item {
-                        SeriesCoverStack(leadBook = leadBook, layerCount = books.size.coerceAtMost(5))
+                        SeriesCoverStack(leadBook = leadBook, layerCount = books.size.coerceIn(2, 3))
                     }
                     item {
                         Text(
@@ -1075,16 +1285,7 @@ fun SeriesDetailScreen(
 
                     if (listMode) {
                         itemsIndexed(books, key = { _, item -> item.id }) { index, book ->
-                            val orderLabel = book.seriesSequence
-                                ?.takeIf { it > 0.0 }
-                                ?.let { sequence ->
-                                    if (sequence % 1.0 == 0.0) {
-                                        sequence.toInt().toString()
-                                    } else {
-                                        sequence.toString()
-                                    }
-                                }
-                                ?: (index + 1).toString()
+                            val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: (index + 1).toString()
                             SeriesDetailBookRow(
                                 book = book,
                                 orderLabel = orderLabel,
@@ -1094,14 +1295,17 @@ fun SeriesDetailScreen(
                         }
                     } else {
                         val bookRows = books.chunked(2)
-                        itemsIndexed(bookRows, key = { index, _ -> "series-grid-row-$index" }) { _, rowBooks ->
+                        itemsIndexed(bookRows, key = { index, _ -> "series-grid-row-$index" }) { rowIndex, rowBooks ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                rowBooks.forEach { book ->
+                                rowBooks.forEachIndexed { columnIndex, book ->
+                                    val fallbackIndex = (rowIndex * 2) + columnIndex + 1
+                                    val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: fallbackIndex.toString()
                                     SeriesDetailGridCard(
                                         book = book,
+                                        orderLabel = orderLabel,
                                         modifier = Modifier.weight(1f),
                                         onClick = { onBookClick(book.id) }
                                     )
@@ -1129,6 +1333,7 @@ fun SeriesDetailScreen(
 fun GenresBrowseScreen(
     onBackClick: () -> Unit,
     onGenreClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: GenresBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -1144,7 +1349,8 @@ fun GenresBrowseScreen(
     ) {
         FacetTopBar(
             title = "Genres",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
         Spacer(modifier = Modifier.height(10.dp))
         Box(
@@ -1229,12 +1435,14 @@ fun GenresBrowseScreen(
 fun GenreDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: GenreDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     FacetBooksScreen(
         uiState = uiState,
         onBackClick = onBackClick,
+        onHomeClick = onHomeClick,
         onBookClick = onBookClick,
         onRetry = viewModel::refresh,
         showMoreIcon = true
@@ -1245,12 +1453,14 @@ fun GenreDetailScreen(
 fun NarratorDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: NarratorDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     FacetBooksScreen(
         uiState = uiState,
         onBackClick = onBackClick,
+        onHomeClick = onHomeClick,
         onBookClick = onBookClick,
         onRetry = viewModel::refresh
     )
@@ -1261,6 +1471,7 @@ fun NarratorDetailScreen(
 private fun FacetBooksScreen(
     uiState: FacetBooksUiState,
     onBackClick: () -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     onBookClick: (String) -> Unit,
     onRetry: () -> Unit,
     showMoreIcon: Boolean = false
@@ -1277,6 +1488,7 @@ private fun FacetBooksScreen(
         FacetTopBar(
             title = uiState.title,
             onBackClick = onBackClick,
+            onHomeClick = onHomeClick,
             showMoreIcon = showMoreIcon
         )
         Spacer(modifier = Modifier.height(10.dp))
@@ -1342,6 +1554,7 @@ private fun FacetBooksScreen(
 private fun FacetTopBar(
     title: String,
     onBackClick: () -> Unit,
+    onHomeClick: (() -> Unit)? = null,
     showMoreIcon: Boolean = false
 ) {
     Row(
@@ -1361,6 +1574,21 @@ private fun FacetTopBar(
             )
         }
         Spacer(modifier = Modifier.width(FacetBackTitleSpacing))
+        if (onHomeClick != null) {
+            IconButton(
+                onClick = onHomeClick,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Home,
+                    contentDescription = "Home"
+                )
+            }
+            Spacer(modifier = Modifier.width(FacetBackTitleSpacing))
+        }
         Text(
             text = title,
             style = MaterialTheme.typography.titleLarge,
@@ -1379,17 +1607,27 @@ private fun FacetTopBar(
     }
 }
 
+private inline fun <reified T : Enum<T>> enumValueOrNull(raw: String): T? {
+    return runCatching { enumValueOf<T>(raw) }.getOrNull()
+}
+
 @Composable
 private fun SeriesCoverStack(
     leadBook: BookSummary,
     layerCount: Int
 ) {
-    val count = layerCount.coerceAtLeast(1)
-    val posterWidth = 168.dp
-    val posterHeight = 172.dp
-    val stepX = 14f
-    val stepY = 5f
-    val startX = (-(stepX * (count - 1)) / 2f).dp
+    val count = layerCount.coerceIn(2, 3)
+    val frameWidth = 168.dp
+    val frameHeight = 172.dp
+    val stepX = 7.dp
+    val stepY = 12.dp
+    val totalShiftX = stepX * (count - 1)
+    val totalShiftY = stepY * (count - 1)
+    val cardWidth = frameWidth - totalShiftX - 3.dp
+    val cardHeight = frameHeight - totalShiftY - 3.dp
+    val baseShiftX = (-4).dp
+    val baseShiftY = 1.dp
+    val layerShape = RoundedCornerShape(10.dp)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1397,19 +1635,20 @@ private fun SeriesCoverStack(
         contentAlignment = Alignment.TopCenter
     ) {
         for (layer in 0 until count) {
-            val offsetX = startX + (layer * stepX).dp
-            val offsetY = (layer * stepY).dp
-            val isFront = layer == count - 1
-            val alpha = if (isFront) 1f else (0.32f + (layer * 0.14f)).coerceAtMost(0.78f)
+            val offsetX = baseShiftX + (stepX * layer)
+            val offsetY = baseShiftY + (stepY * layer)
+            val alpha = 1f
+            val layerShadow = if (layer == count - 1) 1.2.dp else 3.4.dp
             FramedCoverImage(
                 coverUrl = leadBook.coverUrl,
                 contentDescription = leadBook.title,
                 modifier = Modifier
                     .offset(x = offsetX, y = offsetY)
-                    .width(posterWidth)
-                    .height(posterHeight)
+                    .width(cardWidth)
+                    .height(cardHeight)
+                    .shadow(elevation = layerShadow, shape = layerShape, clip = false)
                     .graphicsLayer(alpha = alpha),
-                shape = RoundedCornerShape(10.dp),
+                shape = layerShape,
                 contentScale = ContentScale.Fit,
                 backgroundBlur = 44.dp
             )
@@ -1494,6 +1733,7 @@ private fun SeriesDetailBookRow(
 @Composable
 private fun SeriesDetailGridCard(
     book: BookSummary,
+    orderLabel: String,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -1501,21 +1741,45 @@ private fun SeriesDetailGridCard(
         modifier = modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        FramedCoverImage(
-            coverUrl = book.coverUrl,
-            contentDescription = book.title,
+        Box(
             modifier = Modifier
                 .width(StandardGridCoverWidth)
                 .height(StandardGridCoverHeight)
+                .align(Alignment.CenterHorizontally)
+        ) {
+            FramedCoverImage(
+                coverUrl = book.coverUrl,
+                contentDescription = book.title,
+                modifier = Modifier.matchParentSize(),
+                shape = RoundedCornerShape(8.dp),
+                contentScale = ContentScale.Fit
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = (-4).dp, y = (-4).dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            ) {
+                Text(
+                    text = "#$orderLabel",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .width(StandardGridCoverWidth)
                 .align(Alignment.CenterHorizontally),
-            shape = RoundedCornerShape(8.dp),
-            contentScale = ContentScale.Fit
-        )
-        Text(
-            text = formatDuration(book.durationSeconds),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatDuration(book.durationSeconds),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -1578,4 +1842,13 @@ private fun formatDuration(durationSeconds: Double?): String {
     val hours = seconds / 3600
     val minutes = (seconds % 3600) / 60
     return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+private fun formatSeriesOrderLabel(seriesSequence: Double?): String? {
+    val sequence = seriesSequence?.takeIf { it > 0.0 } ?: return null
+    return if (sequence % 1.0 == 0.0) {
+        sequence.toInt().toString()
+    } else {
+        sequence.toString()
+    }
 }

@@ -27,6 +27,9 @@ class SessionPreferences @Inject constructor(
     private val booksStatusFilterKey = stringPreferencesKey("books_status_filter")
     private val booksSortKey = stringPreferencesKey("books_sort_key")
     private val booksCollapseSeriesKey = booleanPreferencesKey("books_collapse_series")
+    private val authorLayoutModeKey = stringPreferencesKey("author_layout_mode")
+    private val authorCollapseSeriesKey = booleanPreferencesKey("author_collapse_series")
+    private val seriesDetailListModeKey = booleanPreferencesKey("series_detail_list_mode")
     private val immersivePlayerEnabledKey = booleanPreferencesKey("immersive_player_enabled")
     private val appThemeModeKey = stringPreferencesKey("app_theme_mode")
     private val materialDesignEnabledKey = booleanPreferencesKey("material_design_enabled")
@@ -47,6 +50,9 @@ class SessionPreferences @Inject constructor(
             booksStatusFilter = prefs[booksStatusFilterKey],
             booksSortKey = prefs[booksSortKey],
             booksCollapseSeries = prefs[booksCollapseSeriesKey] ?: true,
+            authorLayoutMode = prefs[authorLayoutModeKey],
+            authorCollapseSeries = prefs[authorCollapseSeriesKey] ?: true,
+            seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
             immersivePlayerEnabled = prefs[immersivePlayerEnabledKey] ?: false,
             appThemeMode = prefs[appThemeModeKey] ?: "follow_system",
             materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false
@@ -159,6 +165,28 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setAuthorLayoutMode(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(authorLayoutModeKey)
+            } else {
+                prefs[authorLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setAuthorCollapseSeries(collapse: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[authorCollapseSeriesKey] = collapse
+        }
+    }
+
+    suspend fun setSeriesDetailListMode(listMode: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[seriesDetailListModeKey] = listMode
+        }
+    }
+
     suspend fun setImmersivePlayerEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[immersivePlayerEnabledKey] = enabled
@@ -241,6 +269,9 @@ data class SessionPreferenceState(
     val booksStatusFilter: String? = null,
     val booksSortKey: String? = null,
     val booksCollapseSeries: Boolean = true,
+    val authorLayoutMode: String? = null,
+    val authorCollapseSeries: Boolean = true,
+    val seriesDetailListMode: Boolean = true,
     val immersivePlayerEnabled: Boolean = false,
     val appThemeMode: String = "follow_system",
     val materialDesignEnabled: Boolean = false

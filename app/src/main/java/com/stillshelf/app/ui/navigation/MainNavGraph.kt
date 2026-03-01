@@ -69,6 +69,17 @@ private fun MainShell() {
     val currentTab = MainTab.fromRoute(currentRoute)
     val miniPlayerViewModel: MiniPlayerViewModel = hiltViewModel()
     val miniPlayerState by miniPlayerViewModel.uiState.collectAsStateWithLifecycle()
+    val onHomeClick: () -> Unit = {
+        if (!tabsNavController.popBackStack(MainTab.Home.route, inclusive = false)) {
+            tabsNavController.navigate(MainTab.Home.route) {
+                popUpTo(tabsNavController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     RootScaffold(
         currentTab = currentTab,
@@ -82,6 +93,7 @@ private fun MainShell() {
             }
         },
         miniPlayerState = miniPlayerState,
+        onMiniPlayerHomeClick = if (currentTab != MainTab.Home) onHomeClick else null,
         onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
         onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,
         onMiniPlayerClick = {
@@ -93,11 +105,13 @@ private fun MainShell() {
             currentRoute != MainTab.Search.route &&
             currentRoute != MainTab.Settings.route &&
             currentRoute != MainRoute.SETTINGS &&
-            currentRoute != MainRoute.SERVERS
+            currentRoute != MainRoute.SERVERS &&
+            currentRoute?.startsWith("auth/") != true
     ) { paddingValues ->
         MainTabsNavHost(
             paddingValues = paddingValues,
-            navController = tabsNavController
+            navController = tabsNavController,
+            onHomeClick = onHomeClick
         )
     }
 }
@@ -105,20 +119,9 @@ private fun MainShell() {
 @Composable
 private fun MainTabsNavHost(
     paddingValues: PaddingValues,
-    navController: androidx.navigation.NavHostController
+    navController: androidx.navigation.NavHostController,
+    onHomeClick: () -> Unit
 ) {
-    val onHomeClick: () -> Unit = {
-        if (!navController.popBackStack(MainTab.Home.route, inclusive = false)) {
-            navController.navigate(MainTab.Home.route) {
-                popUpTo(navController.graph.findStartDestination().id) {
-                    saveState = true
-                }
-                launchSingleTop = true
-                restoreState = true
-            }
-        }
-    }
-
     NavHost(
         navController = navController,
         startDestination = MainTab.Home.route,
@@ -257,7 +260,7 @@ private fun MainTabsNavHost(
             exitTransition = {
                 slideOutVertically(
                     targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
+                    animationSpec = tween(durationMillis = 240)
                 )
             },
             popEnterTransition = {
@@ -269,7 +272,7 @@ private fun MainTabsNavHost(
             popExitTransition = {
                 slideOutVertically(
                     targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
+                    animationSpec = tween(durationMillis = 240)
                 )
             }
         ) {
@@ -317,13 +320,6 @@ private fun MainTabsNavHost(
         composable(AuthRoute.LIBRARY_PICKER) {
             LibraryPickerRoute(
                 onLibrarySelected = {
-                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
-                        navController.navigate(MainRoute.SERVERS) {
-                            launchSingleTop = true
-                        }
-                    }
-                },
-                onManageServers = {
                     if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
                         navController.navigate(MainRoute.SERVERS) {
                             launchSingleTop = true

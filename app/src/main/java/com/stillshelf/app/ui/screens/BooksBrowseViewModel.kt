@@ -20,6 +20,13 @@ class BooksBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
+    companion object {
+        private const val BOOKS_CACHE_MAX_AGE_MS: Long = 5 * 60 * 1000L
+    }
+
+    private val booksCacheByLibrary = mutableMapOf<String, List<BookSummary>>()
+    private val booksCacheAtMsByLibrary = mutableMapOf<String, Long>()
+
     private val mutableUiState = MutableStateFlow(BooksBrowseUiState())
     val uiState: StateFlow<BooksBrowseUiState> = mutableUiState.asStateFlow()
 
@@ -86,6 +93,24 @@ class BooksBrowseViewModel @Inject constructor(
         clearBootstrap: Boolean = false
     ) {
         if (uiState.value.isLoading) return
+        val activeLibraryId = sessionRepository.observeSessionState().first().activeLibraryId
+        if (!isUserRefresh && !activeLibraryId.isNullOrBlank()) {
+            val cachedBooks = booksCacheByLibrary[activeLibraryId]
+            val cachedAt = booksCacheAtMsByLibrary[activeLibraryId] ?: 0L
+            val isFresh = (System.currentTimeMillis() - cachedAt) <= BOOKS_CACHE_MAX_AGE_MS
+            if (!cachedBooks.isNullOrEmpty() && isFresh) {
+                mutableUiState.update {
+                    it.copy(
+                        isBootstrapping = false,
+                        isLoading = false,
+                        isRefreshing = false,
+                        errorMessage = null,
+                        books = cachedBooks
+                    )
+                }
+                return
+            }
+        }
         mutableUiState.update {
             it.copy(
                 isBootstrapping = if (clearBootstrap) false else it.isBootstrapping,
@@ -95,8 +120,16 @@ class BooksBrowseViewModel @Inject constructor(
             )
         }
 
-        when (val result = sessionRepository.fetchBooksForActiveLibrary()) {
+        when (
+            val result = sessionRepository.fetchBooksForActiveLibrary(
+                forceRefresh = isUserRefresh
+            )
+        ) {
             is AppResult.Success -> {
+                if (!activeLibraryId.isNullOrBlank()) {
+                    booksCacheByLibrary[activeLibraryId] = result.value
+                    booksCacheAtMsByLibrary[activeLibraryId] = System.currentTimeMillis()
+                }
                 mutableUiState.update {
                     it.copy(
                         isBootstrapping = false,

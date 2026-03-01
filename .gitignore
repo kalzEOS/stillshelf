@@ -38,6 +38,7 @@ keystore.properties
 *.tmp
 *.swp
 *.swo
+*.kate-swp
 captures/
 
 # OS files

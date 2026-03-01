@@ -20,10 +20,16 @@ class AddServerViewModel @Inject constructor(
     val uiState: StateFlow<AddServerUiState> = mutableUiState.asStateFlow()
 
     fun onServerNameChange(value: String) {
+        val serverNameError = validateServerName(value)
         mutableUiState.update { state ->
             state.copy(
                 serverName = value,
-                canContinue = canContinue(name = value, baseUrl = state.baseUrl),
+                serverNameError = serverNameError,
+                canContinue = canContinue(
+                    name = value,
+                    baseUrl = state.baseUrl,
+                    serverNameError = serverNameError
+                ),
                 connectionMessage = null,
                 connectionSuccess = null
             )
@@ -31,10 +37,18 @@ class AddServerViewModel @Inject constructor(
     }
 
     fun onBaseUrlChange(value: String) {
+        val normalizedValue = value.replace(" ", "")
+        val currentServerName = uiState.value.serverName
+        val serverNameError = validateServerName(currentServerName)
         mutableUiState.update { state ->
             state.copy(
-                baseUrl = value,
-                canContinue = canContinue(name = state.serverName, baseUrl = value),
+                baseUrl = normalizedValue,
+                serverNameError = serverNameError,
+                canContinue = canContinue(
+                    name = currentServerName,
+                    baseUrl = normalizedValue,
+                    serverNameError = serverNameError
+                ),
                 connectionMessage = null,
                 connectionSuccess = null
             )
@@ -78,13 +92,27 @@ class AddServerViewModel @Inject constructor(
         }
     }
 
-    private fun canContinue(name: String, baseUrl: String): Boolean {
-        return name.isNotBlank() && baseUrl.isNotBlank()
+    private fun canContinue(name: String, baseUrl: String, serverNameError: String?): Boolean {
+        return name.isNotBlank() && baseUrl.isNotBlank() && serverNameError == null
+    }
+
+    private fun validateServerName(name: String): String? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return "Server name is required."
+        if (trimmed.length < 2) return "Server name must be at least 2 characters."
+        val hasInvalidChar = trimmed.any { char ->
+            !char.isLetterOrDigit() && char !in setOf(' ', '.', '-', '_', '\'')
+        }
+        if (hasInvalidChar) {
+            return "Use letters, numbers, spaces, or . - _ ' only."
+        }
+        return null
     }
 }
 
 data class AddServerUiState(
     val serverName: String = "",
+    val serverNameError: String? = null,
     val baseUrl: String = "",
     val canContinue: Boolean = false,
     val isTestingConnection: Boolean = false,

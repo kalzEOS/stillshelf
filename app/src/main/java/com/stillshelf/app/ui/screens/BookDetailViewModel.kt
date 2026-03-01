@@ -38,17 +38,21 @@ class BookDetailViewModel @Inject constructor(
     val playbackUiState: StateFlow<PlaybackUiState> = playbackController.uiState
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         if (bookId.isBlank()) {
             mutableUiState.update { it.copy(isLoading = false, errorMessage = "Invalid book id.") }
             return
         }
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBookDetail(bookId)) {
+            when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     val progress = when (val progressResult = sessionRepository.fetchPlaybackProgress(bookId)) {
                         is AppResult.Success -> progressResult.value

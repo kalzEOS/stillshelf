@@ -70,5 +70,46 @@ class ServerManagementViewModel @Inject constructor(
     fun clearError() {
         mutableUiState.update { it.copy(errorMessage = null) }
     }
-}
 
+    fun updateServer(serverId: String, name: String, baseUrl: String) {
+        if (uiState.value.isSwitching) return
+        mutableUiState.update { it.copy(isSwitching = true, errorMessage = null) }
+        viewModelScope.launch {
+            when (val result = sessionRepository.updateServer(serverId, name, baseUrl)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(isSwitching = false) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSwitching = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun deleteServer(serverId: String) {
+        if (uiState.value.isSwitching) return
+        mutableUiState.update { it.copy(isSwitching = true, errorMessage = null) }
+        viewModelScope.launch {
+            when (val result = sessionRepository.deleteServer(serverId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(isSwitching = false) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSwitching = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

@@ -36,7 +36,7 @@ fun RootNavGraph(
     val authStartDestination = if (uiState.hasActiveServer) {
         AuthRoute.LIBRARY_PICKER
     } else {
-        AuthRoute.SERVERS
+        AuthRoute.ADD_SERVER
     }
 
     key(startGraph, authStartDestination) {

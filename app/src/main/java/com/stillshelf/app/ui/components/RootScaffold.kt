@@ -2,13 +2,26 @@ package com.stillshelf.app.ui.components
 
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -21,20 +34,20 @@ fun RootScaffold(
     currentTab: MainTab,
     onTabSelected: (MainTab) -> Unit,
     miniPlayerState: MiniPlayerUiState,
+    onMiniPlayerHomeClick: (() -> Unit)? = null,
     onMiniPlayerRewind15: () -> Unit,
     onMiniPlayerPlayPause: () -> Unit,
     onMiniPlayerClick: () -> Unit,
     showMiniPlayer: Boolean = true,
     content: @Composable (PaddingValues) -> Unit
 ) {
-    val contentBottomInset = if (showMiniPlayer) 88.dp else 0.dp
+    val contentBottomInset = 0.dp
 
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
         ) {
             content(PaddingValues(bottom = contentBottomInset))
         }
@@ -50,13 +63,41 @@ fun RootScaffold(
                 animationSpec = tween(durationMillis = 260)
             )
         ) {
-            MiniPlayerBar(
-                state = miniPlayerState,
-                onRewind15 = onMiniPlayerRewind15,
-                onPlayPause = onMiniPlayerPlayPause,
-                onClick = onMiniPlayerClick,
-                modifier = Modifier.navigationBarsPadding()
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 6.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                MiniPlayerBar(
+                    state = miniPlayerState,
+                    onRewind15 = onMiniPlayerRewind15,
+                    onPlayPause = onMiniPlayerPlayPause,
+                    onClick = onMiniPlayerClick,
+                    modifier = Modifier.weight(1f)
+                )
+                if (onMiniPlayerHomeClick != null) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = CircleShape
+                            )
+                            .clickable(onClick = onMiniPlayerHomeClick),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Home,
+                            contentDescription = "Home",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
         }
     }
 }

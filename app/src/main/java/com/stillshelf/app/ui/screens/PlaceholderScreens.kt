@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -79,6 +80,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -89,6 +91,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -112,7 +115,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1853,6 +1858,7 @@ fun SettingsPlaceholderScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -1868,7 +1874,6 @@ fun SettingsPlaceholderScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onManageServers)
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1889,11 +1894,6 @@ fun SettingsPlaceholderScreen(
                     imageVector = Icons.Filled.Check,
                     contentDescription = "Active",
                     tint = Color(0xFF2EAE62)
-                )
-                Icon(
-                    imageVector = Icons.Outlined.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -2099,6 +2099,12 @@ fun ServersManagementScreen(
     viewModel: ServerManagementViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var expandedServerMenuId by remember { mutableStateOf<String?>(null) }
+    var editingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
+    var editingName by remember { mutableStateOf("") }
+    var editingUrl by remember { mutableStateOf("") }
+    var editingError by remember { mutableStateOf<String?>(null) }
+    var deletingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
 
     Column(
         modifier = Modifier
@@ -2116,16 +2122,6 @@ fun ServersManagementScreen(
                 onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
             )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Text(
-                    text = "Edit",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                )
-            }
         }
 
         Card(
@@ -2161,6 +2157,36 @@ fun ServersManagementScreen(
                         if (server.id == uiState.activeServerId) {
                             Icon(imageVector = Icons.Filled.Check, contentDescription = "Active")
                         }
+                        Box {
+                            IconButton(onClick = { expandedServerMenuId = server.id }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreHoriz,
+                                    contentDescription = "Server actions"
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = expandedServerMenuId == server.id,
+                                onDismissRequest = { expandedServerMenuId = null }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit") },
+                                    onClick = {
+                                        expandedServerMenuId = null
+                                        editingServer = server
+                                        editingName = server.name
+                                        editingUrl = server.baseUrl
+                                        editingError = null
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete") },
+                                    onClick = {
+                                        expandedServerMenuId = null
+                                        deletingServer = server
+                                    }
+                                )
+                            }
+                        }
                     }
                     if (index < uiState.servers.lastIndex) {
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
@@ -2177,6 +2203,98 @@ fun ServersManagementScreen(
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 )
             }
+        }
+
+        if (editingServer != null) {
+            AlertDialog(
+                onDismissRequest = {
+                    editingServer = null
+                    editingError = null
+                },
+                title = { Text("Edit Server") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = editingName,
+                            onValueChange = {
+                                editingName = it
+                                editingError = null
+                            },
+                            label = { Text("Server Name") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = editingUrl,
+                            onValueChange = {
+                                editingUrl = it.replace(" ", "")
+                                editingError = null
+                            },
+                            label = { Text("Base URL") },
+                            singleLine = true
+                        )
+                        editingError?.let { message ->
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val server = editingServer ?: return@TextButton
+                            if (editingName.trim().length < 2) {
+                                editingError = "Server name must be at least 2 characters."
+                                return@TextButton
+                            }
+                            val trimmedUrl = editingUrl.trim()
+                            val validUrl = trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                                trimmedUrl.startsWith("http://", ignoreCase = true)
+                            if (!validUrl) {
+                                editingError = "Base URL must start with http:// or https://"
+                                return@TextButton
+                            }
+                            viewModel.updateServer(
+                                serverId = server.id,
+                                name = editingName.trim(),
+                                baseUrl = trimmedUrl
+                            )
+                            editingServer = null
+                        }
+                    ) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            editingServer = null
+                            editingError = null
+                        }
+                    ) { Text("Cancel") }
+                }
+            )
+        }
+
+        if (deletingServer != null) {
+            val server = deletingServer
+            AlertDialog(
+                onDismissRequest = { deletingServer = null },
+                title = { Text("Delete Server?") },
+                text = { Text("Remove ${server?.name.orEmpty()} from this device?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val target = deletingServer ?: return@TextButton
+                            deletingServer = null
+                            viewModel.deleteServer(target.id)
+                        }
+                    ) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingServer = null }) { Text("Cancel") }
+                }
+            )
         }
 
         uiState.errorMessage?.let { message ->
@@ -2675,7 +2793,6 @@ fun PlayerPlaceholderScreen(
     val speeds = remember { listOf(0.8f, 1.0f, 1.3f, 1.5f, 1.8f, 2.0f) }
     var speedIndex by rememberSaveable { mutableStateOf(2) }
     val speedLabel = "${speeds[speedIndex]}x"
-    val playerTopOffset = 8.dp
     val mainPlayButtonContainer = if (immersiveEnabled) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
     } else {
@@ -2702,6 +2819,18 @@ fun PlayerPlaceholderScreen(
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val effectiveHeightDp = (configuration.screenHeightDp.toFloat() / density.fontScale).coerceAtLeast(520f)
+    val playerHorizontalPadding = (effectiveHeightDp * 0.025f).dp.coerceIn(14.dp, 20.dp)
+    val playerVerticalPadding = (effectiveHeightDp * 0.015f).dp.coerceIn(8.dp, 16.dp)
+    val adaptiveLargeGap = (effectiveHeightDp * 0.05f).dp.coerceIn(26.dp, 44.dp)
+    val progressMetaGap = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
+    val coverTargetWidth = (effectiveHeightDp * 0.42f).dp.coerceIn(286.dp, 332.dp)
+    val controlsRowPadding = (effectiveHeightDp * 0.04f).dp.coerceIn(24.dp, 38.dp)
+    val bottomToolsTopPadding = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
+    val bottomToolsBottomPadding = (effectiveHeightDp * 0.01f).dp.coerceIn(6.dp, 10.dp)
+    val playerTopOffset = (effectiveHeightDp * 0.01f).dp.coerceIn(4.dp, 10.dp)
 
     Box(
         modifier = Modifier
@@ -2709,16 +2838,20 @@ fun PlayerPlaceholderScreen(
             .pointerInput(onBackClick) {
                 detectVerticalDragGestures(
                     onVerticalDrag = { _, dragAmount ->
-                        if (dragAmount > 0f) dragDistance += dragAmount
+                        if (dragAmount > 0f) {
+                            dragDistance += dragAmount
+                        }
                     },
                     onDragEnd = {
-                        if (dragDistance > 110f) {
+                        if (dragDistance > 24f) {
                             viewModel.onDismissPlayer()
                             onBackClick?.invoke()
                         }
                         dragDistance = 0f
                     },
-                    onDragCancel = { dragDistance = 0f }
+                    onDragCancel = {
+                        dragDistance = 0f
+                    }
                 )
             }
     ) {
@@ -2757,7 +2890,8 @@ fun PlayerPlaceholderScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 18.dp, vertical = 12.dp)
+                .navigationBarsPadding()
+                .padding(horizontal = playerHorizontalPadding, vertical = playerVerticalPadding)
         ) {
         Box(
             modifier = Modifier
@@ -2781,7 +2915,7 @@ fun PlayerPlaceholderScreen(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            val coverWidth = minOf(332.dp, maxWidth)
+            val coverWidth = minOf(coverTargetWidth, maxWidth)
             val coverHeight = coverWidth * (320f / 332f)
             Box(
                 modifier = Modifier
@@ -2814,7 +2948,7 @@ fun PlayerPlaceholderScreen(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(modifier = Modifier.height(adaptiveLargeGap))
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
@@ -2837,7 +2971,7 @@ fun PlayerPlaceholderScreen(
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(modifier = Modifier.height(adaptiveLargeGap))
         PlayerProgressBar(
             progress = effectiveProgress,
             activeColor = progressActiveColor,
@@ -2854,7 +2988,7 @@ fun PlayerPlaceholderScreen(
             },
             modifier = Modifier.fillMaxWidth()
         )
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(progressMetaGap))
         val remainingSeconds = (durationSeconds - positionSeconds).coerceAtLeast(0.0)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2897,7 +3031,7 @@ fun PlayerPlaceholderScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 34.dp),
+                    .padding(horizontal = controlsRowPadding),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -2934,7 +3068,7 @@ fun PlayerPlaceholderScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp, bottom = 8.dp),
+                    .padding(top = bottomToolsTopPadding, bottom = bottomToolsBottomPadding),
                 verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
@@ -3102,32 +3236,45 @@ private fun PlayerBottomToolItem(
     secondaryColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     onClick: () -> Unit
 ) {
+    val topSlotHeight = 22.dp
     Column(
         modifier = Modifier
-            .width(58.dp)
+            .width(66.dp)
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        if (!valueText.isNullOrBlank()) {
-            Text(
-                text = valueText,
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                color = primaryColor
-            )
-        } else if (imageVector != null) {
-            Icon(
-                imageVector = imageVector,
-                contentDescription = label,
-                tint = primaryColor,
-                modifier = Modifier.size(20.dp)
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(topSlotHeight),
+            contentAlignment = Alignment.Center
+        ) {
+            if (!valueText.isNullOrBlank()) {
+                Text(
+                    text = valueText,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+                    color = primaryColor,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else if (imageVector != null) {
+                Icon(
+                    imageVector = imageVector,
+                    contentDescription = label,
+                    tint = primaryColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
         Text(
             text = label,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp),
             color = secondaryColor,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Clip,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }

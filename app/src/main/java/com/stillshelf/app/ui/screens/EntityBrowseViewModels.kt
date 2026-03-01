@@ -40,15 +40,19 @@ class AuthorsBrowseViewModel @Inject constructor(
     val uiState: StateFlow<EntityBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchAuthorsForActiveLibrary()) {
+            when (val result = sessionRepository.fetchAuthorsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     val filtered = result.value.filterNot { isStillShelfProbeCollection(it.name) }
                     mutableUiState.update {
@@ -80,15 +84,19 @@ class NarratorsBrowseViewModel @Inject constructor(
     val uiState: StateFlow<EntityBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchNarratorsForActiveLibrary()) {
+            when (val result = sessionRepository.fetchNarratorsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     mutableUiState.update {
                         it.copy(
@@ -119,17 +127,27 @@ class SeriesBrowseViewModel @Inject constructor(
     val uiState: StateFlow<SeriesBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            when (val seriesResult = sessionRepository.fetchSeriesForActiveLibrary()) {
+            when (val seriesResult = sessionRepository.fetchSeriesForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
-                    val books = when (val booksResult = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+                    val books = when (
+                        val booksResult = sessionRepository.fetchBooksForActiveLibrary(
+                            limit = 400,
+                            page = 0,
+                            forceRefresh = forceRefresh
+                        )
+                    ) {
                         is AppResult.Success -> booksResult.value
                         is AppResult.Error -> emptyList()
                     }
@@ -179,15 +197,19 @@ class CollectionsBrowseViewModel @Inject constructor(
     val uiState: StateFlow<EntityBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchCollectionsForActiveLibrary()) {
+            when (val result = sessionRepository.fetchCollectionsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     val filtered = result.value.filterNot { isStillShelfProbeCollection(it.name) }
                     mutableUiState.update {

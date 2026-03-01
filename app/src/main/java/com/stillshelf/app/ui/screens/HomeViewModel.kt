@@ -67,20 +67,25 @@ class HomeViewModel @Inject constructor(
                     authorImageUrls = cachedResult.value.authorImageUrls
                 )
             }
+            refreshNetwork(showLoading = false)
             return
         }
-        refreshNetwork()
+        refreshNetwork(showLoading = true)
     }
 
     fun refresh() {
         viewModelScope.launch {
-            refreshNetwork()
+            refreshNetwork(showLoading = true)
         }
     }
 
-    private suspend fun refreshNetwork() {
+    private suspend fun refreshNetwork(showLoading: Boolean) {
         if (uiState.value.isLoading) return
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        if (showLoading) {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        } else {
+            mutableUiState.update { it.copy(errorMessage = null) }
+        }
 
         when (val result = sessionRepository.fetchHomeFeed()) {
             is AppResult.Success -> {

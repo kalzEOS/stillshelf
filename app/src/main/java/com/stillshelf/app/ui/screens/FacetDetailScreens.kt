@@ -149,7 +149,7 @@ class AuthorDetailViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { restoreUiPreferences() }
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun setLayoutMode(value: AuthorLayoutMode) {
@@ -176,9 +176,19 @@ class AuthorDetailViewModel @Inject constructor(
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            val matchedAuthor = when (val authorsResult = sessionRepository.fetchAuthorsForActiveLibrary(limit = 400, page = 0)) {
+            val matchedAuthor = when (
+                val authorsResult = sessionRepository.fetchAuthorsForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     authorsResult.value.firstOrNull { it.name.equals(authorName, ignoreCase = true) }
                 }
@@ -188,7 +198,13 @@ class AuthorDetailViewModel @Inject constructor(
             val authorImageUrl = matchedAuthor?.imageUrl
             val authorAbout = matchedAuthor?.description?.takeIf { it.isNotBlank() }
 
-            when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     val books = result.value.filter {
                         it.authorName.equals(authorName, ignoreCase = true)
@@ -234,7 +250,7 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().seriesDetailListMode
         }
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun setListMode(value: Boolean) {
@@ -245,9 +261,19 @@ class SeriesDetailViewModel @Inject constructor(
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     val normalizedSeries = normalizeSeriesKey(seriesName)
                     val matchedBooks = result.value.filter {
@@ -259,13 +285,7 @@ class SeriesDetailViewModel @Inject constructor(
                     }
                     val books = matchedBooks
                         .map { book ->
-                            val detail = when (val detailResult = sessionRepository.fetchBookDetail(book.id)) {
-                                is AppResult.Success -> detailResult.value
-                                is AppResult.Error -> null
-                            }
                             val sequence = book.seriesSequence
-                                ?: detail?.book?.seriesSequence
-                                ?: extractSeriesSequenceFromChapter(detail?.chapters?.firstOrNull()?.title)
                                 ?: extractSeriesSequenceFromTitle(book.title)
                             if (sequence != null) {
                                 book.copy(seriesSequence = sequence)
@@ -300,12 +320,6 @@ class SeriesDetailViewModel @Inject constructor(
 
 private fun extractSeriesSequenceFromTitle(title: String): Double? {
     val match = Regex("(?i)\\bbook\\s*(\\d+(?:\\.\\d+)?)\\b").find(title) ?: return null
-    return match.groupValues.getOrNull(1)?.toDoubleOrNull()
-}
-
-private fun extractSeriesSequenceFromChapter(chapterTitle: String?): Double? {
-    if (chapterTitle.isNullOrBlank()) return null
-    val match = Regex("(?i)\\bbook\\s*(\\d+(?:\\.\\d+)?)\\b").find(chapterTitle) ?: return null
     return match.groupValues.getOrNull(1)?.toDoubleOrNull()
 }
 
@@ -387,13 +401,23 @@ class NarratorDetailViewModel @Inject constructor(
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     val books = result.value.filter {
                         it.narratorName?.equals(narratorName, ignoreCase = true) == true
@@ -427,13 +451,23 @@ class GenresBrowseViewModel @Inject constructor(
     val uiState: StateFlow<GenresUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     val map = linkedMapOf<String, Int>()
                     result.value
@@ -474,13 +508,23 @@ class GenreDetailViewModel @Inject constructor(
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
 
     init {
-        refresh()
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBooksForActiveLibrary(limit = 400, page = 0)) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = 400,
+                    page = 0,
+                    forceRefresh = forceRefresh
+                )
+            ) {
                 is AppResult.Success -> {
                     val books = result.value.filter { item ->
                         item.genres.any { it.equals(genreName, ignoreCase = true) }

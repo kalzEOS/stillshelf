@@ -17,10 +17,13 @@ import kotlinx.coroutines.flow.Flow
 interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
     fun observeServers(): Flow<List<Server>>
+    suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
+    suspend fun deleteServer(serverId: String): AppResult<Unit>
     fun observeLibrariesForActiveServer(): Flow<List<Library>>
     suspend fun setActiveServer(serverId: String): AppResult<Unit>
     suspend fun setActiveLibrary(libraryId: String): AppResult<Unit>
     suspend fun signOutActiveSession(): AppResult<Unit>
+    suspend fun refreshLibrariesForActiveServer(): AppResult<Unit>
     suspend fun addServerAndLogin(
         serverName: String,
         baseUrl: String,
@@ -28,12 +31,31 @@ interface SessionRepository {
         password: String
     ): AppResult<Unit>
     suspend fun testServerConnection(baseUrl: String): AppResult<String>
-    suspend fun fetchBooksForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<BookSummary>>
-    suspend fun fetchAuthorsForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<NamedEntitySummary>>
-    suspend fun fetchNarratorsForActiveLibrary(): AppResult<List<NamedEntitySummary>>
-    suspend fun fetchSeriesForActiveLibrary(limit: Int = 60, page: Int = 0): AppResult<List<NamedEntitySummary>>
-    suspend fun fetchCollectionsForActiveLibrary(): AppResult<List<NamedEntitySummary>>
-    suspend fun fetchBookDetail(bookId: String): AppResult<BookDetail>
+    suspend fun fetchBooksForActiveLibrary(
+        limit: Int = 60,
+        page: Int = 0,
+        forceRefresh: Boolean = false
+    ): AppResult<List<BookSummary>>
+    suspend fun fetchAuthorsForActiveLibrary(
+        limit: Int = 60,
+        page: Int = 0,
+        forceRefresh: Boolean = false
+    ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchNarratorsForActiveLibrary(
+        forceRefresh: Boolean = false
+    ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchSeriesForActiveLibrary(
+        limit: Int = 60,
+        page: Int = 0,
+        forceRefresh: Boolean = false
+    ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchCollectionsForActiveLibrary(
+        forceRefresh: Boolean = false
+    ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchBookDetail(
+        bookId: String,
+        forceRefresh: Boolean = false
+    ): AppResult<BookDetail>
     suspend fun fetchPlaybackSource(bookId: String): AppResult<PlaybackSource>
     suspend fun fetchPlaybackProgress(bookId: String): AppResult<PlaybackProgress?>
     suspend fun syncPlaybackProgress(

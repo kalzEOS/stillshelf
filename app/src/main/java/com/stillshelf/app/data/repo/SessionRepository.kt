@@ -46,7 +46,7 @@ interface SessionRepository {
     suspend fun setLastPlayedBookId(bookId: String?): AppResult<Unit>
     suspend fun searchActiveLibrary(query: String, limit: Int = 60): AppResult<SearchResults>
     suspend fun fetchMiniPlayerItem(): AppResult<ContinueListeningItem?>
-    suspend fun fetchCachedHomeFeed(): AppResult<HomeFeed?>
+    suspend fun fetchCachedHomeFeed(maxAgeMs: Long? = null): AppResult<HomeFeed?>
     suspend fun fetchHomeFeed(
         continueLimit: Int = 10,
         recentlyAddedLimit: Int = 12

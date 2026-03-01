@@ -52,6 +52,10 @@ class SessionRepositoryImpl @Inject constructor(
     private val secureTokenStorage: SecureTokenStorage,
     private val audiobookshelfApi: AudiobookshelfApi
 ) : SessionRepository {
+    companion object {
+        private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
+    }
+
     private data class ActiveConnection(
         val server: ServerEntity,
         val token: String,
@@ -178,8 +182,8 @@ class SessionRepositoryImpl @Inject constructor(
             return AppResult.Error("No libraries were returned for this account.")
         }
 
+        val serverId = UUID.randomUUID().toString()
         return try {
-            val serverId = UUID.randomUUID().toString()
             val serverEntity = ServerEntity(
                 id = serverId,
                 name = serverName.trim(),
@@ -195,6 +199,7 @@ class SessionRepositoryImpl @Inject constructor(
 
             AppResult.Success(Unit)
         } catch (t: Throwable) {
+            rollbackFailedServerSetup(serverId)
             AppResult.Error("Unable to save server session.", t)
         }
     }
@@ -829,12 +834,17 @@ class SessionRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun fetchCachedHomeFeed(): AppResult<HomeFeed?> {
+    override suspend fun fetchCachedHomeFeed(maxAgeMs: Long?): AppResult<HomeFeed?> {
         val activeLibraryId = sessionPreferences.state.first().activeLibraryId
             ?: return AppResult.Success(null)
         val cached = sessionPreferences.getCachedHomeFeed()
             ?: return AppResult.Success(null)
         if (cached.libraryId != activeLibraryId) {
+            return AppResult.Success(null)
+        }
+        val cacheAgeMs = (System.currentTimeMillis() - cached.savedAtMs).coerceAtLeast(0L)
+        val effectiveMaxAgeMs = maxAgeMs ?: HOME_FEED_CACHE_MAX_AGE_MS
+        if (cacheAgeMs > effectiveMaxAgeMs) {
             return AppResult.Success(null)
         }
 
@@ -1077,6 +1087,12 @@ class SessionRepositoryImpl @Inject constructor(
                 )
             }
         )
+    }
+
+    private suspend fun rollbackFailedServerSetup(serverId: String) {
+        runCatching { secureTokenStorage.clearToken(serverId) }
+        runCatching { libraryDao.deleteByServerId(serverId) }
+        runCatching { serverDao.deleteById(serverId) }
     }
 
     private suspend fun getActiveConnection(requireLibrary: Boolean): AppResult<ActiveConnection> {

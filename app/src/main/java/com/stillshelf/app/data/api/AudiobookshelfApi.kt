@@ -3,6 +3,8 @@ package com.stillshelf.app.data.api
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.stillshelf.app.core.network.addAuthTokenFragment
+import com.stillshelf.app.core.network.authorizationHeaderValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -638,13 +640,13 @@ class AudiobookshelfApi @Inject constructor(
     ): String {
         val normalized = baseUrl.removeSuffix("/")
         val httpUrl = normalized.toHttpUrlOrNull()
-            ?: return "$normalized/api/items/$libraryItemId/cover?token=$authToken"
+            ?: return addAuthTokenFragment("$normalized/api/items/$libraryItemId/cover", authToken)
 
-        return httpUrl.newBuilder()
+        val rawUrl = httpUrl.newBuilder()
             .addPathSegments("api/items/$libraryItemId/cover")
-            .addQueryParameter("token", authToken)
             .build()
             .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
     }
 
     fun buildPlaybackUrl(
@@ -654,14 +656,14 @@ class AudiobookshelfApi @Inject constructor(
     ): String {
         val normalized = baseUrl.removeSuffix("/")
         val baseHttpUrl = normalized.toHttpUrlOrNull()
-            ?: return "${normalized}/${streamPath.removePrefix("/")}?token=$authToken"
+            ?: return addAuthTokenFragment("${normalized}/${streamPath.removePrefix("/")}", authToken)
         val cleanedPath = streamPath.removePrefix("/")
 
-        return baseHttpUrl.newBuilder()
+        val rawUrl = baseHttpUrl.newBuilder()
             .addPathSegments(cleanedPath)
-            .addQueryParameter("token", authToken)
             .build()
             .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
     }
 
     fun buildAuthorImageUrl(
@@ -671,18 +673,16 @@ class AudiobookshelfApi @Inject constructor(
     ): String {
         val normalized = baseUrl.removeSuffix("/")
         val httpUrl = normalized.toHttpUrlOrNull()
-            ?: return "$normalized/api/authors/$authorId/image?token=$authToken"
+            ?: return addAuthTokenFragment("$normalized/api/authors/$authorId/image", authToken)
 
-        return httpUrl.newBuilder()
+        val rawUrl = httpUrl.newBuilder()
             .addPathSegments("api/authors/$authorId/image")
-            .addQueryParameter("token", authToken)
             .build()
             .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
     }
 
-    private fun authHeaderValue(token: String): String {
-        return if (token.startsWith(BEARER_PREFIX, ignoreCase = true)) token else "$BEARER_PREFIX$token"
-    }
+    private fun authHeaderValue(token: String): String = authorizationHeaderValue(token)
 
     private fun parseLibraries(rawJson: String): List<AudiobookshelfLibraryDto> {
         val trimmed = rawJson.trim()
@@ -1230,7 +1230,6 @@ class AudiobookshelfApi @Inject constructor(
 
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
-        const val BEARER_PREFIX = "Bearer "
         const val MAX_429_RETRIES = 3
         const val ME_CACHE_TTL_MS = 2_500L
     }

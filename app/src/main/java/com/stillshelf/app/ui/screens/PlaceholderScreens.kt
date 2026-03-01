@@ -119,6 +119,8 @@ import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import coil.request.ImageRequest
 import coil.imageLoader
+import com.stillshelf.app.core.network.authorizationHeaderValue
+import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
@@ -2883,8 +2885,14 @@ private fun rememberDominantCoverColor(
 
         value = withContext(Dispatchers.IO) {
             runCatching {
+                val resolvedCover = splitAuthenticatedUrl(coverUrl)
                 val request = ImageRequest.Builder(context)
-                    .data(coverUrl)
+                    .data(resolvedCover.cleanUrl)
+                    .apply {
+                        resolvedCover.authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                            addHeader("Authorization", authorizationHeaderValue(token))
+                        }
+                    }
                     .allowHardware(false)
                     .size(64)
                     .build()

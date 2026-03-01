@@ -92,9 +92,6 @@ class SessionRepositoryImpl @Inject constructor(
     override suspend fun setActiveServer(serverId: String): AppResult<Unit> {
         val server = serverDao.getById(serverId)
             ?: return AppResult.Error("Server not found.")
-        if (!isHttpsUrl(server.baseUrl)) {
-            return AppResult.Error("Server URL must use https.")
-        }
 
         val token = secureTokenStorage.getToken(server.id)
             ?: return AppResult.Error("No saved session for this server. Please log in again.")
@@ -148,8 +145,8 @@ class SessionRepositoryImpl @Inject constructor(
         if (serverName.isBlank()) {
             return AppResult.Error("Server name is required.")
         }
-        if (!isHttpsUrl(baseUrl)) {
-            return AppResult.Error("Base URL must use https.")
+        if (!isHttpUrl(baseUrl)) {
+            return AppResult.Error("Base URL must use http or https.")
         }
         if (username.isBlank() || password.isBlank()) {
             return AppResult.Error("Username and password are required.")
@@ -208,8 +205,8 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     override suspend fun testServerConnection(baseUrl: String): AppResult<String> {
-        if (!isHttpsUrl(baseUrl)) {
-            return AppResult.Error("Base URL must use https.")
+        if (!isHttpUrl(baseUrl)) {
+            return AppResult.Error("Base URL must use http or https.")
         }
 
         val normalizedBaseUrl = normalizedBaseUrl(baseUrl)
@@ -1045,9 +1042,9 @@ class SessionRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun isHttpsUrl(value: String): Boolean {
+    private fun isHttpUrl(value: String): Boolean {
         val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return false
-        return uri.scheme.equals("https", ignoreCase = true)
+        return uri.scheme == "http" || uri.scheme == "https"
     }
 
     private suspend fun refreshLibrariesFromServer(
@@ -1104,9 +1101,6 @@ class SessionRepositoryImpl @Inject constructor(
             ?: return AppResult.Error("No active server selected.")
         val server = serverDao.getById(activeServerId)
             ?: return AppResult.Error("Active server not found.")
-        if (!isHttpsUrl(server.baseUrl)) {
-            return AppResult.Error("Server URL must use https.")
-        }
         val token = secureTokenStorage.getToken(server.id)
             ?: return AppResult.Error("No saved session for this server. Please log in again.")
 

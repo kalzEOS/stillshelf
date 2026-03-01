@@ -2814,7 +2814,7 @@ fun PlayerPlaceholderScreen(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(18.dp))
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
@@ -2837,7 +2837,7 @@ fun PlayerPlaceholderScreen(
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(18.dp))
         PlayerProgressBar(
             progress = effectiveProgress,
             activeColor = progressActiveColor,

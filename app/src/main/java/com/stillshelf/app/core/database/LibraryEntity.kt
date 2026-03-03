@@ -3,10 +3,10 @@ package com.stillshelf.app.core.database
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
-import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "libraries",
+    primaryKeys = ["serverId", "id"],
     foreignKeys = [
         ForeignKey(
             entity = ServerEntity::class,
@@ -15,10 +15,10 @@ import androidx.room.PrimaryKey
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index(value = ["serverId"])]
+    indices = [Index(value = ["serverId"]), Index(value = ["id"])]
 )
 data class LibraryEntity(
-    @PrimaryKey val id: String,
+    val id: String,
     val serverId: String,
     val name: String
 )

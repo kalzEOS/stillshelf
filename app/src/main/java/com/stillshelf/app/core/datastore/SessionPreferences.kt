@@ -19,6 +19,7 @@ class SessionPreferences @Inject constructor(
 ) {
     private val activeServerIdKey = stringPreferencesKey("active_server_id")
     private val activeLibraryIdKey = stringPreferencesKey("active_library_id")
+    private val requiresLibrarySelectionKey = booleanPreferencesKey("requires_library_selection")
     private val lastPlayedBookIdKey = stringPreferencesKey("last_played_book_id")
     private val hiddenBrowseSectionsKey = stringPreferencesKey("hidden_browse_sections")
     private val hiddenHomeSectionsKey = stringPreferencesKey("hidden_home_sections")
@@ -33,6 +34,7 @@ class SessionPreferences @Inject constructor(
     private val seriesDetailListModeKey = booleanPreferencesKey("series_detail_list_mode")
     private val collectionDetailListModeKey = booleanPreferencesKey("collection_detail_list_mode")
     private val playlistDetailListModeKey = booleanPreferencesKey("playlist_detail_list_mode")
+    private val downloadedListModeKey = booleanPreferencesKey("downloaded_list_mode")
     private val immersivePlayerEnabledKey = booleanPreferencesKey("immersive_player_enabled")
     private val appThemeModeKey = stringPreferencesKey("app_theme_mode")
     private val materialDesignEnabledKey = booleanPreferencesKey("material_design_enabled")
@@ -49,6 +51,7 @@ class SessionPreferences @Inject constructor(
         SessionPreferenceState(
             activeServerId = prefs[activeServerIdKey],
             activeLibraryId = prefs[activeLibraryIdKey],
+            requiresLibrarySelection = prefs[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = prefs[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(prefs[hiddenBrowseSectionsKey]),
             hiddenHomeSectionIds = parseCsv(prefs[hiddenHomeSectionsKey]),
@@ -63,6 +66,7 @@ class SessionPreferences @Inject constructor(
             seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
             collectionDetailListMode = prefs[collectionDetailListModeKey] ?: true,
             playlistDetailListMode = prefs[playlistDetailListModeKey] ?: true,
+            downloadedListMode = prefs[downloadedListModeKey] ?: true,
             immersivePlayerEnabled = prefs[immersivePlayerEnabledKey] ?: false,
             appThemeMode = prefs[appThemeModeKey] ?: "follow_system",
             materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false,
@@ -86,6 +90,27 @@ class SessionPreferences @Inject constructor(
 
     suspend fun setActiveLibraryId(libraryId: String?) {
         dataStore.edit { prefs ->
+            if (libraryId == null) {
+                prefs.remove(activeLibraryIdKey)
+            } else {
+                prefs[activeLibraryIdKey] = libraryId
+            }
+        }
+    }
+
+    suspend fun setRequiresLibrarySelection(required: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[requiresLibrarySelectionKey] = required
+        }
+    }
+
+    suspend fun setActiveSelection(serverId: String?, libraryId: String?) {
+        dataStore.edit { prefs ->
+            if (serverId == null) {
+                prefs.remove(activeServerIdKey)
+            } else {
+                prefs[activeServerIdKey] = serverId
+            }
             if (libraryId == null) {
                 prefs.remove(activeLibraryIdKey)
             } else {
@@ -211,6 +236,12 @@ class SessionPreferences @Inject constructor(
     suspend fun setPlaylistDetailListMode(listMode: Boolean) {
         dataStore.edit { prefs ->
             prefs[playlistDetailListModeKey] = listMode
+        }
+    }
+
+    suspend fun setDownloadedListMode(listMode: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[downloadedListModeKey] = listMode
         }
     }
 
@@ -343,6 +374,7 @@ class SessionPreferences @Inject constructor(
 data class SessionPreferenceState(
     val activeServerId: String?,
     val activeLibraryId: String?,
+    val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),
     val hiddenHomeSectionIds: Set<String> = emptySet(),
@@ -357,6 +389,7 @@ data class SessionPreferenceState(
     val seriesDetailListMode: Boolean = true,
     val collectionDetailListMode: Boolean = true,
     val playlistDetailListMode: Boolean = true,
+    val downloadedListMode: Boolean = true,
     val immersivePlayerEnabled: Boolean = false,
     val appThemeMode: String = "follow_system",
     val materialDesignEnabled: Boolean = false,

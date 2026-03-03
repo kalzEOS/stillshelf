@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 data class BookDetailUiState(
     val isLoading: Boolean = false,
@@ -117,6 +119,21 @@ class BookDetailViewModel @Inject constructor(
         }
     }
 
+    fun markAsUnfinished() {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun toggleDownload(): Unit {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -148,6 +165,96 @@ class BookDetailViewModel @Inject constructor(
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
     }
 
+    fun playBookmark(bookmark: BookBookmark) {
+        if (bookId.isBlank()) return
+        val bookmarkSeconds = bookmark.timeSeconds ?: return
+        val positionMs = (bookmarkSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+    }
+
+    fun editBookmark(bookmark: BookBookmark, newTitle: String) {
+        if (bookId.isBlank()) return
+        val normalizedTitle = newTitle.trim()
+        if (normalizedTitle.isBlank()) {
+            mutableUiState.update { it.copy(actionMessage = "Bookmark title can't be empty.") }
+            return
+        }
+        val previousDetail = uiState.value.detail ?: run {
+            mutableUiState.update { it.copy(actionMessage = "Book details not ready yet.") }
+            return
+        }
+        mutableUiState.update { state ->
+            state.copy(
+                detail = state.detail?.copy(
+                    bookmarks = state.detail.bookmarks.map { existing ->
+                        if (bookmarkMatches(existing, bookmark)) {
+                            existing.copy(title = normalizedTitle)
+                        } else {
+                            existing
+                        }
+                    }
+                )
+            )
+        }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.updateBookmark(
+                    bookId = bookId,
+                    bookmark = bookmark,
+                    newTitle = normalizedTitle
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Bookmark updated.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            detail = previousDetail,
+                            actionMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun deleteBookmark(bookmark: BookBookmark) {
+        if (bookId.isBlank()) return
+        val previousDetail = uiState.value.detail ?: run {
+            mutableUiState.update { it.copy(actionMessage = "Book details not ready yet.") }
+            return
+        }
+        mutableUiState.update { state ->
+            state.copy(
+                detail = state.detail?.copy(
+                    bookmarks = state.detail.bookmarks.filterNot { existing ->
+                        bookmarkMatches(existing, bookmark)
+                    }
+                )
+            )
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.deleteBookmark(bookId = bookId, bookmark = bookmark)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Bookmark deleted.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            detail = previousDetail,
+                            actionMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun observePreferences() {
         viewModelScope.launch {
             bookDownloadManager.items.collect { items ->
@@ -167,5 +274,23 @@ class BookDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun bookmarkMatches(source: BookBookmark, target: BookBookmark): Boolean {
+        val sourceId = source.id.trim()
+        val targetId = target.id.trim()
+        if (sourceId.isNotBlank() && targetId.isNotBlank() && sourceId.equals(targetId, ignoreCase = true)) {
+            return true
+        }
+        if (!source.libraryItemId.equals(target.libraryItemId, ignoreCase = true)) {
+            return false
+        }
+        val sourceTime = source.timeSeconds
+        val targetTime = target.timeSeconds
+        val timeMatches = sourceTime != null && targetTime != null && abs(sourceTime - targetTime) <= 2.0
+        val titleMatches = !source.title.isNullOrBlank() &&
+            !target.title.isNullOrBlank() &&
+            source.title.trim().equals(target.title.trim(), ignoreCase = true)
+        return timeMatches || titleMatches
     }
 }

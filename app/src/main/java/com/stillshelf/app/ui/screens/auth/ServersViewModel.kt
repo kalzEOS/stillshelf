@@ -22,6 +22,7 @@ class ServersViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val errorState = MutableStateFlow<String?>(null)
+    private val busyState = MutableStateFlow(false)
     private val mutableEvents = MutableSharedFlow<ServersEvent>()
 
     val events = mutableEvents.asSharedFlow()
@@ -29,11 +30,13 @@ class ServersViewModel @Inject constructor(
     val uiState: StateFlow<ServersUiState> = combine(
         sessionRepository.observeServers(),
         sessionRepository.observeSessionState(),
+        busyState,
         errorState
-    ) { servers, session, errorMessage ->
+    ) { servers, session, isBusy, errorMessage ->
         ServersUiState(
             servers = servers,
             activeServerId = session.activeServerId,
+            isBusy = isBusy,
             errorMessage = errorMessage
         )
     }.stateIn(
@@ -45,13 +48,16 @@ class ServersViewModel @Inject constructor(
     fun onServerSelected(serverId: String) {
         viewModelScope.launch {
             val selectedServer = uiState.value.servers.firstOrNull { it.id == serverId }
+            busyState.value = true
             when (val result = sessionRepository.setActiveServer(serverId)) {
                 is AppResult.Success -> {
+                    busyState.value = false
                     errorState.value = null
                     mutableEvents.emit(ServersEvent.NavigateToLibraryPicker)
                 }
 
                 is AppResult.Error -> {
+                    busyState.value = false
                     val requiresReauth = result.message.contains("no saved session", ignoreCase = true)
                     if (requiresReauth && selectedServer != null) {
                         errorState.value = null
@@ -72,11 +78,46 @@ class ServersViewModel @Inject constructor(
     fun clearError() {
         errorState.value = null
     }
+
+    fun updateServer(serverId: String, name: String, baseUrl: String) {
+        viewModelScope.launch {
+            busyState.value = true
+            when (val result = sessionRepository.updateServer(serverId, name, baseUrl)) {
+                is AppResult.Success -> {
+                    busyState.value = false
+                    errorState.value = null
+                }
+
+                is AppResult.Error -> {
+                    busyState.value = false
+                    errorState.value = result.message
+                }
+            }
+        }
+    }
+
+    fun deleteServer(serverId: String) {
+        viewModelScope.launch {
+            busyState.value = true
+            when (val result = sessionRepository.deleteServer(serverId)) {
+                is AppResult.Success -> {
+                    busyState.value = false
+                    errorState.value = null
+                }
+
+                is AppResult.Error -> {
+                    busyState.value = false
+                    errorState.value = result.message
+                }
+            }
+        }
+    }
 }
 
 data class ServersUiState(
     val servers: List<Server> = emptyList(),
     val activeServerId: String? = null,
+    val isBusy: Boolean = false,
     val errorMessage: String? = null
 )
 

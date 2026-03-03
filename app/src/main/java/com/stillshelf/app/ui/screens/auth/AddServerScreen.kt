@@ -42,16 +42,38 @@ fun AddServerRoute(
     viewModel: AddServerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var duplicateServerMessage by remember { mutableStateOf<String?>(null) }
 
     AddServerScreen(
         uiState = uiState,
         onServerNameChange = viewModel::onServerNameChange,
         onBaseUrlChange = viewModel::onBaseUrlChange,
         onTestConnection = viewModel::onTestConnectionClick,
-        onContinue = onContinue,
+        onContinue = { serverName, baseUrl ->
+            val duplicateMessage = viewModel.duplicateServerMessage(baseUrl)
+            if (duplicateMessage != null) {
+                duplicateServerMessage = duplicateMessage
+            } else {
+                onContinue(serverName, baseUrl)
+            }
+        },
         onBack = onBack,
         showBackButton = showBackButton
     )
+
+    val dialogMessage = duplicateServerMessage
+    if (dialogMessage != null) {
+        AlertDialog(
+            onDismissRequest = { duplicateServerMessage = null },
+            title = { Text("Server already added") },
+            text = { Text(dialogMessage) },
+            confirmButton = {
+                TextButton(onClick = { duplicateServerMessage = null }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 }
 
 @Composable

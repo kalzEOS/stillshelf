@@ -79,12 +79,18 @@ class LibraryPickerViewModel @Inject constructor(
     val uiState: StateFlow<LibraryPickerUiState> = combine(
         sessionRepository.observeLibrariesForActiveServer(),
         sessionRepository.observeSessionState(),
+        sessionRepository.observeServers(),
         errorState,
         loadingState
-    ) { libraries, session, errorMessage, isLoading ->
+    ) { libraries, session, servers, errorMessage, isLoading ->
+        val activeServerName = when {
+            session.activeServerId.isNullOrBlank() -> null
+            else -> servers.firstOrNull { it.id == session.activeServerId }?.name ?: "Loading server..."
+        }
         LibraryPickerUiState(
             libraries = libraries,
             activeLibraryId = session.activeLibraryId,
+            activeServerName = activeServerName,
             errorMessage = errorMessage,
             isLoading = isLoading
         )
@@ -128,6 +134,7 @@ class LibraryPickerViewModel @Inject constructor(
 data class LibraryPickerUiState(
     val libraries: List<Library> = emptyList(),
     val activeLibraryId: String? = null,
+    val activeServerName: String? = null,
     val errorMessage: String? = null,
     val isLoading: Boolean = false
 )

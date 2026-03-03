@@ -8,7 +8,7 @@ import androidx.room.RoomDatabase
         ServerEntity::class,
         LibraryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

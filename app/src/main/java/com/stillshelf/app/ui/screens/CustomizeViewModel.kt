@@ -37,6 +37,7 @@ object ListSectionIds {
 
 object HomeSectionIds {
     const val CONTINUE = "continue_listening"
+    const val LISTEN_AGAIN = "listen_again"
     const val RECENTLY_ADDED = "recently_added"
     const val RECENT_SERIES = "recent_series"
     const val DISCOVER = "discover"
@@ -60,6 +61,7 @@ class CustomizeViewModel @Inject constructor(
     )
     private val defaultPersonalizedSections = listOf(
         ToggleSectionItem(HomeSectionIds.CONTINUE, "Continue Listening"),
+        ToggleSectionItem(HomeSectionIds.LISTEN_AGAIN, "Listen Again"),
         ToggleSectionItem(HomeSectionIds.RECENTLY_ADDED, "Recently Added"),
         ToggleSectionItem(HomeSectionIds.RECENT_SERIES, "Recent Series"),
         ToggleSectionItem(HomeSectionIds.DISCOVER, "Discover"),
@@ -118,6 +120,18 @@ class CustomizeViewModel @Inject constructor(
         val updated = moveDown(current, id)
         viewModelScope.launch {
             sessionPreferences.setHomeSectionOrder(updated.map { it.id })
+        }
+    }
+
+    fun setListOrder(ids: List<String>) {
+        viewModelScope.launch {
+            sessionPreferences.setBrowseSectionOrder(ids)
+        }
+    }
+
+    fun setPersonalizedOrder(ids: List<String>) {
+        viewModelScope.launch {
+            sessionPreferences.setHomeSectionOrder(ids)
         }
     }
 

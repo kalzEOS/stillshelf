@@ -28,12 +28,20 @@ object MainRoute {
     const val SETTINGS = "main/settings"
     const val PLAYER = "main/player"
     const val PLAYER_BOOK_ID_ARG = "bookId"
-    const val PLAYER_PATTERN = "$PLAYER?$PLAYER_BOOK_ID_ARG={$PLAYER_BOOK_ID_ARG}"
+    const val PLAYER_START_SECONDS_ARG = "startSeconds"
+    const val PLAYER_PATTERN =
+        "$PLAYER?$PLAYER_BOOK_ID_ARG={$PLAYER_BOOK_ID_ARG}&$PLAYER_START_SECONDS_ARG={$PLAYER_START_SECONDS_ARG}"
     const val SERVERS = "main/servers"
 
-    fun player(bookId: String? = null): String {
+    fun player(bookId: String? = null, startSeconds: Double? = null): String {
         if (bookId.isNullOrBlank()) return PLAYER
-        return "$PLAYER?$PLAYER_BOOK_ID_ARG=${Uri.encode(bookId)}"
+        val encodedBookId = Uri.encode(bookId)
+        val encodedStart = startSeconds?.let { Uri.encode(it.toString()) }
+        return if (encodedStart.isNullOrBlank()) {
+            "$PLAYER?$PLAYER_BOOK_ID_ARG=$encodedBookId"
+        } else {
+            "$PLAYER?$PLAYER_BOOK_ID_ARG=$encodedBookId&$PLAYER_START_SECONDS_ARG=$encodedStart"
+        }
     }
 }
 

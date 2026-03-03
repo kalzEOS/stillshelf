@@ -9,6 +9,7 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookBookmark
+import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
 import com.stillshelf.app.core.model.NamedEntitySummary
@@ -90,7 +91,8 @@ class SessionRepositoryImpl @Inject constructor(
     override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
         SessionState(
             activeServerId = prefState.activeServerId,
-            activeLibraryId = prefState.activeLibraryId
+            activeLibraryId = prefState.activeLibraryId,
+            requiresLibrarySelection = prefState.requiresLibrarySelection
         )
     }
 
@@ -107,6 +109,13 @@ class SessionRepositoryImpl @Inject constructor(
         if (!isHttpUrl(baseUrl)) return AppResult.Error("Base URL must use http or https.")
         val existing = serverDao.getById(serverId) ?: return AppResult.Error("Server not found.")
         val normalizedBaseUrl = normalizedBaseUrl(baseUrl)
+        val duplicate = serverDao.getAll().firstOrNull { server ->
+            server.id != existing.id &&
+                normalizedBaseUrl(server.baseUrl).equals(normalizedBaseUrl, ignoreCase = true)
+        }
+        if (duplicate != null) {
+            return AppResult.Error("A server with this base URL already exists.")
+        }
         return try {
             val updatedRows = serverDao.update(
                 serverId = existing.id,
@@ -127,21 +136,19 @@ class SessionRepositoryImpl @Inject constructor(
     override suspend fun deleteServer(serverId: String): AppResult<Unit> {
         val existing = serverDao.getById(serverId) ?: return AppResult.Error("Server not found.")
         return try {
+            val nextServer = serverDao.getAll().firstOrNull { it.id != existing.id }
             secureTokenStorage.clearToken(existing.id)
             serverDao.deleteById(existing.id)
             clearContentCaches()
             val session = sessionPreferences.state.first()
             if (session.activeServerId == existing.id) {
-                val remainingServers = serverDao.getAll()
-                val nextServer = remainingServers.firstOrNull()
-                sessionPreferences.setActiveLibraryId(null)
-                if (nextServer != null) {
-                    sessionPreferences.setActiveServerId(nextServer.id)
-                } else {
-                    sessionPreferences.setActiveServerId(null)
-                    sessionPreferences.setLastPlayedBookId(null)
-                    sessionPreferences.clearCachedHomeFeed()
-                }
+                sessionPreferences.setLastPlayedBookId(null)
+                sessionPreferences.clearCachedHomeFeed()
+                sessionPreferences.setActiveSelection(
+                    serverId = nextServer?.id,
+                    libraryId = null
+                )
+                sessionPreferences.setRequiresLibrarySelection(nextServer != null)
             }
             AppResult.Success(Unit)
         } catch (t: Throwable) {
@@ -177,37 +184,42 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return syncResult
         }
 
-        sessionPreferences.setActiveServerId(server.id)
-        sessionPreferences.setActiveLibraryId(null)
+        sessionPreferences.setActiveSelection(serverId = server.id, libraryId = null)
+        sessionPreferences.setRequiresLibrarySelection(true)
         clearContentCaches()
         return AppResult.Success(Unit)
     }
 
     override suspend fun setActiveLibrary(libraryId: String): AppResult<Unit> {
-        val library = libraryDao.getById(libraryId)
-            ?: return AppResult.Error("Library not found.")
-
         val activeServerId = sessionPreferences.state.first().activeServerId
             ?: return AppResult.Error("No active server selected.")
-        if (library.serverId != activeServerId) {
-            return AppResult.Error("Library does not belong to the active server.")
-        }
+        val library = libraryDao.getByServerAndId(activeServerId, libraryId)
+            ?: return AppResult.Error("Library not found.")
 
         sessionPreferences.setActiveLibraryId(library.id)
+        sessionPreferences.setRequiresLibrarySelection(false)
         return AppResult.Success(Unit)
     }
 
     override suspend fun signOutActiveSession(): AppResult<Unit> {
         return try {
-            val servers = serverDao.getAll()
-            servers.forEach { server ->
-                runCatching { secureTokenStorage.clearToken(server.id) }
+            val session = sessionPreferences.state.first()
+            val activeServerId = session.activeServerId
+                ?: return AppResult.Error("No active server selected.")
+            val nextServer = serverDao.getAll().firstOrNull { it.id != activeServerId }
+
+            runCatching { secureTokenStorage.clearToken(activeServerId) }
+            appDatabase.withTransaction {
+                runCatching { libraryDao.deleteByServerId(activeServerId) }
+                serverDao.deleteById(activeServerId)
             }
-            serverDao.deleteAll()
             sessionPreferences.setLastPlayedBookId(null)
             sessionPreferences.clearCachedHomeFeed()
-            sessionPreferences.setActiveLibraryId(null)
-            sessionPreferences.setActiveServerId(null)
+            sessionPreferences.setActiveSelection(
+                serverId = nextServer?.id,
+                libraryId = null
+            )
+            sessionPreferences.setRequiresLibrarySelection(nextServer != null)
             clearContentCaches()
             AppResult.Success(Unit)
         } catch (t: Throwable) {
@@ -240,6 +252,13 @@ class SessionRepositoryImpl @Inject constructor(
         }
 
         val normalizedBaseUrl = normalizedBaseUrl(baseUrl)
+        val existingServer = serverDao.getAll().firstOrNull { server ->
+            normalizedBaseUrl(server.baseUrl).equals(normalizedBaseUrl, ignoreCase = true)
+        }
+        if (existingServer != null && !secureTokenStorage.getToken(existingServer.id).isNullOrBlank()) {
+            return AppResult.Error("This server already exists. Use the existing entry instead.")
+        }
+
         val loginResult = audiobookshelfApi.login(
             baseUrl = normalizedBaseUrl,
             username = username.trim(),
@@ -269,13 +288,20 @@ class SessionRepositoryImpl @Inject constructor(
             return AppResult.Error("No libraries were returned for this account.")
         }
 
-        val serverId = UUID.randomUUID().toString()
+        val matchingServers = serverDao.getAll().filter { server ->
+            normalizedBaseUrl(server.baseUrl).equals(normalizedBaseUrl, ignoreCase = true)
+        }
+        val matchingExistingServer = matchingServers.firstOrNull()
+        val serverId = matchingExistingServer?.id ?: UUID.randomUUID().toString()
         return try {
-            val serverEntity = ServerEntity(
+            val serverEntity = (matchingExistingServer ?: ServerEntity(
                 id = serverId,
                 name = serverName.trim(),
                 baseUrl = normalizedBaseUrl,
                 createdAt = System.currentTimeMillis()
+            )).copy(
+                name = serverName.trim(),
+                baseUrl = normalizedBaseUrl
             )
 
             appDatabase.withTransaction {
@@ -285,15 +311,32 @@ class SessionRepositoryImpl @Inject constructor(
                     libraries = libraries,
                     serverFallback = serverEntity
                 )
+                matchingServers
+                    .asSequence()
+                    .filter { it.id != serverId }
+                    .forEach { duplicate ->
+                        libraryDao.deleteByServerId(duplicate.id)
+                        serverDao.deleteById(duplicate.id)
+                    }
             }
+
+            matchingServers
+                .asSequence()
+                .filter { it.id != serverId }
+                .forEach { duplicate ->
+                    runCatching { secureTokenStorage.clearToken(duplicate.id) }
+                }
+
             secureTokenStorage.saveToken(serverId, token)
-            sessionPreferences.setActiveServerId(serverId)
-            sessionPreferences.setActiveLibraryId(null)
+            sessionPreferences.setActiveSelection(serverId = serverId, libraryId = null)
+            sessionPreferences.setRequiresLibrarySelection(true)
             clearContentCaches()
 
             AppResult.Success(Unit)
         } catch (t: Throwable) {
-            rollbackFailedServerSetup(serverId)
+            if (matchingExistingServer == null) {
+                rollbackFailedServerSetup(serverId)
+            }
             AppResult.Error("Unable to save server session.", t)
         }
     }
@@ -1236,6 +1279,13 @@ class SessionRepositoryImpl @Inject constructor(
                         itemId = bookId
                     )
                 }
+                val mediaProgressDeferred = async {
+                    audiobookshelfApi.getMediaProgressForItem(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token,
+                        itemId = bookId
+                    ).getOrNull()
+                }
                 val bookmarksDeferred = async {
                     audiobookshelfApi.getBookmarks(
                         baseUrl = connection.server.baseUrl,
@@ -1257,7 +1307,9 @@ class SessionRepositoryImpl @Inject constructor(
                 val bookmarks = bookmarksDeferred.await()
                     .getOrDefault(emptyList())
                     .asSequence()
-                    .filter { it.libraryItemId == bookId }
+                    .filter { bookmark ->
+                        bookmark.libraryItemId.matchesLibraryItemId(bookId)
+                    }
                     .sortedBy { it.timeSeconds ?: Double.MAX_VALUE }
                     .map { it.toModel() }
                     .toList()
@@ -1266,7 +1318,11 @@ class SessionRepositoryImpl @Inject constructor(
                     baseUrl = connection.server.baseUrl,
                     authToken = connection.token,
                     bookmarks = bookmarks
-                )
+                ).let { parsed ->
+                    parsed.copy(
+                        book = parsed.book.withResolvedProgress(mediaProgressDeferred.await())
+                    )
+                }
                 putCache(bookDetailCache, cacheKey, detail)
                 AppResult.Success(detail)
             }
@@ -1392,6 +1448,10 @@ class SessionRepositoryImpl @Inject constructor(
                 cause = syncResult.exceptionOrNull()
             )
         }
+        if (isFinished) {
+            runCatching { sessionPreferences.clearCachedHomeFeed() }
+            clearContentCaches()
+        }
         return AppResult.Success(Unit)
     }
 
@@ -1418,6 +1478,132 @@ class SessionRepositoryImpl @Inject constructor(
             return AppResult.Error(
                 message = createResult.exceptionOrNull()?.message ?: "Unable to add bookmark.",
                 cause = createResult.exceptionOrNull()
+            )
+        }
+
+        clearBookDetailCache(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            bookId = bookId
+        )
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun fetchBookmarksForActiveLibrary(
+        forceRefresh: Boolean
+    ): AppResult<List<BookmarkEntry>> {
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+
+        val books = when (
+            val booksResult = fetchBooksForActiveLibrary(
+                limit = 400,
+                page = 0,
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is AppResult.Success -> booksResult.value
+            is AppResult.Error -> {
+                return AppResult.Error(
+                    message = booksResult.message,
+                    cause = booksResult.cause
+                )
+            }
+        }
+
+        val bookmarksResult = audiobookshelfApi.getBookmarks(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token
+        )
+        if (bookmarksResult.isFailure) {
+            return AppResult.Error(
+                message = bookmarksResult.exceptionOrNull()?.message ?: "Unable to load bookmarks.",
+                cause = bookmarksResult.exceptionOrNull()
+            )
+        }
+
+        val bookmarkEntries = bookmarksResult.getOrDefault(emptyList())
+            .mapNotNull { rawBookmark ->
+                val book = books.firstOrNull { book ->
+                    rawBookmark.libraryItemId.matchesLibraryItemId(book.id)
+                } ?: return@mapNotNull null
+                BookmarkEntry(
+                    book = book,
+                    bookmark = rawBookmark.toModel()
+                )
+            }
+            .sortedWith(
+                compareByDescending<BookmarkEntry> { it.bookmark.createdAtMs ?: Long.MIN_VALUE }
+                    .thenByDescending { it.bookmark.timeSeconds ?: Double.MIN_VALUE }
+                    .thenBy { it.book.title.lowercase() }
+            )
+
+        return AppResult.Success(bookmarkEntries)
+    }
+
+    override suspend fun updateBookmark(
+        bookId: String,
+        bookmark: BookBookmark,
+        newTitle: String
+    ): AppResult<Unit> {
+        if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val normalizedTitle = newTitle.trim()
+        if (normalizedTitle.isBlank()) return AppResult.Error("Bookmark title can't be empty.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+
+        val updateResult = audiobookshelfApi.updateBookmark(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            itemId = bookId,
+            bookmarkId = bookmark.id,
+            timeSeconds = bookmark.timeSeconds,
+            existingTitle = bookmark.title,
+            newTitle = normalizedTitle
+        )
+        if (updateResult.isFailure) {
+            return AppResult.Error(
+                message = updateResult.exceptionOrNull()?.message ?: "Unable to edit bookmark.",
+                cause = updateResult.exceptionOrNull()
+            )
+        }
+
+        clearBookDetailCache(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            bookId = bookId
+        )
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun deleteBookmark(
+        bookId: String,
+        bookmark: BookBookmark
+    ): AppResult<Unit> {
+        if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+
+        val deleteResult = audiobookshelfApi.deleteBookmark(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            itemId = bookId,
+            bookmarkId = bookmark.id,
+            timeSeconds = bookmark.timeSeconds,
+            title = bookmark.title
+        )
+        if (deleteResult.isFailure) {
+            return AppResult.Error(
+                message = deleteResult.exceptionOrNull()?.message ?: "Unable to delete bookmark.",
+                cause = deleteResult.exceptionOrNull()
             )
         }
 
@@ -1878,18 +2064,28 @@ class SessionRepositoryImpl @Inject constructor(
                         item.toBookSummary(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token
-                        )
+                        ).withResolvedProgress(mediaProgressByItemId[item.id])
                     }
                 val allBooks = if (allBooksResult.isSuccess) {
                     allBooksResult.getOrThrow().map { item ->
                         item.toBookSummary(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token
-                        )
+                        ).withResolvedProgress(mediaProgressByItemId[item.id])
                     }
                 } else {
                     emptyList()
                 }
+                val listenAgain = allBooks
+                    .asSequence()
+                    .filter { it.isFinished }
+                    .distinctBy { it.id }
+                    .sortedWith(
+                        compareByDescending<BookSummary> { it.addedAtMs ?: 0L }
+                            .thenBy { it.title.lowercase() }
+                    )
+                    .take(40)
+                    .toList()
                 val seriesCountByKey = allBooks
                     .asSequence()
                     .mapNotNull { item ->
@@ -1942,6 +2138,7 @@ class SessionRepositoryImpl @Inject constructor(
                     libraryName = library.name,
                     continueListening = continueListening,
                     recentlyAdded = recentlyAdded,
+                    listenAgain = listenAgain,
                     recentSeries = recentSeries,
                     authorImageUrls = authorImageUrls
                 )
@@ -2070,14 +2267,14 @@ class SessionRepositoryImpl @Inject constructor(
             ?: return AppResult.Error("No active server selected.")
         val server = serverDao.getById(activeServerId)
             ?: run {
-                sessionPreferences.setActiveLibraryId(null)
-                sessionPreferences.setActiveServerId(null)
+                sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
+                sessionPreferences.setRequiresLibrarySelection(false)
                 return AppResult.Error("Active server not found.")
             }
         val token = secureTokenStorage.getToken(server.id)
             ?: run {
-                sessionPreferences.setActiveLibraryId(null)
-                sessionPreferences.setActiveServerId(null)
+                sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
+                sessionPreferences.setRequiresLibrarySelection(false)
                 return AppResult.Error("No saved session for this server. Please log in again.")
             }
 
@@ -2093,15 +2290,12 @@ class SessionRepositoryImpl @Inject constructor(
 
         val activeLibraryId = session.activeLibraryId
             ?: return AppResult.Error("No active library selected.")
-        val library = libraryDao.getById(activeLibraryId)
+        val library = libraryDao.getByServerAndId(server.id, activeLibraryId)
             ?: run {
                 sessionPreferences.setActiveLibraryId(null)
+                sessionPreferences.setRequiresLibrarySelection(true)
                 return AppResult.Error("Active library not found.")
             }
-        if (library.serverId != server.id) {
-            sessionPreferences.setActiveLibraryId(null)
-            return AppResult.Error("Active library does not belong to the active server.")
-        }
 
         return AppResult.Success(
             ActiveConnection(
@@ -2219,6 +2413,14 @@ class SessionRepositoryImpl @Inject constructor(
             }
         )
         root.put(
+            "listenAgain",
+            JSONArray().apply {
+                feed.listenAgain.forEach { book ->
+                    put(serializeBook(book))
+                }
+            }
+        )
+        root.put(
             "recentSeries",
             JSONArray().apply {
                 feed.recentSeries.forEach { series ->
@@ -2257,6 +2459,13 @@ class SessionRepositoryImpl @Inject constructor(
                 add(parseBook(item))
             }
         }
+        val listenAgainItems = buildList {
+            val source = root.optJSONArray("listenAgain") ?: JSONArray()
+            for (index in 0 until source.length()) {
+                val item = source.optJSONObject(index) ?: continue
+                add(parseBook(item))
+            }
+        }
         val recentSeries = buildList {
             val source = root.optJSONArray("recentSeries") ?: JSONArray()
             for (index in 0 until source.length()) {
@@ -2279,6 +2488,7 @@ class SessionRepositoryImpl @Inject constructor(
             libraryName = root.optString("libraryName").ifBlank { "Library" },
             continueListening = continueItems,
             recentlyAdded = recentItems,
+            listenAgain = listenAgainItems,
             recentSeries = recentSeries,
             authorImageUrls = buildMap {
                 val source = root.optJSONObject("authorImageUrls") ?: JSONObject()
@@ -2480,5 +2690,14 @@ class SessionRepositoryImpl @Inject constructor(
             timeSeconds = timeSeconds,
             createdAtMs = createdAtMs
         )
+    }
+
+    private fun String.matchesLibraryItemId(targetItemId: String): Boolean {
+        val normalizedSource = trim()
+        val normalizedTarget = targetItemId.trim()
+        if (normalizedSource.isBlank() || normalizedTarget.isBlank()) return false
+        return normalizedSource.equals(normalizedTarget, ignoreCase = true) ||
+            normalizedSource.endsWith(normalizedTarget, ignoreCase = true) ||
+            normalizedTarget.endsWith(normalizedSource, ignoreCase = true)
     }
 }

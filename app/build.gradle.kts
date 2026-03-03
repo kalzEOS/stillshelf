@@ -13,8 +13,8 @@ android {
         applicationId = "com.stillshelf.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.0-alpha.4"
+        versionCode = 5
+        versionName = "0.1.0-beta.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.androidx.compose.bom))

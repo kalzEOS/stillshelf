@@ -59,6 +59,11 @@ data class BookBookmark(
     val createdAtMs: Long? = null
 )
 
+data class BookmarkEntry(
+    val book: BookSummary,
+    val bookmark: BookBookmark
+)
+
 data class BookDetail(
     val book: BookSummary,
     val description: String?,
@@ -72,6 +77,7 @@ data class HomeFeed(
     val libraryName: String,
     val continueListening: List<ContinueListeningItem>,
     val recentlyAdded: List<BookSummary>,
+    val listenAgain: List<BookSummary> = emptyList(),
     val recentSeries: List<SeriesStackSummary> = emptyList(),
     val authorImageUrls: Map<String, String> = emptyMap()
 )
@@ -102,5 +108,6 @@ data class PlaybackProgress(
 
 data class SessionState(
     val activeServerId: String?,
-    val activeLibraryId: String?
+    val activeLibraryId: String?,
+    val requiresLibrarySelection: Boolean = false
 )

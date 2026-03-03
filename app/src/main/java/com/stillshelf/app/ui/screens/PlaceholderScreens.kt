@@ -4,14 +4,15 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -65,6 +66,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Download
@@ -81,6 +83,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.RemoveCircleOutline
 import androidx.compose.material.icons.outlined.SettingsVoice
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -106,6 +109,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -114,9 +118,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -147,15 +153,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.graphics.drawable.toBitmap
@@ -172,6 +182,8 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.playback.controller.PlaybackOutputDevice
+import com.stillshelf.app.playback.controller.SleepTimerMode
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.FramedCoverImage
@@ -181,14 +193,15 @@ import com.stillshelf.app.ui.navigation.BrowseRoute
 import com.stillshelf.app.ui.navigation.MainRoute
 import com.stillshelf.app.ui.navigation.MainTab
 import com.stillshelf.app.ui.theme.AppThemeMode
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private data class LibraryListItem(
@@ -256,6 +269,7 @@ fun HomePlaceholderScreen(
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val menuUiState by menuViewModel.uiState.collectAsStateWithLifecycle()
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
@@ -344,6 +358,20 @@ fun HomePlaceholderScreen(
         val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         collectionPickerViewModel.clearMessages()
+    }
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.onHomeScreenVisibilityChanged(true)
+                Lifecycle.Event.ON_STOP -> viewModel.onHomeScreenVisibilityChanged(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onHomeScreenVisibilityChanged(false)
+        }
     }
     Box(
         modifier = Modifier
@@ -485,6 +513,9 @@ fun HomePlaceholderScreen(
                 if (customizeUiState.hiddenPersonalizedSectionIds.contains(section.id)) {
                     return@forEach
                 }
+                if (section.id == HomeSectionIds.LISTEN_AGAIN && uiState.listenAgain.isEmpty()) {
+                    return@forEach
+                }
                 when (section.id) {
                     HomeSectionIds.CONTINUE -> {
                         item { SectionTitle("Continue Listening") }
@@ -524,12 +555,137 @@ fun HomePlaceholderScreen(
                                                 onClick = { onOpenPlayer(item.book.id) },
                                                 onGoToBook = { onOpenBook(item.book.id) },
                                                 onAddToCollection = { addToListBookId = item.book.id },
-                                                onMarkFinished = { viewModel.markAsFinished(item.book.id) },
+                                                onMarkFinished = {
+                                                    if (item.book.hasFinishedProgress()) {
+                                                        viewModel.markAsUnfinished(item.book.id)
+                                                    } else {
+                                                        viewModel.markAsFinished(item.book.id)
+                                                    }
+                                                },
                                                 onRemoveFromContinueListening = {
                                                     viewModel.removeFromContinueListening(item.book.id)
                                                 },
                                                 onToggleDownload = { viewModel.toggleDownload(item.book.id) }
                                             )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HomeSectionIds.LISTEN_AGAIN -> {
+                        item { SectionTitle("Listen Again") }
+                        item {
+                            val books = uiState.listenAgain
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                items(books, key = { it.id }) { book ->
+                                    var menuExpanded by remember { mutableStateOf(false) }
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.clickable { onOpenBook(book.id) }
+                                    ) {
+                                        BookPoster(
+                                            book = book,
+                                            width = 92.dp,
+                                            height = 118.dp,
+                                            backgroundBlur = 64.dp,
+                                            showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                        )
+                                        Row(
+                                            modifier = Modifier.width(92.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = formatDurationHoursMinutes(book.durationSeconds),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Box {
+                                                IconButton(
+                                                    onClick = { menuExpanded = true },
+                                                    modifier = Modifier.size(22.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.MoreHoriz,
+                                                        contentDescription = "Book actions",
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                DropdownMenu(
+                                                    expanded = menuExpanded,
+                                                    onDismissRequest = { menuExpanded = false }
+                                                ) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("Add to Collection") },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            addToListBookId = book.id
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Text(
+                                                                if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
+                                                            )
+                                                        },
+                                                        leadingIcon = {
+                                                            Icon(
+                                                                imageVector = if (book.hasFinishedProgress()) {
+                                                                    Icons.Outlined.Refresh
+                                                                } else {
+                                                                    Icons.Outlined.CheckCircle
+                                                                },
+                                                                contentDescription = null
+                                                            )
+                                                        },
+                                                        onClick = {
+                                                            if (book.hasFinishedProgress()) {
+                                                                viewModel.markAsUnfinished(book.id)
+                                                            } else {
+                                                                viewModel.markAsFinished(book.id)
+                                                            }
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Text(
+                                                                if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                    "Remove Download"
+                                                                } else {
+                                                                    "Download"
+                                                                }
+                                                            )
+                                                        },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.Download, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            viewModel.toggleDownload(book.id)
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Remove from Listen Again") },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.RemoveCircleOutline, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            viewModel.removeFromListenAgain(book.id)
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -617,12 +773,31 @@ fun HomePlaceholderScreen(
                                                                 }
                                                             )
                                                             DropdownMenuItem(
-                                                                text = { Text("Mark as Unfinished") },
+                                                                text = {
+                                                                    Text(
+                                                                        if (book.hasFinishedProgress()) {
+                                                                            "Mark as Unfinished"
+                                                                        } else {
+                                                                            "Mark as Finished"
+                                                                        }
+                                                                    )
+                                                                },
                                                                 leadingIcon = {
-                                                                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                                                                    Icon(
+                                                                        imageVector = if (book.hasFinishedProgress()) {
+                                                                            Icons.Outlined.Refresh
+                                                                        } else {
+                                                                            Icons.Outlined.CheckCircle
+                                                                        },
+                                                                        contentDescription = null
+                                                                    )
                                                                 },
                                                                 onClick = {
-                                                                    viewModel.markAsUnfinished(book.id)
+                                                                    if (book.hasFinishedProgress()) {
+                                                                        viewModel.markAsUnfinished(book.id)
+                                                                    } else {
+                                                                        viewModel.markAsFinished(book.id)
+                                                                    }
                                                                     menuExpanded = false
                                                                 }
                                                             )
@@ -687,7 +862,7 @@ fun HomePlaceholderScreen(
                     HomeSectionIds.DISCOVER -> {
                         item { SectionTitle("Discover") }
                         item {
-                            val discoverBooks = uiState.recentlyAdded.drop(1).take(4)
+                            val discoverBooks = uiState.discoverBooks
                             if (discoverBooks.isEmpty()) {
                                 Text(
                                     text = "No discover picks yet.",
@@ -745,12 +920,27 @@ fun HomePlaceholderScreen(
                                                         }
                                                     )
                                                     DropdownMenuItem(
-                                                        text = { Text("Mark as Finished") },
+                                                        text = {
+                                                            Text(
+                                                                if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
+                                                            )
+                                                        },
                                                         leadingIcon = {
-                                                            Icon(Icons.Outlined.CheckCircle, contentDescription = null)
+                                                            Icon(
+                                                                imageVector = if (book.hasFinishedProgress()) {
+                                                                    Icons.Outlined.Refresh
+                                                                } else {
+                                                                    Icons.Outlined.CheckCircle
+                                                                },
+                                                                contentDescription = null
+                                                            )
                                                         },
                                                         onClick = {
-                                                            viewModel.markAsFinished(book.id)
+                                                            if (book.hasFinishedProgress()) {
+                                                                viewModel.markAsUnfinished(book.id)
+                                                            } else {
+                                                                viewModel.markAsFinished(book.id)
+                                                            }
                                                             menuExpanded = false
                                                         }
                                                     )
@@ -787,8 +977,8 @@ fun HomePlaceholderScreen(
                             val authorNames = uiState.recentlyAdded
                                 .flatMap { splitAuthorNames(it.authorName) }
                                 .filter { it.isNotBlank() }
-                                .distinct()
-                                .take(5)
+                                .distinctBy { it.trim().lowercase() }
+                                .take(12)
                             if (authorNames.isEmpty()) {
                                 Text(
                                     text = "No authors available.",
@@ -1194,7 +1384,13 @@ fun BrowsePlaceholderScreen(
                                             isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
                                             downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
-                                            onMarkFinished = { viewModel.markAsFinished(entry.book.id) },
+                                            onMarkFinished = {
+                                                if (entry.book.hasFinishedProgress()) {
+                                                    viewModel.markAsUnfinished(entry.book.id)
+                                                } else {
+                                                    viewModel.markAsFinished(entry.book.id)
+                                                }
+                                            },
                                             onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
@@ -1206,7 +1402,13 @@ fun BrowsePlaceholderScreen(
                                             isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
                                             downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
-                                            onMarkFinished = { viewModel.markAsFinished(entry.leadBook.id) },
+                                            onMarkFinished = {
+                                                if (entry.leadBook.hasFinishedProgress()) {
+                                                    viewModel.markAsUnfinished(entry.leadBook.id)
+                                                } else {
+                                                    viewModel.markAsFinished(entry.leadBook.id)
+                                                }
+                                            },
                                             onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
@@ -1227,7 +1429,13 @@ fun BrowsePlaceholderScreen(
                                             isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
                                             downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
-                                            onMarkFinished = { viewModel.markAsFinished(entry.book.id) },
+                                            onMarkFinished = {
+                                                if (entry.book.hasFinishedProgress()) {
+                                                    viewModel.markAsUnfinished(entry.book.id)
+                                                } else {
+                                                    viewModel.markAsFinished(entry.book.id)
+                                                }
+                                            },
                                             onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
@@ -1239,7 +1447,13 @@ fun BrowsePlaceholderScreen(
                                             isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
                                             downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
-                                            onMarkFinished = { viewModel.markAsFinished(entry.leadBook.id) },
+                                            onMarkFinished = {
+                                                if (entry.leadBook.hasFinishedProgress()) {
+                                                    viewModel.markAsUnfinished(entry.leadBook.id)
+                                                } else {
+                                                    viewModel.markAsFinished(entry.leadBook.id)
+                                                }
+                                            },
                                             onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
@@ -1359,8 +1573,17 @@ private fun BookGridItem(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as Finished") },
-                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (book.hasFinishedProgress()) {
+                                    Icons.Outlined.Refresh
+                                } else {
+                                    Icons.Outlined.CheckCircle
+                                },
+                                contentDescription = null
+                            )
+                        },
                         onClick = {
                             onMarkFinished()
                             menuExpanded = false
@@ -1509,8 +1732,19 @@ private fun SeriesStackGridItem(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as Finished") },
-                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        text = {
+                            Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished")
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (book.hasFinishedProgress()) {
+                                    Icons.Outlined.Refresh
+                                } else {
+                                    Icons.Outlined.CheckCircle
+                                },
+                                contentDescription = null
+                            )
+                        },
                         onClick = {
                             onMarkFinished()
                             menuExpanded = false
@@ -1602,8 +1836,17 @@ private fun BookListItem(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Mark as Finished") },
-                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                    text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (book.hasFinishedProgress()) {
+                                Icons.Outlined.Refresh
+                            } else {
+                                Icons.Outlined.CheckCircle
+                            },
+                            contentDescription = null
+                        )
+                    },
                     onClick = {
                         onMarkFinished()
                         menuExpanded = false
@@ -1757,8 +2000,17 @@ private fun SeriesStackListItem(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Mark as Finished") },
-                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                    text = { Text(if (lead.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (lead.hasFinishedProgress()) {
+                                Icons.Outlined.Refresh
+                            } else {
+                                Icons.Outlined.CheckCircle
+                            },
+                            contentDescription = null
+                        )
+                    },
                     onClick = {
                         onMarkFinished()
                         menuExpanded = false
@@ -1831,6 +2083,181 @@ fun AuthorsBrowseScreen(
         onHomeClick = onHomeClick,
         showAvatar = true
     )
+}
+
+@OptIn(ExperimentalMaterialApi::class)
+@Composable
+fun BookmarksBrowseScreen(
+    onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
+    onBookmarkClick: (bookId: String, startSeconds: Double?) -> Unit = { _, _ -> },
+    viewModel: BookmarksBrowseViewModel = hiltViewModel()
+) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && uiState.bookmarks.isEmpty(),
+        onRefresh = viewModel::refresh
+    )
+
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.refreshSilent()
+            while (true) {
+                kotlinx.coroutines.delay(1_000L)
+                viewModel.refreshSilent()
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 14.dp)
+    ) {
+        BackTitle(
+            title = "Bookmarks",
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.bookmarks.isNotEmpty() -> {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(
+                            items = uiState.bookmarks,
+                            key = { item ->
+                                "${item.book.id}:${item.bookmark.id}:${item.bookmark.createdAtMs ?: 0L}:${item.bookmark.timeSeconds ?: 0.0}"
+                            }
+                        ) { item ->
+                            Column {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onBookmarkClick(
+                                                item.book.id,
+                                                item.bookmark.timeSeconds
+                                            )
+                                        }
+                                        .padding(vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    BookPoster(
+                                        book = item.book,
+                                        width = 42.dp,
+                                        height = 56.dp,
+                                        fillMaxWidth = false,
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = item.bookmark.title?.ifBlank { null } ?: "Bookmark",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = item.book.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        val bookmarkMeta = buildString {
+                                            append(formatBookmarkDate(item.bookmark.createdAtMs))
+                                            append(" ")
+                                            append(formatBookmarkTime24(item.bookmark.createdAtMs))
+                                            item.bookmark.timeSeconds?.let {
+                                                append(" • ")
+                                                append(formatSecondsAsHms(it))
+                                            }
+                                        }
+                                        Text(
+                                            text = bookmarkMeta,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Outlined.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            }
+                        }
+                    }
+                }
+
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading bookmarks...",
+                        modifier = Modifier.align(Alignment.Center),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = uiState.errorMessage ?: "Unable to load bookmarks.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                else -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.BookmarkBorder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Text(
+                            text = "Bookmarks you add will appear here.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && uiState.bookmarks.isEmpty(),
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterialApi::class)
@@ -3136,7 +3563,6 @@ fun DownloadsPlaceholderScreen(
     val downloadItemById = remember(uiState.downloadItems) {
         uiState.downloadItems.associateBy { it.bookId }
     }
-    var listMode by rememberSaveable { mutableStateOf(true) }
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -3159,9 +3585,9 @@ fun DownloadsPlaceholderScreen(
                 modifier = Modifier.weight(1f)
             )
             CircleActionButton(
-                icon = if (listMode) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
+                icon = if (uiState.listMode) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
                 contentDescription = "Downloaded layout",
-                onClick = { listMode = !listMode }
+                onClick = { viewModel.setListMode(!uiState.listMode) }
             )
         }
         Spacer(modifier = Modifier.height(10.dp))
@@ -3184,7 +3610,7 @@ fun DownloadsPlaceholderScreen(
                 }
             }
 
-            uiState.downloadedBookIds.isEmpty() || uiState.books.isEmpty() -> {
+            uiState.books.isEmpty() -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -3206,7 +3632,7 @@ fun DownloadsPlaceholderScreen(
                 }
             }
 
-            listMode -> {
+            uiState.listMode -> {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(bottom = 120.dp)
@@ -3309,6 +3735,7 @@ fun DownloadsPlaceholderScreen(
                 ) {
                     gridItems(uiState.books, key = { it.id }) { book ->
                         val downloadItem = downloadItemById[book.id]
+                        var menuExpanded by remember { mutableStateOf(false) }
                         Column(
                             modifier = Modifier.clickable { onBookClick(book.id) },
                             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -3323,11 +3750,54 @@ fun DownloadsPlaceholderScreen(
                                 showDownloadIndicator = true,
                                 downloadProgressPercent = downloadItem?.progressPercent
                             )
-                            Text(
-                                text = formatDurationHoursMinutes(book.durationSeconds),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Box {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(width = 34.dp, height = 24.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))
+                                            .clickable { menuExpanded = true },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            contentDescription = "Book actions",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = menuExpanded,
+                                        onDismissRequest = { menuExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Go to book") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onBookClick(book.id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Remove Download") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                viewModel.removeDownload(book.id)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                             downloadItem?.let { item ->
                                 if (item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Downloading ||
                                     item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Queued
@@ -4198,6 +4668,10 @@ fun BookDetailScreen(
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var aboutExpanded by remember { mutableStateOf(false) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
+    var bookmarkMenuId by remember { mutableStateOf<String?>(null) }
+    var editingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
+    var editingDetailBookmarkTitle by rememberSaveable { mutableStateOf("") }
+    var deletingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
 
     LaunchedEffect(infoMessage) {
         val message = infoMessage ?: return@LaunchedEffect
@@ -4223,6 +4697,34 @@ fun BookDetailScreen(
         val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         collectionPickerViewModel.clearMessages()
+    }
+    val detailBook = uiState.detail?.book
+    val isPlayingDetailBookNow = detailBook != null && playbackUiState.book?.id == detailBook.id
+    val detailDurationSeconds = when {
+        detailBook?.durationSeconds != null && detailBook.durationSeconds > 0.0 -> detailBook.durationSeconds
+        isPlayingDetailBookNow && playbackUiState.durationMs > 0L -> playbackUiState.durationMs / 1000.0
+        else -> null
+    }
+    val detailProgressPercent = (uiState.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+    val detailCurrentSeconds = if (isPlayingDetailBookNow) {
+        playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0
+    } else {
+        uiState.currentTimeSeconds?.coerceAtLeast(0.0)
+    }
+    val detailProgressFromTime = if (
+        detailDurationSeconds != null &&
+        detailDurationSeconds > 0.0 &&
+        detailCurrentSeconds != null
+    ) {
+        (detailCurrentSeconds / detailDurationSeconds).coerceIn(0.0, 1.0)
+    } else {
+        null
+    }
+    val resolvedDetailProgress = max(detailProgressPercent, detailProgressFromTime ?: 0.0)
+    val finishedFromDetailProgress = resolvedDetailProgress >= 0.995
+    val effectiveDetailFinished = when {
+        isPlayingDetailBookNow && resolvedDetailProgress < 0.995 && (detailCurrentSeconds ?: 0.0) > 0.5 -> false
+        else -> (detailBook?.isFinished == true) || finishedFromDetailProgress
     }
 
     LazyColumn(
@@ -4288,9 +4790,21 @@ fun BookDetailScreen(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Mark as Finished") },
+                            text = {
+                                Text(
+                                    if (effectiveDetailFinished) {
+                                        "Mark as Unfinished"
+                                    } else {
+                                        "Mark as Finished"
+                                    }
+                                )
+                            },
                             onClick = {
-                                viewModel.markAsFinished()
+                                if (effectiveDetailFinished) {
+                                    viewModel.markAsUnfinished()
+                                } else {
+                                    viewModel.markAsFinished()
+                                }
                                 actionsExpanded = false
                             }
                         )
@@ -4335,16 +4849,24 @@ fun BookDetailScreen(
             else -> {
                 val detail = uiState.detail ?: return@LazyColumn
                 val book = detail.book
-                val livePlaybackSeconds = if (playbackUiState.book?.id == book.id) {
+                val isPlayingThisBook = playbackUiState.book?.id == book.id
+                val livePlaybackSeconds = if (isPlayingThisBook) {
                     (playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0)
                 } else {
                     0.0
                 }
                 val serverPlaybackSeconds = uiState.currentTimeSeconds?.coerceAtLeast(0.0) ?: 0.0
+                val effectiveBookFinished = effectiveDetailFinished
                 val hasProgress = livePlaybackSeconds > 0.5 ||
                     serverPlaybackSeconds > 0.5 ||
                     (uiState.progressPercent ?: 0.0) > 0.001
-                val listenLabel = if (hasProgress) "Continue Listening" else "Start Listening"
+                val listenLabel = if (effectiveBookFinished) {
+                    "Start Listening"
+                } else if (hasProgress) {
+                    "Continue Listening"
+                } else {
+                    "Start Listening"
+                }
                 val listenProgressFraction = run {
                     val duration = when {
                         book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
@@ -4635,18 +5157,92 @@ fun BookDetailScreen(
                                 )
                             }
                         } else {
-                            items(detail.bookmarks, key = { it.id }) { bookmark ->
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(
-                                        text = bookmark.title ?: "Bookmark",
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                    bookmark.timeSeconds?.let { bookmarkTime ->
+                            items(
+                                items = detail.bookmarks,
+                                key = {
+                                    "${it.id}:${it.createdAtMs ?: 0L}:${it.timeSeconds ?: 0.0}:${it.title.orEmpty()}"
+                                }
+                            ) { bookmark ->
+                                val bookmarkSeconds = bookmark.timeSeconds
+                                val isActiveBookmark = bookmarkSeconds != null &&
+                                    chapterPositionSeconds != null &&
+                                    kotlin.math.abs(bookmarkSeconds - chapterPositionSeconds) < 1.0
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (isActiveBookmark) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .clickable(enabled = bookmarkSeconds != null) {
+                                            viewModel.playBookmark(bookmark)
+                                            onStartListening(book.id)
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
                                         Text(
-                                            text = formatSecondsAsHms(bookmarkTime),
+                                            text = bookmark.title?.ifBlank { null } ?: "Bookmark",
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            text = bookmark.timeSeconds?.let { formatSecondsAsHms(it) } ?: "--:--",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        if (isActiveBookmark) {
+                                            ChapterPlaybackIndicator(
+                                                isPlaying = playbackUiState.isPlaying,
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Box {
+                                            IconButton(
+                                                onClick = {
+                                                    bookmarkMenuId = bookmark.id
+                                                },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.MoreHoriz,
+                                                    contentDescription = "Bookmark actions",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = bookmarkMenuId == bookmark.id,
+                                                onDismissRequest = { bookmarkMenuId = null }
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Edit title") },
+                                                    onClick = {
+                                                        bookmarkMenuId = null
+                                                        editingDetailBookmark = bookmark
+                                                        editingDetailBookmarkTitle = bookmark.title.orEmpty()
+                                                    }
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Delete bookmark") },
+                                                    onClick = {
+                                                        bookmarkMenuId = null
+                                                        deletingDetailBookmark = bookmark
+                                                    }
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                                 HorizontalDivider()
@@ -4656,6 +5252,60 @@ fun BookDetailScreen(
                 }
             }
         }
+    }
+
+    editingDetailBookmark?.let { targetBookmark ->
+        AlertDialog(
+            onDismissRequest = { editingDetailBookmark = null },
+            title = { Text("Edit bookmark title") },
+            text = {
+                OutlinedTextField(
+                    value = editingDetailBookmarkTitle,
+                    onValueChange = { editingDetailBookmarkTitle = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.editBookmark(targetBookmark, editingDetailBookmarkTitle)
+                        editingDetailBookmark = null
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingDetailBookmark = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deletingDetailBookmark?.let { targetBookmark ->
+        AlertDialog(
+            onDismissRequest = { deletingDetailBookmark = null },
+            title = { Text("Delete bookmark") },
+            text = { Text("Remove this bookmark?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteBookmark(targetBookmark)
+                        deletingDetailBookmark = null
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingDetailBookmark = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     val targetBookId = addToListBookId
@@ -4699,6 +5349,8 @@ fun BookDetailScreen(
 fun PlayerPlaceholderScreen(
     onBackClick: (() -> Unit)? = null,
     viewModel: PlayerViewModel = hiltViewModel(),
+    onGoToBook: ((String) -> Unit)? = null,
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -4709,8 +5361,21 @@ fun PlayerPlaceholderScreen(
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
+    val downloadedBookIds by viewModel.downloadedBookIds.collectAsStateWithLifecycle()
+    val playerDownloadProgressPercent by viewModel.downloadProgressPercent.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
+    val bookId = book?.id
+    val isBookDownloaded = bookId != null && downloadedBookIds.contains(bookId)
+    val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
+    val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
+    val downloadToolLabel = if (isBookDownloaded || hasActivePlayerDownload) "Remove" else "Download"
+    val downloadToolValue = if (hasActivePlayerDownload) {
+        "${activeDownloadProgressPercent}%"
+    } else {
+        null
+    }
     val durationSeconds = when {
         book?.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
         playbackUiState.durationMs > 0L -> playbackUiState.durationMs / 1000.0
@@ -4725,6 +5390,13 @@ fun PlayerPlaceholderScreen(
         (positionSeconds / durationSeconds).toFloat().coerceIn(0f, 1f)
     } else {
         0f
+    }
+    val effectivePlayerFinished = if (book != null) {
+        val finishedFromPlayback = progress >= 0.995f
+        val finishedFromBook = book.hasFinishedProgress()
+        finishedFromPlayback || finishedFromBook
+    } else {
+        false
     }
     val activeChapterIndex = remember(chapters, positionSeconds) {
         findActiveChapterIndex(chapters, positionSeconds)
@@ -4772,9 +5444,21 @@ fun PlayerPlaceholderScreen(
         activeChapterTitle
     )
     val immersiveEnabled = appearanceUiState.immersivePlayerEnabled && !book?.coverUrl.isNullOrBlank()
-    var dragDistance by remember { mutableStateOf(0f) }
+    val dismissPlayer: () -> Unit = {
+        viewModel.onDismissPlayer()
+        onBackClick?.invoke()
+    }
+    val dragDismissDistancePx = with(LocalDensity.current) { 120.dp.toPx() }
+    val dragDismissVelocityPxPerSec = with(LocalDensity.current) { 1100.dp.toPx() }
+    var playerDragOffsetPx by remember { mutableStateOf(0f) }
+    val dragScope = rememberCoroutineScope()
+    var settleDragJob by remember { mutableStateOf<Job?>(null) }
+    val verticalDragState = rememberDraggableState { delta ->
+        settleDragJob?.cancel()
+        playerDragOffsetPx = (playerDragOffsetPx + delta).coerceAtLeast(0f)
+    }
     var bottomMenuExpanded by remember { mutableStateOf(false) }
-    var playerInfoMessage by remember { mutableStateOf<String?>(null) }
+    var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     var bookmarkFeedbackActive by remember { mutableStateOf(false) }
     val bookmarkIconScale by animateFloatAsState(
         targetValue = if (bookmarkFeedbackActive) 1.18f else 1f,
@@ -4784,9 +5468,21 @@ fun PlayerPlaceholderScreen(
     val chapterSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var showChapterSheet by rememberSaveable { mutableStateOf(false) }
     var chapterSheetTab by rememberSaveable { mutableStateOf(PlayerSheetTab.Chapters) }
-    val speeds = remember { listOf(0.8f, 1.0f, 1.3f, 1.5f, 1.8f, 2.0f) }
-    var speedIndex by rememberSaveable { mutableStateOf(2) }
-    val speedLabel = "${speeds[speedIndex]}x"
+    val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showOutputSheet by rememberSaveable { mutableStateOf(false) }
+    val timerExpiredSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val timerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showTimerSheet by rememberSaveable { mutableStateOf(false) }
+    var timerSheetSessionKey by rememberSaveable { mutableIntStateOf(0) }
+    val speedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showSpeedSheet by rememberSaveable { mutableStateOf(false) }
+    val speedLabel = formatPlaybackSpeedShort(playbackUiState.playbackSpeed)
+    val timerRemainingMs = playbackUiState.sleepTimerRemainingMs ?: 0L
+    val timerTotalMs = playbackUiState.sleepTimerTotalMs ?: timerRemainingMs
+    val timerIsActive = playbackUiState.sleepTimerMode != SleepTimerMode.Off && timerRemainingMs > 0L
+    val timerLabel = if (timerIsActive) formatTimerChipLabel(timerRemainingMs) else null
+    val selectedOutput = playbackUiState.outputDevices.firstOrNull { it.id == playbackUiState.selectedOutputDeviceId }
+    val outputLabel = selectedOutput?.typeLabel ?: "Output"
     val mainPlayButtonContainer = if (immersiveEnabled) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
     } else {
@@ -4833,6 +5529,22 @@ fun PlayerPlaceholderScreen(
         Toast.makeText(context, latest, Toast.LENGTH_SHORT).show()
         viewModel.clearActionMessage()
     }
+    LaunchedEffect(addToListBookId) {
+        if (!addToListBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        addToListBookId = null
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
 
     LaunchedEffect(bookmarkFeedbackActive) {
         if (bookmarkFeedbackActive) {
@@ -4844,25 +5556,32 @@ fun PlayerPlaceholderScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(onBackClick) {
-                detectVerticalDragGestures(
-                    onVerticalDrag = { _, dragAmount ->
-                        if (dragAmount > 0f) {
-                            dragDistance += dragAmount
+            .offset { IntOffset(x = 0, y = playerDragOffsetPx.roundToInt()) }
+            .draggable(
+                state = verticalDragState,
+                orientation = androidx.compose.foundation.gestures.Orientation.Vertical,
+                onDragStarted = {
+                    settleDragJob?.cancel()
+                },
+                onDragStopped = { velocity ->
+                    val shouldDismiss = playerDragOffsetPx >= dragDismissDistancePx ||
+                        velocity >= dragDismissVelocityPxPerSec
+                    if (shouldDismiss) {
+                        dismissPlayer()
+                    } else {
+                        settleDragJob?.cancel()
+                        settleDragJob = dragScope.launch {
+                            androidx.compose.animation.core.animate(
+                                initialValue = playerDragOffsetPx,
+                                targetValue = 0f,
+                                animationSpec = tween(durationMillis = 200)
+                            ) { value, _ ->
+                                playerDragOffsetPx = value
+                            }
                         }
-                    },
-                    onDragEnd = {
-                        if (dragDistance > 24f) {
-                            viewModel.onDismissPlayer()
-                            onBackClick?.invoke()
-                        }
-                        dragDistance = 0f
-                    },
-                    onDragCancel = {
-                        dragDistance = 0f
                     }
-                )
-            }
+                }
+            )
     ) {
         if (immersiveEnabled) {
             AsyncImage(
@@ -4938,7 +5657,9 @@ fun PlayerPlaceholderScreen(
                     fillMaxWidth = true,
                     shape = RoundedCornerShape(14.dp),
                     contentScale = ContentScale.Fit,
-                    backgroundBlur = WideCoverBackgroundBlur
+                    backgroundBlur = WideCoverBackgroundBlur,
+                    showDownloadIndicator = isBookDownloaded,
+                    downloadProgressPercent = activeDownloadProgressPercent
                 )
                 playerSeriesOrderLabel?.let { order ->
                     Box(
@@ -4955,12 +5676,24 @@ fun PlayerPlaceholderScreen(
                         )
                     }
                 }
+                if (timerIsActive) {
+                    PlayerTimerRunningBadge(
+                        remainingMs = timerRemainingMs,
+                        totalMs = timerTotalMs,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(
+                                x = 4.dp,
+                                y = if (isBookDownloaded || hasActivePlayerDownload) 30.dp else (-4).dp
+                            )
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(coverTitleGap))
-        Box(
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = playerTitle,
@@ -4969,10 +5702,10 @@ fun PlayerPlaceholderScreen(
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Visible,
-                textAlign = TextAlign.Start,
+                textAlign = TextAlign.Center,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 48.dp)
+                    .weight(1f)
+                    .padding(start = 8.dp, end = 10.dp)
                     .clickable {
                         chapterSheetTab = PlayerSheetTab.Chapters
                         showChapterSheet = true
@@ -4995,8 +5728,7 @@ fun PlayerPlaceholderScreen(
                     )
                 },
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .size(34.dp)
+                    .size(44.dp)
                     .graphicsLayer {
                         scaleX = bookmarkIconScale
                         scaleY = bookmarkIconScale
@@ -5087,16 +5819,6 @@ fun PlayerPlaceholderScreen(
                 maxLines = 1
             )
         }
-        playerInfoMessage?.let { message ->
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryTextColor,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
-            )
-        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -5155,30 +5877,38 @@ fun PlayerPlaceholderScreen(
                     primaryColor = primaryTextColor,
                     secondaryColor = secondaryTextColor,
                     onClick = {
-                        speedIndex = (speedIndex + 1) % speeds.size
-                        playerInfoMessage = "Speed set to ${speeds[speedIndex]}x."
+                        showSpeedSheet = true
                     }
                 )
                 PlayerBottomToolItem(
                     label = "Timer",
-                    imageVector = Icons.Outlined.Timer,
+                    imageVector = if (timerLabel == null) Icons.Outlined.Timer else null,
+                    valueText = timerLabel,
                     primaryColor = primaryTextColor,
                     secondaryColor = secondaryTextColor,
-                    onClick = { playerInfoMessage = "Sleep timer controls coming soon." }
+                    onClick = {
+                        timerSheetSessionKey += 1
+                        showTimerSheet = true
+                    }
                 )
                 PlayerBottomToolItem(
-                    label = "History",
-                    imageVector = Icons.Outlined.Refresh,
+                    label = "Output",
+                    imageVector = Icons.Outlined.SettingsVoice,
+                    valueText = outputLabel,
                     primaryColor = primaryTextColor,
                     secondaryColor = secondaryTextColor,
-                    onClick = { playerInfoMessage = "History controls coming soon." }
+                    onClick = {
+                        viewModel.refreshAudioOutputs()
+                        showOutputSheet = true
+                    }
                 )
                 PlayerBottomToolItem(
-                    label = "Download",
+                    label = downloadToolLabel,
                     imageVector = Icons.Outlined.Download,
+                    valueText = downloadToolValue,
                     primaryColor = primaryTextColor,
                     secondaryColor = secondaryTextColor,
-                    onClick = { playerInfoMessage = "Download controls coming soon." }
+                    onClick = { viewModel.toggleDownload() }
                 )
                 Box {
                     PlayerBottomToolItem(
@@ -5193,23 +5923,176 @@ fun PlayerPlaceholderScreen(
                         onDismissRequest = { bottomMenuExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Share") },
+                            text = { Text("Skip Intro & Outro") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.SkipNext,
+                                    contentDescription = null
+                                )
+                            },
                             onClick = {
-                                playerInfoMessage = "Share coming soon."
                                 bottomMenuExpanded = false
+                                val activeChapter = chapters.getOrNull(activeChapterIndex)
+                                if (activeChapter == null || !isIntroOutroChapterTitle(activeChapter.title)) {
+                                    Toast.makeText(
+                                        context,
+                                        "No intro/outro marker found in this chapter.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    val nextChapter = chapters.getOrNull(activeChapterIndex + 1)
+                                    if (nextChapter != null) {
+                                        viewModel.jumpToSeconds(nextChapter.startSeconds)
+                                        Toast.makeText(context, "Skipped chapter.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val endPositionMs = (durationSeconds * 1000.0).toLong().coerceAtLeast(0L)
+                                        viewModel.seekToPositionMs(positionMs = endPositionMs, commit = true)
+                                        Toast.makeText(context, "Skipped chapter.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (effectivePlayerFinished) {
+                                        "Mark as Unfinished"
+                                    } else {
+                                        "Mark as Finished"
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (effectivePlayerFinished) {
+                                        Icons.Outlined.Refresh
+                                    } else {
+                                        Icons.Outlined.CheckCircle
+                                    },
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                bottomMenuExpanded = false
+                                if (effectivePlayerFinished) {
+                                    viewModel.markAsUnfinished()
+                                } else {
+                                    viewModel.markAsFinished()
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add to Collection") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.CollectionsBookmark,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                bottomMenuExpanded = false
+                                addToListBookId = bookId
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Go to Book") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                                    contentDescription = null
+                                )
+                            },
                             onClick = {
-                                playerInfoMessage = "Already viewing this book."
                                 bottomMenuExpanded = false
+                                if (!bookId.isNullOrBlank()) {
+                                    onGoToBook?.invoke(bookId)
+                                }
                             }
                         )
                     }
                 }
             }
         }
+        }
+
+        if (playbackUiState.sleepTimerExpiredPromptVisible) {
+            ModalBottomSheet(
+                onDismissRequest = viewModel::dismissSleepTimerExpiredPrompt,
+                sheetState = timerExpiredSheetState,
+                dragHandle = null,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
+                PlayerTimerExpiredSheet(
+                    onClose = viewModel::dismissSleepTimerExpiredPrompt,
+                    onExtendOneMinute = {
+                        viewModel.extendSleepTimerOneMinute()
+                        viewModel.dismissSleepTimerExpiredPrompt()
+                    },
+                    onReset = {
+                        viewModel.clearSleepTimer()
+                        viewModel.dismissSleepTimerExpiredPrompt()
+                    }
+                )
+            }
+        }
+
+        if (showOutputSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showOutputSheet = false },
+                sheetState = outputSheetState,
+                dragHandle = null,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
+                PlayerOutputSheet(
+                    outputDevices = playbackUiState.outputDevices,
+                    selectedOutputDeviceId = playbackUiState.selectedOutputDeviceId,
+                    onSelectOutput = { deviceId ->
+                        viewModel.selectAudioOutputDevice(deviceId)
+                        showOutputSheet = false
+                    }
+                )
+            }
+        }
+
+        if (showTimerSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showTimerSheet = false },
+                sheetState = timerSheetState,
+                dragHandle = null,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
+                PlayerTimerSheet(
+                    sessionKey = timerSheetSessionKey,
+                    sleepTimerMode = playbackUiState.sleepTimerMode,
+                    sleepTimerRemainingMs = playbackUiState.sleepTimerRemainingMs,
+                    onStartMinutes = { minutes ->
+                        viewModel.startSleepTimerMinutes(minutes)
+                        showTimerSheet = false
+                    },
+                    onStartEndOfChapter = {
+                        viewModel.startSleepTimerEndOfChapter()
+                        showTimerSheet = false
+                    },
+                    onTurnOff = {
+                        viewModel.clearSleepTimer()
+                        showTimerSheet = false
+                    }
+                )
+            }
+        }
+
+        if (showSpeedSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showSpeedSheet = false },
+                sheetState = speedSheetState,
+                dragHandle = null,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
+                PlayerSpeedSheet(
+                    currentSpeed = playbackUiState.playbackSpeed,
+                    onSpeedChange = viewModel::setPlaybackSpeed
+                )
+            }
         }
 
         if (showChapterSheet && book != null) {
@@ -5234,9 +6117,50 @@ fun PlayerPlaceholderScreen(
                     },
                     onPlayBookmark = { bookmarkSeconds ->
                         viewModel.jumpToSeconds(bookmarkSeconds)
+                    },
+                    onEditBookmark = { bookmark, newTitle ->
+                        viewModel.editBookmark(bookmark = bookmark, newTitle = newTitle)
+                    },
+                    onDeleteBookmark = { bookmark ->
+                        viewModel.deleteBookmark(bookmark)
                     }
                 )
             }
+        }
+
+        val targetBookId = addToListBookId
+        if (!targetBookId.isNullOrBlank()) {
+            AddToListDialog(
+                uiState = collectionPickerUiState,
+                onDismiss = {
+                    addToListBookId = null
+                    collectionPickerViewModel.clearMessages()
+                },
+                onAddToExistingCollection = { collectionId ->
+                    collectionPickerViewModel.addBookToExistingCollection(
+                        bookId = targetBookId,
+                        collectionId = collectionId
+                    )
+                },
+                onCreateCollection = { name ->
+                    collectionPickerViewModel.createCollectionAndAddBook(
+                        bookId = targetBookId,
+                        name = name
+                    )
+                },
+                onAddToExistingPlaylist = { playlistId ->
+                    collectionPickerViewModel.addBookToExistingPlaylist(
+                        bookId = targetBookId,
+                        playlistId = playlistId
+                    )
+                },
+                onCreatePlaylist = { name ->
+                    collectionPickerViewModel.createPlaylistAndAddBook(
+                        bookId = targetBookId,
+                        name = name
+                    )
+                }
+            )
         }
     }
 }
@@ -5258,7 +6182,9 @@ private fun PlayerChapterBookmarkSheet(
     timeLeftLabel: String,
     onSelectTab: (PlayerSheetTab) -> Unit,
     onPlayChapter: (Double) -> Unit,
-    onPlayBookmark: (Double) -> Unit
+    onPlayBookmark: (Double) -> Unit,
+    onEditBookmark: (BookBookmark, String) -> Unit,
+    onDeleteBookmark: (BookBookmark) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -5285,6 +6211,10 @@ private fun PlayerChapterBookmarkSheet(
                 .thenBy { it.timeSeconds ?: Double.MAX_VALUE }
         )
     }
+    var bookmarkMenuId by remember { mutableStateOf<String?>(null) }
+    var editingBookmark by remember { mutableStateOf<BookBookmark?>(null) }
+    var editingBookmarkTitle by rememberSaveable { mutableStateOf("") }
+    var deletingBookmark by remember { mutableStateOf<BookBookmark?>(null) }
 
     Column(
         modifier = Modifier
@@ -5532,11 +6462,48 @@ private fun PlayerChapterBookmarkSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                if (isActiveBookmark) {
-                                    ChapterPlaybackIndicator(
-                                        isPlaying = isPlaying,
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isActiveBookmark) {
+                                        ChapterPlaybackIndicator(
+                                            isPlaying = isPlaying,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    Box {
+                                        IconButton(
+                                            onClick = { bookmarkMenuId = bookmark.id },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MoreHoriz,
+                                                contentDescription = "Bookmark actions",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = bookmarkMenuId == bookmark.id,
+                                            onDismissRequest = { bookmarkMenuId = null }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Edit title") },
+                                                onClick = {
+                                                    bookmarkMenuId = null
+                                                    editingBookmark = bookmark
+                                                    editingBookmarkTitle = bookmark.title.orEmpty()
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete bookmark") },
+                                                onClick = {
+                                                    bookmarkMenuId = null
+                                                    deletingBookmark = bookmark
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             HorizontalDivider()
@@ -5545,6 +6512,60 @@ private fun PlayerChapterBookmarkSheet(
                 }
             }
         }
+    }
+
+    editingBookmark?.let { targetBookmark ->
+        AlertDialog(
+            onDismissRequest = { editingBookmark = null },
+            title = { Text("Edit bookmark title") },
+            text = {
+                OutlinedTextField(
+                    value = editingBookmarkTitle,
+                    onValueChange = { editingBookmarkTitle = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onEditBookmark(targetBookmark, editingBookmarkTitle)
+                        editingBookmark = null
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingBookmark = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deletingBookmark?.let { targetBookmark ->
+        AlertDialog(
+            onDismissRequest = { deletingBookmark = null },
+            title = { Text("Delete bookmark") },
+            text = { Text("Remove this bookmark?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteBookmark(targetBookmark)
+                        deletingBookmark = null
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingBookmark = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -5750,6 +6771,743 @@ private fun PlayerBottomToolItem(
     }
 }
 
+private const val PlayerSpeedMin = 0.7f
+private const val PlayerSpeedMax = 2.0f
+private const val PlayerSpeedStep = 0.05f
+private val PlayerSpeedPresetButtonHeight = 58.dp
+private val PlayerSpeedPresets = listOf(0.7f, 1.0f, 1.2f, 1.5f, 1.7f, 2.0f)
+private val PlayerTimerPresetMinutes = listOf(15, 30, 45, 60)
+private const val PlayerTimerCustomMinMinutes = 1
+private const val PlayerTimerCustomMaxMinutes = 360
+
+private enum class PlayerTimerSelectionType {
+    Preset,
+    Custom,
+    EndOfChapter
+}
+
+@Composable
+private fun PlayerOutputSheet(
+    outputDevices: List<PlaybackOutputDevice>,
+    selectedOutputDeviceId: Int?,
+    onSelectOutput: (Int?) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(100))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+            text = "Output",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Choose where audio plays",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (outputDevices.isEmpty()) {
+            Text(
+                text = "No output devices detected.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        } else {
+            outputDevices.forEach { device ->
+                val selected = device.id == selectedOutputDeviceId
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (selected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f)
+                            }
+                        )
+                        .clickable { onSelectOutput(device.id) }
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SettingsVoice,
+                        contentDescription = null,
+                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = device.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = device.typeLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    if (selected) {
+                        Icon(
+                            imageVector = Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimerRunningBadge(
+    remainingMs: Long,
+    totalMs: Long,
+    modifier: Modifier = Modifier
+) {
+    val progress = if (totalMs > 0L) {
+        (remainingMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            modifier = Modifier.size(16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.matchParentSize(),
+                strokeWidth = 1.8.dp,
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+            Icon(
+                imageVector = Icons.Outlined.Timer,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(10.dp)
+            )
+        }
+        Box(
+            modifier = Modifier.width(52.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = formatTimerCountdownShort(remainingMs),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontFamily = FontFamily.Monospace
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimerExpiredSheet(
+    onClose: () -> Unit,
+    onExtendOneMinute: () -> Unit,
+    onReset: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = "Close"
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Timer,
+                contentDescription = null,
+                modifier = Modifier.size(44.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Time's up",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Text(
+                text = "Extend the timer or reset it.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Button(
+                onClick = onExtendOneMinute,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Extend 1m")
+            }
+            TextButton(onClick = onReset) {
+                Text("Reset timer")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerTimerSheet(
+    sessionKey: Int,
+    sleepTimerMode: SleepTimerMode,
+    sleepTimerRemainingMs: Long?,
+    onStartMinutes: (Int) -> Unit,
+    onStartEndOfChapter: () -> Unit,
+    onTurnOff: () -> Unit
+) {
+    val remainingMinutes = (((sleepTimerRemainingMs ?: 0L) + 59_999L) / 60_000L)
+        .toInt()
+        .coerceAtLeast(PlayerTimerCustomMinMinutes)
+    val initialSelection = when {
+        sleepTimerMode == SleepTimerMode.EndOfChapter -> PlayerTimerSelectionType.EndOfChapter
+        sleepTimerMode == SleepTimerMode.Duration && remainingMinutes in PlayerTimerPresetMinutes -> PlayerTimerSelectionType.Preset
+        sleepTimerMode == SleepTimerMode.Duration -> PlayerTimerSelectionType.Custom
+        else -> PlayerTimerSelectionType.Preset
+    }
+    var selectionType by remember(sessionKey) { mutableStateOf(initialSelection) }
+    var selectedPresetMinutes by remember(sessionKey) {
+        mutableStateOf(
+            when {
+                sleepTimerMode == SleepTimerMode.Duration && remainingMinutes in PlayerTimerPresetMinutes -> remainingMinutes
+                else -> PlayerTimerPresetMinutes.first()
+            }
+        )
+    }
+    var customMinutes by remember(sessionKey) {
+        mutableStateOf(
+            when {
+                sleepTimerMode == SleepTimerMode.Duration && remainingMinutes !in PlayerTimerPresetMinutes -> {
+                    remainingMinutes.coerceIn(PlayerTimerCustomMinMinutes, PlayerTimerCustomMaxMinutes)
+                }
+                else -> PlayerTimerCustomMinMinutes
+            }
+        )
+    }
+    var showCustomTimeDialog by remember { mutableStateOf(false) }
+    var pickerHours by remember { mutableStateOf(customMinutes / 60) }
+    var pickerMinutes by remember { mutableStateOf(customMinutes % 60) }
+    val hapticFeedback = LocalHapticFeedback.current
+    val buttonShape = RoundedCornerShape(10.dp)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(100))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Spacer(modifier = Modifier.width(58.dp))
+            Text(
+                text = "Timer",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    when (selectionType) {
+                        PlayerTimerSelectionType.Preset -> onStartMinutes(selectedPresetMinutes)
+                        PlayerTimerSelectionType.Custom -> onStartMinutes(customMinutes)
+                        PlayerTimerSelectionType.EndOfChapter -> onStartEndOfChapter()
+                    }
+                },
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text(text = "Start")
+            }
+        }
+
+        if (sleepTimerMode != SleepTimerMode.Off && (sleepTimerRemainingMs ?: 0L) > 0L) {
+            Text(
+                text = "Active: ${formatTimerRemainingLabel(sleepTimerMode, sleepTimerRemainingMs ?: 0L)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+        PlayerTimerPresetMinutes.chunked(2).forEach { rowMinutes ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                rowMinutes.forEach { minutes ->
+                    val selected = selectionType == PlayerTimerSelectionType.Preset && selectedPresetMinutes == minutes
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                            .clip(buttonShape)
+                            .background(
+                                if (selected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                }
+                            )
+                            .then(
+                                if (selected) {
+                                    Modifier.border(
+                                        width = 1.dp,
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+                                        shape = buttonShape
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .clickable {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                selectionType = PlayerTimerSelectionType.Preset
+                                selectedPresetMinutes = minutes
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (minutes >= 60 && minutes % 60 == 0) {
+                                "${minutes / 60} hr"
+                            } else {
+                                "$minutes min"
+                            },
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(buttonShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                .clickable {
+                    selectionType = PlayerTimerSelectionType.Custom
+                    pickerHours = (customMinutes / 60).coerceIn(0, PlayerTimerCustomMaxMinutes / 60)
+                    pickerMinutes = (customMinutes % 60).coerceIn(0, 59)
+                    showCustomTimeDialog = true
+                }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Custom time",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = if (selectionType == PlayerTimerSelectionType.Custom) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = formatCustomTimerLabel(customMinutes),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(buttonShape)
+                .background(
+                    if (selectionType == PlayerTimerSelectionType.EndOfChapter) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    }
+                )
+                .then(
+                    if (selectionType == PlayerTimerSelectionType.EndOfChapter) {
+                        Modifier.border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+                            shape = buttonShape
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+                .clickable { selectionType = PlayerTimerSelectionType.EndOfChapter }
+                .padding(horizontal = 12.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "End of chapter",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                modifier = Modifier.weight(1f)
+            )
+            if (selectionType == PlayerTimerSelectionType.EndOfChapter) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Button(
+            onClick = onTurnOff,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            )
+        ) {
+            Text("Off")
+        }
+    }
+    if (showCustomTimeDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomTimeDialog = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val totalMinutes = ((pickerHours * 60) + pickerMinutes)
+                            .coerceIn(PlayerTimerCustomMinMinutes, PlayerTimerCustomMaxMinutes)
+                        customMinutes = totalMinutes
+                        selectionType = PlayerTimerSelectionType.Custom
+                        showCustomTimeDialog = false
+                    }
+                ) {
+                    Text("Set")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomTimeDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+            title = { Text("Custom time") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = formatCustomTimerLabel((pickerHours * 60) + pickerMinutes),
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Hours", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = pickerHours.toFloat(),
+                            onValueChange = { pickerHours = it.roundToInt().coerceIn(0, PlayerTimerCustomMaxMinutes / 60) },
+                            valueRange = 0f..(PlayerTimerCustomMaxMinutes / 60).toFloat(),
+                            steps = (PlayerTimerCustomMaxMinutes / 60 - 1).coerceAtLeast(0)
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Minutes", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = pickerMinutes.toFloat(),
+                            onValueChange = { pickerMinutes = it.roundToInt().coerceIn(0, 59) },
+                            valueRange = 0f..59f,
+                            steps = 58
+                        )
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PlayerSpeedSheet(
+    currentSpeed: Float,
+    onSpeedChange: (Float) -> Unit
+) {
+    val normalizedSpeed = normalizePlaybackSpeed(currentSpeed)
+    val sliderSteps = (((PlayerSpeedMax - PlayerSpeedMin) / PlayerSpeedStep).toInt() - 1).coerceAtLeast(0)
+    val buttonShape = RoundedCornerShape(12.dp)
+    val selectedButtonColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+    val selectedButtonBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.56f)
+    val defaultSubLabelColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+    val hapticFeedback = LocalHapticFeedback.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(100))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+            text = "Speed",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = formatPlaybackSpeedExact(normalizedSpeed),
+            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.SemiBold),
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircleActionButton(
+                icon = Icons.Outlined.RemoveCircleOutline,
+                contentDescription = "Decrease speed",
+                onClick = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSpeedChange(normalizePlaybackSpeed(normalizedSpeed - PlayerSpeedStep))
+                }
+            )
+            Slider(
+                value = normalizedSpeed,
+                onValueChange = { onSpeedChange(normalizePlaybackSpeed(it)) },
+                valueRange = PlayerSpeedMin..PlayerSpeedMax,
+                steps = sliderSteps,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp)
+            )
+            CircleActionButton(
+                icon = Icons.Outlined.Add,
+                contentDescription = "Increase speed",
+                onClick = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSpeedChange(normalizePlaybackSpeed(normalizedSpeed + PlayerSpeedStep))
+                }
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        PlayerSpeedPresets.chunked(3).forEach { presetRow ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                presetRow.forEach { preset ->
+                    val isSelected = kotlin.math.abs(normalizedSpeed - preset) < 0.01f
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(PlayerSpeedPresetButtonHeight)
+                            .clip(buttonShape)
+                            .background(
+                                if (isSelected) selectedButtonColor else MaterialTheme.colorScheme.surfaceVariant.copy(
+                                    alpha = 0.48f
+                                )
+                            )
+                            .clickable {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSpeedChange(preset)
+                            }
+                            .then(
+                                if (isSelected) {
+                                    Modifier.border(
+                                        width = 1.dp,
+                                        color = selectedButtonBorder,
+                                        shape = buttonShape
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (preset == 1.0f) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                Text(
+                                    text = "1.0",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "DEFAULT",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    color = if (isSelected) {
+                                        defaultSubLabelColor
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = formatPlaybackSpeedPreset(preset),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun normalizePlaybackSpeed(rawSpeed: Float): Float {
+    val clamped = rawSpeed.coerceIn(PlayerSpeedMin, PlayerSpeedMax)
+    val steps = ((clamped - PlayerSpeedMin) / PlayerSpeedStep).roundToInt()
+    return (PlayerSpeedMin + steps * PlayerSpeedStep).coerceIn(PlayerSpeedMin, PlayerSpeedMax)
+}
+
+private fun formatPlaybackSpeedExact(speed: Float): String {
+    return String.format(Locale.getDefault(), "%.2fx", normalizePlaybackSpeed(speed))
+}
+
+private fun formatPlaybackSpeedPreset(speed: Float): String {
+    return String.format(Locale.getDefault(), "%.1f", speed.coerceIn(PlayerSpeedMin, PlayerSpeedMax))
+}
+
+private fun formatPlaybackSpeedShort(speed: Float): String {
+    val normalized = normalizePlaybackSpeed(speed)
+    val text = String.format(Locale.getDefault(), "%.2f", normalized)
+        .trimEnd('0')
+        .trimEnd('.')
+    return "${text}x"
+}
+
+private fun formatTimerChipLabel(remainingMs: Long): String {
+    val minutes = ((remainingMs.coerceAtLeast(0L) + 59_999L) / 60_000L).coerceAtLeast(1L)
+    return if (minutes >= 60L && minutes % 60L == 0L) {
+        "${minutes / 60L}h"
+    } else {
+        "${minutes}m"
+    }
+}
+
+private fun formatTimerCountdownShort(remainingMs: Long): String {
+    val totalSeconds = (remainingMs.coerceAtLeast(0L) / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
+    }
+}
+
+private fun formatCustomTimerLabel(totalMinutes: Int): String {
+    val clamped = totalMinutes.coerceIn(PlayerTimerCustomMinMinutes, PlayerTimerCustomMaxMinutes)
+    val hours = clamped / 60
+    val minutes = clamped % 60
+    return when {
+        hours > 0 && minutes > 0 -> "${hours}h ${minutes}m"
+        hours > 0 -> "${hours}h"
+        else -> "${minutes}m"
+    }
+}
+
+private fun formatTimerRemainingLabel(mode: SleepTimerMode, remainingMs: Long): String {
+    val minutes = ((remainingMs.coerceAtLeast(0L) + 59_999L) / 60_000L).coerceAtLeast(1L)
+    val minutesText = if (minutes >= 60L && minutes % 60L == 0L) {
+        "${minutes / 60L} hr"
+    } else {
+        "$minutes min"
+    }
+    return if (mode == SleepTimerMode.EndOfChapter) {
+        "End of chapter (about $minutesText)"
+    } else {
+        "$minutesText left"
+    }
+}
+
 @Composable
 private fun BookListenProgressButton(
     text: String,
@@ -5758,23 +7516,24 @@ private fun BookListenProgressButton(
     modifier: Modifier = Modifier
 ) {
     val buttonShape = ButtonDefaults.shape
-    val baseColor = MaterialTheme.colorScheme.onSurface
-    val contentColor = MaterialTheme.colorScheme.surface
-    val remainingColor = listenButtonRemainingColor(baseColor)
+    val baseColor = Color(0xFF1F2126)
+    val contentColor = Color.White
+    val progressColor = listenButtonRemainingColor(baseColor)
     val clampedProgress = progress.coerceIn(0f, 1f)
+    val progressFillFraction = if (clampedProgress >= 0.995f) 0f else clampedProgress
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(40.dp)
             .clip(buttonShape)
-            .background(remainingColor)
+            .background(baseColor)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .fillMaxWidth(clampedProgress)
-                .background(baseColor)
+                .fillMaxWidth(progressFillFraction)
+                .background(progressColor)
         )
         Button(
             onClick = onClick,
@@ -6132,7 +7891,13 @@ fun CustomizePlaceholderScreen(
     viewModel: CustomizeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val hapticFeedback = LocalHapticFeedback.current
     var selectedTab by remember { mutableStateOf("Lists") }
+    var draggedRowId by remember(selectedTab) { mutableStateOf<String?>(null) }
+    var draggedOffsetPx by remember(selectedTab) { mutableStateOf(0f) }
+    var draggedStartIndex by remember(selectedTab) { mutableStateOf(-1) }
+    var draggedTargetIndex by remember(selectedTab) { mutableStateOf(-1) }
+    var dragBaseRows by remember(selectedTab) { mutableStateOf<List<ToggleSectionItem>>(emptyList()) }
 
     Column(
         modifier = Modifier
@@ -6185,22 +7950,100 @@ fun CustomizePlaceholderScreen(
         }
         Spacer(modifier = Modifier.height(10.dp))
 
-        val rows = if (selectedTab == "Lists") uiState.listSections else uiState.personalizedSections
+        val rows = if (selectedTab == "Lists") {
+            uiState.listSections
+        } else {
+            if (uiState.personalizedSections.any { it.id == HomeSectionIds.LISTEN_AGAIN }) {
+                uiState.personalizedSections
+            } else {
+                uiState.personalizedSections + ToggleSectionItem(
+                    id = HomeSectionIds.LISTEN_AGAIN,
+                    title = "Listen Again"
+                )
+            }
+        }
+        var draggableRows by remember(selectedTab, rows) { mutableStateOf(rows) }
+        val rowStridePx = with(LocalDensity.current) { (42.dp + 6.dp).toPx() }
+        LaunchedEffect(rows, selectedTab, draggedRowId) {
+            if (draggedRowId == null) {
+                draggableRows = rows
+            }
+        }
+
+        fun moveRow(
+            source: List<ToggleSectionItem>,
+            from: Int,
+            to: Int
+        ): List<ToggleSectionItem> {
+            if (source.isEmpty() || from !in source.indices || to !in source.indices || from == to) {
+                return source
+            }
+            val mutable = source.toMutableList()
+            val item = mutable.removeAt(from)
+            mutable.add(to, item)
+            return mutable
+        }
+
+        fun persistOrder(updated: List<ToggleSectionItem>) {
+            val ids = updated.map { it.id }
+            if (selectedTab == "Lists") {
+                viewModel.setListOrder(ids)
+            } else {
+                viewModel.setPersonalizedOrder(ids)
+            }
+        }
+
+        fun finishDrag(commit: Boolean) {
+            if (commit && draggedRowId != null && draggedStartIndex >= 0 && draggedTargetIndex >= 0) {
+                draggableRows = moveRow(dragBaseRows, draggedStartIndex, draggedTargetIndex)
+                persistOrder(draggableRows)
+            }
+            draggedRowId = null
+            draggedOffsetPx = 0f
+            draggedStartIndex = -1
+            draggedTargetIndex = -1
+            dragBaseRows = emptyList()
+        }
+
+        val renderedRows = if (
+            draggedRowId != null &&
+            draggedStartIndex >= 0 &&
+            draggedTargetIndex >= 0 &&
+            dragBaseRows.isNotEmpty()
+        ) {
+            moveRow(dragBaseRows, draggedStartIndex, draggedTargetIndex)
+        } else {
+            draggableRows
+        }
+
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
-            items(rows, key = { it.id }) { row ->
+            items(renderedRows, key = { it.id }) { row ->
                 val enabled = if (selectedTab == "Lists") {
                     !uiState.hiddenListSectionIds.contains(row.id)
                 } else {
                     !uiState.hiddenPersonalizedSectionIds.contains(row.id)
                 }
+                val dragIndexDelta = if (draggedStartIndex >= 0 && draggedTargetIndex >= 0) {
+                    draggedTargetIndex - draggedStartIndex
+                } else {
+                    0
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(42.dp)
-                        .clickable {
+                        .zIndex(if (row.id == draggedRowId) 1f else 0f)
+                        .graphicsLayer {
+                            translationY = if (row.id == draggedRowId) {
+                                draggedOffsetPx - (dragIndexDelta * rowStridePx)
+                            } else {
+                                0f
+                            }
+                        }
+                        .clickable(enabled = draggedRowId == null) {
                             if (selectedTab == "Lists") {
                                 viewModel.toggleListSection(row.id)
                             } else {
@@ -6238,12 +8081,36 @@ fun CustomizePlaceholderScreen(
                         imageVector = Icons.Outlined.DragHandle,
                         contentDescription = "Reorder",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.clickable {
-                            if (selectedTab == "Lists") {
-                                viewModel.moveListSection(row.id)
-                            } else {
-                                viewModel.movePersonalizedSection(row.id)
-                            }
+                        modifier = Modifier.pointerInput(row.id, selectedTab) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    val startIndex = draggableRows.indexOfFirst { it.id == row.id }
+                                    if (startIndex < 0) return@detectDragGesturesAfterLongPress
+                                    dragBaseRows = draggableRows
+                                    draggedRowId = row.id
+                                    draggedOffsetPx = 0f
+                                    draggedStartIndex = startIndex
+                                    draggedTargetIndex = startIndex
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDragCancel = { finishDrag(commit = false) },
+                                onDragEnd = { finishDrag(commit = true) },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    if (draggedRowId == null || draggedStartIndex < 0 || dragBaseRows.isEmpty()) {
+                                        return@detectDragGesturesAfterLongPress
+                                    }
+
+                                    draggedOffsetPx += dragAmount.y
+                                    val proposedIndex = (
+                                        draggedStartIndex + (draggedOffsetPx / rowStridePx).roundToInt()
+                                        ).coerceIn(0, dragBaseRows.lastIndex)
+                                    if (proposedIndex != draggedTargetIndex) {
+                                        draggedTargetIndex = proposedIndex
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                }
+                            )
                         }
                     )
                 }
@@ -6673,8 +8540,25 @@ private fun ContinueListeningCard(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as Finished") },
-                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        text = {
+                            Text(
+                                if (item.book.hasFinishedProgress()) {
+                                    "Mark as Unfinished"
+                                } else {
+                                    "Mark as Finished"
+                                }
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (item.book.hasFinishedProgress()) {
+                                    Icons.Outlined.Refresh
+                                } else {
+                                    Icons.Outlined.CheckCircle
+                                },
+                                contentDescription = null
+                            )
+                        },
                         onClick = {
                             onMarkFinished()
                             menuExpanded = false
@@ -6945,6 +8829,17 @@ private fun List<BookSummary>.filterByStatus(filter: BooksStatusFilter): List<Bo
     }
 }
 
+private fun isIntroOutroChapterTitle(raw: String?): Boolean {
+    val title = raw?.trim()?.lowercase(Locale.ROOT).orEmpty()
+    if (title.isBlank()) return false
+    return title.contains("intro") ||
+        title.contains("introduction") ||
+        title.contains("prologue") ||
+        title.contains("outro") ||
+        title.contains("epilogue") ||
+        title.contains("credits")
+}
+
 private fun sortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {
     return when (sortKey) {
         BooksSortKey.Title -> compareBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
@@ -6967,7 +8862,10 @@ private fun BookSummary.hasStartedProgress(): Boolean {
 
 private fun BookSummary.hasFinishedProgress(): Boolean {
     val normalized = normalizedProgressPercent()
-    return isFinished || (normalized != null && normalized >= 0.995)
+    return when {
+        normalized != null -> normalized >= 0.995
+        else -> isFinished
+    }
 }
 
 private fun BookSummary.normalizedProgressPercent(): Double? {
@@ -7008,7 +8906,7 @@ private fun resolveSeriesOrderLabel(seriesSequence: Double?, vararg textCandidat
 
 private fun splitAuthorNames(raw: String): List<String> {
     return raw
-        .split(",")
+        .split(Regex(",|;|\\s+and\\s+|\\s*&\\s*"))
         .map { it.trim() }
         .filter { it.isNotBlank() }
         .ifEmpty { listOf(raw.trim()) }
@@ -7051,21 +8949,17 @@ private fun formatTimeLeftLabel(durationSeconds: Double, positionSeconds: Double
 
 private fun formatBookmarkDate(createdAtMs: Long?): String {
     val timestamp = createdAtMs ?: return "Unknown date"
-    val formatter = DateTimeFormatter.ofPattern("M/d/yyyy", Locale.getDefault())
+    val formatter = SimpleDateFormat("M/d/yyyy", Locale.getDefault())
     return runCatching {
-        Instant.ofEpochMilli(timestamp)
-            .atZone(ZoneId.systemDefault())
-            .format(formatter)
+        formatter.format(Date(timestamp))
     }.getOrDefault("Unknown date")
 }
 
 private fun formatBookmarkTime24(createdAtMs: Long?): String {
     val timestamp = createdAtMs ?: return "--:--"
-    val formatter = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
+    val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
     return runCatching {
-        Instant.ofEpochMilli(timestamp)
-            .atZone(ZoneId.systemDefault())
-            .format(formatter)
+        formatter.format(Date(timestamp))
     }.getOrDefault("--:--")
 }
 
@@ -7088,9 +8982,9 @@ private fun formatFileSize(bytes: Long?): String {
     if (value <= 0L) return "Unknown"
     val mb = value / (1024.0 * 1024.0)
     return if (mb >= 1024.0) {
-        String.format("%.1f GB", mb / 1024.0)
+        String.format(Locale.getDefault(), "%.1f GB", mb / 1024.0)
     } else {
-        String.format("%.0f MB", mb)
+        String.format(Locale.getDefault(), "%.0f MB", mb)
     }
 }
 

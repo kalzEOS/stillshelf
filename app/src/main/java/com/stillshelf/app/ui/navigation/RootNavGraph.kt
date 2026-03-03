@@ -27,19 +27,19 @@ fun RootNavGraph(
         return
     }
 
-    val navController = rememberNavController()
     val startGraph = if (uiState.hasActiveServer && uiState.hasActiveLibrary) {
         GraphRoute.MAIN
     } else {
         GraphRoute.AUTH
     }
-    val authStartDestination = if (uiState.hasActiveServer) {
-        AuthRoute.LIBRARY_PICKER
-    } else {
-        AuthRoute.ADD_SERVER
+    val authStartDestination = when {
+        uiState.hasActiveServer -> AuthRoute.LIBRARY_PICKER
+        uiState.hasAnyServer -> AuthRoute.SERVERS
+        else -> AuthRoute.ADD_SERVER
     }
 
-    key(startGraph) {
+    key(startGraph, authStartDestination) {
+        val navController = rememberNavController()
         NavHost(
             navController = navController,
             startDestination = startGraph,

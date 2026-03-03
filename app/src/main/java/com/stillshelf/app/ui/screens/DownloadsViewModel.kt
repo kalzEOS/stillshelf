@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
@@ -11,6 +12,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -19,18 +21,21 @@ data class DownloadsUiState(
     val books: List<BookSummary> = emptyList(),
     val downloadItems: List<DownloadItem> = emptyList(),
     val downloadedBookIds: Set<String> = emptySet(),
+    val listMode: Boolean = true,
     val errorMessage: String? = null,
     val actionMessage: String? = null
 )
 
 @HiltViewModel
 class DownloadsViewModel @Inject constructor(
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = mutableUiState.asStateFlow()
 
     init {
+        restoreListMode()
         observeDownloads()
     }
 
@@ -55,6 +60,20 @@ class DownloadsViewModel @Inject constructor(
 
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    fun setListMode(listMode: Boolean) {
+        mutableUiState.update { it.copy(listMode = listMode) }
+        viewModelScope.launch {
+            sessionPreferences.setDownloadedListMode(listMode)
+        }
+    }
+
+    private fun restoreListMode() {
+        viewModelScope.launch {
+            val pref = sessionPreferences.state.first()
+            mutableUiState.update { it.copy(listMode = pref.downloadedListMode) }
+        }
     }
 
     private fun observeDownloads() {

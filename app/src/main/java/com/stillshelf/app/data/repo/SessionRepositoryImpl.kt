@@ -62,6 +62,8 @@ class SessionRepositoryImpl @Inject constructor(
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
         private const val CONTENT_CACHE_MAX_AGE_MS: Long = 20 * 60 * 1000L
         private const val DETAIL_CACHE_MAX_AGE_MS: Long = 30 * 60 * 1000L
+        private const val FULL_LIBRARY_PAGE_SIZE: Int = 500
+        private const val MAX_FULL_LIBRARY_PAGES: Int = 1_000
     }
 
     private data class TimedCacheEntry<T>(
@@ -655,13 +657,7 @@ class SessionRepositoryImpl @Inject constructor(
             return AppResult.Success(emptyList())
         }
 
-        return when (
-            val booksResult = fetchBooksForActiveLibrary(
-                limit = 500,
-                page = 0,
-                forceRefresh = forceRefresh
-            )
-        ) {
+        return when (val booksResult = fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
             is AppResult.Success -> {
                 val normalizedIds = bookIds
                     .map { it.trim() }
@@ -708,13 +704,7 @@ class SessionRepositoryImpl @Inject constructor(
             return AppResult.Success(emptyList())
         }
 
-        return when (
-            val booksResult = fetchBooksForActiveLibrary(
-                limit = 500,
-                page = 0,
-                forceRefresh = forceRefresh
-            )
-        ) {
+        return when (val booksResult = fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
             is AppResult.Success -> {
                 val normalizedIds = bookIds
                     .map { it.trim() }
@@ -735,6 +725,37 @@ class SessionRepositoryImpl @Inject constructor(
             }
             is AppResult.Error -> booksResult
         }
+    }
+
+    private suspend fun fetchAllBooksForActiveLibrary(forceRefresh: Boolean): AppResult<List<BookSummary>> {
+        val booksById = LinkedHashMap<String, BookSummary>()
+        var page = 0
+        while (page < MAX_FULL_LIBRARY_PAGES) {
+            when (
+                val booksResult = fetchBooksForActiveLibrary(
+                    limit = FULL_LIBRARY_PAGE_SIZE,
+                    page = page,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Error -> return booksResult
+                is AppResult.Success -> {
+                    val pageBooks = booksResult.value
+                    if (pageBooks.isEmpty()) {
+                        break
+                    }
+                    val beforeCount = booksById.size
+                    pageBooks.forEach { book ->
+                        booksById.putIfAbsent(book.id.trim(), book)
+                    }
+                    if (pageBooks.size < FULL_LIBRARY_PAGE_SIZE || booksById.size == beforeCount) {
+                        break
+                    }
+                    page += 1
+                }
+            }
+        }
+        return AppResult.Success(booksById.values.toList())
     }
 
     override suspend fun createCollection(name: String): AppResult<NamedEntitySummary> {

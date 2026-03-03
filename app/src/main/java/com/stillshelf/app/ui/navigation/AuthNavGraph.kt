@@ -51,7 +51,10 @@ fun NavGraphBuilder.authNavGraph(
 
         composable(AuthRoute.LIBRARY_PICKER) {
             LibraryPickerRoute(
-                onLibrarySelected = onAuthCompleted
+                onLibrarySelected = onAuthCompleted,
+                onManageServers = {
+                    navController.popBackStack(AuthRoute.SERVERS, inclusive = false)
+                }
             )
         }
     }

@@ -2023,9 +2023,17 @@ class SessionRepositoryImpl @Inject constructor(
         val activeServerId = session.activeServerId
             ?: return AppResult.Error("No active server selected.")
         val server = serverDao.getById(activeServerId)
-            ?: return AppResult.Error("Active server not found.")
+            ?: run {
+                sessionPreferences.setActiveLibraryId(null)
+                sessionPreferences.setActiveServerId(null)
+                return AppResult.Error("Active server not found.")
+            }
         val token = secureTokenStorage.getToken(server.id)
-            ?: return AppResult.Error("No saved session for this server. Please log in again.")
+            ?: run {
+                sessionPreferences.setActiveLibraryId(null)
+                sessionPreferences.setActiveServerId(null)
+                return AppResult.Error("No saved session for this server. Please log in again.")
+            }
 
         if (!requireLibrary) {
             return AppResult.Success(
@@ -2040,8 +2048,12 @@ class SessionRepositoryImpl @Inject constructor(
         val activeLibraryId = session.activeLibraryId
             ?: return AppResult.Error("No active library selected.")
         val library = libraryDao.getById(activeLibraryId)
-            ?: return AppResult.Error("Active library not found.")
+            ?: run {
+                sessionPreferences.setActiveLibraryId(null)
+                return AppResult.Error("Active library not found.")
+            }
         if (library.serverId != server.id) {
+            sessionPreferences.setActiveLibraryId(null)
             return AppResult.Error("Active library does not belong to the active server.")
         }
 

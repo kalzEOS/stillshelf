@@ -48,8 +48,9 @@ fun LibraryPickerRoute(
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
-            if (event is LibraryPickerEvent.NavigateToMain) {
-                onLibrarySelected()
+            when (event) {
+                LibraryPickerEvent.NavigateToMain -> onLibrarySelected()
+                LibraryPickerEvent.NavigateToManageServers -> onManageServers()
             }
         }
     }

@@ -44,6 +44,7 @@ class ServersViewModel @Inject constructor(
 
     fun onServerSelected(serverId: String) {
         viewModelScope.launch {
+            val selectedServer = uiState.value.servers.firstOrNull { it.id == serverId }
             when (val result = sessionRepository.setActiveServer(serverId)) {
                 is AppResult.Success -> {
                     errorState.value = null
@@ -51,7 +52,18 @@ class ServersViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    errorState.value = result.message
+                    val requiresReauth = result.message.contains("no saved session", ignoreCase = true)
+                    if (requiresReauth && selectedServer != null) {
+                        errorState.value = null
+                        mutableEvents.emit(
+                            ServersEvent.NavigateToLogin(
+                                serverName = selectedServer.name,
+                                baseUrl = selectedServer.baseUrl
+                            )
+                        )
+                    } else {
+                        errorState.value = result.message
+                    }
                 }
             }
         }
@@ -70,4 +82,8 @@ data class ServersUiState(
 
 sealed interface ServersEvent {
     data object NavigateToLibraryPicker : ServersEvent
+    data class NavigateToLogin(
+        val serverName: String,
+        val baseUrl: String
+    ) : ServersEvent
 }

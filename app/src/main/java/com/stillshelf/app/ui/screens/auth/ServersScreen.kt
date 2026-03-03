@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun ServersRoute(
     onAddServer: () -> Unit,
     onServerSelected: () -> Unit,
+    onReauthenticate: (serverName: String, baseUrl: String) -> Unit,
     viewModel: ServersViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -36,8 +37,9 @@ fun ServersRoute(
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
-            if (event is ServersEvent.NavigateToLibraryPicker) {
-                onServerSelected()
+            when (event) {
+                ServersEvent.NavigateToLibraryPicker -> onServerSelected()
+                is ServersEvent.NavigateToLogin -> onReauthenticate(event.serverName, event.baseUrl)
             }
         }
     }

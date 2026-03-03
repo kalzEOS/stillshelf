@@ -20,6 +20,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.PaddingValues
 @Composable
 fun LibraryPickerRoute(
     onLibrarySelected: () -> Unit,
+    onManageServers: () -> Unit,
     viewModel: LibraryPickerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -61,7 +63,8 @@ fun LibraryPickerRoute(
     LibraryPickerScreen(
         uiState = uiState,
         snackbarHostState = snackbarHostState,
-        onLibrarySelected = viewModel::onLibrarySelected
+        onLibrarySelected = viewModel::onLibrarySelected,
+        onManageServers = onManageServers
     )
 }
 
@@ -69,7 +72,8 @@ fun LibraryPickerRoute(
 private fun LibraryPickerScreen(
     uiState: LibraryPickerUiState,
     snackbarHostState: SnackbarHostState,
-    onLibrarySelected: (String) -> Unit
+    onLibrarySelected: (String) -> Unit,
+    onManageServers: () -> Unit
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
@@ -125,6 +129,13 @@ private fun LibraryPickerScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp)
                     )
+                    Button(
+                        onClick = onManageServers,
+                        modifier = Modifier
+                            .padding(top = 16.dp)
+                    ) {
+                        Text("Manage Servers")
+                    }
                 }
             } else {
                 val reachableLayout = uiState.libraries.size <= 3

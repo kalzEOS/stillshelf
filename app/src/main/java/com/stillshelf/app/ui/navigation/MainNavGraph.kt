@@ -368,6 +368,13 @@ private fun MainTabsNavHost(
                             launchSingleTop = true
                         }
                     }
+                },
+                onManageServers = {
+                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(MainRoute.SERVERS) {
+                            launchSingleTop = true
+                        }
+                    }
                 }
             )
         }

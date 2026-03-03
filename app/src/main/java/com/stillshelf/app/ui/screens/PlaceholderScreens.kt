@@ -4,6 +4,9 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.MarqueeSpacing
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.draggable
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -43,6 +47,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -54,6 +59,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.ViewList
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BookmarkBorder
@@ -123,15 +129,18 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -158,6 +167,7 @@ import coil.request.ImageRequest
 import coil.imageLoader
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
+import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
@@ -171,9 +181,14 @@ import com.stillshelf.app.ui.navigation.BrowseRoute
 import com.stillshelf.app.ui.navigation.MainRoute
 import com.stillshelf.app.ui.navigation.MainTab
 import com.stillshelf.app.ui.theme.AppThemeMode
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 private data class LibraryListItem(
@@ -196,12 +211,15 @@ enum class BooksStatusFilter(val label: String) {
     NotFinished("Not Finished")
 }
 
-enum class BooksSortKey(val label: String) {
-    Title("Title"),
-    Author("Author"),
-    PublicationDate("Publication Date"),
-    DateAdded("Date Added"),
-    Duration("Duration")
+enum class BooksSortKey(
+    val label: String,
+    val hint: String
+) {
+    Title(label = "Title", hint = "A - Z"),
+    Author(label = "Author", hint = "A - Z"),
+    PublicationDate(label = "Publication Date", hint = "Newest first"),
+    DateAdded(label = "Date Added", hint = "Newest first"),
+    Duration(label = "Duration", hint = "Longest first")
 }
 
 private val BackTitleSpacing = 12.dp
@@ -314,7 +332,7 @@ fun HomePlaceholderScreen(
     }
     LaunchedEffect(addToListBookId) {
         if (!addToListBookId.isNullOrBlank()) {
-            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
         }
     }
     LaunchedEffect(collectionPickerUiState.actionMessage) {
@@ -908,7 +926,7 @@ fun BrowsePlaceholderScreen(
     }
     LaunchedEffect(collectionPickerBookId) {
         if (!collectionPickerBookId.isNullOrBlank()) {
-            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
         }
     }
     LaunchedEffect(collectionPickerUiState.actionMessage) {
@@ -1016,10 +1034,22 @@ fun BrowsePlaceholderScreen(
                     )
                     HorizontalDivider()
                     BooksSortKey.entries.forEach { option ->
+                        val isSelected = uiState.sortKey == option
                         DropdownMenuItem(
-                            text = { Text(option.label) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    Text(option.label)
+                                    if (isSelected) {
+                                        Text(
+                                            text = option.hint,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            },
                             trailingIcon = {
-                                if (uiState.sortKey == option) {
+                                if (isSelected) {
                                     Icon(imageVector = Icons.Filled.Check, contentDescription = null)
                                 }
                             },
@@ -1819,7 +1849,7 @@ fun CollectionsBrowseScreen(
         refreshing = uiState.isLoading && manualRefreshInProgress,
         onRefresh = {
             manualRefreshInProgress = true
-            viewModel.refresh()
+            viewModel.refreshLibrary()
         }
     )
     var renameTarget by remember { mutableStateOf<com.stillshelf.app.core.model.NamedEntitySummary?>(null) }
@@ -1838,7 +1868,7 @@ fun CollectionsBrowseScreen(
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             viewModel.refresh()
             while (true) {
-                kotlinx.coroutines.delay(5_000L)
+                kotlinx.coroutines.delay(1_000L)
                 viewModel.refresh()
             }
         }
@@ -1868,86 +1898,166 @@ fun CollectionsBrowseScreen(
         ) {
             when {
                 uiState.entities.isNotEmpty() -> {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 132.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         contentPadding = PaddingValues(bottom = 120.dp)
                     ) {
-                        items(uiState.entities, key = { it.id }) { collection ->
+                        gridItems(uiState.entities, key = { it.id }) { collection ->
                             var menuExpanded by remember { mutableStateOf(false) }
-                            Row(
+                            val coverStack = uiState.coverStackByCollectionId[collection.id].orEmpty()
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onCollectionClick(collection) }
-                                    .padding(vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(bottom = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = collection.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    collection.subtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                                        Text(
-                                            text = subtitle,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                                Box {
-                                    IconButton(
-                                        onClick = { menuExpanded = true },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.MoreHoriz,
-                                            contentDescription = "Collection actions",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = menuExpanded,
-                                        onDismissRequest = { menuExpanded = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Rename") },
-                                            onClick = {
-                                                menuExpanded = false
-                                                nameInput = collection.name
-                                                renameTarget = collection
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(186.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                ) {
+                                    if (coverStack.isNotEmpty()) {
+                                        val frontCover = coverStack.getOrNull(0)
+                                        val backCoverLeft = coverStack.getOrNull(1)
+                                        val backCoverRight = coverStack.getOrNull(2)
+                                        val coverShape = RoundedCornerShape(8.dp)
+                                        val layerWidth = 102.dp
+                                        val layerHeight = 154.dp
+
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            backCoverRight?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .offset(x = 14.dp, y = (-8).dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .graphicsLayer(alpha = 0.7f),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
                                             }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Delete") },
-                                            onClick = {
-                                                menuExpanded = false
-                                                deleteTarget = collection
+                                            backCoverLeft?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .offset(x = (-14).dp, y = (-8).dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .graphicsLayer(alpha = 0.7f),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
                                             }
-                                        )
+                                            frontCover?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = collection.name,
+                                                    modifier = Modifier
+                                                        .offset(y = 4.dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .shadow(
+                                                            elevation = 3.dp,
+                                                            shape = coverShape,
+                                                            clip = false
+                                                        ),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.CollectionsBookmark,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(40.dp)
+                                            )
+                                        }
                                     }
+
                                 }
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    imageVector = Icons.Outlined.ChevronRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+
+                                Text(
+                                    text = collection.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = collection.subtitle.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Box {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 34.dp, height = 24.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))
+                                                .clickable { menuExpanded = true },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MoreHoriz,
+                                                contentDescription = "Collection actions",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = menuExpanded,
+                                            onDismissRequest = { menuExpanded = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Rename") },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    nameInput = collection.name
+                                                    renameTarget = collection
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete") },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    deleteTarget = collection
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                         }
                     }
-                }
-
-                uiState.isLoading -> {
-                    Text(
-                        text = "Loading collections...",
-                        modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
 
                 else -> {
@@ -1956,6 +2066,22 @@ fun CollectionsBrowseScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        if (uiState.errorMessage == null) {
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.CollectionsBookmark,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                        }
                         Text(
                             text = uiState.errorMessage ?: "No collections yet.",
                             style = MaterialTheme.typography.bodyLarge,
@@ -2052,7 +2178,7 @@ fun PlaylistsBrowseScreen(
         refreshing = uiState.isLoading && manualRefreshInProgress,
         onRefresh = {
             manualRefreshInProgress = true
-            viewModel.refresh()
+            viewModel.refreshLibrary()
         }
     )
     var createDialogVisible by remember { mutableStateOf(false) }
@@ -2072,7 +2198,7 @@ fun PlaylistsBrowseScreen(
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             viewModel.refresh()
             while (true) {
-                kotlinx.coroutines.delay(5_000L)
+                kotlinx.coroutines.delay(1_000L)
                 viewModel.refresh()
             }
         }
@@ -2110,86 +2236,165 @@ fun PlaylistsBrowseScreen(
         ) {
             when {
                 uiState.entities.isNotEmpty() -> {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 132.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         contentPadding = PaddingValues(bottom = 120.dp)
                     ) {
-                        items(uiState.entities, key = { it.id }) { playlist ->
+                        gridItems(uiState.entities, key = { it.id }) { playlist ->
                             var menuExpanded by remember { mutableStateOf(false) }
-                            Row(
+                            val coverStack = uiState.coverStackByCollectionId[playlist.id].orEmpty()
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onPlaylistClick(playlist) }
-                                    .padding(vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(bottom = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    playlist.subtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-                                        Text(
-                                            text = subtitle,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(186.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                ) {
+                                    if (coverStack.isNotEmpty()) {
+                                        val frontCover = coverStack.getOrNull(0)
+                                        val backCoverLeft = coverStack.getOrNull(1)
+                                        val backCoverRight = coverStack.getOrNull(2)
+                                        val coverShape = RoundedCornerShape(8.dp)
+                                        val layerWidth = 102.dp
+                                        val layerHeight = 154.dp
+
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            backCoverRight?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .offset(x = 14.dp, y = (-8).dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .graphicsLayer(alpha = 0.7f),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
+                                            }
+                                            backCoverLeft?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier
+                                                        .offset(x = (-14).dp, y = (-8).dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .graphicsLayer(alpha = 0.7f),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
+                                            }
+                                            frontCover?.let { coverUrl ->
+                                                FramedCoverImage(
+                                                    coverUrl = coverUrl,
+                                                    contentDescription = playlist.name,
+                                                    modifier = Modifier
+                                                        .offset(y = 4.dp)
+                                                        .width(layerWidth)
+                                                        .height(layerHeight)
+                                                        .shadow(
+                                                            elevation = 3.dp,
+                                                            shape = coverShape,
+                                                            clip = false
+                                                        ),
+                                                    shape = coverShape,
+                                                    contentScale = ContentScale.Crop,
+                                                    backgroundBlur = WideCoverBackgroundBlur
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MusicNote,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(40.dp)
+                                            )
+                                        }
                                     }
                                 }
-                                Box {
-                                    IconButton(
-                                        onClick = { menuExpanded = true },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.MoreHoriz,
-                                            contentDescription = "Playlist actions",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = menuExpanded,
-                                        onDismissRequest = { menuExpanded = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Rename") },
-                                            onClick = {
-                                                menuExpanded = false
-                                                nameInput = playlist.name
-                                                renameTarget = playlist
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Delete") },
-                                            onClick = {
-                                                menuExpanded = false
-                                                deleteTarget = playlist
-                                            }
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    imageVector = Icons.Outlined.ChevronRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+
+                                Text(
+                                    text = playlist.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = playlist.subtitle.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Box {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 34.dp, height = 24.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))
+                                                .clickable { menuExpanded = true },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.MoreHoriz,
+                                                contentDescription = "Playlist actions",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = menuExpanded,
+                                            onDismissRequest = { menuExpanded = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Rename") },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    nameInput = playlist.name
+                                                    renameTarget = playlist
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete") },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    deleteTarget = playlist
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                         }
                     }
-                }
-
-                uiState.isLoading -> {
-                    Text(
-                        text = "Loading playlists...",
-                        modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
 
                 else -> {
@@ -2198,6 +2403,22 @@ fun PlaylistsBrowseScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        if (uiState.errorMessage == null) {
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MusicNote,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            }
+                        }
                         Text(
                             text = uiState.errorMessage ?: "No playlists yet.",
                             style = MaterialTheme.typography.bodyLarge,
@@ -3990,7 +4211,7 @@ fun BookDetailScreen(
     }
     LaunchedEffect(addToListBookId) {
         if (!addToListBookId.isNullOrBlank()) {
-            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
         }
     }
     LaunchedEffect(collectionPickerUiState.actionMessage) {
@@ -4080,13 +4301,6 @@ fun BookDetailScreen(
                                 actionsExpanded = false
                             }
                         )
-                        DropdownMenuItem(
-                            text = { Text("Go to Book") },
-                            onClick = {
-                                infoMessage = "Already viewing this book."
-                                actionsExpanded = false
-                            }
-                        )
                     }
                 }
             }
@@ -4131,6 +4345,25 @@ fun BookDetailScreen(
                     serverPlaybackSeconds > 0.5 ||
                     (uiState.progressPercent ?: 0.0) > 0.001
                 val listenLabel = if (hasProgress) "Continue Listening" else "Start Listening"
+                val listenProgressFraction = run {
+                    val duration = when {
+                        book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
+                        playbackUiState.book?.id == book.id && playbackUiState.durationMs > 0L -> {
+                            playbackUiState.durationMs / 1000.0
+                        }
+                        else -> null
+                    }
+                    val resolved = when {
+                        duration != null && duration > 0.0 && livePlaybackSeconds > 0.0 -> {
+                            (livePlaybackSeconds / duration).coerceIn(0.0, 1.0)
+                        }
+                        duration != null && duration > 0.0 && serverPlaybackSeconds > 0.0 -> {
+                            (serverPlaybackSeconds / duration).coerceIn(0.0, 1.0)
+                        }
+                        else -> (uiState.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+                    }
+                    resolved.toFloat().coerceIn(0f, 1f)
+                }
                 val chapterPositionSeconds = if (playbackUiState.book?.id == book.id) {
                     (playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0)
                 } else {
@@ -4231,21 +4464,29 @@ fun BookDetailScreen(
                     }
                 }
                 item {
-                    Button(
-                        onClick = { onStartListening(book.id) },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.onSurface,
-                            contentColor = MaterialTheme.colorScheme.surface
+                    if (hasProgress) {
+                        BookListenProgressButton(
+                            text = listenLabel,
+                            progress = listenProgressFraction,
+                            onClick = { onStartListening(book.id) }
                         )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(listenLabel)
+                    } else {
+                        Button(
+                            onClick = { onStartListening(book.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface,
+                                contentColor = MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(listenLabel)
+                        }
                     }
                 }
                 item {
@@ -4453,19 +4694,25 @@ fun BookDetailScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerPlaceholderScreen(
     onBackClick: (() -> Unit)? = null,
     viewModel: PlayerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
     val playbackUiState by viewModel.uiState.collectAsStateWithLifecycle()
     val previewItem by viewModel.previewItem.collectAsStateWithLifecycle()
     val chapters by viewModel.chapters.collectAsStateWithLifecycle()
+    val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+    val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
     val durationSeconds = when {
+        book?.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
         playbackUiState.durationMs > 0L -> playbackUiState.durationMs / 1000.0
         else -> previewItem?.book?.durationSeconds ?: 0.0
     }
@@ -4528,6 +4775,15 @@ fun PlayerPlaceholderScreen(
     var dragDistance by remember { mutableStateOf(0f) }
     var bottomMenuExpanded by remember { mutableStateOf(false) }
     var playerInfoMessage by remember { mutableStateOf<String?>(null) }
+    var bookmarkFeedbackActive by remember { mutableStateOf(false) }
+    val bookmarkIconScale by animateFloatAsState(
+        targetValue = if (bookmarkFeedbackActive) 1.18f else 1f,
+        animationSpec = tween(durationMillis = 130),
+        label = "bookmark-icon-feedback"
+    )
+    val chapterSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    var showChapterSheet by rememberSaveable { mutableStateOf(false) }
+    var chapterSheetTab by rememberSaveable { mutableStateOf(PlayerSheetTab.Chapters) }
     val speeds = remember { listOf(0.8f, 1.0f, 1.3f, 1.5f, 1.8f, 2.0f) }
     var speedIndex by rememberSaveable { mutableStateOf(2) }
     val speedLabel = "${speeds[speedIndex]}x"
@@ -4562,13 +4818,28 @@ fun PlayerPlaceholderScreen(
     val effectiveHeightDp = (configuration.screenHeightDp.toFloat() / density.fontScale).coerceAtLeast(520f)
     val playerHorizontalPadding = (effectiveHeightDp * 0.025f).dp.coerceIn(14.dp, 20.dp)
     val playerVerticalPadding = (effectiveHeightDp * 0.015f).dp.coerceIn(8.dp, 16.dp)
-    val adaptiveLargeGap = (effectiveHeightDp * 0.05f).dp.coerceIn(26.dp, 44.dp)
+    val coverTopGap = (effectiveHeightDp * 0.03f).dp.coerceIn(16.dp, 24.dp)
+    val coverTitleGap = (effectiveHeightDp * 0.035f).dp.coerceIn(16.dp, 30.dp)
+    val titleProgressGap = coverTitleGap
     val progressMetaGap = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
     val coverTargetWidth = (effectiveHeightDp * 0.42f).dp.coerceIn(286.dp, 332.dp)
     val controlsRowPadding = (effectiveHeightDp * 0.04f).dp.coerceIn(24.dp, 38.dp)
     val bottomToolsTopPadding = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
     val bottomToolsBottomPadding = (effectiveHeightDp * 0.01f).dp.coerceIn(6.dp, 10.dp)
-    val playerTopOffset = (effectiveHeightDp * 0.01f).dp.coerceIn(4.dp, 10.dp)
+    val playerTopOffset = (effectiveHeightDp * 0.02f).dp.coerceIn(8.dp, 16.dp)
+
+    LaunchedEffect(actionMessage) {
+        val latest = actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, latest, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+
+    LaunchedEffect(bookmarkFeedbackActive) {
+        if (bookmarkFeedbackActive) {
+            delay(160L)
+            bookmarkFeedbackActive = false
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -4639,7 +4910,7 @@ fun PlayerPlaceholderScreen(
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
         )
-        Spacer(modifier = Modifier.height(playerTopOffset))
+        Spacer(modifier = Modifier.height(playerTopOffset + coverTopGap))
         if (book == null) {
             CenteredEmptyState(
                 icon = Icons.Outlined.PlayArrow,
@@ -4686,7 +4957,7 @@ fun PlayerPlaceholderScreen(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(adaptiveLargeGap))
+        Spacer(modifier = Modifier.height(coverTitleGap))
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
@@ -4695,21 +4966,54 @@ fun PlayerPlaceholderScreen(
                 text = playerTitle,
                 style = MaterialTheme.typography.titleMedium,
                 color = primaryTextColor,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Visible,
+                textAlign = TextAlign.Start,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 48.dp)
+                    .clickable {
+                        chapterSheetTab = PlayerSheetTab.Chapters
+                        showChapterSheet = true
+                    }
+                    .basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        animationMode = androidx.compose.foundation.MarqueeAnimationMode.Immediately,
+                        repeatDelayMillis = 2000,
+                        initialDelayMillis = 1200,
+                        spacing = MarqueeSpacing(48.dp)
+                    )
             )
-            Icon(
-                imageVector = Icons.Outlined.BookmarkBorder,
-                contentDescription = "Bookmark",
-                tint = secondaryTextColor,
-                modifier = Modifier.align(Alignment.CenterEnd)
-            )
+            IconButton(
+                onClick = {
+                    bookmarkFeedbackActive = true
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.addBookmark(
+                        positionSeconds = positionSeconds,
+                        title = activeChapterTitle ?: playerTitle
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .size(34.dp)
+                    .graphicsLayer {
+                        scaleX = bookmarkIconScale
+                        scaleY = bookmarkIconScale
+                    }
+            ) {
+                Icon(
+                    imageVector = if (bookmarkFeedbackActive) {
+                        Icons.Filled.Bookmark
+                    } else {
+                        Icons.Outlined.BookmarkBorder
+                    },
+                    contentDescription = "Bookmark",
+                    tint = secondaryTextColor
+                )
+            }
         }
-        Spacer(modifier = Modifier.height(adaptiveLargeGap))
+        Spacer(modifier = Modifier.height(titleProgressGap))
         PlayerProgressBar(
             progress = effectiveProgress,
             activeColor = progressActiveColor,
@@ -4748,6 +5052,10 @@ fun PlayerPlaceholderScreen(
             .coerceAtLeast(currentDisplaySeconds)
         val remainingDisplaySeconds = (chapterDisplayDurationSeconds - currentDisplaySeconds)
             .coerceAtLeast(0L)
+        val wholeBookProgressPercent = formatProgressPercentLabel(progress)
+        val wholeBookRemainingSeconds = (durationSeconds - positionSeconds)
+            .coerceAtLeast(0.0)
+            .toLong()
         val timeTextStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -4758,15 +5066,15 @@ fun PlayerPlaceholderScreen(
                 style = timeTextStyle,
                 color = secondaryTextColor,
                 textAlign = TextAlign.Start,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(0.75f),
                 maxLines = 1
             )
             Text(
-                text = "${formatDurationHoursMinutes(remainingDisplaySeconds.toDouble())} left · ${(chapterProgress * 100).toInt()}% complete",
-                style = MaterialTheme.typography.bodySmall,
+                text = "${formatHoursMinutesPrecise(wholeBookRemainingSeconds.toDouble())} left • $wholeBookProgressPercent complete",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                 color = secondaryTextColor,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1.5f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -4775,7 +5083,7 @@ fun PlayerPlaceholderScreen(
                 style = timeTextStyle,
                 color = secondaryTextColor,
                 textAlign = TextAlign.End,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(0.75f),
                 maxLines = 1
             )
         }
@@ -4903,6 +5211,400 @@ fun PlayerPlaceholderScreen(
             }
         }
         }
+
+        if (showChapterSheet && book != null) {
+            ModalBottomSheet(
+                onDismissRequest = { showChapterSheet = false },
+                sheetState = chapterSheetState,
+                dragHandle = null,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            ) {
+                PlayerChapterBookmarkSheet(
+                    book = book,
+                    chapters = chapters,
+                    bookmarks = bookmarks,
+                    selectedTab = chapterSheetTab,
+                    activeChapterIndex = activeChapterIndex,
+                    positionSeconds = positionSeconds,
+                    isPlaying = playbackUiState.isPlaying,
+                    timeLeftLabel = formatTimeLeftLabel(durationSeconds = durationSeconds, positionSeconds = positionSeconds),
+                    onSelectTab = { chapterSheetTab = it },
+                    onPlayChapter = { chapterStart ->
+                        viewModel.jumpToSeconds(chapterStart)
+                    },
+                    onPlayBookmark = { bookmarkSeconds ->
+                        viewModel.jumpToSeconds(bookmarkSeconds)
+                    }
+                )
+            }
+        }
+    }
+}
+
+private enum class PlayerSheetTab {
+    Chapters,
+    Bookmarks
+}
+
+@Composable
+private fun PlayerChapterBookmarkSheet(
+    book: BookSummary,
+    chapters: List<BookChapter>,
+    bookmarks: List<BookBookmark>,
+    selectedTab: PlayerSheetTab,
+    activeChapterIndex: Int,
+    positionSeconds: Double,
+    isPlaying: Boolean,
+    timeLeftLabel: String,
+    onSelectTab: (PlayerSheetTab) -> Unit,
+    onPlayChapter: (Double) -> Unit,
+    onPlayBookmark: (Double) -> Unit
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val statusBarTopPx = remember(context) {
+        val resourceId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resourceId > 0) {
+            context.resources.getDimensionPixelSize(resourceId).toFloat()
+        } else {
+            0f
+        }
+    }
+    val sheetHeightFraction = if (screenHeightPx > 0f) {
+        ((screenHeightPx - statusBarTopPx) / screenHeightPx).coerceIn(0.82f, 0.97f)
+    } else {
+        0.93f
+    }
+    val sheetHandleTopGap = (configuration.screenHeightDp * 0.01f).dp.coerceIn(8.dp, 14.dp)
+    val sheetHandleTitleGap = (configuration.screenHeightDp * 0.008f).dp.coerceIn(8.dp, 12.dp)
+    val sortedBookmarks = remember(bookmarks) {
+        bookmarks.sortedWith(
+            compareByDescending<BookBookmark> { it.createdAtMs ?: Long.MIN_VALUE }
+                .thenBy { it.timeSeconds ?: Double.MAX_VALUE }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(sheetHeightFraction)
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp)
+            .padding(top = sheetHandleTopGap, bottom = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(100))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+            )
+        }
+        Spacer(modifier = Modifier.height(sheetHandleTitleGap))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+            ) {
+                BookPoster(
+                    book = book,
+                    width = 48.dp,
+                    height = 48.dp,
+                    fillMaxWidth = true,
+                    shape = RoundedCornerShape(8.dp),
+                    contentScale = ContentScale.Crop
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = book.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = book.authorName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = timeLeftLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            PlayerSheetTabButton(
+                title = "Chapters",
+                selected = selectedTab == PlayerSheetTab.Chapters,
+                onClick = { onSelectTab(PlayerSheetTab.Chapters) },
+                modifier = Modifier.weight(1f)
+            )
+            PlayerSheetTabButton(
+                title = "Bookmarks",
+                selected = selectedTab == PlayerSheetTab.Bookmarks,
+                onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        when (selectedTab) {
+            PlayerSheetTab.Chapters -> {
+                if (chapters.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PlayerSheetEmptyState(
+                            icon = Icons.AutoMirrored.Outlined.ViewList,
+                            title = "This book has no chapters"
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(bottom = 12.dp)
+                    ) {
+                        itemsIndexed(chapters) { index, chapter ->
+                            val isActiveChapter = index == activeChapterIndex
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (isActiveChapter) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        } else {
+                                            Color.Transparent
+                                        }
+                                    )
+                                    .clickable { onPlayChapter(chapter.startSeconds) }
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = chapter.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = if (isActiveChapter) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                    )
+                                    Text(
+                                        text = formatChapterDurationForRow(
+                                            chapter = chapter,
+                                            index = index,
+                                            chapters = chapters,
+                                            totalDurationSeconds = book.durationSeconds
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (isActiveChapter) {
+                                    ChapterPlaybackIndicator(
+                                        isPlaying = isPlaying,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+
+            PlayerSheetTab.Bookmarks -> {
+                if (sortedBookmarks.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PlayerSheetEmptyState(
+                            icon = Icons.Outlined.BookmarkBorder,
+                            title = "No bookmarks yet",
+                            iconSize = 58.dp
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(bottom = 12.dp)
+                    ) {
+                        items(sortedBookmarks, key = { it.id }) { bookmark ->
+                            val bookmarkSeconds = bookmark.timeSeconds
+                            val isActiveBookmark = bookmarkSeconds != null &&
+                                kotlin.math.abs(bookmarkSeconds - positionSeconds) < 1.0
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (isActiveBookmark) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        } else {
+                                            Color.Transparent
+                                        }
+                                    )
+                                    .clickable(enabled = bookmarkSeconds != null) {
+                                        onPlayBookmark(bookmarkSeconds ?: 0.0)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.width(110.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = formatBookmarkDate(bookmark.createdAtMs),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        text = bookmark.timeSeconds?.let { formatSecondsAsHms(it) } ?: "--:--",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        text = formatBookmarkTime24(bookmark.createdAtMs),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (isActiveBookmark) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                    )
+                                    Text(
+                                        text = bookmark.title?.ifBlank { null } ?: "Bookmark",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (isActiveBookmark) {
+                                    ChapterPlaybackIndicator(
+                                        isPlaying = isPlaying,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerSheetTabButton(
+    title: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                } else {
+                    Color.Transparent
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun PlayerSheetEmptyState(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    iconSize: Dp = 46.dp
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(iconSize)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -5045,6 +5747,60 @@ private fun PlayerBottomToolItem(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+@Composable
+private fun BookListenProgressButton(
+    text: String,
+    progress: Float,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val buttonShape = ButtonDefaults.shape
+    val baseColor = MaterialTheme.colorScheme.onSurface
+    val contentColor = MaterialTheme.colorScheme.surface
+    val remainingColor = listenButtonRemainingColor(baseColor)
+    val clampedProgress = progress.coerceIn(0f, 1f)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .clip(buttonShape)
+            .background(remainingColor)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(clampedProgress)
+                .background(baseColor)
+        )
+        Button(
+            onClick = onClick,
+            modifier = Modifier.fillMaxSize(),
+            shape = buttonShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Transparent,
+                contentColor = contentColor
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text)
+        }
+    }
+}
+
+private fun listenButtonRemainingColor(baseColor: Color): Color {
+    return if (baseColor.luminance() < 0.5f) {
+        lerp(baseColor, Color.White, 0.22f)
+    } else {
+        lerp(baseColor, Color.Black, 0.12f)
     }
 }
 
@@ -6184,7 +6940,7 @@ private fun List<BookSummary>.filterByStatus(filter: BooksStatusFilter): List<Bo
         BooksStatusFilter.All -> this
         BooksStatusFilter.Finished -> filter { it.hasFinishedProgress() }
         BooksStatusFilter.InProgress -> filter { it.hasStartedProgress() && !it.hasFinishedProgress() }
-        BooksStatusFilter.NotStarted -> filter { !it.hasStartedProgress() }
+        BooksStatusFilter.NotStarted -> filter { !it.hasStartedProgress() && !it.hasFinishedProgress() }
         BooksStatusFilter.NotFinished -> filter { !it.hasFinishedProgress() }
     }
 }
@@ -6204,6 +6960,7 @@ private fun sortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {
 }
 
 private fun BookSummary.hasStartedProgress(): Boolean {
+    if (hasFinishedProgress()) return true
     val normalized = normalizedProgressPercent()
     return normalized != null && normalized > 0.001
 }
@@ -6267,6 +7024,49 @@ private fun formatDurationHoursMinutes(durationSeconds: Double?): String {
     } else {
         "${max(minutes, 1)}m"
     }
+}
+
+private fun formatHoursMinutesPrecise(durationSeconds: Double?): String {
+    val totalSeconds = durationSeconds?.coerceAtLeast(0.0) ?: 0.0
+    val totalMinutes = (totalSeconds / 60.0).toLong()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return "${hours}h ${minutes}m"
+}
+
+private fun formatProgressPercentLabel(progressFraction: Float): String {
+    val percent = (progressFraction.coerceIn(0f, 1f) * 100f).toDouble()
+    return if (percent < 1.0) {
+        String.format(Locale.getDefault(), "%.1f%%", percent)
+    } else {
+        "${percent.toInt().coerceIn(0, 100)}%"
+    }
+}
+
+private fun formatTimeLeftLabel(durationSeconds: Double, positionSeconds: Double): String {
+    val remainingSeconds = (durationSeconds - positionSeconds).coerceAtLeast(0.0)
+    val readable = formatDurationHoursMinutes(remainingSeconds)
+    return if (readable.isBlank()) "0m left" else "$readable left"
+}
+
+private fun formatBookmarkDate(createdAtMs: Long?): String {
+    val timestamp = createdAtMs ?: return "Unknown date"
+    val formatter = DateTimeFormatter.ofPattern("M/d/yyyy", Locale.getDefault())
+    return runCatching {
+        Instant.ofEpochMilli(timestamp)
+            .atZone(ZoneId.systemDefault())
+            .format(formatter)
+    }.getOrDefault("Unknown date")
+}
+
+private fun formatBookmarkTime24(createdAtMs: Long?): String {
+    val timestamp = createdAtMs ?: return "--:--"
+    val formatter = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())
+    return runCatching {
+        Instant.ofEpochMilli(timestamp)
+            .atZone(ZoneId.systemDefault())
+            .format(formatter)
+    }.getOrDefault("--:--")
 }
 
 private fun formatTimeLeft(item: ContinueListeningItem): String {

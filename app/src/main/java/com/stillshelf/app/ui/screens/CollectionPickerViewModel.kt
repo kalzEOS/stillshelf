@@ -28,11 +28,16 @@ data class CollectionPickerUiState(
 class CollectionPickerViewModel @Inject constructor(
     private val sessionRepository: SessionRepository
 ) : ViewModel() {
-    private val mutableUiState = MutableStateFlow(CollectionPickerUiState())
+    private val mutableUiState = MutableStateFlow(
+        CollectionPickerUiState(
+            collections = CollectionPickerMemoryCache.collectionsSnapshot(),
+            playlists = CollectionPickerMemoryCache.playlistsSnapshot()
+        )
+    )
     val uiState: StateFlow<CollectionPickerUiState> = mutableUiState.asStateFlow()
 
     fun loadDestinations(
-        forceRefresh: Boolean = true,
+        forceRefresh: Boolean = false,
         showLoader: Boolean = true
     ) {
         if (mutableUiState.value.isLoading) return
@@ -75,6 +80,10 @@ class CollectionPickerViewModel @Inject constructor(
                     errorMessage = errorParts.takeIf { parts -> parts.isNotEmpty() }?.joinToString("  ")
                 )
             }
+            CollectionPickerMemoryCache.update(
+                collections = nextCollections,
+                playlists = nextPlaylists
+            )
         }
     }
 
@@ -284,5 +293,25 @@ class CollectionPickerViewModel @Inject constructor(
             it.id == added.id || it.name.equals(added.name, ignoreCase = true)
         }
         return listOf(added) + filtered
+    }
+}
+
+private object CollectionPickerMemoryCache {
+    private var collections: List<NamedEntitySummary> = emptyList()
+    private var playlists: List<NamedEntitySummary> = emptyList()
+
+    @Synchronized
+    fun collectionsSnapshot(): List<NamedEntitySummary> = collections
+
+    @Synchronized
+    fun playlistsSnapshot(): List<NamedEntitySummary> = playlists
+
+    @Synchronized
+    fun update(
+        collections: List<NamedEntitySummary>,
+        playlists: List<NamedEntitySummary>
+    ) {
+        this.collections = collections
+        this.playlists = playlists
     }
 }

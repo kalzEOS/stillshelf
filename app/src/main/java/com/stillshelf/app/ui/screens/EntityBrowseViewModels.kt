@@ -35,6 +35,7 @@ data class SeriesBrowseUiState(
 data class CollectionsBrowseUiState(
     val isLoading: Boolean = false,
     val entities: List<NamedEntitySummary> = emptyList(),
+    val coverStackByCollectionId: Map<String, List<String>> = emptyMap(),
     val errorMessage: String? = null,
     val actionMessage: String? = null
 )
@@ -202,6 +203,7 @@ class CollectionsBrowseViewModel @Inject constructor(
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(CollectionsBrowseUiState())
     val uiState: StateFlow<CollectionsBrowseUiState> = mutableUiState.asStateFlow()
+    private val inFlightCoverLoads = mutableSetOf<String>()
 
     init {
         refresh(forceRefresh = false)
@@ -209,6 +211,12 @@ class CollectionsBrowseViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun refreshLibrary() {
+        EntityCoverStackMemoryCache.clearCollections()
+        mutableUiState.update { it.copy(coverStackByCollectionId = emptyMap()) }
+        refresh(forceRefresh = true, reloadAllCoverStacks = true)
     }
 
     fun createCollection(name: String) {
@@ -257,19 +265,38 @@ class CollectionsBrowseViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    private fun refresh(forceRefresh: Boolean, reloadAllCoverStacks: Boolean = false) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
             when (val result = sessionRepository.fetchCollectionsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val previousState = uiState.value
                     val filtered = result.value.filterNot { isStillShelfProbeCollection(it.name) }
+                    val visibleIds = filtered.map { it.id }.toSet()
+                    val cachedStacks = EntityCoverStackMemoryCache.collectionsForIds(visibleIds)
+                    val retainedStacks = previousState.coverStackByCollectionId.filterKeys { id ->
+                        visibleIds.contains(id)
+                    }
+                    val mergedStacks = retainedStacks + cachedStacks
+                    val previousById = previousState.entities.associateBy { it.id }
+                    val collectionsToReload = filtered.filter { collection ->
+                        val previous = previousById[collection.id]
+                        val hasCoverStack = mergedStacks.containsKey(collection.id)
+                        reloadAllCoverStacks ||
+                            !hasCoverStack ||
+                            (previous != null && previous.subtitle != collection.subtitle)
+                    }
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            entities = filtered
+                            entities = filtered,
+                            coverStackByCollectionId = mergedStacks
                         )
+                    }
+                    if (collectionsToReload.isNotEmpty()) {
+                        loadCollectionCoverStacks(collections = collectionsToReload, forceRefresh = forceRefresh)
                     }
                 }
 
@@ -284,6 +311,58 @@ class CollectionsBrowseViewModel @Inject constructor(
             }
         }
     }
+
+    private fun loadCollectionCoverStacks(
+        collections: List<NamedEntitySummary>,
+        forceRefresh: Boolean
+    ) {
+        collections.forEach { collection ->
+            if (!inFlightCoverLoads.add(collection.id)) return@forEach
+
+            viewModelScope.launch {
+                try {
+                    val covers = when (
+                        val result = sessionRepository.fetchCollectionBooks(
+                            collectionId = collection.id,
+                            forceRefresh = forceRefresh
+                        )
+                    ) {
+                        is AppResult.Success -> result.value
+                            .mapNotNull { it.coverUrl?.trim() }
+                            .filter { it.isNotEmpty() }
+                            .distinct()
+                            .take(3)
+
+                        is AppResult.Error -> emptyList()
+                    }
+
+                    mutableUiState.update { state ->
+                        if (state.entities.none { it.id == collection.id }) {
+                            state
+                        } else {
+                            val current = state.coverStackByCollectionId[collection.id].orEmpty()
+                            if (current == covers) {
+                                state
+                            } else {
+                                val updatedStacks = if (covers.isEmpty()) {
+                                    state.coverStackByCollectionId - collection.id
+                                } else {
+                                    state.coverStackByCollectionId + (collection.id to covers)
+                                }
+                                EntityCoverStackMemoryCache.updateCollection(
+                                    collectionId = collection.id,
+                                    covers = covers
+                                )
+                                state.copy(coverStackByCollectionId = updatedStacks)
+                            }
+                        }
+                    }
+                } finally {
+                    inFlightCoverLoads.remove(collection.id)
+                }
+            }
+        }
+    }
 }
 
 @HiltViewModel
@@ -292,6 +371,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(CollectionsBrowseUiState())
     val uiState: StateFlow<CollectionsBrowseUiState> = mutableUiState.asStateFlow()
+    private val inFlightCoverLoads = mutableSetOf<String>()
 
     init {
         refresh(forceRefresh = false)
@@ -299,6 +379,12 @@ class PlaylistsBrowseViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun refreshLibrary() {
+        EntityCoverStackMemoryCache.clearPlaylists()
+        mutableUiState.update { it.copy(coverStackByCollectionId = emptyMap()) }
+        refresh(forceRefresh = true, reloadAllCoverStacks = true)
     }
 
     fun createPlaylist(name: String) {
@@ -347,18 +433,37 @@ class PlaylistsBrowseViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    private fun refresh(forceRefresh: Boolean, reloadAllCoverStacks: Boolean = false) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
             when (val result = sessionRepository.fetchPlaylistsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val previousState = uiState.value
+                    val visibleIds = result.value.map { it.id }.toSet()
+                    val cachedStacks = EntityCoverStackMemoryCache.playlistsForIds(visibleIds)
+                    val retainedStacks = previousState.coverStackByCollectionId.filterKeys { id ->
+                        visibleIds.contains(id)
+                    }
+                    val mergedStacks = retainedStacks + cachedStacks
+                    val previousById = previousState.entities.associateBy { it.id }
+                    val playlistsToReload = result.value.filter { playlist ->
+                        val previous = previousById[playlist.id]
+                        val hasCoverStack = mergedStacks.containsKey(playlist.id)
+                        reloadAllCoverStacks ||
+                            !hasCoverStack ||
+                            (previous != null && previous.subtitle != playlist.subtitle)
+                    }
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            entities = result.value
+                            entities = result.value,
+                            coverStackByCollectionId = mergedStacks
                         )
+                    }
+                    if (playlistsToReload.isNotEmpty()) {
+                        loadPlaylistCoverStacks(playlists = playlistsToReload, forceRefresh = forceRefresh)
                     }
                 }
 
@@ -372,6 +477,105 @@ class PlaylistsBrowseViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun loadPlaylistCoverStacks(
+        playlists: List<NamedEntitySummary>,
+        forceRefresh: Boolean
+    ) {
+        playlists.forEach { playlist ->
+            if (!inFlightCoverLoads.add(playlist.id)) return@forEach
+
+            viewModelScope.launch {
+                try {
+                    val covers = when (
+                        val result = sessionRepository.fetchPlaylistBooks(
+                            playlistId = playlist.id,
+                            forceRefresh = forceRefresh
+                        )
+                    ) {
+                        is AppResult.Success -> result.value
+                            .mapNotNull { it.coverUrl?.trim() }
+                            .filter { it.isNotEmpty() }
+                            .distinct()
+                            .take(3)
+
+                        is AppResult.Error -> emptyList()
+                    }
+
+                    mutableUiState.update { state ->
+                        if (state.entities.none { it.id == playlist.id }) {
+                            state
+                        } else {
+                            val current = state.coverStackByCollectionId[playlist.id].orEmpty()
+                            if (current == covers) {
+                                state
+                            } else {
+                                val updatedStacks = if (covers.isEmpty()) {
+                                    state.coverStackByCollectionId - playlist.id
+                                } else {
+                                    state.coverStackByCollectionId + (playlist.id to covers)
+                                }
+                                EntityCoverStackMemoryCache.updatePlaylist(
+                                    playlistId = playlist.id,
+                                    covers = covers
+                                )
+                                state.copy(coverStackByCollectionId = updatedStacks)
+                            }
+                        }
+                    }
+                } finally {
+                    inFlightCoverLoads.remove(playlist.id)
+                }
+            }
+        }
+    }
+}
+
+private object EntityCoverStackMemoryCache {
+    private val collectionStacks = mutableMapOf<String, List<String>>()
+    private val playlistStacks = mutableMapOf<String, List<String>>()
+
+    @Synchronized
+    fun collectionsForIds(ids: Set<String>): Map<String, List<String>> {
+        val stacks = LinkedHashMap<String, List<String>>(ids.size)
+        ids.forEach { id -> collectionStacks[id]?.let { stacks[id] = it } }
+        return stacks
+    }
+
+    @Synchronized
+    fun playlistsForIds(ids: Set<String>): Map<String, List<String>> {
+        val stacks = LinkedHashMap<String, List<String>>(ids.size)
+        ids.forEach { id -> playlistStacks[id]?.let { stacks[id] = it } }
+        return stacks
+    }
+
+    @Synchronized
+    fun updateCollection(collectionId: String, covers: List<String>) {
+        if (covers.isEmpty()) {
+            collectionStacks.remove(collectionId)
+        } else {
+            collectionStacks[collectionId] = covers
+        }
+    }
+
+    @Synchronized
+    fun updatePlaylist(playlistId: String, covers: List<String>) {
+        if (covers.isEmpty()) {
+            playlistStacks.remove(playlistId)
+        } else {
+            playlistStacks[playlistId] = covers
+        }
+    }
+
+    @Synchronized
+    fun clearCollections() {
+        collectionStacks.clear()
+    }
+
+    @Synchronized
+    fun clearPlaylists() {
+        playlistStacks.clear()
     }
 }
 

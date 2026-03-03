@@ -209,6 +209,8 @@ class BooksBrowseViewModel @Inject constructor(
 
         when (
             val result = sessionRepository.fetchBooksForActiveLibrary(
+                limit = 400,
+                page = 0,
                 forceRefresh = isUserRefresh
             )
         ) {

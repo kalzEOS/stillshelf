@@ -3,7 +3,6 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -37,7 +36,6 @@ class BookDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
     private val playbackController: PlaybackController,
-    private val sessionPreferences: SessionPreferences,
     private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private val bookId: String = savedStateHandle.get<String>(DetailRoute.BOOK_ID_ARG).orEmpty()
@@ -138,9 +136,6 @@ class BookDetailViewModel @Inject constructor(
 
     fun setSelectedTab(tab: String) {
         mutableUiState.update { it.copy(selectedTab = tab) }
-        viewModelScope.launch {
-            sessionPreferences.setLastBookDetailTab(tab)
-        }
     }
 
     fun clearActionMessage() {
@@ -169,13 +164,6 @@ class BookDetailViewModel @Inject constructor(
                         downloadedBookIds = downloadedIds,
                         downloadProgressPercent = progressPercent
                     )
-                }
-            }
-        }
-        viewModelScope.launch {
-            sessionPreferences.state.collect { pref ->
-                mutableUiState.update {
-                    it.copy(selectedTab = pref.lastBookDetailTab.ifBlank { "About" })
                 }
             }
         }

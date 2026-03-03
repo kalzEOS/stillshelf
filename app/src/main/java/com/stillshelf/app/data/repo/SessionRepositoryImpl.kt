@@ -25,6 +25,7 @@ import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.api.AudiobookshelfApi
 import com.stillshelf.app.data.api.AudiobookshelfLibraryDto
 import com.stillshelf.app.data.api.AudiobookshelfLibraryItemDto
+import com.stillshelf.app.data.api.AudiobookshelfMediaProgressDto
 import com.stillshelf.app.data.api.AudiobookshelfBookDetailDto
 import com.stillshelf.app.data.api.AudiobookshelfBookmarkDto
 import com.stillshelf.app.data.api.AudiobookshelfNamedEntityDto
@@ -363,11 +364,22 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
-        val books = itemsResult.getOrThrow().map { item ->
+        val items = itemsResult.getOrThrow()
+        val mediaProgressByItemId = if (items.isEmpty()) {
+            emptyMap()
+        } else {
+            audiobookshelfApi.getMediaProgress(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token
+            ).getOrNull()
+                ?.associateBy { it.libraryItemId }
+                .orEmpty()
+        }
+        val books = items.map { item ->
             item.toBookSummary(
                 baseUrl = connection.server.baseUrl,
                 authToken = connection.token
-            )
+            ).withResolvedProgress(mediaProgressByItemId[item.id])
         }
         putCache(booksCache, cacheKey, books)
 
@@ -1383,6 +1395,40 @@ class SessionRepositoryImpl @Inject constructor(
         return AppResult.Success(Unit)
     }
 
+    override suspend fun createBookmark(
+        bookId: String,
+        timeSeconds: Double,
+        title: String?
+    ): AppResult<Unit> {
+        if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+
+        val createResult = audiobookshelfApi.createBookmark(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            itemId = bookId,
+            timeSeconds = timeSeconds.coerceAtLeast(0.0),
+            title = title
+        )
+        if (createResult.isFailure) {
+            return AppResult.Error(
+                message = createResult.exceptionOrNull()?.message ?: "Unable to add bookmark.",
+                cause = createResult.exceptionOrNull()
+            )
+        }
+
+        clearBookDetailCache(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            bookId = bookId
+        )
+        return AppResult.Success(Unit)
+    }
+
     override suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit> {
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
@@ -2126,6 +2172,17 @@ class SessionRepositoryImpl @Inject constructor(
         bookDetailCache.clear()
     }
 
+    private suspend fun clearBookDetailCache(
+        serverId: String,
+        libraryId: String,
+        bookId: String
+    ) {
+        val key = contentCacheKey(serverId, libraryId, suffix = "bookDetail:$bookId")
+        cacheMutex.withLock {
+            bookDetailCache.remove(key)
+        }
+    }
+
     private fun normalizeAuthorKey(name: String): String = name.trim().lowercase()
     private fun normalizeSeriesKey(name: String): String = name.trim().lowercase()
 
@@ -2322,6 +2379,27 @@ class SessionRepositoryImpl @Inject constructor(
         )
     }
 
+    private fun BookSummary.withResolvedProgress(
+        progress: AudiobookshelfMediaProgressDto?
+    ): BookSummary {
+        progress ?: return this
+        val mergedCurrentTimeSeconds = progress.currentTimeSeconds?.coerceAtLeast(0.0) ?: currentTimeSeconds
+        val progressFromApi = progress.progressPercent?.coerceIn(0.0, 1.0)
+        val mergedDurationSeconds = progress.durationSeconds?.takeIf { it > 0.0 } ?: durationSeconds
+        val derivedProgress = if (progressFromApi == null && mergedCurrentTimeSeconds != null && mergedDurationSeconds != null && mergedDurationSeconds > 0.0) {
+            (mergedCurrentTimeSeconds / mergedDurationSeconds).coerceIn(0.0, 1.0)
+        } else {
+            null
+        }
+        val mergedProgressPercent = progressFromApi ?: derivedProgress ?: progressPercent
+        val finishedFromProgress = (mergedProgressPercent ?: 0.0) >= 0.995
+        return copy(
+            progressPercent = mergedProgressPercent,
+            currentTimeSeconds = mergedCurrentTimeSeconds,
+            isFinished = isFinished || finishedFromProgress
+        )
+    }
+
     private fun AudiobookshelfNamedEntityDto.toModel(
         baseUrl: String,
         authToken: String,
@@ -2399,7 +2477,8 @@ class SessionRepositoryImpl @Inject constructor(
             id = id,
             libraryItemId = libraryItemId,
             title = title,
-            timeSeconds = timeSeconds
+            timeSeconds = timeSeconds,
+            createdAtMs = createdAtMs
         )
     }
 }

@@ -55,7 +55,8 @@ data class BookBookmark(
     val id: String,
     val libraryItemId: String,
     val title: String?,
-    val timeSeconds: Double?
+    val timeSeconds: Double?,
+    val createdAtMs: Long? = null
 )
 
 data class BookDetail(

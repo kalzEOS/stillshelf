@@ -1,6 +1,7 @@
 package com.stillshelf.app.data.api
 
 import java.io.IOException
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.stillshelf.app.core.network.addAuthTokenFragment
@@ -76,7 +77,8 @@ data class AudiobookshelfBookmarkDto(
     val id: String,
     val libraryItemId: String,
     val title: String?,
-    val timeSeconds: Double?
+    val timeSeconds: Double?,
+    val createdAtMs: Long?
 )
 
 data class AudiobookshelfBookDetailDto(
@@ -441,6 +443,97 @@ class AudiobookshelfApi @Inject constructor(
     ): Result<List<AudiobookshelfBookmarkDto>> = withContext(Dispatchers.IO) {
         runCatching {
             parseBookmarks(requestMePayload(baseUrl, authToken))
+        }
+    }
+
+    suspend fun createBookmark(
+        baseUrl: String,
+        authToken: String,
+        itemId: String,
+        timeSeconds: Double,
+        title: String?
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val normalizedItemId = itemId.trim()
+        val normalizedTime = timeSeconds.coerceAtLeast(0.0)
+        val normalizedTitle = title?.trim().takeUnless { it.isNullOrBlank() }
+        val verifyStartedAtMs = System.currentTimeMillis()
+        val requestBodies = buildList {
+            add(JSONObject().put("time", normalizedTime))
+            add(JSONObject().put("timeSeconds", normalizedTime))
+            add(JSONObject().put("currentTime", normalizedTime))
+            add(JSONObject().put("position", normalizedTime))
+        }.flatMap { baseBody ->
+            buildList {
+                add(baseBody)
+                if (!normalizedTitle.isNullOrBlank()) {
+                    add(JSONObject(baseBody.toString()).put("title", normalizedTitle))
+                    add(JSONObject(baseBody.toString()).put("note", normalizedTitle))
+                }
+            }
+        }.distinctBy { it.toString() }
+
+        val requestBuilders = buildList {
+            listOf(
+                "api/me/item/$itemId/bookmark",
+                "api/me/items/$itemId/bookmark",
+                "api/items/$itemId/bookmark",
+                "api/me/bookmarks",
+                "api/bookmarks"
+            ).forEach { path ->
+                requestBodies.forEach { body ->
+                    add(
+                        Request.Builder()
+                            .url(buildUrl(baseUrl, path))
+                            .header("Authorization", authHeaderValue(authToken))
+                            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+                            .build()
+                    )
+                }
+            }
+        }
+
+        runCatching {
+            invalidateMePayloadCache()
+            val baselineForItemCount = getBookmarks(baseUrl, authToken)
+                .getOrNull()
+                ?.count { bookmark ->
+                    bookmark.libraryItemId.matchesLibraryItemId(normalizedItemId)
+                }
+                ?: 0
+            var lastError: Throwable? = null
+            requestBuilders.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) {
+                    invalidateMePayloadCache()
+                    val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull()
+                    val bookmarksForItem = latestBookmarks
+                        ?.filter { bookmark -> bookmark.libraryItemId.matchesLibraryItemId(normalizedItemId) }
+                        .orEmpty()
+                    val verified = when {
+                        bookmarksForItem.size > baselineForItemCount -> true
+                        else -> {
+                            bookmarksForItem.any { bookmark ->
+                                val timeMatches = bookmark.timeSeconds?.let { bookmarkTime ->
+                                    kotlin.math.abs(bookmarkTime - normalizedTime) <= BOOKMARK_VERIFY_TIME_TOLERANCE_SECONDS
+                                } ?: false
+                                val titleMatches = !normalizedTitle.isNullOrBlank() &&
+                                    bookmark.title?.trim()?.equals(normalizedTitle, ignoreCase = true) == true
+                                val recentEnough = bookmark.createdAtMs?.let { createdAt ->
+                                    createdAt >= (verifyStartedAtMs - BOOKMARK_VERIFY_RECENT_GRACE_MS)
+                                } ?: true
+                                recentEnough && (timeMatches || titleMatches)
+                            }
+                        }
+                    }
+                    if (verified) {
+                        return@runCatching Unit
+                    }
+                    lastError = IOException("Bookmark create verification failed.")
+                    return@forEach
+                }
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to add bookmark.", lastError)
         }
     }
 
@@ -1990,11 +2083,49 @@ class AudiobookshelfApi @Inject constructor(
                             ?: item.optDoubleOrNull("timeSeconds")
                             ?: item.optDoubleOrNull("startTime")
                             ?: item.optDoubleOrNull("position")
-                            ?: item.optDoubleOrNull("currentTime")
+                            ?: item.optDoubleOrNull("currentTime"),
+                        createdAtMs = item.optEpochMillis(
+                            "createdAt",
+                            "createdAtMs",
+                            "addedAt",
+                            "addedAtMs",
+                            "updatedAt",
+                            "updatedAtMs",
+                            "timestamp",
+                            "date"
+                        )
                     )
                 )
             }
         }
+    }
+
+    private fun JSONObject.optEpochMillis(vararg keys: String): Long? {
+        keys.forEach { key ->
+            if (!has(key) || isNull(key)) return@forEach
+            val raw = opt(key) ?: return@forEach
+            when (raw) {
+                is Number -> return normalizeEpochMillis(raw.toLong())
+                is String -> {
+                    val trimmed = raw.trim()
+                    if (trimmed.isBlank()) return@forEach
+                    trimmed.toLongOrNull()?.let { epoch -> return normalizeEpochMillis(epoch) }
+                    runCatching { Instant.parse(trimmed).toEpochMilli() }.getOrNull()?.let { epoch ->
+                        return normalizeEpochMillis(epoch)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun String.matchesLibraryItemId(targetItemId: String): Boolean {
+        val normalizedSource = this.trim()
+        val normalizedTarget = targetItemId.trim()
+        if (normalizedSource.isBlank() || normalizedTarget.isBlank()) return false
+        return normalizedSource.equals(normalizedTarget, ignoreCase = true) ||
+            normalizedSource.endsWith(normalizedTarget, ignoreCase = true) ||
+            normalizedTarget.endsWith(normalizedSource, ignoreCase = true)
     }
 
     private suspend fun requestMePayload(
@@ -2033,6 +2164,15 @@ class AudiobookshelfApi @Inject constructor(
                 payload
             }
         }.getOrThrow()
+    }
+
+    private suspend fun invalidateMePayloadCache() {
+        mePayloadMutex.withLock {
+            cachedMePayload = null
+            cachedMePayloadAtMs = 0L
+            cachedMePayloadBaseUrl = null
+            cachedMePayloadToken = null
+        }
     }
 
     private fun parseNamedEntities(
@@ -2573,6 +2713,8 @@ class AudiobookshelfApi @Inject constructor(
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val MAX_429_RETRIES = 3
         const val ME_CACHE_TTL_MS = 2_500L
+        const val BOOKMARK_VERIFY_TIME_TOLERANCE_SECONDS = 2.5
+        const val BOOKMARK_VERIFY_RECENT_GRACE_MS = 8_000L
     }
 }
 

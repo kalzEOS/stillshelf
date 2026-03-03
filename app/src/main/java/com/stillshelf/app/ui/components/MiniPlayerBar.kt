@@ -1,5 +1,8 @@
 package com.stillshelf.app.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.MarqueeSpacing
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
@@ -33,11 +36,11 @@ import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import kotlin.math.max
 import kotlin.math.cos
 import kotlin.math.sin
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayerBar(
     state: MiniPlayerUiState,
@@ -47,7 +50,7 @@ fun MiniPlayerBar(
     modifier: Modifier = Modifier
 ) {
     val item = state.item
-    val title = item?.book?.title ?: "Nothing playing"
+    val title = state.displayTitle.ifBlank { item?.book?.title ?: "Nothing playing" }
     val subtitle = when {
         state.isLoading -> "Loading playback..."
         item != null -> formatMiniPlayerSubtitle(item)
@@ -98,7 +101,15 @@ fun MiniPlayerBar(
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                    modifier = Modifier.basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        animationMode = androidx.compose.foundation.MarqueeAnimationMode.Immediately,
+                        repeatDelayMillis = 2000,
+                        initialDelayMillis = 1200,
+                        spacing = MarqueeSpacing(36.dp)
+                    )
                 )
                 Text(
                     text = subtitle,
@@ -198,11 +209,29 @@ private fun MiniSeek15Glyph(
 }
 
 private fun formatMiniPlayerSubtitle(item: com.stillshelf.app.core.model.ContinueListeningItem): String {
-    val author = item.book.authorName
-    val duration = item.book.durationSeconds
+    val duration = item.book.durationSeconds?.takeIf { it > 0.0 }
+        ?: run {
+            val progress = item.progressPercent?.coerceIn(0.0, 1.0)
+            val current = item.currentTimeSeconds?.coerceAtLeast(0.0)
+            if (progress != null && current != null && progress > 0.0) {
+                (current / progress).takeIf { it.isFinite() && it > 0.0 }
+            } else {
+                null
+            }
+        }
     val progress = item.progressPercent
     val currentTime = item.currentTimeSeconds
-    if (duration == null || duration <= 0.0) return author
+    if (duration == null || duration <= 0.0) {
+        val fallbackPercent = progress
+            ?.coerceIn(0.0, 1.0)
+            ?.let { (it * 100.0).toInt() }
+            ?: 0
+        return if (fallbackPercent > 0) {
+            "In progress • $fallbackPercent% complete"
+        } else {
+            "0h 0m left • 0% complete"
+        }
+    }
 
     val percent = when {
         progress != null -> (progress.coerceIn(0.0, 1.0) * 100.0).toInt()
@@ -216,16 +245,13 @@ private fun formatMiniPlayerSubtitle(item: com.stillshelf.app.core.model.Continu
         else -> duration
     }.coerceAtLeast(0.0)
 
-    return "$author · $percent% · ${formatDuration(remainingSeconds)} left"
+    return "${formatHoursMinutesPrecise(remainingSeconds)} left • $percent% complete"
 }
 
-private fun formatDuration(seconds: Double): String {
-    val totalSeconds = seconds.toLong()
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    return if (hours > 0) {
-        "${hours}h ${minutes}m"
-    } else {
-        "${max(minutes, 1)}m"
-    }
+private fun formatHoursMinutesPrecise(durationSeconds: Double): String {
+    if (durationSeconds <= 0.0) return "0h 0m"
+    val totalMinutes = (durationSeconds / 60.0).toLong()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return "${hours}h ${minutes}m"
 }

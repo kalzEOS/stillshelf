@@ -196,6 +196,46 @@ class AuthorDetailViewModel @Inject constructor(
         refresh(forceRefresh = true)
     }
 
+    fun markAsFinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val book = uiState.value.books.firstOrNull { it.id == bookId }
+            if (book == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
     private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
@@ -496,21 +536,30 @@ private fun normalizeAuthorName(raw: String): String {
 private fun List<BookSummary>.applySeriesStatusFilter(filter: BooksStatusFilter): List<BookSummary> {
     return when (filter) {
         BooksStatusFilter.All -> this
-        BooksStatusFilter.Finished -> filter { book ->
-            book.isFinished || (book.progressPercent ?: 0.0) >= 0.999
-        }
-        BooksStatusFilter.InProgress -> filter { book ->
-            val progress = (book.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
-            !book.isFinished && progress > 0.001 && progress < 0.999
-        }
-        BooksStatusFilter.NotStarted -> filter { book ->
-            val progress = (book.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
-            !book.isFinished && progress <= 0.001
-        }
-        BooksStatusFilter.NotFinished -> filter { book ->
-            !book.isFinished
-        }
+        BooksStatusFilter.Finished -> filter { it.hasFinishedStatusProgress() }
+        BooksStatusFilter.InProgress -> filter { it.hasStartedStatusProgress() && !it.hasFinishedStatusProgress() }
+        BooksStatusFilter.NotStarted -> filter { !it.hasStartedStatusProgress() && !it.hasFinishedStatusProgress() }
+        BooksStatusFilter.NotFinished -> filter { !it.hasFinishedStatusProgress() }
     }
+}
+
+private fun BookSummary.hasStartedStatusProgress(): Boolean {
+    if (hasFinishedStatusProgress()) return true
+    val normalized = normalizedStatusProgressPercent()
+    return normalized != null && normalized > 0.001
+}
+
+private fun BookSummary.hasFinishedStatusProgress(): Boolean {
+    val normalized = normalizedStatusProgressPercent()
+    return isFinished || (normalized != null && normalized >= 0.995)
+}
+
+private fun BookSummary.normalizedStatusProgressPercent(): Double? {
+    progressPercent?.coerceIn(0.0, 1.0)?.let { return it }
+    val duration = durationSeconds ?: return null
+    if (duration <= 0.0) return null
+    val current = currentTimeSeconds ?: return null
+    return (current / duration).coerceIn(0.0, 1.0)
 }
 
 private fun buildAuthorDisplayEntries(
@@ -724,11 +773,36 @@ fun AuthorDetailScreen(
     onBookClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: AuthorDetailViewModel = hiltViewModel()
+    viewModel: AuthorDetailViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val layoutMode by viewModel.layoutMode.collectAsStateWithLifecycle()
     val collapseSeries by viewModel.collapseSeries.collectAsStateWithLifecycle()
+    var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(addToListBookId) {
+        if (!addToListBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
 
     val displayBooks = remember(uiState.books) { uiState.books.sortedBy { it.title.lowercase() } }
     val displayEntries = remember(displayBooks, collapseSeries) {
@@ -803,7 +877,10 @@ fun AuthorDetailScreen(
                                     book = entry.book,
                                     isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
                                     downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
-                                    onClick = { onBookClick(entry.book.id) }
+                                    onClick = { onBookClick(entry.book.id) },
+                                    onAddToCollection = { addToListBookId = entry.book.id },
+                                    onMarkAsFinished = { viewModel.markAsFinished(entry.book.id) },
+                                    onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
 
@@ -881,7 +958,10 @@ fun AuthorDetailScreen(
                                     book = entry.book,
                                     isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
                                     downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
-                                    onClick = { onBookClick(entry.book.id) }
+                                    onClick = { onBookClick(entry.book.id) },
+                                    onAddToCollection = { addToListBookId = entry.book.id },
+                                    onMarkAsFinished = { viewModel.markAsFinished(entry.book.id) },
+                                    onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
 
@@ -898,6 +978,41 @@ fun AuthorDetailScreen(
                 }
             }
         }
+    }
+
+    val targetBookId = addToListBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                addToListBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
     }
 }
 
@@ -1087,9 +1202,14 @@ private fun AuthorGridBookItem(
     book: BookSummary,
     isDownloaded: Boolean,
     downloadProgressPercent: Int?,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onAddToCollection: () -> Unit,
+    onMarkAsFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Column(
         modifier = Modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1144,16 +1264,25 @@ private fun AuthorGridBookItem(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Download") },
-                        onClick = { menuExpanded = false }
+                        text = { Text(downloadLabel) },
+                        onClick = {
+                            menuExpanded = false
+                            onToggleDownload()
+                        }
                     )
                     DropdownMenuItem(
                         text = { Text("Mark as Finished") },
-                        onClick = { menuExpanded = false }
+                        onClick = {
+                            menuExpanded = false
+                            onMarkAsFinished()
+                        }
                     )
                     DropdownMenuItem(
                         text = { Text("Add to Collection") },
-                        onClick = { menuExpanded = false }
+                        onClick = {
+                            menuExpanded = false
+                            onAddToCollection()
+                        }
                     )
                 }
             }
@@ -1238,8 +1367,14 @@ private fun AuthorBookRow(
     book: BookSummary,
     isDownloaded: Boolean,
     downloadProgressPercent: Int?,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onAddToCollection: () -> Unit,
+    onMarkAsFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1295,11 +1430,44 @@ private fun AuthorBookRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                imageVector = Icons.Outlined.MoreHoriz,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Book actions",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        onClick = {
+                            menuExpanded = false
+                            onToggleDownload()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as Finished") },
+                        onClick = {
+                            menuExpanded = false
+                            onMarkAsFinished()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to Collection") },
+                        onClick = {
+                            menuExpanded = false
+                            onAddToCollection()
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1712,10 +1880,12 @@ class CollectionDetailViewModel @Inject constructor(
 ) : ViewModel() {
     private val collectionId = savedStateHandle.get<String>(DetailRoute.COLLECTION_ID_ARG).orEmpty()
     private val collectionName = savedStateHandle.get<String>(DetailRoute.COLLECTION_NAME_ARG).orEmpty()
+    private val initialBooks = FacetBooksMemoryCache.collectionBooks(collectionId)
     private val mutableUiState = MutableStateFlow(
         FacetBooksUiState(
-            isLoading = true,
-            title = collectionName.ifBlank { "Collection" }
+            isLoading = initialBooks.isEmpty(),
+            title = collectionName.ifBlank { "Collection" },
+            books = initialBooks
         )
     )
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
@@ -1726,7 +1896,7 @@ class CollectionDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().collectionDetailListMode
         }
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
     fun setListMode(value: Boolean) {
@@ -1737,7 +1907,7 @@ class CollectionDetailViewModel @Inject constructor(
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, showLoader = true)
     }
 
     fun removeBook(bookId: String) {
@@ -1751,8 +1921,10 @@ class CollectionDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     mutableUiState.update {
+                        val updatedBooks = it.books.filterNot { book -> book.id == bookId }
+                        FacetBooksMemoryCache.updateCollectionBooks(collectionId, updatedBooks)
                         it.copy(
-                            books = it.books.filterNot { book -> book.id == bookId },
+                            books = updatedBooks,
                             actionMessage = "Removed from collection."
                         )
                     }
@@ -1769,14 +1941,19 @@ class CollectionDetailViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    private fun refresh(forceRefresh: Boolean, showLoader: Boolean) {
         if (collectionId.isBlank()) {
             mutableUiState.update {
                 it.copy(isLoading = false, errorMessage = "Invalid collection.")
             }
             return
         }
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        mutableUiState.update {
+            it.copy(
+                isLoading = showLoader,
+                errorMessage = null
+            )
+        }
         viewModelScope.launch {
             when (
                 val result = sessionRepository.fetchCollectionBooks(
@@ -1785,19 +1962,22 @@ class CollectionDetailViewModel @Inject constructor(
                 )
             ) {
                 is AppResult.Success -> {
+                    FacetBooksMemoryCache.updateCollectionBooks(collectionId, result.value)
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            books = result.value
+                            books = result.value,
+                            errorMessage = null
                         )
                     }
                 }
 
                 is AppResult.Error -> {
                     mutableUiState.update {
+                        val shouldShowError = showLoader || it.books.isEmpty()
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = if (shouldShowError) result.message else null
                         )
                     }
                 }
@@ -1935,10 +2115,12 @@ class PlaylistDetailViewModel @Inject constructor(
 ) : ViewModel() {
     private val playlistId = savedStateHandle.get<String>(DetailRoute.PLAYLIST_ID_ARG).orEmpty()
     private val playlistName = savedStateHandle.get<String>(DetailRoute.PLAYLIST_NAME_ARG).orEmpty()
+    private val initialBooks = FacetBooksMemoryCache.playlistBooks(playlistId)
     private val mutableUiState = MutableStateFlow(
         FacetBooksUiState(
-            isLoading = true,
-            title = playlistName.ifBlank { "Playlist" }
+            isLoading = initialBooks.isEmpty(),
+            title = playlistName.ifBlank { "Playlist" },
+            books = initialBooks
         )
     )
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
@@ -1949,7 +2131,7 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().playlistDetailListMode
         }
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
     fun setListMode(value: Boolean) {
@@ -1960,7 +2142,7 @@ class PlaylistDetailViewModel @Inject constructor(
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, showLoader = true)
     }
 
     fun removeBook(bookId: String) {
@@ -1975,6 +2157,7 @@ class PlaylistDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     if (wasLastVisibleBook) {
+                        FacetBooksMemoryCache.updatePlaylistBooks(playlistId, emptyList())
                         mutableUiState.update {
                             it.copy(
                                 isLoading = false,
@@ -1984,12 +2167,16 @@ class PlaylistDetailViewModel @Inject constructor(
                             )
                         }
                     } else {
+                        val updatedBooks = uiState.value.books.filterNot { book -> book.id == bookId }
+                        FacetBooksMemoryCache.updatePlaylistBooks(playlistId, updatedBooks)
                         mutableUiState.update {
                             it.copy(
+                                books = updatedBooks,
+                                errorMessage = null,
                                 actionMessage = "Removed from playlist."
                             )
                         }
-                        refresh(forceRefresh = true)
+                        refresh(forceRefresh = true, showLoader = false)
                     }
                 }
 
@@ -2004,14 +2191,19 @@ class PlaylistDetailViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    private fun refresh(forceRefresh: Boolean, showLoader: Boolean) {
         if (playlistId.isBlank()) {
             mutableUiState.update {
                 it.copy(isLoading = false, errorMessage = "Invalid playlist.")
             }
             return
         }
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        mutableUiState.update {
+            it.copy(
+                isLoading = showLoader,
+                errorMessage = null
+            )
+        }
         viewModelScope.launch {
             when (
                 val result = sessionRepository.fetchPlaylistBooks(
@@ -2020,25 +2212,53 @@ class PlaylistDetailViewModel @Inject constructor(
                 )
             ) {
                 is AppResult.Success -> {
+                    FacetBooksMemoryCache.updatePlaylistBooks(playlistId, result.value)
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            books = result.value
+                            books = result.value,
+                            errorMessage = null
                         )
                     }
                 }
 
                 is AppResult.Error -> {
-                    val treatAsEmpty = result.message.contains("404") && uiState.value.books.isEmpty()
                     mutableUiState.update {
+                        val treatAsEmpty = result.message.contains("404") && it.books.isEmpty()
+                        val shouldShowError = (showLoader || it.books.isEmpty()) && !treatAsEmpty
                         it.copy(
                             isLoading = false,
-                            errorMessage = if (treatAsEmpty) null else result.message
+                            errorMessage = if (shouldShowError) result.message else null
                         )
                     }
                 }
             }
         }
+    }
+}
+
+private object FacetBooksMemoryCache {
+    private val collectionBooksById = mutableMapOf<String, List<BookSummary>>()
+    private val playlistBooksById = mutableMapOf<String, List<BookSummary>>()
+
+    @Synchronized
+    fun collectionBooks(collectionId: String): List<BookSummary> {
+        return collectionBooksById[collectionId].orEmpty()
+    }
+
+    @Synchronized
+    fun playlistBooks(playlistId: String): List<BookSummary> {
+        return playlistBooksById[playlistId].orEmpty()
+    }
+
+    @Synchronized
+    fun updateCollectionBooks(collectionId: String, books: List<BookSummary>) {
+        collectionBooksById[collectionId] = books
+    }
+
+    @Synchronized
+    fun updatePlaylistBooks(playlistId: String, books: List<BookSummary>) {
+        playlistBooksById[playlistId] = books
     }
 }
 

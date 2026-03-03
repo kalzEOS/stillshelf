@@ -87,6 +87,11 @@ interface SessionRepository {
         durationSeconds: Double?,
         isFinished: Boolean
     ): AppResult<Unit>
+    suspend fun createBookmark(
+        bookId: String,
+        timeSeconds: Double,
+        title: String? = null
+    ): AppResult<Unit>
     suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit>
     suspend fun addBookToDefaultCollection(bookId: String): AppResult<String>
     suspend fun setLastPlayedBookId(bookId: String?): AppResult<Unit>

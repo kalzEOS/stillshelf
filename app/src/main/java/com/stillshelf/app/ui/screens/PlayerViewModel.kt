@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
+import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -36,27 +37,31 @@ class PlayerViewModel @Inject constructor(
     val previewItem: StateFlow<ContinueListeningItem?> = mutablePreviewItem.asStateFlow()
     private val mutableChapters = MutableStateFlow<List<BookChapter>>(emptyList())
     val chapters: StateFlow<List<BookChapter>> = mutableChapters.asStateFlow()
+    private val mutableBookmarks = MutableStateFlow<List<BookBookmark>>(emptyList())
+    val bookmarks: StateFlow<List<BookBookmark>> = mutableBookmarks.asStateFlow()
+    private val mutableActionMessage = MutableStateFlow<String?>(null)
+    val actionMessage: StateFlow<String?> = mutableActionMessage.asStateFlow()
     private val mutableControlPrefs = MutableStateFlow(PlayerControlPrefs())
     val controlPrefs: StateFlow<PlayerControlPrefs> = mutableControlPrefs.asStateFlow()
-    private var chaptersBookId: String? = null
+    private var loadedBookId: String? = null
 
     init {
         observeControlPrefs()
         val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
         if (bookId.isNotBlank()) {
-            loadChapters(bookId)
+            loadBookMetadata(bookId)
             playbackController.playBook(bookId)
         } else if (playbackController.uiState.value.book == null) {
             val cachedItem = playbackController.getCachedContinueListeningItem()
             if (cachedItem != null) {
                 mutablePreviewItem.value = cachedItem
-                loadChapters(cachedItem.book.id)
+                loadBookMetadata(cachedItem.book.id)
             } else {
                 viewModelScope.launch {
                     when (val result = sessionRepository.fetchMiniPlayerItem()) {
                         is AppResult.Success -> {
                             mutablePreviewItem.value = result.value
-                            result.value?.book?.id?.let(::loadChapters)
+                            result.value?.book?.id?.let(::loadBookMetadata)
                         }
 
                         is AppResult.Error -> Unit
@@ -69,7 +74,7 @@ class PlayerViewModel @Inject constructor(
             playbackController.uiState.collect { playbackState ->
                 if (playbackState.book != null) {
                     mutablePreviewItem.value = null
-                    loadChapters(playbackState.book.id)
+                    loadBookMetadata(playbackState.book.id)
                 }
             }
         }
@@ -111,17 +116,68 @@ class PlayerViewModel @Inject constructor(
         playbackController.seekToPositionMs(positionMs = positionMs, commit = commit)
     }
 
-    private fun loadChapters(bookId: String) {
-        if (bookId.isBlank() || chaptersBookId == bookId) return
-        chaptersBookId = bookId
+    fun jumpToSeconds(seconds: Double) {
+        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id ?: return
+        val positionMs = (seconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val playbackState = uiState.value
+        if (playbackState.book?.id == bookId) {
+            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
+            if (!playbackState.isPlaying) {
+                playbackController.togglePlayPause()
+            }
+        } else {
+            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+        }
+    }
+
+    fun addBookmark(positionSeconds: Double, title: String?) {
+        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        if (bookId.isNullOrBlank()) {
+            mutableActionMessage.value = "Unable to add bookmark right now."
+            return
+        }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBookDetail(bookId)) {
+            when (
+                val result = sessionRepository.createBookmark(
+                    bookId = bookId,
+                    timeSeconds = positionSeconds.coerceAtLeast(0.0),
+                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                )
+            ) {
                 is AppResult.Success -> {
-                    mutableChapters.value = result.value.chapters
+                    mutableActionMessage.value = "Bookmark added."
+                    loadBookMetadata(bookId = bookId, forceRefresh = true)
                 }
 
                 is AppResult.Error -> {
-                    mutableChapters.value = emptyList()
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableActionMessage.value = null
+    }
+
+    private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false) {
+        if (bookId.isBlank()) return
+        if (!forceRefresh && loadedBookId == bookId) return
+        loadedBookId = bookId
+        viewModelScope.launch {
+            when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableChapters.value = result.value.chapters
+                    mutableBookmarks.value = result.value.bookmarks
+                }
+
+                is AppResult.Error -> {
+                    if (forceRefresh) {
+                        mutableActionMessage.value = result.message
+                    } else {
+                        mutableChapters.value = emptyList()
+                        mutableBookmarks.value = emptyList()
+                    }
                 }
             }
         }

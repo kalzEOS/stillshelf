@@ -1,5 +1,13 @@
 package com.stillshelf.app.ui.navigation
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.slideInHorizontally
@@ -9,7 +17,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
@@ -28,6 +39,7 @@ import com.stillshelf.app.ui.screens.AuthorDetailScreen
 import com.stillshelf.app.ui.screens.BookDetailScreen
 import com.stillshelf.app.ui.screens.BrowsePlaceholderScreen
 import com.stillshelf.app.ui.screens.BrowseSectionPlaceholderScreen
+import com.stillshelf.app.ui.screens.CollectionDetailScreen
 import com.stillshelf.app.ui.screens.CollectionsBrowseScreen
 import com.stillshelf.app.ui.screens.CustomizePlaceholderScreen
 import com.stillshelf.app.ui.screens.DownloadsPlaceholderScreen
@@ -37,6 +49,8 @@ import com.stillshelf.app.ui.screens.HomePlaceholderScreen
 import com.stillshelf.app.ui.screens.NarratorsBrowseScreen
 import com.stillshelf.app.ui.screens.NarratorDetailScreen
 import com.stillshelf.app.ui.screens.PlayerPlaceholderScreen
+import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
+import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchPlaceholderScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
 import com.stillshelf.app.ui.screens.SeriesDetailScreen
@@ -47,8 +61,6 @@ import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BookmarkBorder
-import androidx.compose.material.icons.outlined.CollectionsBookmark
-import androidx.compose.material.icons.outlined.MusicNote
 
 fun NavGraphBuilder.mainNavGraph() {
     navigation(
@@ -63,12 +75,39 @@ fun NavGraphBuilder.mainNavGraph() {
 
 @Composable
 private fun MainShell() {
+    val context = LocalContext.current
+    val activity = context.findActivity()
+    val notificationsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {}
+    LaunchedEffect(activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@LaunchedEffect
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted && activity != null) {
+            notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     val tabsNavController = rememberNavController()
     val currentBackStackEntry by tabsNavController.currentBackStackEntryAsState()
     val currentRoute = currentBackStackEntry?.destination?.route
     val currentTab = MainTab.fromRoute(currentRoute)
     val miniPlayerViewModel: MiniPlayerViewModel = hiltViewModel()
     val miniPlayerState by miniPlayerViewModel.uiState.collectAsStateWithLifecycle()
+    val onHomeClick: () -> Unit = {
+        if (!tabsNavController.popBackStack(MainTab.Home.route, inclusive = false)) {
+            tabsNavController.navigate(MainTab.Home.route) {
+                popUpTo(tabsNavController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     RootScaffold(
         currentTab = currentTab,
@@ -82,6 +121,7 @@ private fun MainShell() {
             }
         },
         miniPlayerState = miniPlayerState,
+        onMiniPlayerHomeClick = if (currentTab != MainTab.Home) onHomeClick else null,
         onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
         onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,
         onMiniPlayerClick = {
@@ -93,32 +133,31 @@ private fun MainShell() {
             currentRoute != MainTab.Search.route &&
             currentRoute != MainTab.Settings.route &&
             currentRoute != MainRoute.SETTINGS &&
-            currentRoute != MainRoute.SERVERS
+            currentRoute != MainRoute.SERVERS &&
+            currentRoute?.startsWith("auth/") != true
     ) { paddingValues ->
         MainTabsNavHost(
             paddingValues = paddingValues,
-            navController = tabsNavController
+            navController = tabsNavController,
+            onHomeClick = onHomeClick
         )
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 
 @Composable
 private fun MainTabsNavHost(
     paddingValues: PaddingValues,
-    navController: androidx.navigation.NavHostController
+    navController: androidx.navigation.NavHostController,
+    onHomeClick: () -> Unit
 ) {
-    val onHomeClick: () -> Unit = {
-        if (!navController.popBackStack(MainTab.Home.route, inclusive = false)) {
-            navController.navigate(MainTab.Home.route) {
-                popUpTo(navController.graph.findStartDestination().id) {
-                    saveState = true
-                }
-                launchSingleTop = true
-                restoreState = true
-            }
-        }
-    }
-
     NavHost(
         navController = navController,
         startDestination = MainTab.Home.route,
@@ -217,7 +256,14 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainTab.Downloads.route) {
-            DownloadsPlaceholderScreen(onHomeClick = onHomeClick)
+            DownloadsPlaceholderScreen(
+                onHomeClick = onHomeClick,
+                onBookClick = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
+            )
         }
         composable(MainTab.Settings.route) {
             SettingsPlaceholderScreen(
@@ -257,7 +303,7 @@ private fun MainTabsNavHost(
             exitTransition = {
                 slideOutVertically(
                     targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
+                    animationSpec = tween(durationMillis = 240)
                 )
             },
             popEnterTransition = {
@@ -269,7 +315,7 @@ private fun MainTabsNavHost(
             popExitTransition = {
                 slideOutVertically(
                     targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
+                    animationSpec = tween(durationMillis = 240)
                 )
             }
         ) {
@@ -317,13 +363,6 @@ private fun MainTabsNavHost(
         composable(AuthRoute.LIBRARY_PICKER) {
             LibraryPickerRoute(
                 onLibrarySelected = {
-                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
-                        navController.navigate(MainRoute.SERVERS) {
-                            launchSingleTop = true
-                        }
-                    }
-                },
-                onManageServers = {
                     if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
                         navController.navigate(MainRoute.SERVERS) {
                             launchSingleTop = true
@@ -391,7 +430,12 @@ private fun MainTabsNavHost(
         composable(BrowseRoute.COLLECTIONS) {
             CollectionsBrowseScreen(
                 onBackClick = { navController.popBackStack() },
-                onHomeClick = onHomeClick
+                onHomeClick = onHomeClick,
+                onCollectionClick = { collection ->
+                    navController.navigate(DetailRoute.collection(collection.id, collection.name)) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(BrowseRoute.GENRES) {
@@ -415,18 +459,25 @@ private fun MainTabsNavHost(
             )
         }
         composable(BrowseRoute.PLAYLISTS) {
-            BrowseSectionPlaceholderScreen(
-                title = "Playlists",
-                emptyMessage = "Playlists you create will appear here.",
-                icon = Icons.Outlined.MusicNote,
+            PlaylistsBrowseScreen(
                 onBackClick = { navController.popBackStack() },
-                onHomeClick = onHomeClick
+                onHomeClick = onHomeClick,
+                onPlaylistClick = { playlist ->
+                    navController.navigate(DetailRoute.playlist(playlist.id, playlist.name)) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(BrowseRoute.DOWNLOADED) {
             DownloadsPlaceholderScreen(
                 onBackClick = { navController.popBackStack() },
-                onHomeClick = onHomeClick
+                onHomeClick = onHomeClick,
+                onBookClick = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
 
@@ -521,6 +572,48 @@ private fun MainTabsNavHost(
             )
         ) {
             GenreDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onBookClick = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+        composable(
+            route = DetailRoute.COLLECTION_PATTERN,
+            arguments = listOf(
+                navArgument(DetailRoute.COLLECTION_ID_ARG) { type = NavType.StringType },
+                navArgument(DetailRoute.COLLECTION_NAME_ARG) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = ""
+                }
+            )
+        ) {
+            CollectionDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onBookClick = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+        composable(
+            route = DetailRoute.PLAYLIST_PATTERN,
+            arguments = listOf(
+                navArgument(DetailRoute.PLAYLIST_ID_ARG) { type = NavType.StringType },
+                navArgument(DetailRoute.PLAYLIST_NAME_ARG) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = ""
+                }
+            )
+        ) {
+            PlaylistDetailScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->

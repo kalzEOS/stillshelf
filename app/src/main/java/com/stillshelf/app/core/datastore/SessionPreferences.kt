@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
@@ -30,9 +31,16 @@ class SessionPreferences @Inject constructor(
     private val authorLayoutModeKey = stringPreferencesKey("author_layout_mode")
     private val authorCollapseSeriesKey = booleanPreferencesKey("author_collapse_series")
     private val seriesDetailListModeKey = booleanPreferencesKey("series_detail_list_mode")
+    private val collectionDetailListModeKey = booleanPreferencesKey("collection_detail_list_mode")
+    private val playlistDetailListModeKey = booleanPreferencesKey("playlist_detail_list_mode")
     private val immersivePlayerEnabledKey = booleanPreferencesKey("immersive_player_enabled")
     private val appThemeModeKey = stringPreferencesKey("app_theme_mode")
     private val materialDesignEnabledKey = booleanPreferencesKey("material_design_enabled")
+    private val skipForwardSecondsKey = intPreferencesKey("skip_forward_seconds")
+    private val skipBackwardSecondsKey = intPreferencesKey("skip_backward_seconds")
+    private val lockScreenControlModeKey = stringPreferencesKey("lock_screen_control_mode")
+    private val lastBookDetailTabKey = stringPreferencesKey("last_book_detail_tab")
+    private val downloadedBookIdsKey = stringPreferencesKey("downloaded_book_ids")
     private val cachedHomeFeedLibraryIdKey = stringPreferencesKey("cached_home_feed_library_id")
     private val cachedHomeFeedPayloadKey = stringPreferencesKey("cached_home_feed_payload")
     private val cachedHomeFeedSavedAtKey = longPreferencesKey("cached_home_feed_saved_at")
@@ -53,9 +61,16 @@ class SessionPreferences @Inject constructor(
             authorLayoutMode = prefs[authorLayoutModeKey],
             authorCollapseSeries = prefs[authorCollapseSeriesKey] ?: true,
             seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
+            collectionDetailListMode = prefs[collectionDetailListModeKey] ?: true,
+            playlistDetailListMode = prefs[playlistDetailListModeKey] ?: true,
             immersivePlayerEnabled = prefs[immersivePlayerEnabledKey] ?: false,
             appThemeMode = prefs[appThemeModeKey] ?: "follow_system",
-            materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false
+            materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false,
+            skipForwardSeconds = (prefs[skipForwardSecondsKey] ?: 15).coerceIn(5, 600),
+            skipBackwardSeconds = (prefs[skipBackwardSecondsKey] ?: 15).coerceIn(5, 600),
+            lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
+            lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
+            downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey])
         )
     }
 
@@ -187,6 +202,18 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setCollectionDetailListMode(listMode: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[collectionDetailListModeKey] = listMode
+        }
+    }
+
+    suspend fun setPlaylistDetailListMode(listMode: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[playlistDetailListModeKey] = listMode
+        }
+    }
+
     suspend fun setImmersivePlayerEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[immersivePlayerEnabledKey] = enabled
@@ -207,6 +234,62 @@ class SessionPreferences @Inject constructor(
         dataStore.edit { prefs ->
             prefs[materialDesignEnabledKey] = enabled
         }
+    }
+
+    suspend fun setSkipForwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[skipForwardSecondsKey] = seconds.coerceIn(5, 600)
+        }
+    }
+
+    suspend fun setSkipBackwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[skipBackwardSecondsKey] = seconds.coerceIn(5, 600)
+        }
+    }
+
+    suspend fun setLockScreenControlMode(mode: String) {
+        dataStore.edit { prefs ->
+            prefs[lockScreenControlModeKey] = mode.ifBlank { "skip" }
+        }
+    }
+
+    suspend fun setLastBookDetailTab(tab: String) {
+        dataStore.edit { prefs ->
+            prefs[lastBookDetailTabKey] = tab.ifBlank { "About" }
+        }
+    }
+
+    suspend fun setDownloadedBookIds(ids: Set<String>) {
+        dataStore.edit { prefs ->
+            if (ids.isEmpty()) {
+                prefs.remove(downloadedBookIdsKey)
+            } else {
+                prefs[downloadedBookIdsKey] = ids.sorted().joinToString(",")
+            }
+        }
+    }
+
+    suspend fun toggleDownloadedBookId(bookId: String): Boolean {
+        val trimmedId = bookId.trim()
+        if (trimmedId.isEmpty()) return false
+        var nowDownloaded = false
+        dataStore.edit { prefs ->
+            val current = parseCsv(prefs[downloadedBookIdsKey]).toMutableSet()
+            if (current.contains(trimmedId)) {
+                current.remove(trimmedId)
+                nowDownloaded = false
+            } else {
+                current.add(trimmedId)
+                nowDownloaded = true
+            }
+            if (current.isEmpty()) {
+                prefs.remove(downloadedBookIdsKey)
+            } else {
+                prefs[downloadedBookIdsKey] = current.sorted().joinToString(",")
+            }
+        }
+        return nowDownloaded
     }
 
     suspend fun getCachedHomeFeed(): CachedHomeFeedPayload? {
@@ -272,9 +355,16 @@ data class SessionPreferenceState(
     val authorLayoutMode: String? = null,
     val authorCollapseSeries: Boolean = true,
     val seriesDetailListMode: Boolean = true,
+    val collectionDetailListMode: Boolean = true,
+    val playlistDetailListMode: Boolean = true,
     val immersivePlayerEnabled: Boolean = false,
     val appThemeMode: String = "follow_system",
-    val materialDesignEnabled: Boolean = false
+    val materialDesignEnabled: Boolean = false,
+    val skipForwardSeconds: Int = 15,
+    val skipBackwardSeconds: Int = 15,
+    val lockScreenControlMode: String = "skip",
+    val lastBookDetailTab: String = "About",
+    val downloadedBookIds: Set<String> = emptySet()
 )
 
 data class CachedHomeFeedPayload(

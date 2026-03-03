@@ -1,6 +1,7 @@
 package com.stillshelf.app.ui.common
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,7 +19,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
-import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -87,20 +89,24 @@ fun FramedCoverImage(
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
     ) {
+        val painter = rememberAsyncImagePainter(model = model)
+        val isSuccessState = painter.state is AsyncImagePainter.State.Success
         val preferredInset = (maxWidth * 0.20f).coerceIn(2.dp, 34.dp)
         val maxInsetWithoutVerticalLetterbox =
             ((maxWidth - (maxHeight * TypicalCoverAspectRatio)) / 2f).coerceAtLeast(0.dp)
         val sideInset = minOf(preferredInset, maxInsetWithoutVerticalLetterbox)
-        AsyncImage(
-            model = model,
-            contentDescription = contentDescription,
-            modifier = Modifier
-                .fillMaxSize()
-                .blur(backgroundBlur),
-            contentScale = ContentScale.Crop
-        )
-        AsyncImage(
-            model = model,
+        if (isSuccessState) {
+            Image(
+                painter = painter,
+                contentDescription = contentDescription,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(backgroundBlur),
+                contentScale = ContentScale.Crop
+            )
+        }
+        Image(
+            painter = painter,
             contentDescription = contentDescription,
             modifier = Modifier
                 .fillMaxSize()

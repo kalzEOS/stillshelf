@@ -22,19 +22,44 @@ class LibraryPickerViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val errorState = MutableStateFlow<String?>(null)
+    private val loadingState = MutableStateFlow(true)
     private val mutableEvents = MutableSharedFlow<LibraryPickerEvent>()
 
     val events = mutableEvents.asSharedFlow()
 
+    init {
+        viewModelScope.launch {
+            try {
+                loadingState.value = true
+                when (
+                    val result = runCatching {
+                        sessionRepository.refreshLibrariesForActiveServer()
+                    }.getOrElse {
+                        AppResult.Error("Unable to load libraries for this server.", it)
+                    }
+                ) {
+                    is AppResult.Success -> errorState.value = null
+                    is AppResult.Error -> errorState.value = result.message
+                }
+            } catch (t: Throwable) {
+                errorState.value = t.message ?: "Unable to load libraries for this server."
+            } finally {
+                loadingState.value = false
+            }
+        }
+    }
+
     val uiState: StateFlow<LibraryPickerUiState> = combine(
         sessionRepository.observeLibrariesForActiveServer(),
         sessionRepository.observeSessionState(),
-        errorState
-    ) { libraries, session, errorMessage ->
+        errorState,
+        loadingState
+    ) { libraries, session, errorMessage, isLoading ->
         LibraryPickerUiState(
             libraries = libraries,
             activeLibraryId = session.activeLibraryId,
-            errorMessage = errorMessage
+            errorMessage = errorMessage,
+            isLoading = isLoading
         )
     }.stateIn(
         scope = viewModelScope,
@@ -65,7 +90,8 @@ class LibraryPickerViewModel @Inject constructor(
 data class LibraryPickerUiState(
     val libraries: List<Library> = emptyList(),
     val activeLibraryId: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isLoading: Boolean = false
 )
 
 sealed interface LibraryPickerEvent {

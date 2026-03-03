@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
@@ -15,22 +16,32 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+
+data class PlayerControlPrefs(
+    val skipForwardSeconds: Int = 15,
+    val skipBackwardSeconds: Int = 15
+)
 
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val playbackController: PlaybackController,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     val uiState: StateFlow<PlaybackUiState> = playbackController.uiState
     private val mutablePreviewItem = MutableStateFlow<ContinueListeningItem?>(null)
     val previewItem: StateFlow<ContinueListeningItem?> = mutablePreviewItem.asStateFlow()
     private val mutableChapters = MutableStateFlow<List<BookChapter>>(emptyList())
     val chapters: StateFlow<List<BookChapter>> = mutableChapters.asStateFlow()
+    private val mutableControlPrefs = MutableStateFlow(PlayerControlPrefs())
+    val controlPrefs: StateFlow<PlayerControlPrefs> = mutableControlPrefs.asStateFlow()
     private var chaptersBookId: String? = null
 
     init {
+        observeControlPrefs()
         val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
         if (bookId.isNotBlank()) {
             loadChapters(bookId)
@@ -77,11 +88,11 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun onRewindClick() {
-        playbackController.seekBy(deltaMs = -15_000L)
+        playbackController.seekBy(deltaMs = -(controlPrefs.value.skipBackwardSeconds * 1000L))
     }
 
     fun onForwardClick() {
-        playbackController.seekBy(deltaMs = 15_000L)
+        playbackController.seekBy(deltaMs = (controlPrefs.value.skipForwardSeconds * 1000L))
     }
 
     fun onScrubProgress(progressFraction: Float) {
@@ -96,6 +107,10 @@ class PlayerViewModel @Inject constructor(
         playbackController.saveProgressSnapshot()
     }
 
+    fun seekToPositionMs(positionMs: Long, commit: Boolean) {
+        playbackController.seekToPositionMs(positionMs = positionMs, commit = commit)
+    }
+
     private fun loadChapters(bookId: String) {
         if (bookId.isBlank() || chaptersBookId == bookId) return
         chaptersBookId = bookId
@@ -107,6 +122,19 @@ class PlayerViewModel @Inject constructor(
 
                 is AppResult.Error -> {
                     mutableChapters.value = emptyList()
+                }
+            }
+        }
+    }
+
+    private fun observeControlPrefs() {
+        viewModelScope.launch {
+            sessionPreferences.state.collect { pref ->
+                mutableControlPrefs.update {
+                    it.copy(
+                        skipForwardSeconds = pref.skipForwardSeconds.coerceIn(10, 60),
+                        skipBackwardSeconds = pref.skipBackwardSeconds.coerceIn(10, 60)
+                    )
                 }
             }
         }

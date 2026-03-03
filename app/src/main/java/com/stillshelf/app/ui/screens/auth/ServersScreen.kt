@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens.auth
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -69,8 +70,7 @@ private fun ServersScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 16.dp, vertical = 20.dp)
         ) {
             Text(
                 text = "Servers",
@@ -78,10 +78,24 @@ private fun ServersScreen(
             )
 
             if (uiState.servers.isEmpty()) {
+                Spacer(modifier = Modifier.weight(0.95f))
                 Text(
                     text = "No servers added yet.",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Text(
+                    text = "Add your Audiobookshelf server to get started.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp, bottom = 14.dp)
+                )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onAddServer
+                ) {
+                    Text("Add Server")
+                }
+                Spacer(modifier = Modifier.weight(0.6f))
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
@@ -115,13 +129,12 @@ private fun ServersScreen(
                         }
                     }
                 }
-            }
-
-            Button(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onAddServer
-            ) {
-                Text("Add Server")
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onAddServer
+                ) {
+                    Text("Add Server")
+                }
             }
         }
     }

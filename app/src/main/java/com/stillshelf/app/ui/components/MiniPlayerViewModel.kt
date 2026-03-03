@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.components
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -20,13 +21,15 @@ data class MiniPlayerUiState(
     val isLoading: Boolean = false,
     val item: ContinueListeningItem? = null,
     val isPlaying: Boolean = false,
+    val rewindSeconds: Int = 15,
     val errorMessage: String? = null
 )
 
 @HiltViewModel
 class MiniPlayerViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
-    private val playbackController: PlaybackController
+    private val playbackController: PlaybackController,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(MiniPlayerUiState())
     private var hadActivePlayback = false
@@ -35,6 +38,7 @@ class MiniPlayerViewModel @Inject constructor(
     init {
         observePlaybackState()
         observeSessionChanges()
+        observeSkipSettings()
         refresh()
     }
 
@@ -99,7 +103,18 @@ class MiniPlayerViewModel @Inject constructor(
     fun onRewindClick() {
         val playbackState = playbackController.uiState.value
         if (playbackState.book != null) {
-            playbackController.seekBy(deltaMs = -15_000L)
+            val deltaMs = -(uiState.value.rewindSeconds * 1000L)
+            playbackController.seekBy(deltaMs = deltaMs)
+        }
+    }
+
+    private fun observeSkipSettings() {
+        viewModelScope.launch {
+            sessionPreferences.state.collect { pref ->
+                mutableUiState.update {
+                    it.copy(rewindSeconds = pref.skipBackwardSeconds.coerceIn(10, 60))
+                }
+            }
         }
     }
 

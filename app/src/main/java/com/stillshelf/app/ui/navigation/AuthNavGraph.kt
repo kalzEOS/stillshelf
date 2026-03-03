@@ -51,13 +51,7 @@ fun NavGraphBuilder.authNavGraph(
 
         composable(AuthRoute.LIBRARY_PICKER) {
             LibraryPickerRoute(
-                onLibrarySelected = onAuthCompleted,
-                onManageServers = {
-                    navController.navigate(AuthRoute.SERVERS) {
-                        popUpTo(AuthRoute.SERVERS) { inclusive = false }
-                        launchSingleTop = true
-                    }
-                }
+                onLibrarySelected = onAuthCompleted
             )
         }
     }

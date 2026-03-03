@@ -7,6 +7,9 @@ import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.ui.navigation.AuthRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import javax.net.ssl.SSLException
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
@@ -59,28 +63,41 @@ class LoginViewModel @Inject constructor(
         if (!currentState.canSubmit || currentState.isLoading) return
 
         viewModelScope.launch {
-            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+            try {
+                mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
-            when (
-                val result = sessionRepository.addServerAndLogin(
-                    serverName = currentState.serverName,
-                    baseUrl = currentState.baseUrl,
-                    username = currentState.username,
-                    password = currentState.password
-                )
-            ) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(isLoading = false) }
-                    mutableEvents.emit(LoginEvent.Success)
-                }
-
-                is AppResult.Error -> {
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = result.message
+                when (
+                    val result = runCatching {
+                        sessionRepository.addServerAndLogin(
+                            serverName = currentState.serverName,
+                            baseUrl = currentState.baseUrl,
+                            username = currentState.username,
+                            password = currentState.password
                         )
+                    }.getOrElse {
+                        AppResult.Error("Unable to complete login.", it)
                     }
+                ) {
+                    is AppResult.Success -> {
+                        mutableUiState.update { it.copy(isLoading = false) }
+                        mutableEvents.emit(LoginEvent.Success)
+                    }
+
+                    is AppResult.Error -> {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = mapLoginErrorMessage(result)
+                            )
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                mutableUiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = mapLoginErrorMessage(AppResult.Error("Unable to complete login.", t))
+                    )
                 }
             }
         }
@@ -92,6 +109,55 @@ class LoginViewModel @Inject constructor(
 
     private fun canSubmit(username: String, password: String): Boolean {
         return username.isNotBlank() && password.isNotBlank()
+    }
+
+    private fun mapLoginErrorMessage(error: AppResult.Error): String {
+        val message = error.message.trim()
+        val normalized = message.lowercase()
+        val cause = error.cause
+
+        return when {
+            normalized.contains("http 401") ||
+                normalized.contains("http 403") ||
+                normalized.contains("invalid username") ||
+                normalized.contains("invalid password") -> {
+                "Login failed. Check your username and password."
+            }
+
+            normalized.contains("http 429") -> {
+                "Too many requests right now. Wait a moment and try again."
+            }
+
+            cause is UnknownHostException ||
+                cause is ConnectException ||
+                normalized.contains("unable to resolve host") ||
+                normalized.contains("failed to connect") ||
+                normalized.contains("connection refused") -> {
+                "Could not reach the server. Check the URL and make sure the server is online."
+            }
+
+            cause is SocketTimeoutException || normalized.contains("timed out") -> {
+                "Connection timed out. Check your network and try again."
+            }
+
+            cause is SSLException ||
+                normalized.contains("ssl") ||
+                normalized.contains("certificate") ||
+                normalized.contains("cleartext") -> {
+                "Secure connection failed. Check your HTTPS/certificate settings and try again."
+            }
+
+            normalized.contains("http 5") -> {
+                "Server error. Please try again in a moment."
+            }
+
+            normalized.contains("http 4") -> {
+                "Login request was rejected. Check your credentials and server settings."
+            }
+
+            message.isBlank() -> "Login failed. Please try again."
+            else -> message
+        }
     }
 }
 

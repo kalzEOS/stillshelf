@@ -22,6 +22,9 @@ data class SettingsUiState(
     val immersivePlayerEnabled: Boolean = false,
     val themeMode: AppThemeMode = AppThemeMode.FollowSystem,
     val materialDesignEnabled: Boolean = false,
+    val skipForwardSeconds: Int = 15,
+    val skipBackwardSeconds: Int = 15,
+    val lockScreenControlMode: String = "skip",
     val errorMessage: String? = null
 )
 
@@ -45,7 +48,10 @@ class SettingsViewModel @Inject constructor(
                     SettingsUiState(
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         themeMode = parseThemeMode(pref.appThemeMode),
-                        materialDesignEnabled = pref.materialDesignEnabled
+                        materialDesignEnabled = pref.materialDesignEnabled,
+                        skipForwardSeconds = pref.skipForwardSeconds,
+                        skipBackwardSeconds = pref.skipBackwardSeconds,
+                        lockScreenControlMode = pref.lockScreenControlMode
                     )
                 } else {
                     SettingsUiState(
@@ -53,7 +59,10 @@ class SettingsViewModel @Inject constructor(
                         serverHost = parseHost(server.baseUrl),
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         themeMode = parseThemeMode(pref.appThemeMode),
-                        materialDesignEnabled = pref.materialDesignEnabled
+                        materialDesignEnabled = pref.materialDesignEnabled,
+                        skipForwardSeconds = pref.skipForwardSeconds,
+                        skipBackwardSeconds = pref.skipBackwardSeconds,
+                        lockScreenControlMode = pref.lockScreenControlMode
                     )
                 }
             }.collect { state ->
@@ -103,6 +112,24 @@ class SettingsViewModel @Inject constructor(
                     AppThemeMode.Dark -> "dark"
                 }
             )
+        }
+    }
+
+    fun setSkipForwardSeconds(seconds: Int) {
+        viewModelScope.launch {
+            sessionPreferences.setSkipForwardSeconds(seconds)
+        }
+    }
+
+    fun setSkipBackwardSeconds(seconds: Int) {
+        viewModelScope.launch {
+            sessionPreferences.setSkipBackwardSeconds(seconds)
+        }
+    }
+
+    fun setLockScreenControlMode(mode: String) {
+        viewModelScope.launch {
+            sessionPreferences.setLockScreenControlMode(mode)
         }
     }
 

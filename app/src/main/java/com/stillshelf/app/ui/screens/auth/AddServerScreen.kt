@@ -1,18 +1,23 @@
 package com.stillshelf.app.ui.screens.auth
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -21,7 +26,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,84 +66,109 @@ private fun AddServerScreen(
     val trimmedServerName = uiState.serverName.trim()
 
     Scaffold { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            Text(
-                text = "Add Server",
-                style = MaterialTheme.typography.headlineMedium
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Add Server",
+                    style = MaterialTheme.typography.headlineMedium
+                )
 
-            OutlinedTextField(
-                value = uiState.serverName,
-                onValueChange = onServerNameChange,
-                label = { Text("Server Name") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                OutlinedTextField(
+                    value = uiState.serverName,
+                    onValueChange = onServerNameChange,
+                    label = { Text("Server Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    isError = uiState.serverNameError != null,
+                    keyboardOptions = KeyboardOptions(
+                        autoCorrectEnabled = false,
+                        capitalization = KeyboardCapitalization.Words
+                    )
+                )
+                uiState.serverNameError?.let { error ->
+                    Text(
+                        text = error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
 
-            OutlinedTextField(
-                value = uiState.baseUrl,
-                onValueChange = onBaseUrlChange,
-                label = { Text("Base URL") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                OutlinedTextField(
+                    value = uiState.baseUrl,
+                    onValueChange = onBaseUrlChange,
+                    label = { Text("Base URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        autoCorrectEnabled = false,
+                        capitalization = KeyboardCapitalization.None,
+                        keyboardType = KeyboardType.Ascii
+                    )
+                )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(
-                    onClick = onTestConnection,
-                    enabled = uiState.baseUrl.isNotBlank() && !uiState.isTestingConnection,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    if (uiState.isTestingConnection) {
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .size(18.dp)
-                                .padding(vertical = 1.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text("Test Connection")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = onTestConnection,
+                        enabled = uiState.baseUrl.isNotBlank() && !uiState.isTestingConnection,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (uiState.isTestingConnection) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .padding(vertical = 1.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Test Connection")
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            if (isHttpUrl(trimmedBaseUrl)) {
+                                showInsecureHttpWarning = true
+                            } else {
+                                onContinue(trimmedServerName, trimmedBaseUrl)
+                            }
+                        },
+                        enabled = uiState.canContinue,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Continue")
                     }
                 }
 
-                Button(
-                    onClick = {
-                        if (isHttpUrl(trimmedBaseUrl)) {
-                            showInsecureHttpWarning = true
+                uiState.connectionMessage?.let { message ->
+                    Text(
+                        text = message,
+                        color = if (uiState.connectionSuccess == true) {
+                            MaterialTheme.colorScheme.primary
                         } else {
-                            onContinue(trimmedServerName, trimmedBaseUrl)
-                        }
-                    },
-                    enabled = uiState.canContinue,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Continue")
+                            MaterialTheme.colorScheme.error
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
-            }
 
-            uiState.connectionMessage?.let { message ->
-                Text(
-                    text = message,
-                    color = if (uiState.connectionSuccess == true) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-
-            Button(
-                onClick = onBack,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Back")
+                Button(
+                    onClick = onBack,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Back")
+                }
             }
         }
 

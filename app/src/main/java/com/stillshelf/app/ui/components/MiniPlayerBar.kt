@@ -61,7 +61,7 @@ fun MiniPlayerBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
             .clip(shape)
             .background(frostedFill)
             .border(width = 1.5.dp, color = borderColor, shape = shape)
@@ -70,14 +70,14 @@ fun MiniPlayerBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (item?.book?.coverUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(30.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 )
@@ -86,7 +86,7 @@ fun MiniPlayerBar(
                     model = rememberCoverImageModel(item?.book?.coverUrl),
                     contentDescription = item?.book?.title,
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(30.dp)
                         .clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop
                 )
@@ -95,14 +95,14 @@ fun MiniPlayerBar(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -112,6 +112,7 @@ fun MiniPlayerBar(
             IconButton(onClick = onRewind15) {
                 MiniSeek15Glyph(
                     forward = false,
+                    seconds = state.rewindSeconds,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -138,6 +139,7 @@ fun MiniPlayerBar(
 @Composable
 private fun MiniSeek15Glyph(
     forward: Boolean,
+    seconds: Int,
     tint: androidx.compose.ui.graphics.Color
 ) {
     Box(
@@ -185,7 +187,7 @@ private fun MiniSeek15Glyph(
             )
         }
         Text(
-            text = "15",
+            text = seconds.coerceIn(10, 60).toString(),
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 9.sp,
                 fontWeight = FontWeight.SemiBold

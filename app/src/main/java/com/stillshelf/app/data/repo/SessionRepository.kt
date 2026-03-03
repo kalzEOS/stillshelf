@@ -52,6 +52,29 @@ interface SessionRepository {
     suspend fun fetchCollectionsForActiveLibrary(
         forceRefresh: Boolean = false
     ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchPlaylistsForActiveLibrary(
+        forceRefresh: Boolean = false
+    ): AppResult<List<NamedEntitySummary>>
+    suspend fun createCollection(name: String): AppResult<NamedEntitySummary>
+    suspend fun createCollectionWithBook(name: String, bookId: String): AppResult<NamedEntitySummary>
+    suspend fun createPlaylist(name: String): AppResult<NamedEntitySummary>
+    suspend fun createPlaylistWithBook(name: String, bookId: String): AppResult<NamedEntitySummary>
+    suspend fun renameCollection(collectionId: String, name: String): AppResult<Unit>
+    suspend fun renamePlaylist(playlistId: String, name: String): AppResult<Unit>
+    suspend fun deleteCollection(collectionId: String): AppResult<Unit>
+    suspend fun deletePlaylist(playlistId: String): AppResult<Unit>
+    suspend fun addBookToCollection(collectionId: String, bookId: String): AppResult<Unit>
+    suspend fun addBookToPlaylist(playlistId: String, bookId: String): AppResult<Unit>
+    suspend fun removeBookFromCollection(collectionId: String, bookId: String): AppResult<Unit>
+    suspend fun removeBookFromPlaylist(playlistId: String, bookId: String): AppResult<Unit>
+    suspend fun fetchCollectionBooks(
+        collectionId: String,
+        forceRefresh: Boolean = false
+    ): AppResult<List<BookSummary>>
+    suspend fun fetchPlaylistBooks(
+        playlistId: String,
+        forceRefresh: Boolean = false
+    ): AppResult<List<BookSummary>>
     suspend fun fetchBookDetail(
         bookId: String,
         forceRefresh: Boolean = false
@@ -64,6 +87,7 @@ interface SessionRepository {
         durationSeconds: Double?,
         isFinished: Boolean
     ): AppResult<Unit>
+    suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit>
     suspend fun addBookToDefaultCollection(bookId: String): AppResult<String>
     suspend fun setLastPlayedBookId(bookId: String?): AppResult<Unit>
     suspend fun searchActiveLibrary(query: String, limit: Int = 60): AppResult<SearchResults>
@@ -71,6 +95,6 @@ interface SessionRepository {
     suspend fun fetchCachedHomeFeed(maxAgeMs: Long? = null): AppResult<HomeFeed?>
     suspend fun fetchHomeFeed(
         continueLimit: Int = 10,
-        recentlyAddedLimit: Int = 12
+        recentlyAddedLimit: Int = 24
     ): AppResult<HomeFeed>
 }

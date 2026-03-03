@@ -32,6 +32,13 @@ data class SeriesBrowseUiState(
     val errorMessage: String? = null
 )
 
+data class CollectionsBrowseUiState(
+    val isLoading: Boolean = false,
+    val entities: List<NamedEntitySummary> = emptyList(),
+    val errorMessage: String? = null,
+    val actionMessage: String? = null
+)
+
 @HiltViewModel
 class AuthorsBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository
@@ -193,8 +200,8 @@ class SeriesBrowseViewModel @Inject constructor(
 class CollectionsBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository
 ) : ViewModel() {
-    private val mutableUiState = MutableStateFlow(EntityBrowseUiState())
-    val uiState: StateFlow<EntityBrowseUiState> = mutableUiState.asStateFlow()
+    private val mutableUiState = MutableStateFlow(CollectionsBrowseUiState())
+    val uiState: StateFlow<CollectionsBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
         refresh(forceRefresh = false)
@@ -202,6 +209,52 @@ class CollectionsBrowseViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun createCollection(name: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.createCollection(name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Collection created.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun renameCollection(collectionId: String, name: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.renameCollection(collectionId = collectionId, name = name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Collection renamed.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun deleteCollection(collectionId: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.deleteCollection(collectionId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Collection deleted.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -216,6 +269,95 @@ class CollectionsBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             entities = filtered
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@HiltViewModel
+class PlaylistsBrowseViewModel @Inject constructor(
+    private val sessionRepository: SessionRepository
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(CollectionsBrowseUiState())
+    val uiState: StateFlow<CollectionsBrowseUiState> = mutableUiState.asStateFlow()
+
+    init {
+        refresh(forceRefresh = false)
+    }
+
+    fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    fun createPlaylist(name: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.createPlaylist(name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Playlist created.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun renamePlaylist(playlistId: String, name: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.renamePlaylist(playlistId = playlistId, name = name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Playlist renamed.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun deletePlaylist(playlistId: String) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.deletePlaylist(playlistId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Playlist deleted.") }
+                    refresh(forceRefresh = true)
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
+        if (uiState.value.isLoading) return
+        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+
+        viewModelScope.launch {
+            when (val result = sessionRepository.fetchPlaylistsForActiveLibrary(forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            entities = result.value
                         )
                     }
                 }

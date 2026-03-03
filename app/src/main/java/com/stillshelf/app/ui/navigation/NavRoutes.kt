@@ -55,17 +55,32 @@ object DetailRoute {
     const val NARRATOR_NAME_ARG = "narratorName"
     const val SERIES_NAME_ARG = "seriesName"
     const val GENRE_NAME_ARG = "genreName"
+    const val COLLECTION_ID_ARG = "collectionId"
+    const val COLLECTION_NAME_ARG = "collectionName"
+    const val PLAYLIST_ID_ARG = "playlistId"
+    const val PLAYLIST_NAME_ARG = "playlistName"
     const val BOOK_PATTERN = "main/book/{$BOOK_ID_ARG}"
     const val AUTHOR_PATTERN = "main/author/{$AUTHOR_NAME_ARG}"
     const val NARRATOR_PATTERN = "main/narrator/{$NARRATOR_NAME_ARG}"
     const val SERIES_PATTERN = "main/series/{$SERIES_NAME_ARG}"
     const val GENRE_PATTERN = "main/genre/{$GENRE_NAME_ARG}"
+    const val COLLECTION_PATTERN =
+        "main/collection/{$COLLECTION_ID_ARG}?$COLLECTION_NAME_ARG={$COLLECTION_NAME_ARG}"
+    const val PLAYLIST_PATTERN =
+        "main/playlist/{$PLAYLIST_ID_ARG}?$PLAYLIST_NAME_ARG={$PLAYLIST_NAME_ARG}"
 
     fun book(bookId: String): String = "main/book/${Uri.encode(bookId)}"
     fun author(name: String): String = "main/author/${Uri.encode(name)}"
     fun narrator(name: String): String = "main/narrator/${Uri.encode(name)}"
     fun series(name: String): String = "main/series/${Uri.encode(name)}"
     fun genre(name: String): String = "main/genre/${Uri.encode(name)}"
+    fun collection(id: String, name: String): String {
+        return "main/collection/${Uri.encode(id)}?$COLLECTION_NAME_ARG=${Uri.encode(name)}"
+    }
+
+    fun playlist(id: String, name: String): String {
+        return "main/playlist/${Uri.encode(id)}?$PLAYLIST_NAME_ARG=${Uri.encode(name)}"
+    }
 }
 
 enum class MainTab(val route: String, val label: String) {

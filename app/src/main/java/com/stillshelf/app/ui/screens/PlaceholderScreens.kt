@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens
 
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
@@ -9,6 +10,9 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +24,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,7 +55,9 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.DragHandle
@@ -81,18 +89,23 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -118,15 +131,24 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import kotlin.math.cos
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.graphics.drawable.toBitmap
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
@@ -212,12 +234,16 @@ fun HomePlaceholderScreen(
     onHomeClick: (() -> Unit)? = null,
     viewModel: HomeViewModel = hiltViewModel(),
     menuViewModel: HomeMenuViewModel = hiltViewModel(),
-    customizeViewModel: CustomizeViewModel = hiltViewModel()
+    customizeViewModel: CustomizeViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val menuUiState by menuViewModel.uiState.collectAsStateWithLifecycle()
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     var isMenuExpanded by remember { mutableStateOf(false) }
+    var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
         onRefresh = viewModel::refresh
@@ -281,7 +307,26 @@ fun HomePlaceholderScreen(
     val orderedListItems = customizeUiState.listSections
         .mapNotNull { listItemById[it.id] }
         .filterNot { customizeUiState.hiddenListSectionIds.contains(it.id) }
-
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(addToListBookId) {
+        if (!addToListBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -456,7 +501,16 @@ fun HomePlaceholderScreen(
                                         items(uiState.continueListening, key = { it.book.id }) { item ->
                                             ContinueListeningCard(
                                                 item = item,
-                                                onClick = { onOpenPlayer(item.book.id) }
+                                                isDownloaded = uiState.downloadedBookIds.contains(item.book.id),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId[item.book.id],
+                                                onClick = { onOpenPlayer(item.book.id) },
+                                                onGoToBook = { onOpenBook(item.book.id) },
+                                                onAddToCollection = { addToListBookId = item.book.id },
+                                                onMarkFinished = { viewModel.markAsFinished(item.book.id) },
+                                                onRemoveFromContinueListening = {
+                                                    viewModel.removeFromContinueListening(item.book.id)
+                                                },
+                                                onToggleDownload = { viewModel.toggleDownload(item.book.id) }
                                             )
                                         }
                                     }
@@ -496,13 +550,85 @@ fun HomePlaceholderScreen(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
                                         items(uiState.recentlyAdded, key = { it.id }) { book ->
-                                            Box(modifier = Modifier.clickable { onOpenBook(book.id) }) {
+                                            var menuExpanded by remember { mutableStateOf(false) }
+                                            Column(
+                                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                                modifier = Modifier.clickable { onOpenBook(book.id) }
+                                            ) {
                                                 BookPoster(
                                                     book = book,
                                                     width = 92.dp,
                                                     height = 118.dp,
-                                                    backgroundBlur = 64.dp
+                                                    backgroundBlur = 64.dp,
+                                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                                    downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
                                                 )
+                                                Row(
+                                                    modifier = Modifier.width(92.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = formatDurationHoursMinutes(book.durationSeconds),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                    Box {
+                                                        IconButton(
+                                                            onClick = { menuExpanded = true },
+                                                            modifier = Modifier.size(22.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Outlined.MoreHoriz,
+                                                                contentDescription = "Book actions",
+                                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                        DropdownMenu(
+                                                            expanded = menuExpanded,
+                                                            onDismissRequest = { menuExpanded = false }
+                                                        ) {
+                                                            DropdownMenuItem(
+                                                                text = { Text("Add to Collection") },
+                                                                leadingIcon = {
+                                                                    Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
+                                                                },
+                                                                onClick = {
+                                                                    addToListBookId = book.id
+                                                                    menuExpanded = false
+                                                                }
+                                                            )
+                                                            DropdownMenuItem(
+                                                                text = { Text("Mark as Unfinished") },
+                                                                leadingIcon = {
+                                                                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                                                                },
+                                                                onClick = {
+                                                                    viewModel.markAsUnfinished(book.id)
+                                                                    menuExpanded = false
+                                                                }
+                                                            )
+                                                            DropdownMenuItem(
+                                                                text = {
+                                                                    Text(
+                                                                        if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                            "Remove Download"
+                                                                        } else {
+                                                                            "Download"
+                                                                        }
+                                                                    )
+                                                                },
+                                                                leadingIcon = {
+                                                                    Icon(Icons.Outlined.Download, contentDescription = null)
+                                                                },
+                                                                onClick = {
+                                                                    viewModel.toggleDownload(book.id)
+                                                                    menuExpanded = false
+                                                                }
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -514,7 +640,7 @@ fun HomePlaceholderScreen(
                     HomeSectionIds.RECENT_SERIES -> {
                         item { SectionTitle("Recent Series") }
                         item {
-                            val seriesItems = uiState.recentSeries.take(6)
+                            val seriesItems = uiState.recentSeries
                             if (seriesItems.isEmpty()) {
                                 Text(
                                     text = "No recent series.",
@@ -530,6 +656,8 @@ fun HomePlaceholderScreen(
                                     items(seriesItems, key = { it.seriesName }) { series ->
                                         SeriesStackCard(
                                             series = series,
+                                            isDownloaded = uiState.downloadedBookIds.contains(series.leadBook.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[series.leadBook.id],
                                             onClick = { onOpenSeries(series.seriesName) }
                                         )
                                     }
@@ -555,6 +683,7 @@ fun HomePlaceholderScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     items(discoverBooks, key = { it.id }) { book ->
+                                        var menuExpanded by remember { mutableStateOf(false) }
                                         Column(
                                             modifier = Modifier.clickable { onOpenBook(book.id) },
                                             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -563,13 +692,70 @@ fun HomePlaceholderScreen(
                                                 book = book,
                                                 width = 92.dp,
                                                 height = 118.dp,
-                                                backgroundBlur = 64.dp
+                                                backgroundBlur = 64.dp,
+                                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
                                             )
                                             Text(
                                                 text = formatDurationHoursMinutes(book.durationSeconds),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                            Box {
+                                                IconButton(
+                                                    onClick = { menuExpanded = true },
+                                                    modifier = Modifier.size(22.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.MoreHoriz,
+                                                        contentDescription = "Book actions",
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                DropdownMenu(
+                                                    expanded = menuExpanded,
+                                                    onDismissRequest = { menuExpanded = false }
+                                                ) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("Add to Collection") },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            addToListBookId = book.id
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = { Text("Mark as Finished") },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.CheckCircle, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            viewModel.markAsFinished(book.id)
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Text(
+                                                                if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                    "Remove Download"
+                                                                } else {
+                                                                    "Download"
+                                                                }
+                                                            )
+                                                        },
+                                                        leadingIcon = {
+                                                            Icon(Icons.Outlined.Download, contentDescription = null)
+                                                        },
+                                                        onClick = {
+                                                            viewModel.toggleDownload(book.id)
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -648,6 +834,41 @@ fun HomePlaceholderScreen(
             modifier = Modifier.align(Alignment.TopCenter)
         )
     }
+
+    val targetBookId = addToListBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                addToListBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterialApi::class)
@@ -657,11 +878,15 @@ fun BrowsePlaceholderScreen(
     onSeriesClick: (String) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: BooksBrowseViewModel = hiltViewModel()
+    viewModel: BooksBrowseViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     var statusMenuExpanded by remember { mutableStateOf(false) }
     var optionsMenuExpanded by remember { mutableStateOf(false) }
+    var collectionPickerBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isRefreshing,
         onRefresh = viewModel::refresh
@@ -675,6 +900,26 @@ fun BrowsePlaceholderScreen(
             books = displayBooks,
             collapseSeries = uiState.collapseSeries
         )
+    }
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(collectionPickerBookId) {
+        if (!collectionPickerBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
     }
 
     Column(
@@ -915,14 +1160,24 @@ fun BrowsePlaceholderScreen(
                                     is BooksGridEntry.BookItem -> {
                                         BookGridItem(
                                             book = entry.book,
-                                            onClick = { onBookClick(entry.book.id) }
+                                            onClick = { onBookClick(entry.book.id) },
+                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            onAddToCollection = { collectionPickerBookId = entry.book.id },
+                                            onMarkFinished = { viewModel.markAsFinished(entry.book.id) },
+                                            onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
 
                                     is BooksGridEntry.SeriesStack -> {
                                         SeriesStackGridItem(
                                             entry = entry,
-                                            onClick = { onSeriesClick(entry.seriesName) }
+                                            onClick = { onSeriesClick(entry.seriesName) },
+                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
+                                            onMarkFinished = { viewModel.markAsFinished(entry.leadBook.id) },
+                                            onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
                                 }
@@ -938,14 +1193,24 @@ fun BrowsePlaceholderScreen(
                                     is BooksGridEntry.BookItem -> {
                                         BookListItem(
                                             book = entry.book,
-                                            onClick = { onBookClick(entry.book.id) }
+                                            onClick = { onBookClick(entry.book.id) },
+                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            onAddToCollection = { collectionPickerBookId = entry.book.id },
+                                            onMarkFinished = { viewModel.markAsFinished(entry.book.id) },
+                                            onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
 
                                     is BooksGridEntry.SeriesStack -> {
                                         SeriesStackListItem(
                                             entry = entry,
-                                            onClick = { onSeriesClick(entry.seriesName) }
+                                            onClick = { onSeriesClick(entry.seriesName) },
+                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
+                                            onMarkFinished = { viewModel.markAsFinished(entry.leadBook.id) },
+                                            onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
                                 }
@@ -962,14 +1227,56 @@ fun BrowsePlaceholderScreen(
             )
         }
     }
+
+    val targetBookId = collectionPickerBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                collectionPickerBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
 }
 
 @Composable
 private fun BookGridItem(
     book: BookSummary,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     val posterWidth = StandardGridCoverWidth
     val posterHeight = StandardGridCoverHeight
     Column(
@@ -984,7 +1291,9 @@ private fun BookGridItem(
                 book = book,
                 width = posterWidth,
                 height = posterHeight,
-                contentScale = ContentScale.Fit
+                contentScale = ContentScale.Fit,
+                showDownloadIndicator = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent
             )
         }
         Row(
@@ -1011,9 +1320,30 @@ private fun BookGridItem(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(text = { Text("Download") }, onClick = { menuExpanded = false })
-                    DropdownMenuItem(text = { Text("Mark as Finished") }, onClick = { menuExpanded = false })
-                    DropdownMenuItem(text = { Text("Add to Collection") }, onClick = { menuExpanded = false })
+                    DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        onClick = {
+                            onToggleDownload()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as Finished") },
+                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        onClick = {
+                            onMarkFinished()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to Collection") },
+                        leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                        onClick = {
+                            onAddToCollection()
+                            menuExpanded = false
+                        }
+                    )
                 }
             }
         }
@@ -1023,9 +1353,16 @@ private fun BookGridItem(
 @Composable
 private fun SeriesStackGridItem(
     entry: BooksGridEntry.SeriesStack,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
     val book = entry.leadBook
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     val layerCount = entry.count.coerceIn(2, 3)
     val frameWidth = StandardGridCoverWidth
     val frameHeight = StandardGridCoverHeight
@@ -1042,6 +1379,7 @@ private fun SeriesStackGridItem(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.clickable(onClick = onClick)
     ) {
+        var menuExpanded by remember { mutableStateOf(false) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1068,6 +1406,45 @@ private fun SeriesStackGridItem(
                     backgroundBlur = WideCoverBackgroundBlur
                 )
             }
+            val progress = downloadProgressPercent?.coerceIn(0, 100)
+            val showProgress = progress != null && progress in 0..99
+            val showCompleted = isDownloaded && !showProgress
+            if (showProgress || showCompleted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-6).dp, y = 6.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (showProgress) {
+                        CircularProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.4.dp,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$progress%",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 8.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Downloaded",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
         Row(
             modifier = Modifier
@@ -1078,8 +1455,47 @@ private fun SeriesStackGridItem(
             Text(
                 text = if (entry.count == 1) "1 book" else "${entry.count} books",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
             )
+            Box {
+                IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(22.dp)) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Series actions",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Add to Collection") },
+                        leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                        onClick = {
+                            onAddToCollection()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as Finished") },
+                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        onClick = {
+                            onMarkFinished()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        onClick = {
+                            onToggleDownload()
+                            menuExpanded = false
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -1087,9 +1503,16 @@ private fun SeriesStackGridItem(
 @Composable
 private fun BookListItem(
     book: BookSummary,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1105,7 +1528,9 @@ private fun BookListItem(
             height = 88.dp,
             shape = RoundedCornerShape(6.dp),
             contentScale = ContentScale.Fit,
-            backgroundBlur = 44.dp
+            backgroundBlur = 44.dp,
+            showDownloadIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
@@ -1138,9 +1563,30 @@ private fun BookListItem(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false }
             ) {
-                DropdownMenuItem(text = { Text("Download") }, onClick = { menuExpanded = false })
-                DropdownMenuItem(text = { Text("Mark as Finished") }, onClick = { menuExpanded = false })
-                DropdownMenuItem(text = { Text("Add to Collection") }, onClick = { menuExpanded = false })
+                DropdownMenuItem(
+                    text = { Text(downloadLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = {
+                        onToggleDownload()
+                        menuExpanded = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Mark as Finished") },
+                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                    onClick = {
+                        onMarkFinished()
+                        menuExpanded = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Add to Collection") },
+                    leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                    onClick = {
+                        onAddToCollection()
+                        menuExpanded = false
+                    }
+                )
             }
         }
     }
@@ -1149,9 +1595,17 @@ private fun BookListItem(
 @Composable
 private fun SeriesStackListItem(
     entry: BooksGridEntry.SeriesStack,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
     val lead = entry.leadBook
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1197,6 +1651,45 @@ private fun SeriesStackListItem(
                     backgroundBlur = 44.dp
                 )
             }
+            val progress = downloadProgressPercent?.coerceIn(0, 100)
+            val showProgress = progress != null && progress in 0..99
+            val showCompleted = isDownloaded && !showProgress
+            if (showProgress || showCompleted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-6).dp, y = 6.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (showProgress) {
+                        CircularProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.4.dp,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$progress%",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 8.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Downloaded",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
         Column(
             modifier = Modifier.weight(1f),
@@ -1214,11 +1707,43 @@ private fun SeriesStackListItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Icon(
-            imageVector = Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Series actions"
+                )
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Add to Collection") },
+                    leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                    onClick = {
+                        onAddToCollection()
+                        menuExpanded = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Mark as Finished") },
+                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                    onClick = {
+                        onMarkFinished()
+                        menuExpanded = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(downloadLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = {
+                        onToggleDownload()
+                        menuExpanded = false
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -1278,25 +1803,510 @@ fun AuthorsBrowseScreen(
     )
 }
 
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun CollectionsBrowseScreen(
+    onCollectionClick: (com.stillshelf.app.core.model.NamedEntitySummary) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     viewModel: CollectionsBrowseViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    EntityBrowseScreen(
-        title = "Collections",
-        uiState = uiState,
-        onRetry = viewModel::refresh,
-        onBackClick = onBackClick,
-        onHomeClick = onHomeClick
+    var manualRefreshInProgress by rememberSaveable { mutableStateOf(false) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && manualRefreshInProgress,
+        onRefresh = {
+            manualRefreshInProgress = true
+            viewModel.refresh()
+        }
     )
+    var renameTarget by remember { mutableStateOf<com.stillshelf.app.core.model.NamedEntitySummary?>(null) }
+    var deleteTarget by remember { mutableStateOf<com.stillshelf.app.core.model.NamedEntitySummary?>(null) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(uiState.isLoading) {
+        if (!uiState.isLoading) manualRefreshInProgress = false
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.refresh()
+            while (true) {
+                kotlinx.coroutines.delay(5_000L)
+                viewModel.refresh()
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BackTitle(
+                title = "Collections",
+                onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.entities.isNotEmpty() -> {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(uiState.entities, key = { it.id }) { collection ->
+                            var menuExpanded by remember { mutableStateOf(false) }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onCollectionClick(collection) }
+                                    .padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = collection.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    collection.subtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                                        Text(
+                                            text = subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Box {
+                                    IconButton(
+                                        onClick = { menuExpanded = true },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            contentDescription = "Collection actions",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = menuExpanded,
+                                        onDismissRequest = { menuExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Rename") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                nameInput = collection.name
+                                                renameTarget = collection
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Delete") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                deleteTarget = collection
+                                            }
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
+                    }
+                }
+
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading collections...",
+                        modifier = Modifier.align(Alignment.Center),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = uiState.errorMessage ?: "No collections yet.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (uiState.errorMessage == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && manualRefreshInProgress,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
+
+    renameTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Collection") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Collection name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renameTarget = null
+                        viewModel.renameCollection(target.id, nameInput)
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete Collection") },
+            text = { Text("Delete \"${target.name}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        viewModel.deleteCollection(target.id)
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
 fun NarratorsBrowseScreen(viewModel: NarratorsBrowseViewModel = hiltViewModel()) {
     NarratorsBrowseScreen(onNarratorClick = {}, onBackClick = null, viewModel = viewModel)
+}
+
+@OptIn(ExperimentalMaterialApi::class)
+@Composable
+fun PlaylistsBrowseScreen(
+    onPlaylistClick: (com.stillshelf.app.core.model.NamedEntitySummary) -> Unit = {},
+    onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
+    viewModel: PlaylistsBrowseViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var manualRefreshInProgress by rememberSaveable { mutableStateOf(false) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && manualRefreshInProgress,
+        onRefresh = {
+            manualRefreshInProgress = true
+            viewModel.refresh()
+        }
+    )
+    var createDialogVisible by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<com.stillshelf.app.core.model.NamedEntitySummary?>(null) }
+    var deleteTarget by remember { mutableStateOf<com.stillshelf.app.core.model.NamedEntitySummary?>(null) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(uiState.isLoading) {
+        if (!uiState.isLoading) manualRefreshInProgress = false
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.refresh()
+            while (true) {
+                kotlinx.coroutines.delay(5_000L)
+                viewModel.refresh()
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BackTitle(
+                title = "Playlists",
+                onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
+                modifier = Modifier.weight(1f)
+            )
+            CircleActionButton(
+                icon = Icons.Outlined.Add,
+                contentDescription = "Create playlist",
+                onClick = {
+                    nameInput = ""
+                    createDialogVisible = true
+                }
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.entities.isNotEmpty() -> {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(uiState.entities, key = { it.id }) { playlist ->
+                            var menuExpanded by remember { mutableStateOf(false) }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPlaylistClick(playlist) }
+                                    .padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = playlist.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    playlist.subtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
+                                        Text(
+                                            text = subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Box {
+                                    IconButton(
+                                        onClick = { menuExpanded = true },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            contentDescription = "Playlist actions",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = menuExpanded,
+                                        onDismissRequest = { menuExpanded = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Rename") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                nameInput = playlist.name
+                                                renameTarget = playlist
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Delete") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                deleteTarget = playlist
+                                            }
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
+                    }
+                }
+
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading playlists...",
+                        modifier = Modifier.align(Alignment.Center),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = uiState.errorMessage ?: "No playlists yet.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (uiState.errorMessage == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                        Button(onClick = {
+                            nameInput = ""
+                            createDialogVisible = true
+                        }) {
+                            Text("Create Playlist")
+                        }
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && manualRefreshInProgress,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
+
+    if (createDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { createDialogVisible = false },
+            title = { Text("New Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        createDialogVisible = false
+                        viewModel.createPlaylist(nameInput)
+                    }
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { createDialogVisible = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    renameTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renameTarget = null
+                        viewModel.renamePlaylist(target.id, nameInput)
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete Playlist") },
+            text = { Text("Delete \"${target.name}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        viewModel.deletePlaylist(target.id)
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1407,17 +2417,29 @@ fun SeriesBrowseScreen(
     viewModel: SeriesBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var gridMode by rememberSaveable { mutableStateOf(true) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 18.dp, vertical = 14.dp)
     ) {
-        BackTitle(
-            title = "Series",
-            onBackClick = onBackClick,
-            onHomeClick = onHomeClick
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BackTitle(
+                title = "Series",
+                onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
+                modifier = Modifier.weight(1f)
+            )
+            CircleActionButton(
+                icon = if (gridMode) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
+                contentDescription = if (gridMode) "List mode" else "Grid mode",
+                onClick = { gridMode = !gridMode }
+            )
+        }
         Spacer(modifier = Modifier.height(10.dp))
 
         when {
@@ -1446,81 +2468,164 @@ fun SeriesBrowseScreen(
             }
 
             else -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 120.dp)
-                ) {
-                    gridItems(uiState.series, key = { it.id }) { series ->
-                        Column(
-                            modifier = Modifier.clickable { onSeriesClick(series.name) },
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Box(
+                if (gridMode) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        gridItems(uiState.series, key = { it.id }) { series ->
+                            Column(
+                                modifier = Modifier.clickable { onSeriesClick(series.name) },
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(StandardGridCoverHeight)
+                                        .clipToBounds(),
+                                    contentAlignment = Alignment.TopCenter
+                                ) {
+                                    val inferredCount = series.subtitle
+                                        .orEmpty()
+                                        .trim()
+                                        .substringBefore(" ")
+                                        .toIntOrNull()
+                                    val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
+                                    val stackStepX = 5.dp
+                                    val stackStepY = 10.dp
+                                    val totalShiftX = stackStepX * (layerCount - 1)
+                                    val totalShiftY = stackStepY * (layerCount - 1)
+                                    val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
+                                    val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
+                                    val baseShiftX = (-4).dp
+                                    val baseShiftY = 1.dp
+                                    val layerShape = RoundedCornerShape(8.dp)
+                                    repeat(layerCount) { layer ->
+                                        val xOffset = baseShiftX + (stackStepX * layer)
+                                        val yOffset = baseShiftY + (stackStepY * layer)
+                                        val alpha = 1f
+                                        val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
+                                        FramedCoverImage(
+                                            coverUrl = series.coverUrl,
+                                            contentDescription = series.name,
+                                            modifier = Modifier
+                                                .offset(x = xOffset, y = yOffset)
+                                                .width(cardWidth)
+                                                .height(cardHeight)
+                                                .shadow(elevation = layerShadow, shape = layerShape, clip = false)
+                                                .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
+                                            shape = layerShape,
+                                            contentScale = ContentScale.Fit,
+                                            backgroundBlur = WideCoverBackgroundBlur
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = series.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier
+                                        .width(StandardGridCoverWidth)
+                                        .align(Alignment.CenterHorizontally),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center
+                                )
+                                Text(
+                                    text = series.subtitle.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .width(StandardGridCoverWidth)
+                                        .align(Alignment.CenterHorizontally),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(uiState.series, key = { it.id }) { series ->
+                            val inferredCount = series.subtitle
+                                .orEmpty()
+                                .trim()
+                                .substringBefore(" ")
+                                .toIntOrNull()
+                            val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
+                            val frameWidth = 92.dp
+                            val frameHeight = 102.dp
+                            val stackStepX = 5.dp
+                            val stackStepY = 10.dp
+                            val totalShiftX = stackStepX * (layerCount - 1)
+                            val totalShiftY = stackStepY * (layerCount - 1)
+                            val cardWidth = frameWidth - totalShiftX - 3.dp
+                            val cardHeight = frameHeight - totalShiftY - 3.dp
+                            val baseShiftX = (-4).dp
+                            val baseShiftY = 1.dp
+                            val layerShape = RoundedCornerShape(8.dp)
+                            Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(StandardGridCoverHeight)
-                                    .clipToBounds(),
-                                contentAlignment = Alignment.TopCenter
+                                    .clickable { onSeriesClick(series.name) }
+                                    .padding(vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val inferredCount = series.subtitle
-                                    .orEmpty()
-                                    .trim()
-                                    .substringBefore(" ")
-                                    .toIntOrNull()
-                                val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
-                                val stackStepX = 5.dp
-                                val stackStepY = 10.dp
-                                val totalShiftX = stackStepX * (layerCount - 1)
-                                val totalShiftY = stackStepY * (layerCount - 1)
-                                val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
-                                val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
-                                val baseShiftX = (-4).dp
-                                val baseShiftY = 1.dp
-                                val layerShape = RoundedCornerShape(8.dp)
-                                repeat(layerCount) { layer ->
-                                    val xOffset = baseShiftX + (stackStepX * layer)
-                                    val yOffset = baseShiftY + (stackStepY * layer)
-                                    val alpha = 1f
-                                    val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
-                                    FramedCoverImage(
-                                        coverUrl = series.coverUrl,
-                                        contentDescription = series.name,
-                                        modifier = Modifier
-                                            .offset(x = xOffset, y = yOffset)
-                                            .width(cardWidth)
-                                            .height(cardHeight)
-                                            .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                                            .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                                        shape = layerShape,
-                                        contentScale = ContentScale.Fit,
-                                        backgroundBlur = WideCoverBackgroundBlur
+                                Box(
+                                    modifier = Modifier
+                                        .width(frameWidth)
+                                        .height(frameHeight)
+                                        .clipToBounds()
+                                ) {
+                                    repeat(layerCount) { layer ->
+                                        val xOffset = baseShiftX + (stackStepX * layer)
+                                        val yOffset = baseShiftY + (stackStepY * layer)
+                                        val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
+                                        FramedCoverImage(
+                                            coverUrl = series.coverUrl,
+                                            contentDescription = series.name,
+                                            modifier = Modifier
+                                                .offset(x = xOffset, y = yOffset)
+                                                .width(cardWidth)
+                                                .height(cardHeight)
+                                                .shadow(elevation = layerShadow, shape = layerShape, clip = false),
+                                            shape = layerShape,
+                                            contentScale = ContentScale.Fit,
+                                            backgroundBlur = WideCoverBackgroundBlur
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = series.name,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = series.subtitle.orEmpty(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            Text(
-                                text = series.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier
-                                    .width(StandardGridCoverWidth)
-                                    .align(Alignment.CenterHorizontally),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center
-                            )
-                            Text(
-                                text = series.subtitle.orEmpty(),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                ,
-                                modifier = Modifier
-                                    .width(StandardGridCoverWidth)
-                                    .align(Alignment.CenterHorizontally),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center
-                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                         }
                     }
                 }
@@ -1693,7 +2798,9 @@ fun SearchPlaceholderScreen(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
@@ -1793,14 +2900,28 @@ private fun SearchEntityRow(
 
 @Composable
 fun DownloadsPlaceholderScreen() {
-    DownloadsPlaceholderScreen(onBackClick = null, onHomeClick = null)
+    DownloadsPlaceholderScreen(onBackClick = null, onHomeClick = null, onBookClick = {})
 }
 
 @Composable
 fun DownloadsPlaceholderScreen(
+    onBookClick: (String) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
-    onHomeClick: (() -> Unit)? = null
+    onHomeClick: (() -> Unit)? = null,
+    viewModel: DownloadsViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val downloadItemById = remember(uiState.downloadItems) {
+        uiState.downloadItems.associateBy { it.bookId }
+    }
+    var listMode by rememberSaveable { mutableStateOf(true) }
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1817,30 +2938,191 @@ fun DownloadsPlaceholderScreen(
                 modifier = Modifier.weight(1f)
             )
             CircleActionButton(
-                icon = Icons.AutoMirrored.Outlined.ViewList,
-                contentDescription = "Downloaded layout"
+                icon = if (listMode) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
+                contentDescription = "Downloaded layout",
+                onClick = { listMode = !listMode }
             )
         }
-        Spacer(modifier = Modifier.weight(1f))
-        Column(
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Download,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(48.dp)
-            )
-            Text(text = "Downloaded", style = MaterialTheme.typography.titleLarge)
-            Text(
-                text = "Downloaded books will appear here.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Spacer(modifier = Modifier.height(10.dp))
+        when {
+            uiState.isLoading -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "Loading downloaded books...",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            uiState.errorMessage != null -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = uiState.errorMessage.orEmpty(),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            uiState.downloadedBookIds.isEmpty() || uiState.books.isEmpty() -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Text(text = "Downloaded", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "Downloaded books will appear here.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            listMode -> {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 120.dp)
+                ) {
+                    items(uiState.books, key = { it.id }) { book ->
+                        val downloadItem = downloadItemById[book.id]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onBookClick(book.id) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BookPoster(
+                                book = book,
+                                width = 58.dp,
+                                height = 80.dp,
+                                shape = RoundedCornerShape(8.dp),
+                                contentScale = ContentScale.Fit,
+                                backgroundBlur = WideCoverBackgroundBlur,
+                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                downloadProgressPercent = downloadItem?.progressPercent
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text(
+                                    text = book.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = book.authorName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                downloadItem?.let { item ->
+                                    if (item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Downloading ||
+                                        item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Queued
+                                    ) {
+                                        Text(
+                                            text = "Downloading ${item.progressPercent.coerceIn(0, 100)}%",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                            var menuExpanded by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { menuExpanded = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        contentDescription = "More"
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = menuExpanded,
+                                    onDismissRequest = { menuExpanded = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Go to book") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            onBookClick(book.id)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Remove Download") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            viewModel.removeDownload(book.id)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                    }
+                }
+            }
+
+            else -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = 120.dp)
+                ) {
+                    gridItems(uiState.books, key = { it.id }) { book ->
+                        val downloadItem = downloadItemById[book.id]
+                        Column(
+                            modifier = Modifier.clickable { onBookClick(book.id) },
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            BookPoster(
+                                book = book,
+                                width = StandardGridCoverWidth,
+                                height = StandardGridCoverHeight,
+                                shape = RoundedCornerShape(10.dp),
+                                contentScale = ContentScale.Fit,
+                                backgroundBlur = WideCoverBackgroundBlur,
+                                showDownloadIndicator = true,
+                                downloadProgressPercent = downloadItem?.progressPercent
+                            )
+                            Text(
+                                text = formatDurationHoursMinutes(book.durationSeconds),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            downloadItem?.let { item ->
+                                if (item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Downloading ||
+                                    item.status == com.stillshelf.app.downloads.manager.DownloadStatus.Queued
+                                ) {
+                                    Text(
+                                        text = "Downloading ${item.progressPercent.coerceIn(0, 100)}%",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Spacer(modifier = Modifier.weight(1f))
     }
 }
 
@@ -1851,8 +3133,10 @@ fun SettingsPlaceholderScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var lockScreenControl by remember { mutableStateOf("skip") }
     var infoMessage by remember { mutableStateOf<String?>(null) }
+    var skipForwardDialogVisible by remember { mutableStateOf(false) }
+    var skipBackwardDialogVisible by remember { mutableStateOf(false) }
+    val skipSecondChoices = remember { listOf(10, 15, 30, 45, 60) }
 
     Column(
         modifier = Modifier
@@ -1941,18 +3225,21 @@ fun SettingsPlaceholderScreen(
             SettingsRow(
                 title = "Follow System Theme",
                 selected = uiState.themeMode == AppThemeMode.FollowSystem,
+                showChevronWhenUnselected = false,
                 onClick = { viewModel.setThemeMode(AppThemeMode.FollowSystem) }
             )
             HorizontalDivider()
             SettingsRow(
                 title = "Light Theme",
                 selected = uiState.themeMode == AppThemeMode.Light,
+                showChevronWhenUnselected = false,
                 onClick = { viewModel.setThemeMode(AppThemeMode.Light) }
             )
             HorizontalDivider()
             SettingsRow(
                 title = "Dark Theme",
                 selected = uiState.themeMode == AppThemeMode.Dark,
+                showChevronWhenUnselected = false,
                 onClick = { viewModel.setThemeMode(AppThemeMode.Dark) }
             )
         }
@@ -1968,14 +3255,14 @@ fun SettingsPlaceholderScreen(
         ) {
             SettingsRow(
                 title = "Skip Forward",
-                value = "15 seconds",
-                onClick = { infoMessage = "Skip forward duration editor coming soon." }
+                value = "${uiState.skipForwardSeconds} seconds",
+                onClick = { skipForwardDialogVisible = true }
             )
             HorizontalDivider()
             SettingsRow(
                 title = "Skip Backward",
-                value = "15 seconds",
-                onClick = { infoMessage = "Skip backward duration editor coming soon." }
+                value = "${uiState.skipBackwardSeconds} seconds",
+                onClick = { skipBackwardDialogVisible = true }
             )
         }
 
@@ -1990,18 +3277,20 @@ fun SettingsPlaceholderScreen(
         ) {
             SettingsRow(
                 title = "Next/Previous",
-                selected = lockScreenControl == "next",
+                selected = uiState.lockScreenControlMode == "next",
+                showChevronWhenUnselected = false,
                 onClick = {
-                    lockScreenControl = "next"
+                    viewModel.setLockScreenControlMode("next")
                     infoMessage = "Lock screen controls set to Next/Previous."
                 }
             )
             HorizontalDivider()
             SettingsRow(
                 title = "Skip Forward/Back",
-                selected = lockScreenControl == "skip",
+                selected = uiState.lockScreenControlMode == "skip",
+                showChevronWhenUnselected = false,
                 onClick = {
-                    lockScreenControl = "skip"
+                    viewModel.setLockScreenControlMode("skip")
                     infoMessage = "Lock screen controls set to Skip Forward/Back."
                 }
             )
@@ -2047,6 +3336,62 @@ fun SettingsPlaceholderScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+
+        if (skipForwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipForwardDialogVisible = false },
+                title = { Text("Skip Forward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            SettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.skipForwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setSkipForwardSeconds(seconds)
+                                    skipForwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipForwardDialogVisible = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+
+        if (skipBackwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipBackwardDialogVisible = false },
+                title = { Text("Skip Backward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            SettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.skipBackwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setSkipBackwardSeconds(seconds)
+                                    skipBackwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipBackwardDialogVisible = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -2055,6 +3400,7 @@ private fun SettingsRow(
     title: String,
     value: String? = null,
     selected: Boolean = false,
+    showChevronWhenUnselected: Boolean = true,
     onClick: (() -> Unit)? = null
 ) {
     Row(
@@ -2081,12 +3427,316 @@ private fun SettingsRow(
             )
         } else if (selected) {
             Icon(imageVector = Icons.Filled.Check, contentDescription = null)
-        } else {
+        } else if (showChevronWhenUnselected) {
             Icon(
                 imageVector = Icons.Outlined.ChevronRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddToListDialog(
+    uiState: CollectionPickerUiState,
+    onDismiss: () -> Unit,
+    onAddToExistingCollection: (String) -> Unit,
+    onCreateCollection: (String) -> Unit,
+    onAddToExistingPlaylist: (String) -> Unit,
+    onCreatePlaylist: (String) -> Unit
+) {
+    var showCollectionInput by rememberSaveable { mutableStateOf(false) }
+    var showPlaylistInput by rememberSaveable { mutableStateOf(false) }
+    var newCollectionName by rememberSaveable { mutableStateOf("") }
+    var newPlaylistName by rememberSaveable { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val submitNewCollection: () -> Unit = {
+        val name = newCollectionName.trim()
+        if (name.isNotBlank() && !uiState.isSubmitting) {
+            onCreateCollection(name)
+            newCollectionName = ""
+            showCollectionInput = false
+        }
+    }
+    val submitNewPlaylist: () -> Unit = {
+        val name = newPlaylistName.trim()
+        if (name.isNotBlank() && !uiState.isSubmitting) {
+            onCreatePlaylist(name)
+            newPlaylistName = ""
+            showPlaylistInput = false
+        }
+    }
+
+    val dismissSheet: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        onDismiss()
+    }
+
+    BackHandler(enabled = true) {
+        dismissSheet()
+    }
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = dismissSheet,
+        sheetState = sheetState,
+        dragHandle = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(100))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                )
+            }
+            Text(
+                text = "Add to Collection",
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            AddToListInlineSection(
+                title = "Collections",
+                newLabel = "New Collection",
+                newName = newCollectionName,
+                onNewNameChange = { newCollectionName = it },
+                showInput = showCollectionInput,
+                entities = uiState.collections,
+                icon = Icons.Outlined.CollectionsBookmark,
+                isLoading = uiState.isLoading,
+                isSubmitting = uiState.isSubmitting,
+                onNewClick = {
+                    showCollectionInput = true
+                    showPlaylistInput = false
+                },
+                onSubmitNew = submitNewCollection,
+                onEntityClick = onAddToExistingCollection
+            )
+            AddToListInlineSection(
+                title = "Playlists",
+                newLabel = "New Playlist",
+                newName = newPlaylistName,
+                onNewNameChange = { newPlaylistName = it },
+                showInput = showPlaylistInput,
+                entities = uiState.playlists,
+                icon = Icons.Outlined.MusicNote,
+                isLoading = uiState.isLoading,
+                isSubmitting = uiState.isSubmitting,
+                onNewClick = {
+                    showPlaylistInput = true
+                    showCollectionInput = false
+                },
+                onSubmitNew = submitNewPlaylist,
+                onEntityClick = onAddToExistingPlaylist
+            )
+            uiState.errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+    }
+}
+
+@Composable
+private fun AddToListInlineSection(
+    title: String,
+    newLabel: String,
+    newName: String,
+    onNewNameChange: (String) -> Unit,
+    showInput: Boolean,
+    entities: List<com.stillshelf.app.core.model.NamedEntitySummary>,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isLoading: Boolean,
+    isSubmitting: Boolean,
+    onNewClick: () -> Unit,
+    onSubmitNew: () -> Unit,
+    onEntityClick: (String) -> Unit
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(showInput) {
+        if (showInput) {
+            focusRequester.requestFocus()
+        }
+    }
+
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (!showInput) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !isSubmitting, onClick = onNewClick)
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = newLabel,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    BasicTextField(
+                        value = newName,
+                        onValueChange = onNewNameChange,
+                        singleLine = true,
+                        enabled = !isSubmitting,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = { onSubmitNew() }
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester),
+                        decorationBox = { inner ->
+                            if (newName.isBlank()) {
+                                Text(
+                                    text = newLabel,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            inner()
+                        }
+                    )
+                }
+            }
+            if (entities.isNotEmpty() || (isLoading && entities.isEmpty())) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            }
+
+            when {
+                entities.isNotEmpty() -> {
+                    entities.forEachIndexed { index, entity ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isSubmitting) { onEntityClick(entity.id) }
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = entity.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            entity.subtitle
+                                ?.trim()
+                                ?.substringBefore(" ")
+                                ?.toIntOrNull()
+                                ?.let { count ->
+                                    Text(
+                                        text = count.toString(),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                        }
+                        if (index < entities.lastIndex) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                        }
+                    }
+                }
+
+                isLoading -> {
+                    Text(
+                        text = "Loading...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -2316,15 +3966,17 @@ fun BookDetailScreen(
     onStartListening: (String) -> Unit = {},
     onOpenAuthor: (String) -> Unit = {},
     onHomeClick: (() -> Unit)? = null,
-    viewModel: BookDetailViewModel = hiltViewModel()
+    viewModel: BookDetailViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val playbackUiState by viewModel.playbackUiState.collectAsStateWithLifecycle()
-    var selectedTab by remember { mutableStateOf("About") }
     var actionsExpanded by remember { mutableStateOf(false) }
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var aboutExpanded by remember { mutableStateOf(false) }
+    var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(infoMessage) {
         val message = infoMessage ?: return@LaunchedEffect
@@ -2335,6 +3987,21 @@ fun BookDetailScreen(
         val message = uiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         viewModel.clearActionMessage()
+    }
+    LaunchedEffect(addToListBookId) {
+        if (!addToListBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
     }
 
     LazyColumn(
@@ -2363,12 +4030,6 @@ fun BookDetailScreen(
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                CircleActionButton(
-                    icon = Icons.Outlined.Download,
-                    contentDescription = "Download",
-                    onClick = { infoMessage = "Download queued (placeholder)." }
-                )
-                Spacer(modifier = Modifier.width(8.dp))
                 Box {
                     CircleActionButton(
                         icon = Icons.Outlined.MoreHoriz,
@@ -2380,30 +4041,42 @@ fun BookDetailScreen(
                         onDismissRequest = { actionsExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Download") },
+                            text = {
+                                val hasActiveDownload = (uiState.downloadProgressPercent ?: -1) in 0..99
+                                Text(
+                                    if (
+                                        uiState.detail?.book?.id?.let(uiState.downloadedBookIds::contains) == true ||
+                                        hasActiveDownload
+                                    ) {
+                                        "Remove Download"
+                                    } else {
+                                        "Download"
+                                    }
+                                )
+                            },
                             onClick = {
-                                infoMessage = "Download queued (placeholder)."
+                                viewModel.toggleDownload()
                                 actionsExpanded = false
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Skip Intro & Outro") },
+                            text = { Text("Skip Intro & Outro (coming soon)") },
                             onClick = {
-                                infoMessage = "Skip Intro/Outro enabled (placeholder)."
+                                infoMessage = "Skip Intro/Outro is planned. It is not active yet."
                                 actionsExpanded = false
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Mark as Finished") },
                             onClick = {
-                                infoMessage = "Marked finished (placeholder)."
+                                viewModel.markAsFinished()
                                 actionsExpanded = false
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Add to Collection") },
                             onClick = {
-                                viewModel.addToCollection()
+                                addToListBookId = uiState.detail?.book?.id
                                 actionsExpanded = false
                             }
                         )
@@ -2488,7 +4161,9 @@ fun BookDetailScreen(
                                 height = 320.dp,
                                 fillMaxWidth = true,
                                 shape = RoundedCornerShape(10.dp),
-                                contentScale = ContentScale.Fit
+                                contentScale = ContentScale.Fit,
+                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                downloadProgressPercent = uiState.downloadProgressPercent
                             )
                             seriesOrderLabel?.let { order ->
                                 Box(
@@ -2577,24 +4252,24 @@ fun BookDetailScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         DetailTabChip(
                             title = "About",
-                            selected = selectedTab == "About",
-                            onClick = { selectedTab = "About" }
+                            selected = uiState.selectedTab == "About",
+                            onClick = { viewModel.setSelectedTab("About") }
                         )
                         DetailTabChip(
                             title = "Chapters",
-                            selected = selectedTab == "Chapters",
-                            onClick = { selectedTab = "Chapters" }
+                            selected = uiState.selectedTab == "Chapters",
+                            onClick = { viewModel.setSelectedTab("Chapters") }
                         )
                         DetailTabChip(
                             title = "Bookmarks",
-                            selected = selectedTab == "Bookmarks",
-                            onClick = { selectedTab = "Bookmarks" }
+                            selected = uiState.selectedTab == "Bookmarks",
+                            onClick = { viewModel.setSelectedTab("Bookmarks") }
                         )
                     }
                 }
                 item { Spacer(modifier = Modifier.height(4.dp)) }
 
-                when (selectedTab) {
+                when (uiState.selectedTab) {
                     "About" -> {
                         val about = detail.description?.ifBlank { null } ?: "No description available."
                         val shouldCollapse = about.length > 280
@@ -2687,7 +4362,12 @@ fun BookDetailScreen(
                                             }
                                         )
                                         Text(
-                                            text = formatSecondsAsHms(chapter.startSeconds),
+                                            text = formatChapterDurationForRow(
+                                                chapter = chapter,
+                                                index = index,
+                                                chapters = detail.chapters,
+                                                totalDurationSeconds = book.durationSeconds
+                                            ),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -2736,6 +4416,41 @@ fun BookDetailScreen(
             }
         }
     }
+
+    val targetBookId = addToListBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                addToListBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
 }
 
 @Composable
@@ -2747,6 +4462,7 @@ fun PlayerPlaceholderScreen(
     val playbackUiState by viewModel.uiState.collectAsStateWithLifecycle()
     val previewItem by viewModel.previewItem.collectAsStateWithLifecycle()
     val chapters by viewModel.chapters.collectAsStateWithLifecycle()
+    val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
     val durationSeconds = when {
@@ -2763,14 +4479,36 @@ fun PlayerPlaceholderScreen(
     } else {
         0f
     }
+    val activeChapterIndex = remember(chapters, positionSeconds) {
+        findActiveChapterIndex(chapters, positionSeconds)
+    }
+    val chapterBounds = remember(chapters, activeChapterIndex, durationSeconds) {
+        chapterWindow(
+            chapters = chapters,
+            index = activeChapterIndex,
+            totalDurationSeconds = durationSeconds
+        )
+    }
+    val chapterDurationSeconds = chapterBounds?.durationSeconds ?: durationSeconds
+    val chapterStartSeconds = chapterBounds?.startSeconds ?: 0.0
+    val chapterLocalSeconds = if (chapterDurationSeconds > 0.0) {
+        (positionSeconds - chapterStartSeconds).coerceIn(0.0, chapterDurationSeconds)
+    } else {
+        positionSeconds
+    }
+    val chapterProgress = if (chapterDurationSeconds > 0.0) {
+        (chapterLocalSeconds / chapterDurationSeconds).toFloat().coerceIn(0f, 1f)
+    } else {
+        progress
+    }
     var isScrubbing by remember { mutableStateOf(false) }
-    var scrubbingProgress by remember { mutableStateOf(progress) }
-    LaunchedEffect(progress, isScrubbing) {
+    var scrubbingProgress by remember { mutableStateOf(chapterProgress) }
+    LaunchedEffect(chapterProgress, isScrubbing) {
         if (!isScrubbing) {
-            scrubbingProgress = progress
+            scrubbingProgress = chapterProgress
         }
     }
-    val effectiveProgress = if (isScrubbing) scrubbingProgress else progress
+    val effectiveProgress = if (isScrubbing) scrubbingProgress else chapterProgress
     val activeChapterTitle = findActiveChapterTitle(chapters, positionSeconds)
     val playerTitle = if (
         book != null &&
@@ -2979,37 +4717,66 @@ fun PlayerPlaceholderScreen(
             onProgressChange = { newProgress ->
                 isScrubbing = true
                 scrubbingProgress = newProgress
-                viewModel.onScrubProgress(newProgress)
+                val chapterDurationMs = (chapterDurationSeconds * 1000.0).toLong()
+                val chapterStartMs = (chapterStartSeconds * 1000.0).toLong()
+                val targetMs = if (chapterDurationMs > 0L) {
+                    chapterStartMs + (chapterDurationMs * newProgress.coerceIn(0f, 1f)).toLong()
+                } else {
+                    (durationSeconds * 1000.0 * newProgress.coerceIn(0f, 1f)).toLong()
+                }
+                viewModel.seekToPositionMs(positionMs = targetMs, commit = false)
             },
             onProgressChangeFinished = { finalProgress ->
                 scrubbingProgress = finalProgress
-                viewModel.onScrubProgressFinished(finalProgress)
+                val chapterDurationMs = (chapterDurationSeconds * 1000.0).toLong()
+                val chapterStartMs = (chapterStartSeconds * 1000.0).toLong()
+                val targetMs = if (chapterDurationMs > 0L) {
+                    chapterStartMs + (chapterDurationMs * finalProgress.coerceIn(0f, 1f)).toLong()
+                } else {
+                    (durationSeconds * 1000.0 * finalProgress.coerceIn(0f, 1f)).toLong()
+                }
+                viewModel.seekToPositionMs(positionMs = targetMs, commit = true)
                 isScrubbing = false
             },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(progressMetaGap))
-        val remainingSeconds = (durationSeconds - positionSeconds).coerceAtLeast(0.0)
+        val currentDisplaySeconds = chapterLocalSeconds.coerceAtLeast(0.0).toLong()
+        val chapterDisplayDurationSeconds = chapterDurationSeconds
+            .coerceAtLeast(0.0)
+            .toLong()
+            .coerceAtLeast(currentDisplaySeconds)
+        val remainingDisplaySeconds = (chapterDisplayDurationSeconds - currentDisplaySeconds)
+            .coerceAtLeast(0L)
+        val timeTextStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = formatSecondsAsHms(positionSeconds),
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryTextColor
+                text = formatSecondsAsHms(currentDisplaySeconds.toDouble()),
+                style = timeTextStyle,
+                color = secondaryTextColor,
+                textAlign = TextAlign.Start,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
             )
             Text(
-                text = "${formatDurationHoursMinutes(remainingSeconds)} left · ${(progress * 100).toInt()}% complete",
+                text = "${formatDurationHoursMinutes(remainingDisplaySeconds.toDouble())} left · ${(chapterProgress * 100).toInt()}% complete",
                 style = MaterialTheme.typography.bodySmall,
                 color = secondaryTextColor,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "-${formatSecondsAsHms(remainingSeconds)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryTextColor
+                text = "-${formatSecondsAsHms(remainingDisplaySeconds.toDouble())}",
+                style = timeTextStyle,
+                color = secondaryTextColor,
+                textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f),
+                maxLines = 1
             )
         }
         playerInfoMessage?.let { message ->
@@ -3037,6 +4804,7 @@ fun PlayerPlaceholderScreen(
             ) {
                 Seek15Button(
                     forward = false,
+                    seconds = controlPrefs.skipBackwardSeconds,
                     tint = primaryTextColor,
                     onClick = viewModel::onRewindClick
                 )
@@ -3057,6 +4825,7 @@ fun PlayerPlaceholderScreen(
                 }
                 Seek15Button(
                     forward = true,
+                    seconds = controlPrefs.skipForwardSeconds,
                     tint = primaryTextColor,
                     onClick = viewModel::onForwardClick
                 )
@@ -3282,6 +5051,7 @@ private fun PlayerBottomToolItem(
 @Composable
 private fun Seek15Button(
     forward: Boolean,
+    seconds: Int,
     tint: Color = MaterialTheme.colorScheme.onSurface,
     onClick: () -> Unit
 ) {
@@ -3333,7 +5103,7 @@ private fun Seek15Button(
             )
         }
         Text(
-            text = "15",
+            text = seconds.coerceIn(10, 60).toString(),
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold
@@ -3341,6 +5111,51 @@ private fun Seek15Button(
             color = tint
         )
     }
+}
+
+private data class ChapterWindow(
+    val startSeconds: Double,
+    val endSeconds: Double,
+    val durationSeconds: Double
+)
+
+private fun chapterWindow(
+    chapters: List<BookChapter>,
+    index: Int,
+    totalDurationSeconds: Double
+): ChapterWindow? {
+    if (index !in chapters.indices) return null
+    val chapter = chapters[index]
+    val start = chapter.startSeconds.coerceAtLeast(0.0)
+    val fallbackEnd = when {
+        index < chapters.lastIndex -> chapters[index + 1].startSeconds
+        totalDurationSeconds > 0.0 -> totalDurationSeconds
+        else -> start
+    }
+    val rawEnd = chapter.endSeconds ?: fallbackEnd
+    val end = rawEnd.coerceAtLeast(start)
+    return ChapterWindow(
+        startSeconds = start,
+        endSeconds = end,
+        durationSeconds = (end - start).coerceAtLeast(0.0)
+    )
+}
+
+private fun formatChapterDurationForRow(
+    chapter: BookChapter,
+    index: Int,
+    chapters: List<BookChapter>,
+    totalDurationSeconds: Double?
+): String {
+    val start = chapter.startSeconds.coerceAtLeast(0.0)
+    val fallbackEnd = when {
+        chapter.endSeconds != null -> chapter.endSeconds
+        index < chapters.lastIndex -> chapters[index + 1].startSeconds
+        totalDurationSeconds != null -> totalDurationSeconds
+        else -> start
+    } ?: start
+    val duration = (fallbackEnd - start).coerceAtLeast(0.0)
+    return formatDurationHoursMinutes(duration)
 }
 
 @Composable
@@ -3855,30 +5670,33 @@ private fun EntityBrowseScreen(
 @Composable
 private fun SeriesStackCard(
     series: SeriesStackSummary,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
     onClick: () -> Unit
 ) {
     val book = series.leadBook
-    val posterWidth = 122.dp
-    val posterHeight = 160.dp
-    val layerCount = series.count.coerceIn(3, 6)
-    val frontOffsetX = 16.dp
-    val frontOffsetY = 8.dp
+    val posterWidth = 92.dp
+    val posterHeight = 118.dp
+    val layerCount = series.count.coerceIn(2, 3)
+    val stackStepX = 5.dp
+    val stackStepY = 8.dp
+    val frameWidth = posterWidth + (stackStepX * (layerCount - 1))
+    val frameHeight = posterHeight + (stackStepY * (layerCount - 1))
     Column(
         modifier = Modifier
-            .width(144.dp)
+            .width(frameWidth)
             .clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Box(
             modifier = Modifier
-                .width(144.dp)
-                .height(posterHeight + frontOffsetY + 4.dp)
+                .width(frameWidth)
+                .height(frameHeight)
         ) {
-            repeat(layerCount - 1) { layer ->
-                val depth = (layerCount - 2 - layer)
-                val xOffset = (frontOffsetX - ((depth + 1) * 4).dp).coerceAtLeast(0.dp)
-                val yOffset = (frontOffsetY - ((depth + 1) * 3).dp).coerceAtLeast(0.dp)
-                val alpha = 1f
+            repeat(layerCount) { layer ->
+                val xOffset = stackStepX * layer
+                val yOffset = stackStepY * layer
+                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 2.8.dp
                 FramedCoverImage(
                     coverUrl = book.coverUrl,
                     contentDescription = book.title,
@@ -3886,34 +5704,65 @@ private fun SeriesStackCard(
                         .offset(x = xOffset, y = yOffset)
                         .width(posterWidth)
                         .height(posterHeight)
-                        .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
+                        .shadow(elevation = layerShadow, shape = RoundedCornerShape(8.dp), clip = false)
+                        .graphicsLayer(alpha = 1f),
                     shape = RoundedCornerShape(8.dp),
                     contentScale = ContentScale.Fit,
                     backgroundBlur = WideCoverBackgroundBlur
                 )
             }
-            FramedCoverImage(
-                coverUrl = book.coverUrl,
-                contentDescription = book.title,
-                modifier = Modifier
-                    .offset(x = frontOffsetX, y = frontOffsetY)
-                    .width(posterWidth)
-                    .height(posterHeight),
-                shape = RoundedCornerShape(8.dp),
-                contentScale = ContentScale.Fit,
-                backgroundBlur = WideCoverBackgroundBlur
-            )
+            val progress = downloadProgressPercent?.coerceIn(0, 100)
+            val showProgress = progress != null && progress in 0..99
+            val showCompleted = isDownloaded && !showProgress
+            if (showProgress || showCompleted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-6).dp, y = 6.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (showProgress) {
+                        CircularProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.4.dp,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$progress%",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 8.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Downloaded",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
         Text(
             text = series.seriesName,
             style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.width(frameWidth),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Text(
             text = if (series.count == 1) "1 book" else "${series.count} books",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(frameWidth)
         )
     }
 }
@@ -3980,8 +5829,18 @@ private fun SectionTitle(title: String) {
 @Composable
 private fun ContinueListeningCard(
     item: ContinueListeningItem,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onGoToBook: () -> Unit,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onRemoveFromContinueListening: () -> Unit,
+    onToggleDownload: () -> Unit,
     onClick: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Card(
         modifier = Modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
@@ -3998,7 +5857,9 @@ private fun ContinueListeningCard(
                 book = item.book,
                 width = 64.dp,
                 height = 84.dp,
-                shape = RoundedCornerShape(6.dp)
+                shape = RoundedCornerShape(6.dp),
+                showDownloadIndicator = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent
             )
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -4022,7 +5883,65 @@ private fun ContinueListeningCard(
                     maxLines = 1
                 )
             }
-            Text("⋯", color = Color.White, style = MaterialTheme.typography.titleMedium)
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Continue listening actions",
+                        tint = Color.White
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Go to Book") },
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null)
+                        },
+                        onClick = {
+                            onGoToBook()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to Collection") },
+                        leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                        onClick = {
+                            onAddToCollection()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as Finished") },
+                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null) },
+                        onClick = {
+                            onMarkFinished()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from Continue Listening") },
+                        leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                        onClick = {
+                            onRemoveFromContinueListening()
+                            menuExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        onClick = {
+                            onToggleDownload()
+                            menuExpanded = false
+                        }
+                    )
+                }
+            }
         }
     }
 }
@@ -4063,7 +5982,9 @@ private fun BookPoster(
     fillMaxWidth: Boolean = false,
     shape: RoundedCornerShape = RoundedCornerShape(8.dp),
     contentScale: ContentScale = ContentScale.Crop,
-    backgroundBlur: Dp = WideCoverBackgroundBlur
+    backgroundBlur: Dp = WideCoverBackgroundBlur,
+    showDownloadIndicator: Boolean = false,
+    downloadProgressPercent: Int? = null
 ) {
     val posterModifier = if (fillMaxWidth) {
         Modifier
@@ -4075,14 +5996,55 @@ private fun BookPoster(
             .height(height)
     }
 
-    FramedCoverImage(
-        coverUrl = book.coverUrl,
-        contentDescription = book.title,
-        modifier = posterModifier,
-        shape = shape,
-        contentScale = contentScale,
-        backgroundBlur = backgroundBlur
-    )
+    Box(modifier = posterModifier) {
+        FramedCoverImage(
+            coverUrl = book.coverUrl,
+            contentDescription = book.title,
+            modifier = Modifier.matchParentSize(),
+            shape = shape,
+            contentScale = contentScale,
+            backgroundBlur = backgroundBlur
+        )
+        val progress = downloadProgressPercent?.coerceIn(0, 100)
+        val showProgress = progress != null && progress in 0..99
+        val showCompleted = showDownloadIndicator && !showProgress
+        if (showProgress || showCompleted) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-6).dp, y = 6.dp)
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (showProgress) {
+                    CircularProgressIndicator(
+                        progress = { progress / 100f },
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.4.dp,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "$progress%",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 8.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = "Downloaded",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

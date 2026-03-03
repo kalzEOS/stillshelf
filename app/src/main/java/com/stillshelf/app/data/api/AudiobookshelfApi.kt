@@ -99,7 +99,15 @@ data class AudiobookshelfBookDetailDto(
 data class AudiobookshelfCollectionDto(
     val id: String,
     val name: String,
-    val libraryId: String? = null
+    val libraryId: String? = null,
+    val itemCount: Int? = null
+)
+
+data class AudiobookshelfPlaylistDto(
+    val id: String,
+    val name: String,
+    val libraryId: String? = null,
+    val itemCount: Int? = null
 )
 
 @Singleton
@@ -468,34 +476,89 @@ class AudiobookshelfApi @Inject constructor(
         libraryId: String,
         name: String
     ): Result<AudiobookshelfCollectionDto> = withContext(Dispatchers.IO) {
-        val body = JSONObject()
-            .put("name", name)
-            .toString()
-            .toRequestBody(JSON_MEDIA_TYPE)
-
-        val libraryRequest = Request.Builder()
-            .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
-            .header("Authorization", authHeaderValue(authToken))
-            .post(body)
-            .build()
-
         runCatching {
-            val libraryResponse = runCatching { executeRequestWithRetry(libraryRequest) }.getOrNull()
-            val parsedLibrary = libraryResponse?.let(::parseCollectionFromResponse)
-            if (parsedLibrary != null) return@runCatching parsedLibrary
+            val attempts = listOf(
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/collections"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .put("books", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/collections"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .put("bookIds", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/collections"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("name", name)
+                            .put("books", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("name", name)
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build()
+            )
 
-            val fallbackBody = JSONObject()
-                .put("name", name)
-                .put("libraryId", libraryId)
-                .toString()
-                .toRequestBody(JSON_MEDIA_TYPE)
-            val fallbackRequest = Request.Builder()
-                .url(buildUrl(baseUrl, "api/collections"))
-                .header("Authorization", authHeaderValue(authToken))
-                .post(fallbackBody)
-                .build()
-            parseCollectionFromResponse(executeRequestWithRetry(fallbackRequest))
-                ?: throw IOException("Collection created but no id returned.")
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) {
+                    parseCollectionFromResponse(attempt.getOrThrow())
+                        ?.let { return@runCatching it }
+                } else {
+                    lastError = attempt.exceptionOrNull()
+                }
+            }
+
+            // Some ABS builds return a sparse/empty create payload; verify by listing.
+            val discovered = getCollections(
+                baseUrl = baseUrl,
+                authToken = authToken,
+                libraryId = libraryId
+            ).getOrNull()?.firstOrNull {
+                it.name.equals(name, ignoreCase = true) &&
+                    (it.libraryId == null || it.libraryId == libraryId)
+            }
+            if (discovered != null) return@runCatching discovered
+
+            throw IOException("Unable to create collection.", lastError)
         }
     }
 
@@ -506,29 +569,75 @@ class AudiobookshelfApi @Inject constructor(
         name: String,
         bookId: String
     ): Result<AudiobookshelfCollectionDto> = withContext(Dispatchers.IO) {
-        val booksArray = JSONArray().put(bookId)
-        val libraryBody = JSONObject()
-            .put("name", name)
-            .put("books", booksArray)
-            .toString()
-            .toRequestBody(JSON_MEDIA_TYPE)
-        val globalBody = JSONObject()
-            .put("name", name)
-            .put("libraryId", libraryId)
-            .put("books", JSONArray().put(bookId))
-            .toString()
-            .toRequestBody(JSON_MEDIA_TYPE)
-
         val attempts = listOf(
             Request.Builder()
                 .url(buildUrl(baseUrl, "api/collections"))
                 .header("Authorization", authHeaderValue(authToken))
-                .post(globalBody)
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("books", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("bookIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("libraryItemIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
                 .build(),
             Request.Builder()
                 .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
                 .header("Authorization", authHeaderValue(authToken))
-                .post(libraryBody)
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("books", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("bookIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryItemIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
                 .build()
         )
 
@@ -543,7 +652,32 @@ class AudiobookshelfApi @Inject constructor(
                     lastError = response.exceptionOrNull()
                 }
             }
+            val discovered = getCollections(
+                baseUrl = baseUrl,
+                authToken = authToken,
+                libraryId = libraryId
+            ).getOrNull()?.firstOrNull {
+                it.name.equals(name, ignoreCase = true) &&
+                    (it.libraryId == null || it.libraryId == libraryId)
+            }
+            if (discovered != null) return@runCatching discovered
+
             throw IOException("Unable to create collection with initial book.", lastError)
+        }
+    }
+
+    suspend fun getCollectionBookIds(
+        baseUrl: String,
+        authToken: String,
+        collectionId: String
+    ): Result<Set<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+            parseCollectionBookIds(executeRequestWithRetry(request))
         }
     }
 
@@ -557,12 +691,24 @@ class AudiobookshelfApi @Inject constructor(
             .put("id", bookId)
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
+        val itemIdBody = JSONObject()
+            .put("libraryItemId", bookId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
         val idsBody = JSONObject()
             .put("bookIds", JSONArray().put(bookId))
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemIdsBody = JSONObject()
+            .put("libraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
         val booksBody = JSONObject()
             .put("books", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemsBody = JSONObject()
+            .put("libraryItems", JSONArray().put(bookId))
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         val addIdsBody = JSONObject()
@@ -577,9 +723,19 @@ class AudiobookshelfApi @Inject constructor(
                 .post(idBody)
                 .build(),
             Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/book"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemIdBody)
+                .build(),
+            Request.Builder()
                 .url(buildUrl(baseUrl, "api/collections/$collectionId/batch/add"))
                 .header("Authorization", authHeaderValue(authToken))
                 .post(booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/batch/add"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemsBody)
                 .build(),
             Request.Builder()
                 .url(buildUrl(baseUrl, "api/collections/$collectionId/book/$bookId"))
@@ -599,7 +755,17 @@ class AudiobookshelfApi @Inject constructor(
             Request.Builder()
                 .url(buildUrl(baseUrl, "api/collections/$collectionId/books"))
                 .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/books"))
+                .header("Authorization", authHeaderValue(authToken))
                 .post(booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemsBody)
                 .build(),
             Request.Builder()
                 .url(buildUrl(baseUrl, "api/collections/$collectionId"))
@@ -615,6 +781,16 @@ class AudiobookshelfApi @Inject constructor(
                 .url(buildUrl(baseUrl, "api/collections/$collectionId"))
                 .header("Authorization", authHeaderValue(authToken))
                 .method("PATCH", booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", libraryItemsBody)
                 .build()
         )
 
@@ -623,12 +799,962 @@ class AudiobookshelfApi @Inject constructor(
             val failedUrls = mutableListOf<String>()
             attempts.forEach { request ->
                 val attempt = runCatching { executeRequestWithRetry(request) }
-                if (attempt.isSuccess) return@runCatching Unit
+                if (attempt.isSuccess) {
+                    val verifyIds = getCollectionBookIds(baseUrl, authToken, collectionId).getOrNull()
+                    if (verifyIds == null || verifyIds.contains(bookId)) {
+                        return@runCatching Unit
+                    }
+                }
                 lastError = attempt.exceptionOrNull()
                 failedUrls += request.url.encodedPath
             }
             val message = buildString {
                 append("Unable to add book to collection.")
+                if (failedUrls.isNotEmpty()) {
+                    append(" Tried: ")
+                    append(failedUrls.joinToString(", "))
+                }
+            }
+            throw IOException(message, lastError)
+        }
+    }
+
+    suspend fun renameCollection(
+        baseUrl: String,
+        authToken: String,
+        collectionId: String,
+        name: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("name", name)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val altBody = JSONObject()
+            .put("collection", JSONObject().put("name", name))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", body)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PUT", body)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", altBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PUT", altBody)
+                .build()
+        )
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) return@runCatching Unit
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to rename collection.", lastError)
+        }
+    }
+
+    suspend fun deleteCollection(
+        baseUrl: String,
+        authToken: String,
+        collectionId: String,
+        libraryId: String?
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val attempts = buildList {
+            add(
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .delete()
+                    .build()
+            )
+            if (!libraryId.isNullOrBlank()) {
+                add(
+                    Request.Builder()
+                        .url(buildUrl(baseUrl, "api/libraries/$libraryId/collections/$collectionId"))
+                        .header("Authorization", authHeaderValue(authToken))
+                        .delete()
+                        .build()
+                )
+            }
+        }
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) return@runCatching Unit
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to delete collection.", lastError)
+        }
+    }
+
+    suspend fun renamePlaylist(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String,
+        name: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("name", name)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val altBody = JSONObject()
+            .put("playlist", JSONObject().put("name", name))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", body)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PUT", body)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", altBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PUT", altBody)
+                .build()
+        )
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) return@runCatching Unit
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to rename playlist.", lastError)
+        }
+    }
+
+    suspend fun removeBookFromCollection(
+        baseUrl: String,
+        authToken: String,
+        collectionId: String,
+        bookId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val removeIdsBody = JSONObject()
+            .put("removeBookIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeLibraryItemIdsBody = JSONObject()
+            .put("removeLibraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/book/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId/books/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/collections/$collectionId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeLibraryItemIdsBody)
+                .build()
+        )
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) return@runCatching Unit
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to remove book from collection.", lastError)
+        }
+    }
+
+    suspend fun getPlaylists(
+        baseUrl: String,
+        authToken: String,
+        libraryId: String
+    ): Result<List<AudiobookshelfPlaylistDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val libraryScoped = Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+            val fallbackGlobal = Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+
+            val scoped = runCatching { executeRequestWithRetry(libraryScoped) }
+            if (scoped.isSuccess) return@runCatching parsePlaylists(scoped.getOrThrow())
+
+            val global = parsePlaylists(executeRequestWithRetry(fallbackGlobal))
+            val filtered = global.filter { it.libraryId == null || it.libraryId == libraryId }
+            if (filtered.isNotEmpty()) filtered else global
+        }
+    }
+
+    suspend fun createPlaylist(
+        baseUrl: String,
+        authToken: String,
+        libraryId: String,
+        name: String
+    ): Result<AudiobookshelfPlaylistDto> = withContext(Dispatchers.IO) {
+        runCatching {
+            val attempts = listOf(
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/playlists"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .put("books", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/playlists"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .put("bookIds", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/playlists"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("libraryId", libraryId)
+                            .put("name", name)
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("name", name)
+                            .put("books", JSONArray())
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build(),
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .post(
+                        JSONObject()
+                            .put("name", name)
+                            .toString()
+                            .toRequestBody(JSON_MEDIA_TYPE)
+                    )
+                    .build()
+            )
+
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) {
+                    parsePlaylistFromResponse(attempt.getOrThrow())
+                        ?.let { return@runCatching it }
+                } else {
+                    lastError = attempt.exceptionOrNull()
+                }
+            }
+
+            val discovered = getPlaylists(
+                baseUrl = baseUrl,
+                authToken = authToken,
+                libraryId = libraryId
+            ).getOrNull()?.firstOrNull {
+                it.name.equals(name, ignoreCase = true) &&
+                    (it.libraryId == null || it.libraryId == libraryId)
+            }
+            if (discovered != null) return@runCatching discovered
+
+            throw IOException("Unable to create playlist.", lastError)
+        }
+    }
+
+    suspend fun createPlaylistWithBook(
+        baseUrl: String,
+        authToken: String,
+        libraryId: String,
+        name: String,
+        bookId: String
+    ): Result<AudiobookshelfPlaylistDto> = withContext(Dispatchers.IO) {
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("books", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("bookIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryId", libraryId)
+                        .put("libraryItemIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("books", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("bookIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(
+                    JSONObject()
+                        .put("name", name)
+                        .put("libraryItemIds", JSONArray().put(bookId))
+                        .toString()
+                        .toRequestBody(JSON_MEDIA_TYPE)
+                )
+                .build()
+        )
+
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val response = runCatching { executeRequestWithRetry(request) }
+                if (response.isSuccess) {
+                    parsePlaylistFromResponse(response.getOrThrow())
+                        ?.let { return@runCatching it }
+                } else {
+                    lastError = response.exceptionOrNull()
+                }
+            }
+
+            val discovered = getPlaylists(
+                baseUrl = baseUrl,
+                authToken = authToken,
+                libraryId = libraryId
+            ).getOrNull()?.firstOrNull {
+                it.name.equals(name, ignoreCase = true) &&
+                    (it.libraryId == null || it.libraryId == libraryId)
+            }
+            if (discovered != null) return@runCatching discovered
+
+            throw IOException("Unable to create playlist with initial book.", lastError)
+        }
+    }
+
+    suspend fun getPlaylistBookIds(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String
+    ): Result<Set<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+            parsePlaylistBookIds(executeRequestWithRetry(request))
+        }
+    }
+
+    private data class PlaylistState(
+        val ids: Set<String>,
+        val itemCount: Int?
+    )
+
+    private suspend fun getPlaylistState(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String
+    ): Result<PlaylistState> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+            val raw = executeRequestWithRetry(request)
+            val ids = parsePlaylistBookIds(raw)
+            val itemCount = parsePlaylistFromResponse(raw)?.itemCount
+            PlaylistState(ids = ids, itemCount = itemCount)
+        }
+    }
+
+    suspend fun addBookToPlaylist(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String,
+        bookId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val idBody = JSONObject()
+            .put("id", bookId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val itemIdBody = JSONObject()
+            .put("libraryItemId", bookId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val directBookIdBody = JSONObject()
+            .put("bookId", bookId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val directItemIdBody = JSONObject()
+            .put("itemId", bookId)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val idsBody = JSONObject()
+            .put("bookIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemIdsBody = JSONObject()
+            .put("libraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val itemIdsBody = JSONObject()
+            .put("itemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val booksBody = JSONObject()
+            .put("books", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemsBody = JSONObject()
+            .put("libraryItems", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val itemsBody = JSONObject()
+            .put("items", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val addIdsBody = JSONObject()
+            .put("addBookIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val addLibraryItemIdsBody = JSONObject()
+            .put("addLibraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val addItemIdsBody = JSONObject()
+            .put("addItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/book"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(idBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/book"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemIdBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/book"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(directBookIdBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/item"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(directItemIdBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/item"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemIdBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/item"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(directBookIdBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/add"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/add"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/add"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/book/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/item/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/libraryitem/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(idsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", addIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", addLibraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", addItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", idsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", libraryItemsBody)
+                .build()
+        )
+
+        runCatching {
+            var lastError: Throwable? = null
+            val failedUrls = mutableListOf<String>()
+            val beforeIds = getPlaylistBookIds(baseUrl, authToken, playlistId).getOrNull()
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) {
+                    val afterIds = getPlaylistBookIds(baseUrl, authToken, playlistId).getOrNull()
+                    val confirmedAdded = afterIds?.contains(bookId) == true ||
+                        (beforeIds != null && afterIds != null && afterIds.size > beforeIds.size)
+                    if (confirmedAdded) {
+                        return@runCatching Unit
+                    }
+                }
+                lastError = attempt.exceptionOrNull()
+                failedUrls += request.url.encodedPath
+            }
+            val message = buildString {
+                append("Unable to add book to playlist.")
+                if (failedUrls.isNotEmpty()) {
+                    append(" Tried: ")
+                    append(failedUrls.joinToString(", "))
+                }
+            }
+            throw IOException(message, lastError)
+        }
+    }
+
+    suspend fun deletePlaylist(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String,
+        libraryId: String?
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val attempts = buildList {
+            add(
+                Request.Builder()
+                    .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                    .header("Authorization", authHeaderValue(authToken))
+                    .delete()
+                    .build()
+            )
+            if (!libraryId.isNullOrBlank()) {
+                add(
+                    Request.Builder()
+                        .url(buildUrl(baseUrl, "api/libraries/$libraryId/playlists/$playlistId"))
+                        .header("Authorization", authHeaderValue(authToken))
+                        .delete()
+                        .build()
+                )
+            }
+        }
+        runCatching {
+            var lastError: Throwable? = null
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) return@runCatching Unit
+                lastError = attempt.exceptionOrNull()
+            }
+            throw IOException("Unable to delete playlist.", lastError)
+        }
+    }
+
+    suspend fun removeBookFromPlaylist(
+        baseUrl: String,
+        authToken: String,
+        playlistId: String,
+        bookId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val removeIdsBody = JSONObject()
+            .put("removeBookIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeLibraryItemIdsBody = JSONObject()
+            .put("removeLibraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeItemIdsBody = JSONObject()
+            .put("removeItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeBooksBody = JSONObject()
+            .put("removeBooks", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeItemsBody = JSONObject()
+            .put("removeItems", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val removeLibraryItemsBody = JSONObject()
+            .put("removeLibraryItems", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val idsBody = JSONObject()
+            .put("bookIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemIdsBody = JSONObject()
+            .put("libraryItemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val itemIdsBody = JSONObject()
+            .put("itemIds", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val booksBody = JSONObject()
+            .put("books", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val libraryItemsBody = JSONObject()
+            .put("libraryItems", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val itemsBody = JSONObject()
+            .put("items", JSONArray().put(bookId))
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val attempts = listOf(
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/item/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/book/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/libraryitem/$bookId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .delete()
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeLibraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeBooksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeLibraryItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(removeIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(removeLibraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(removeItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(removeBooksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(removeItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(idsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(booksBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(libraryItemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/batch/remove"))
+                .header("Authorization", authHeaderValue(authToken))
+                .post(itemsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/books"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeLibraryItemIdsBody)
+                .build(),
+            Request.Builder()
+                .url(buildUrl(baseUrl, "api/playlists/$playlistId/items"))
+                .header("Authorization", authHeaderValue(authToken))
+                .method("PATCH", removeItemIdsBody)
+                .build()
+        )
+        runCatching {
+            var lastError: Throwable? = null
+            val failedUrls = mutableListOf<String>()
+            val beforeState = getPlaylistState(
+                baseUrl = baseUrl,
+                authToken = authToken,
+                playlistId = playlistId
+            ).getOrNull()
+            val beforeIds = beforeState?.ids.orEmpty()
+            val beforeCount = beforeState?.itemCount ?: beforeState?.ids?.size
+            val beforeContainsTarget = containsLikelyMatchingId(beforeIds, bookId)
+            attempts.forEach { request ->
+                val attempt = runCatching { executeRequestWithRetry(request) }
+                if (attempt.isSuccess) {
+                    var verifiedRemoval = false
+                    repeat(3) {
+                        val afterResult = getPlaylistState(
+                            baseUrl = baseUrl,
+                            authToken = authToken,
+                            playlistId = playlistId
+                        )
+                        val afterState = afterResult.getOrNull()
+                        if (afterState != null) {
+                            val afterIds = afterState.ids
+                            val afterCount = afterState.itemCount ?: afterIds.size
+                            val removedById = beforeContainsTarget && !containsLikelyMatchingId(afterIds, bookId)
+                            val removedByCount = beforeCount != null && afterCount < beforeCount
+                            if (removedById || removedByCount) {
+                                verifiedRemoval = true
+                                return@repeat
+                            }
+                            delay(120)
+                            return@repeat
+                        }
+                        val verifyError = afterResult.exceptionOrNull()
+                        if (verifyError?.message?.contains("404") == true) {
+                            // Some ABS variants remove the playlist when the last book is removed.
+                            if (beforeCount != null && beforeCount <= 1) {
+                                verifiedRemoval = true
+                                return@repeat
+                            }
+                            throw IOException("Playlist not found (HTTP 404) after removing book.", verifyError)
+                        }
+                        delay(120)
+                    }
+                    if (verifiedRemoval) {
+                        return@runCatching Unit
+                    }
+                }
+                lastError = attempt.exceptionOrNull()
+                failedUrls += request.url.encodedPath
+            }
+            val message = buildString {
+                append("Unable to remove book from playlist.")
                 if (failedUrls.isNotEmpty()) {
                     append(" Tried: ")
                     append(failedUrls.joinToString(", "))
@@ -1076,8 +2202,16 @@ class AudiobookshelfApi @Inject constructor(
                     .ifBlank { collection.optString("_id") }
                 val name = collection.optString("name")
                 val libraryId = collection.optString("libraryId").ifBlank { null }
+                val itemCount = extractItemCount(collection)
                 if (id.isBlank() || name.isBlank()) continue
-                add(AudiobookshelfCollectionDto(id = id, name = name, libraryId = libraryId))
+                add(
+                    AudiobookshelfCollectionDto(
+                        id = id,
+                        name = name,
+                        libraryId = libraryId,
+                        itemCount = itemCount
+                    )
+                )
             }
         }
     }
@@ -1090,8 +2224,210 @@ class AudiobookshelfApi @Inject constructor(
         val id = collection.optString("id").ifBlank { collection.optString("_id") }
         val name = collection.optString("name")
         val libraryId = collection.optString("libraryId").ifBlank { null }
+        val itemCount = extractItemCount(collection)
         if (id.isBlank() || name.isBlank()) return null
-        return AudiobookshelfCollectionDto(id = id, name = name, libraryId = libraryId)
+        return AudiobookshelfCollectionDto(
+            id = id,
+            name = name,
+            libraryId = libraryId,
+            itemCount = itemCount
+        )
+    }
+
+    private fun parsePlaylists(rawJson: String): List<AudiobookshelfPlaylistDto> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val source = if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            val root = JSONObject(trimmed)
+            root.optJSONArray("results")
+                ?: root.optJSONArray("playlists")
+                ?: root.optJSONArray("items")
+                ?: JSONArray()
+        }
+
+        return buildList {
+            for (index in 0 until source.length()) {
+                val playlist = source.optJSONObject(index) ?: continue
+                val id = playlist.optString("id")
+                    .ifBlank { playlist.optString("_id") }
+                val name = playlist.optString("name")
+                val libraryId = playlist.optString("libraryId").ifBlank { null }
+                val itemCount = extractItemCount(playlist)
+                if (id.isBlank() || name.isBlank()) continue
+                add(
+                    AudiobookshelfPlaylistDto(
+                        id = id,
+                        name = name,
+                        libraryId = libraryId,
+                        itemCount = itemCount
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parsePlaylistFromResponse(rawJson: String): AudiobookshelfPlaylistDto? {
+        val trimmed = rawJson.trim()
+        if (trimmed.isBlank() || !trimmed.startsWith("{")) return null
+        val root = JSONObject(trimmed)
+        val playlist = root.optJSONObject("playlist") ?: root
+        val id = playlist.optString("id").ifBlank { playlist.optString("_id") }
+        val name = playlist.optString("name")
+        val libraryId = playlist.optString("libraryId").ifBlank { null }
+        val itemCount = extractItemCount(playlist)
+        if (id.isBlank() || name.isBlank()) return null
+        return AudiobookshelfPlaylistDto(
+            id = id,
+            name = name,
+            libraryId = libraryId,
+            itemCount = itemCount
+        )
+    }
+
+    private fun extractItemCount(entity: JSONObject): Int? {
+        val countByKey = listOf(
+            "numBooks",
+            "bookCount",
+            "numItems",
+            "itemCount",
+            "numLibraryItems",
+            "numLibraryItemIds",
+            "numTracks",
+            "numEntries",
+            "totalBooks",
+            "totalItems",
+            "totalLibraryItems",
+            "totalTracks"
+        ).firstNotNullOfOrNull { key ->
+            entity.optLongOrNull(key)
+                ?.takeIf { value -> value >= 0L }
+                ?.coerceAtMost(Int.MAX_VALUE.toLong())
+                ?.toInt()
+        }
+        if (countByKey != null) return countByKey
+
+        val countsFromArrays = listOf(
+            "bookIds",
+            "libraryItemIds",
+            "itemIds",
+            "books",
+            "libraryItems",
+            "items",
+            "playlistItems"
+        ).mapNotNull { key -> entity.optJSONArray(key)?.length() }
+        return countsFromArrays.maxOrNull()
+    }
+
+    private fun parseCollectionBookIds(rawJson: String): Set<String> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isBlank() || !trimmed.startsWith("{")) return emptySet()
+        val root = JSONObject(trimmed)
+        val collection = root.optJSONObject("collection") ?: root
+        val ids = linkedSetOf<String>()
+
+        fun addId(value: String?) {
+            val trimmedId = value?.trim().orEmpty()
+            if (trimmedId.isNotBlank()) {
+                ids += trimmedId
+            }
+        }
+
+        fun readIdArray(array: JSONArray?) {
+            if (array == null) return
+            for (index in 0 until array.length()) {
+                when (val entry = array.opt(index)) {
+                    is String -> addId(entry)
+                    is JSONObject -> {
+                        addId(entry.optString("id").ifBlank { null })
+                        addId(entry.optString("_id").ifBlank { null })
+                        addId(entry.optString("libraryItemId").ifBlank { null })
+                        val nestedBook = entry.optJSONObject("book")
+                        if (nestedBook != null) {
+                            addId(nestedBook.optString("id").ifBlank { null })
+                            addId(nestedBook.optString("_id").ifBlank { null })
+                            addId(nestedBook.optString("libraryItemId").ifBlank { null })
+                        }
+                    }
+                }
+            }
+        }
+
+        readIdArray(collection.optJSONArray("bookIds"))
+        readIdArray(collection.optJSONArray("libraryItemIds"))
+        readIdArray(collection.optJSONArray("books"))
+        readIdArray(collection.optJSONArray("libraryItems"))
+        readIdArray(collection.optJSONArray("items"))
+
+        return ids
+    }
+
+    private fun parsePlaylistBookIds(rawJson: String): Set<String> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isBlank() || !trimmed.startsWith("{")) return emptySet()
+        val root = JSONObject(trimmed)
+        val playlist = root.optJSONObject("playlist") ?: root
+        val ids = linkedSetOf<String>()
+
+        fun addId(value: String?) {
+            val trimmedId = value?.trim().orEmpty()
+            if (trimmedId.isNotBlank()) {
+                ids += trimmedId
+            }
+        }
+
+        fun readIdArray(array: JSONArray?) {
+            if (array == null) return
+            for (index in 0 until array.length()) {
+                when (val entry = array.opt(index)) {
+                    is String -> addId(entry)
+                    is JSONObject -> {
+                        addId(entry.optString("id").ifBlank { null })
+                        addId(entry.optString("_id").ifBlank { null })
+                        addId(entry.optString("libraryItemId").ifBlank { null })
+                        addId(entry.optString("itemId").ifBlank { null })
+                        addId(entry.optString("bookId").ifBlank { null })
+
+                        fun readNestedObject(obj: JSONObject?) {
+                            if (obj == null) return
+                            addId(obj.optString("id").ifBlank { null })
+                            addId(obj.optString("_id").ifBlank { null })
+                            addId(obj.optString("libraryItemId").ifBlank { null })
+                            addId(obj.optString("itemId").ifBlank { null })
+                            addId(obj.optString("bookId").ifBlank { null })
+                        }
+
+                        readNestedObject(entry.optJSONObject("book"))
+                        readNestedObject(entry.optJSONObject("libraryItem"))
+                        readNestedObject(entry.optJSONObject("item"))
+                        readNestedObject(entry.optJSONObject("mediaItem"))
+                        readNestedObject(entry.optJSONObject("libraryItems"))
+                    }
+                }
+            }
+        }
+
+        readIdArray(playlist.optJSONArray("bookIds"))
+        readIdArray(playlist.optJSONArray("libraryItemIds"))
+        readIdArray(playlist.optJSONArray("itemIds"))
+        readIdArray(playlist.optJSONArray("books"))
+        readIdArray(playlist.optJSONArray("libraryItems"))
+        readIdArray(playlist.optJSONArray("items"))
+        readIdArray(playlist.optJSONArray("playlistItems"))
+
+        return ids
+    }
+
+    private fun containsLikelyMatchingId(ids: Set<String>, targetId: String): Boolean {
+        val normalizedTarget = targetId.trim()
+        if (normalizedTarget.isBlank()) return false
+        return ids.any { candidate ->
+            val normalizedCandidate = candidate.trim()
+            normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+                normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+                normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
+        }
     }
 
     private suspend fun executeRequestWithRetry(request: Request): String {

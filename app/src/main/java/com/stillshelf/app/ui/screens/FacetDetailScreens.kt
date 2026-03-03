@@ -1,5 +1,6 @@
 package com.stillshelf.app.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -48,6 +51,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,9 +64,12 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -73,6 +80,8 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
@@ -86,6 +95,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.text.Regex
 
@@ -95,7 +107,10 @@ data class FacetBooksUiState(
     val books: List<BookSummary> = emptyList(),
     val authorImageUrl: String? = null,
     val authorAbout: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val downloadedBookIds: Set<String> = emptySet(),
+    val downloadProgressByBookId: Map<String, Int> = emptyMap(),
+    val actionMessage: String? = null
 )
 
 private val FacetBackTitleSpacing = 12.dp
@@ -137,7 +152,8 @@ private sealed interface AuthorDisplayEntry {
 class AuthorDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private val authorName = savedStateHandle.get<String>(DetailRoute.AUTHOR_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = authorName))
@@ -149,6 +165,7 @@ class AuthorDetailViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { restoreUiPreferences() }
+        observeDownloadedState()
         refresh(forceRefresh = false)
     }
 
@@ -207,7 +224,7 @@ class AuthorDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     val books = result.value.filter {
-                        it.authorName.equals(authorName, ignoreCase = true)
+                        doesBookMatchAuthor(it.authorName, authorName)
                     }.sortedBy { it.title.lowercase() }
                     mutableUiState.update {
                         it.copy(
@@ -232,13 +249,34 @@ class AuthorDetailViewModel @Inject constructor(
             }
         }
     }
+
+    private fun observeDownloadedState() {
+        viewModelScope.launch {
+            bookDownloadManager.items.collect { items ->
+                val downloadedIds = items
+                    .filter { it.status == DownloadStatus.Completed }
+                    .map { it.bookId }
+                    .toSet()
+                val progressByBookId = items
+                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = downloadedIds,
+                        downloadProgressByBookId = progressByBookId
+                    )
+                }
+            }
+        }
+    }
 }
 
 @HiltViewModel
 class SeriesDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = seriesName))
@@ -250,6 +288,7 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().seriesDetailListMode
         }
+        observeDownloadedState()
         refresh(forceRefresh = false)
     }
 
@@ -262,6 +301,44 @@ class SeriesDetailViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun markAsFinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val book = uiState.value.books.firstOrNull { it.id == bookId }
+            if (book == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -283,16 +360,20 @@ class SeriesDetailViewModel @Inject constructor(
                             candidate.contains(normalizedSeries) ||
                             normalizedSeries.contains(candidate)
                     }
-                    val books = matchedBooks
-                        .map { book ->
-                            val sequence = book.seriesSequence
-                                ?: extractSeriesSequenceFromTitle(book.title)
-                            if (sequence != null) {
-                                book.copy(seriesSequence = sequence)
-                            } else {
-                                book
+                    val books = coroutineScope {
+                        matchedBooks
+                            .map { book ->
+                                async {
+                                    val inferredSequence = inferSeriesSequence(book)
+                                    if (inferredSequence != null) {
+                                        book.copy(seriesSequence = inferredSequence)
+                                    } else {
+                                        book
+                                    }
+                                }
                             }
-                        }
+                            .awaitAll()
+                    }
                         .sortedWith(
                             compareBy<BookSummary> { it.seriesSequence ?: Double.MAX_VALUE }
                                 .thenBy { it.title.lowercase() }
@@ -316,11 +397,55 @@ class SeriesDetailViewModel @Inject constructor(
             }
         }
     }
+
+    private fun observeDownloadedState() {
+        viewModelScope.launch {
+            bookDownloadManager.items.collect { items ->
+                val ids = items
+                    .filter { it.status == DownloadStatus.Completed }
+                    .map { it.bookId }
+                    .toSet()
+                val progressByBookId = items
+                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = ids,
+                        downloadProgressByBookId = progressByBookId
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun inferSeriesSequence(book: BookSummary): Double? {
+        extractSeriesSequenceFromText(book.title)?.let { return it }
+        extractSeriesSequenceFromText(book.seriesName.orEmpty())?.let { return it }
+
+        return when (val detailResult = sessionRepository.fetchBookDetail(bookId = book.id, forceRefresh = false)) {
+            is AppResult.Success -> {
+                val detail = detailResult.value
+                extractSeriesSequenceFromText(detail.book.seriesName.orEmpty())
+                    ?: extractSeriesSequenceFromText(detail.book.title)
+                    ?: detail.book.seriesSequence
+                    ?: book.seriesSequence
+            }
+
+            is AppResult.Error -> book.seriesSequence
+        }
+    }
 }
 
 private fun extractSeriesSequenceFromTitle(title: String): Double? {
     val match = Regex("(?i)\\bbook\\s*(\\d+(?:\\.\\d+)?)\\b").find(title) ?: return null
     return match.groupValues.getOrNull(1)?.toDoubleOrNull()
+}
+
+private fun extractSeriesSequenceFromText(text: String?): Double? {
+    val value = text?.trim().orEmpty()
+    if (value.isBlank()) return null
+    return extractSeriesSequenceFromTitle(value)
+        ?: Regex("(?i)#\\s*(\\d+(?:\\.\\d+)?)\\b").find(value)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
 }
 
 private fun normalizeSeriesKey(value: String): String {
@@ -343,6 +468,49 @@ private fun cleanedSeriesDisplayName(value: String): String {
         .replace(Regex("\\s*#\\d+.*$"), "")
         .replace(Regex("\\s+"), " ")
         .trim()
+}
+
+private fun doesBookMatchAuthor(bookAuthorName: String, targetAuthorName: String): Boolean {
+    val target = normalizeAuthorName(targetAuthorName)
+    if (target.isBlank()) return false
+    return splitAuthorsForMatching(bookAuthorName)
+        .map(::normalizeAuthorName)
+        .any { it == target }
+}
+
+private fun splitAuthorsForMatching(raw: String): List<String> {
+    return raw
+        .split(Regex("\\s*(?:,|;|&|/|\\band\\b)\\s*", RegexOption.IGNORE_CASE))
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+}
+
+private fun normalizeAuthorName(raw: String): String {
+    return raw
+        .lowercase()
+        .replace(Regex("[’‘`´]"), "'")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
+private fun List<BookSummary>.applySeriesStatusFilter(filter: BooksStatusFilter): List<BookSummary> {
+    return when (filter) {
+        BooksStatusFilter.All -> this
+        BooksStatusFilter.Finished -> filter { book ->
+            book.isFinished || (book.progressPercent ?: 0.0) >= 0.999
+        }
+        BooksStatusFilter.InProgress -> filter { book ->
+            val progress = (book.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+            !book.isFinished && progress > 0.001 && progress < 0.999
+        }
+        BooksStatusFilter.NotStarted -> filter { book ->
+            val progress = (book.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+            !book.isFinished && progress <= 0.001
+        }
+        BooksStatusFilter.NotFinished -> filter { book ->
+            !book.isFinished
+        }
+    }
 }
 
 private fun buildAuthorDisplayEntries(
@@ -633,6 +801,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.BookItem -> {
                                 AuthorGridBookItem(
                                     book = entry.book,
+                                    isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                     onClick = { onBookClick(entry.book.id) }
                                 )
                             }
@@ -640,6 +810,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.SeriesItem -> {
                                 AuthorSeriesGridItem(
                                     entry = entry,
+                                    isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
                                     onClick = { onSeriesClick(entry.seriesName) }
                                 )
                             }
@@ -707,6 +879,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.BookItem -> {
                                 AuthorBookRow(
                                     book = entry.book,
+                                    isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                     onClick = { onBookClick(entry.book.id) }
                                 )
                             }
@@ -714,6 +888,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.SeriesItem -> {
                                 AuthorSeriesListRow(
                                     entry = entry,
+                                    isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
                                     onClick = { onSeriesClick(entry.seriesName) }
                                 )
                             }
@@ -909,6 +1085,8 @@ private fun AuthorDetailHeader(
 @Composable
 private fun AuthorGridBookItem(
     book: BookSummary,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
     onClick: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -929,6 +1107,13 @@ private fun AuthorGridBookItem(
                 shape = RoundedCornerShape(8.dp),
                 contentScale = ContentScale.Fit,
                 backgroundBlur = WideCoverBackgroundBlur
+            )
+            DownloadBadge(
+                isDownloaded = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-6).dp, y = 6.dp)
             )
         }
         Row(
@@ -979,6 +1164,8 @@ private fun AuthorGridBookItem(
 @Composable
 private fun AuthorSeriesGridItem(
     entry: AuthorDisplayEntry.SeriesItem,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
     onClick: () -> Unit
 ) {
     val lead = entry.leadBook
@@ -1023,6 +1210,13 @@ private fun AuthorSeriesGridItem(
                     backgroundBlur = WideCoverBackgroundBlur
                 )
             }
+            DownloadBadge(
+                isDownloaded = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-6).dp, y = 6.dp)
+            )
         }
         Row(
             modifier = Modifier
@@ -1042,6 +1236,8 @@ private fun AuthorSeriesGridItem(
 @Composable
 private fun AuthorBookRow(
     book: BookSummary,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
     onClick: () -> Unit
 ) {
     Card(
@@ -1056,14 +1252,26 @@ private fun AuthorBookRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            FramedCoverImage(
-                coverUrl = book.coverUrl,
-                contentDescription = book.title,
-                modifier = Modifier.size(72.dp),
-                shape = RoundedCornerShape(8.dp),
-                contentScale = ContentScale.Fit,
-                backgroundBlur = WideCoverBackgroundBlur
-            )
+            Box(modifier = Modifier.size(72.dp)) {
+                FramedCoverImage(
+                    coverUrl = book.coverUrl,
+                    contentDescription = book.title,
+                    modifier = Modifier.matchParentSize(),
+                    shape = RoundedCornerShape(8.dp),
+                    contentScale = ContentScale.Fit,
+                    backgroundBlur = WideCoverBackgroundBlur
+                )
+                DownloadBadge(
+                    isDownloaded = isDownloaded,
+                    downloadProgressPercent = downloadProgressPercent,
+                    badgeSize = 22.dp,
+                    iconSize = 12.dp,
+                    progressRingSize = 18.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-4).dp, y = 4.dp)
+                )
+            }
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
@@ -1099,6 +1307,8 @@ private fun AuthorBookRow(
 @Composable
 private fun AuthorSeriesListRow(
     entry: AuthorDisplayEntry.SeriesItem,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
     onClick: () -> Unit
 ) {
     val lead = entry.leadBook
@@ -1150,6 +1360,16 @@ private fun AuthorSeriesListRow(
                         backgroundBlur = WideCoverBackgroundBlur
                     )
                 }
+                DownloadBadge(
+                    isDownloaded = isDownloaded,
+                    downloadProgressPercent = downloadProgressPercent,
+                    badgeSize = 22.dp,
+                    iconSize = 12.dp,
+                    progressRingSize = 18.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-4).dp, y = 4.dp)
+                )
             }
             Column(
                 modifier = Modifier.weight(1f),
@@ -1182,14 +1402,41 @@ fun SeriesDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: SeriesDetailViewModel = hiltViewModel()
+    viewModel: SeriesDetailViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val listMode by viewModel.listMode.collectAsStateWithLifecycle()
+    var filterMenuExpanded by remember { mutableStateOf(false) }
+    var statusFilterRaw by rememberSaveable { mutableStateOf(BooksStatusFilter.All.name) }
+    var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
+    val statusFilter = enumValueOrNull<BooksStatusFilter>(statusFilterRaw) ?: BooksStatusFilter.All
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
         onRefresh = viewModel::refresh
     )
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(addToListBookId) {
+        if (!addToListBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = true)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
 
     Box(
         modifier = Modifier
@@ -1228,8 +1475,7 @@ fun SeriesDetailScreen(
             }
 
             else -> {
-                val books = uiState.books
-                val leadBook = books.first()
+                val books = uiState.books.applySeriesStatusFilter(statusFilter)
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1271,16 +1517,40 @@ fun SeriesDetailScreen(
                                     }
                                 }
                                 Spacer(modifier = Modifier.weight(1f))
-                                IconButton(
-                                    onClick = {},
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.FilterList,
-                                        contentDescription = "Filter"
-                                    )
+                                Box {
+                                    IconButton(
+                                        onClick = { filterMenuExpanded = true },
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.FilterList,
+                                            contentDescription = "Filter"
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = filterMenuExpanded,
+                                        onDismissRequest = { filterMenuExpanded = false }
+                                    ) {
+                                        BooksStatusFilter.entries.forEach { candidate ->
+                                            DropdownMenuItem(
+                                                text = { Text(candidate.label) },
+                                                trailingIcon = {
+                                                    if (candidate == statusFilter) {
+                                                        Icon(
+                                                            imageVector = Icons.Filled.Check,
+                                                            contentDescription = null
+                                                        )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    statusFilterRaw = candidate.name
+                                                    filterMenuExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 IconButton(
@@ -1306,8 +1576,25 @@ fun SeriesDetailScreen(
                         }
                     }
 
+                    if (books.isEmpty()) {
+                        item {
+                            Text(
+                                text = "No books in this filter.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        return@LazyColumn
+                    }
+                    val leadBook = books.first()
+
                     item {
-                        SeriesCoverStack(leadBook = leadBook, layerCount = books.size.coerceIn(2, 3))
+                        SeriesCoverStack(
+                            leadBook = leadBook,
+                            layerCount = books.size.coerceIn(2, 3),
+                            isDownloaded = uiState.downloadedBookIds.contains(leadBook.id),
+                            downloadProgressPercent = uiState.downloadProgressByBookId[leadBook.id]
+                        )
                     }
                     item {
                         Text(
@@ -1333,7 +1620,12 @@ fun SeriesDetailScreen(
                             SeriesDetailBookRow(
                                 book = book,
                                 orderLabel = orderLabel,
-                                onClick = { onBookClick(book.id) }
+                                onClick = { onBookClick(book.id) },
+                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
+                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                onAddToCollection = { addToListBookId = book.id },
+                                onMarkAsFinished = { viewModel.markAsFinished(book.id) },
+                                onToggleDownload = { viewModel.toggleDownload(book.id) }
                             )
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                         }
@@ -1351,7 +1643,12 @@ fun SeriesDetailScreen(
                                         book = book,
                                         orderLabel = orderLabel,
                                         modifier = Modifier.weight(1f),
-                                        onClick = { onBookClick(book.id) }
+                                        onClick = { onBookClick(book.id) },
+                                        isDownloaded = uiState.downloadedBookIds.contains(book.id),
+                                        downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                        onAddToCollection = { addToListBookId = book.id },
+                                        onMarkAsFinished = { viewModel.markAsFinished(book.id) },
+                                        onToggleDownload = { viewModel.toggleDownload(book.id) }
                                     )
                                 }
                                 if (rowBooks.size == 1) {
@@ -1369,6 +1666,727 @@ fun SeriesDetailScreen(
             state = refreshState,
             modifier = Modifier.align(Alignment.TopCenter)
         )
+    }
+
+    val targetBookId = addToListBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                addToListBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
+}
+
+@HiltViewModel
+class CollectionDetailViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val collectionId = savedStateHandle.get<String>(DetailRoute.COLLECTION_ID_ARG).orEmpty()
+    private val collectionName = savedStateHandle.get<String>(DetailRoute.COLLECTION_NAME_ARG).orEmpty()
+    private val mutableUiState = MutableStateFlow(
+        FacetBooksUiState(
+            isLoading = true,
+            title = collectionName.ifBlank { "Collection" }
+        )
+    )
+    val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val mutableListMode = MutableStateFlow(true)
+    val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            mutableListMode.value = sessionPreferences.state.first().collectionDetailListMode
+        }
+        refresh(forceRefresh = false)
+    }
+
+    fun setListMode(value: Boolean) {
+        mutableListMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setCollectionDetailListMode(value)
+        }
+    }
+
+    fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    fun removeBook(bookId: String) {
+        if (collectionId.isBlank() || bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.removeBookFromCollection(
+                    collectionId = collectionId,
+                    bookId = bookId
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            books = it.books.filterNot { book -> book.id == bookId },
+                            actionMessage = "Removed from collection."
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
+        if (collectionId.isBlank()) {
+            mutableUiState.update {
+                it.copy(isLoading = false, errorMessage = "Invalid collection.")
+            }
+            return
+        }
+        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.fetchCollectionBooks(
+                    collectionId = collectionId,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            books = result.value
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterialApi::class)
+@Composable
+fun CollectionDetailScreen(
+    onBackClick: () -> Unit,
+    onBookClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
+    viewModel: CollectionDetailViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val listMode by viewModel.listMode.collectAsStateWithLifecycle()
+    var manualRefreshInProgress by rememberSaveable { mutableStateOf(false) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && manualRefreshInProgress,
+        onRefresh = {
+            manualRefreshInProgress = true
+            viewModel.refresh()
+        }
+    )
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(uiState.isLoading) {
+        if (!uiState.isLoading) manualRefreshInProgress = false
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 14.dp)
+    ) {
+        FacetTopBar(
+            title = uiState.title.ifBlank { "Collection" },
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick,
+            trailingIcon = if (listMode) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
+            trailingIconDescription = if (listMode) "Grid mode" else "List mode",
+            onTrailingIconClick = { viewModel.setListMode(!listMode) }
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading collection...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = uiState.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                uiState.books.isEmpty() -> {
+                    Text(
+                        text = "No books found in this collection.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    if (listMode) {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            items(uiState.books, key = { it.id }) { book ->
+                                CollectionBookRow(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) },
+                                    onRemoveFromCollection = { viewModel.removeBook(book.id) }
+                                )
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            gridItems(uiState.books, key = { it.id }) { book ->
+                                FacetBookGridCard(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) },
+                                    removeActionLabel = "Remove from collection",
+                                    menuContentDescription = "Collection item actions",
+                                    onRemove = { viewModel.removeBook(book.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && manualRefreshInProgress,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
+}
+
+@HiltViewModel
+class PlaylistDetailViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val playlistId = savedStateHandle.get<String>(DetailRoute.PLAYLIST_ID_ARG).orEmpty()
+    private val playlistName = savedStateHandle.get<String>(DetailRoute.PLAYLIST_NAME_ARG).orEmpty()
+    private val mutableUiState = MutableStateFlow(
+        FacetBooksUiState(
+            isLoading = true,
+            title = playlistName.ifBlank { "Playlist" }
+        )
+    )
+    val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val mutableListMode = MutableStateFlow(true)
+    val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            mutableListMode.value = sessionPreferences.state.first().playlistDetailListMode
+        }
+        refresh(forceRefresh = false)
+    }
+
+    fun setListMode(value: Boolean) {
+        mutableListMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setPlaylistDetailListMode(value)
+        }
+    }
+
+    fun refresh() {
+        refresh(forceRefresh = true)
+    }
+
+    fun removeBook(bookId: String) {
+        if (playlistId.isBlank() || bookId.isBlank()) return
+        viewModelScope.launch {
+            val wasLastVisibleBook = uiState.value.books.size <= 1
+            when (
+                val result = sessionRepository.removeBookFromPlaylist(
+                    playlistId = playlistId,
+                    bookId = bookId
+                )
+            ) {
+                is AppResult.Success -> {
+                    if (wasLastVisibleBook) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = false,
+                                books = emptyList(),
+                                errorMessage = null,
+                                actionMessage = "Removed from playlist."
+                            )
+                        }
+                    } else {
+                        mutableUiState.update {
+                            it.copy(
+                                actionMessage = "Removed from playlist."
+                            )
+                        }
+                        refresh(forceRefresh = true)
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun refresh(forceRefresh: Boolean) {
+        if (playlistId.isBlank()) {
+            mutableUiState.update {
+                it.copy(isLoading = false, errorMessage = "Invalid playlist.")
+            }
+            return
+        }
+        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.fetchPlaylistBooks(
+                    playlistId = playlistId,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            books = result.value
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    val treatAsEmpty = result.message.contains("404") && uiState.value.books.isEmpty()
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = if (treatAsEmpty) null else result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterialApi::class)
+@Composable
+fun PlaylistDetailScreen(
+    onBackClick: () -> Unit,
+    onBookClick: (String) -> Unit,
+    onHomeClick: (() -> Unit)? = null,
+    viewModel: PlaylistDetailViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val listMode by viewModel.listMode.collectAsStateWithLifecycle()
+    var manualRefreshInProgress by rememberSaveable { mutableStateOf(false) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && manualRefreshInProgress,
+        onRefresh = {
+            manualRefreshInProgress = true
+            viewModel.refresh()
+        }
+    )
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(uiState.isLoading) {
+        if (!uiState.isLoading) manualRefreshInProgress = false
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 14.dp)
+    ) {
+        FacetTopBar(
+            title = uiState.title.ifBlank { "Playlist" },
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick,
+            trailingIcon = if (listMode) Icons.Outlined.GridView else Icons.AutoMirrored.Outlined.ViewList,
+            trailingIconDescription = if (listMode) "Grid mode" else "List mode",
+            onTrailingIconClick = { viewModel.setListMode(!listMode) }
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading playlist...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = uiState.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                uiState.books.isEmpty() -> {
+                    Text(
+                        text = "No books found in this playlist.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    if (listMode) {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            items(uiState.books, key = { it.id }) { book ->
+                                PlaylistBookRow(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) },
+                                    onRemoveFromPlaylist = { viewModel.removeBook(book.id) }
+                                )
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            gridItems(uiState.books, key = { it.id }) { book ->
+                                FacetBookGridCard(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) },
+                                    removeActionLabel = "Remove from playlist",
+                                    menuContentDescription = "Playlist item actions",
+                                    onRemove = { viewModel.removeBook(book.id) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && manualRefreshInProgress,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CollectionBookRow(
+    book: BookSummary,
+    onClick: () -> Unit,
+    onRemoveFromCollection: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FramedCoverImage(
+                coverUrl = book.coverUrl,
+                contentDescription = book.title,
+                modifier = Modifier.size(width = 56.dp, height = 78.dp),
+                shape = RoundedCornerShape(6.dp),
+                contentScale = ContentScale.Fit
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = book.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = book.authorName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Collection item actions"
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Go to book") },
+                        onClick = {
+                            menuExpanded = false
+                            onClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from collection") },
+                        onClick = {
+                            menuExpanded = false
+                            onRemoveFromCollection()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistBookRow(
+    book: BookSummary,
+    onClick: () -> Unit,
+    onRemoveFromPlaylist: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FramedCoverImage(
+                coverUrl = book.coverUrl,
+                contentDescription = book.title,
+                modifier = Modifier.size(width = 56.dp, height = 78.dp),
+                shape = RoundedCornerShape(6.dp),
+                contentScale = ContentScale.Fit
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = book.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = book.authorName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Playlist item actions"
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Go to book") },
+                        onClick = {
+                            menuExpanded = false
+                            onClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from playlist") },
+                        onClick = {
+                            menuExpanded = false
+                            onRemoveFromPlaylist()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FacetBookGridCard(
+    book: BookSummary,
+    onClick: () -> Unit,
+    removeActionLabel: String,
+    menuContentDescription: String,
+    onRemove: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FramedCoverImage(
+                coverUrl = book.coverUrl,
+                contentDescription = book.title,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(StandardGridCoverHeight),
+                shape = RoundedCornerShape(8.dp),
+                contentScale = ContentScale.Fit
+            )
+            Text(
+                text = book.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = book.authorName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreHoriz,
+                            contentDescription = menuContentDescription,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Go to book") },
+                            onClick = {
+                                menuExpanded = false
+                                onClick()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(removeActionLabel) },
+                            onClick = {
+                                menuExpanded = false
+                                onRemove()
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1599,7 +2617,10 @@ private fun FacetTopBar(
     title: String,
     onBackClick: () -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    showMoreIcon: Boolean = false
+    showMoreIcon: Boolean = false,
+    trailingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    trailingIconDescription: String? = null,
+    onTrailingIconClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1640,12 +2661,28 @@ private fun FacetTopBar(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        if (showMoreIcon) {
-            IconButton(onClick = {}) {
+        if (trailingIcon != null && onTrailingIconClick != null) {
+            IconButton(
+                onClick = onTrailingIconClick,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface)
+            ) {
                 Icon(
-                    imageVector = Icons.Outlined.MoreHoriz,
-                    contentDescription = "More"
+                    imageVector = trailingIcon,
+                    contentDescription = trailingIconDescription
                 )
+            }
+        } else if (showMoreIcon) {
+            IconButton(
+                onClick = {},
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface)
+            ) {
+                Icon(imageVector = Icons.Outlined.MoreHoriz, contentDescription = "More")
             }
         }
     }
@@ -1656,9 +2693,59 @@ private inline fun <reified T : Enum<T>> enumValueOrNull(raw: String): T? {
 }
 
 @Composable
+private fun DownloadBadge(
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    modifier: Modifier = Modifier,
+    badgeSize: androidx.compose.ui.unit.Dp = 30.dp,
+    progressRingSize: androidx.compose.ui.unit.Dp = 24.dp,
+    iconSize: androidx.compose.ui.unit.Dp = 16.dp
+) {
+    val progress = downloadProgressPercent?.coerceIn(0, 100)
+    val showProgress = progress != null && progress in 0..99
+    val showCompleted = isDownloaded && !showProgress
+    if (!showProgress && !showCompleted) return
+
+    Box(
+        modifier = modifier
+            .size(badgeSize)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (showProgress) {
+            CircularProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.size(progressRingSize),
+                strokeWidth = 2.4.dp,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "$progress%",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 8.sp
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Outlined.Download,
+                contentDescription = "Downloaded",
+                modifier = Modifier.size(iconSize),
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
 private fun SeriesCoverStack(
     leadBook: BookSummary,
-    layerCount: Int
+    layerCount: Int,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?
 ) {
     val count = layerCount.coerceIn(2, 3)
     val frameWidth = 168.dp
@@ -1697,6 +2784,45 @@ private fun SeriesCoverStack(
                 backgroundBlur = 44.dp
             )
         }
+        val progress = downloadProgressPercent?.coerceIn(0, 100)
+        val showProgress = progress != null && progress in 0..99
+        val showCompleted = isDownloaded && !showProgress
+        if (showProgress || showCompleted) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-6).dp, y = 6.dp)
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (showProgress) {
+                    CircularProgressIndicator(
+                        progress = { progress / 100f },
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.4.dp,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "$progress%",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 8.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = "Downloaded",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1704,8 +2830,16 @@ private fun SeriesCoverStack(
 private fun SeriesDetailBookRow(
     book: BookSummary,
     orderLabel: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkAsFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1740,6 +2874,45 @@ private fun SeriesDetailBookRow(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+            val progress = downloadProgressPercent?.coerceIn(0, 100)
+            val showProgress = progress != null && progress in 0..99
+            val showCompleted = isDownloaded && !showProgress
+            if (showProgress || showCompleted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-6).dp, y = 6.dp)
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (showProgress) {
+                        CircularProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.2.dp,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$progress%",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 8.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Downloaded",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
 
         Column(
@@ -1766,11 +2939,41 @@ private fun SeriesDetailBookRow(
             )
         }
 
-        Icon(
-            imageVector = Icons.Outlined.MoreHoriz,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreHoriz,
+                    contentDescription = "More",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Add to collection") },
+                    onClick = {
+                        menuExpanded = false
+                        onAddToCollection()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Mark as finished") },
+                    onClick = {
+                        menuExpanded = false
+                        onMarkAsFinished()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(downloadLabel) },
+                    onClick = {
+                        menuExpanded = false
+                        onToggleDownload()
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -1779,8 +2982,16 @@ private fun SeriesDetailGridCard(
     book: BookSummary,
     orderLabel: String,
     modifier: Modifier = Modifier,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkAsFinished: () -> Unit,
+    onToggleDownload: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Column(
         modifier = modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1811,6 +3022,45 @@ private fun SeriesDetailGridCard(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+            val progress = downloadProgressPercent?.coerceIn(0, 100)
+            val showProgress = progress != null && progress in 0..99
+            val showCompleted = isDownloaded && !showProgress
+            if (showProgress || showCompleted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-6).dp, y = 6.dp)
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (showProgress) {
+                        CircularProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.4.dp,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "$progress%",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 8.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Downloaded",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
         Row(
             modifier = Modifier
@@ -1823,6 +3073,45 @@ private fun SeriesDetailGridCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(modifier = Modifier.weight(1f))
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "More",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Add to collection") },
+                        onClick = {
+                            menuExpanded = false
+                            onAddToCollection()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Mark as finished") },
+                        onClick = {
+                            menuExpanded = false
+                            onMarkAsFinished()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        onClick = {
+                            menuExpanded = false
+                            onToggleDownload()
+                        }
+                    )
+                }
+            }
         }
     }
 }

@@ -2,11 +2,14 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -19,7 +22,9 @@ import kotlinx.coroutines.launch
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
@@ -30,6 +35,7 @@ class HomeViewModel @Inject constructor(
 
     init {
         observeActiveLibrary()
+        observeDownloadedState()
     }
 
     private fun observeActiveLibrary() {
@@ -67,7 +73,6 @@ class HomeViewModel @Inject constructor(
                     authorImageUrls = cachedResult.value.authorImageUrls
                 )
             }
-            refreshNetwork(showLoading = false)
             return
         }
         refreshNetwork(showLoading = true)
@@ -77,6 +82,78 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             refreshNetwork(showLoading = true)
         }
+    }
+
+    fun addToCollection(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.addBookToDefaultCollection(bookId)) {
+                is AppResult.Success -> mutableUiState.update { it.copy(actionMessage = "Added to Collections") }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun markAsFinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId, finished = true)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    refreshNetwork(showLoading = false)
+                }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun markAsUnfinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    refreshNetwork(showLoading = false)
+                }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun removeFromContinueListening(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            continueListening = it.continueListening.filterNot { item -> item.book.id == bookId },
+                            actionMessage = "Removed from Continue Listening"
+                        )
+                    }
+                }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val target = findBookById(bookId)
+            if (target == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(target)) {
+                is AppResult.Success -> mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
     }
 
     private suspend fun refreshNetwork(showLoading: Boolean) {
@@ -147,7 +224,7 @@ class HomeViewModel @Inject constructor(
                     )
                 }
             }
-            .take(6)
+            .take(20)
     }
 
     private fun normalizeSeriesKey(value: String): String {
@@ -162,6 +239,33 @@ class HomeViewModel @Inject constructor(
             .trim()
     }
 
+    private fun observeDownloadedState() {
+        viewModelScope.launch {
+            bookDownloadManager.items.collect { items ->
+                val downloadedIds = items
+                    .filter { it.status == DownloadStatus.Completed }
+                    .map { it.bookId }
+                    .toSet()
+                val progressByBookId = items
+                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = downloadedIds,
+                        downloadProgressByBookId = progressByBookId
+                    )
+                }
+            }
+        }
+    }
+
+    private fun findBookById(bookId: String): BookSummary? {
+        val state = uiState.value
+        return state.continueListening.firstOrNull { it.book.id == bookId }?.book
+            ?: state.recentlyAdded.firstOrNull { it.id == bookId }
+            ?: state.recentSeries.firstOrNull { it.leadBook.id == bookId }?.leadBook
+    }
+
 }
 
 data class HomeUiState(
@@ -171,5 +275,8 @@ data class HomeUiState(
     val recentlyAdded: List<BookSummary> = emptyList(),
     val recentSeries: List<SeriesStackSummary> = emptyList(),
     val authorImageUrls: Map<String, String> = emptyMap(),
+    val downloadedBookIds: Set<String> = emptySet(),
+    val downloadProgressByBookId: Map<String, Int> = emptyMap(),
+    val actionMessage: String? = null,
     val errorMessage: String? = null
 )

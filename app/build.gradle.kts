@@ -73,6 +73,7 @@ dependencies {
     implementation(libs.google.material)
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
+    implementation(libs.androidx.media)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

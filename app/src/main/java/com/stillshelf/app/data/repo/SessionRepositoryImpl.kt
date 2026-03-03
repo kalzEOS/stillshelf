@@ -35,6 +35,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -59,7 +60,7 @@ class SessionRepositoryImpl @Inject constructor(
 ) : SessionRepository {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
-        private const val CONTENT_CACHE_MAX_AGE_MS: Long = 5 * 60 * 1000L
+        private const val CONTENT_CACHE_MAX_AGE_MS: Long = 20 * 60 * 1000L
         private const val DETAIL_CACHE_MAX_AGE_MS: Long = 30 * 60 * 1000L
     }
 
@@ -80,6 +81,7 @@ class SessionRepositoryImpl @Inject constructor(
     private val narratorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val seriesCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
+    private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val bookDetailCache = mutableMapOf<String, TimedCacheEntry<BookDetail>>()
 
     override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
@@ -549,22 +551,623 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
-        val collections = result.getOrThrow()
-            .asSequence()
-            .filterNot { it.name.startsWith("StillShelf Probe", ignoreCase = true) }
-            .map {
-                NamedEntitySummary(
-                    id = it.id,
-                    name = if (it.name.equals("StillShelf Favorites", ignoreCase = true)) {
-                        "StillShelf Collection"
-                    } else {
-                        it.name
+        val collections = coroutineScope {
+            result.getOrThrow()
+                .asSequence()
+                .filterNot { it.name.startsWith("StillShelf Probe", ignoreCase = true) }
+                .map { collection ->
+                    async {
+                        val resolvedCount = audiobookshelfApi.getCollectionBookIds(
+                            baseUrl = connection.server.baseUrl,
+                            authToken = connection.token,
+                            collectionId = collection.id
+                        ).getOrNull()?.size ?: collection.itemCount ?: 0
+                        NamedEntitySummary(
+                            id = collection.id,
+                            name = collection.name,
+                            subtitle = "$resolvedCount books"
+                        )
                     }
-                )
-            }
-            .toList()
+                }
+                .toList()
+                .awaitAll()
+        }
         putCache(collectionsCache, cacheKey, collections)
         return AppResult.Success(collections)
+    }
+
+    override suspend fun fetchPlaylistsForActiveLibrary(
+        forceRefresh: Boolean
+    ): AppResult<List<NamedEntitySummary>> {
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val cacheKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "playlists"
+        )
+        if (!forceRefresh) {
+            getFreshCache(playlistsCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
+                return AppResult.Success(cached)
+            }
+        }
+        val staleCache = if (forceRefresh) null else getAnyCache(playlistsCache, cacheKey)
+
+        val result = audiobookshelfApi.getPlaylists(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = library.id
+        )
+        if (result.isFailure) {
+            if (!staleCache.isNullOrEmpty()) {
+                return AppResult.Success(staleCache)
+            }
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to load playlists.",
+                cause = result.exceptionOrNull()
+            )
+        }
+
+        val playlists = coroutineScope {
+            result.getOrThrow().map { playlist ->
+                async {
+                    val resolvedCount = audiobookshelfApi.getPlaylistBookIds(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token,
+                        playlistId = playlist.id
+                    ).getOrNull()?.size ?: playlist.itemCount
+                    NamedEntitySummary(
+                        id = playlist.id,
+                        name = playlist.name,
+                        subtitle = resolvedCount?.let { count -> "$count books" }
+                    )
+                }
+            }.awaitAll()
+        }
+        putCache(playlistsCache, cacheKey, playlists)
+        return AppResult.Success(playlists)
+    }
+
+    override suspend fun fetchCollectionBooks(
+        collectionId: String,
+        forceRefresh: Boolean
+    ): AppResult<List<BookSummary>> {
+        if (collectionId.isBlank()) return AppResult.Error("Invalid collection id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+
+        val bookIds = audiobookshelfApi.getCollectionBookIds(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            collectionId = collectionId
+        ).getOrElse { throwable ->
+            return AppResult.Error(
+                message = throwable.message ?: "Unable to load collection items.",
+                cause = throwable
+            )
+        }
+        if (bookIds.isEmpty()) {
+            return AppResult.Success(emptyList())
+        }
+
+        return when (
+            val booksResult = fetchBooksForActiveLibrary(
+                limit = 500,
+                page = 0,
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is AppResult.Success -> {
+                val normalizedIds = bookIds
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .toSet()
+                val books = booksResult.value
+                    .filter { book ->
+                        val id = book.id.trim()
+                        id in normalizedIds ||
+                            normalizedIds.any { candidate ->
+                                candidate.equals(id, ignoreCase = true) ||
+                                    candidate.endsWith(id, ignoreCase = true) ||
+                                    id.endsWith(candidate, ignoreCase = true)
+                            }
+                    }
+                    .sortedWith(compareBy { it.title.lowercase() })
+                AppResult.Success(books)
+            }
+            is AppResult.Error -> booksResult
+        }
+    }
+
+    override suspend fun fetchPlaylistBooks(
+        playlistId: String,
+        forceRefresh: Boolean
+    ): AppResult<List<BookSummary>> {
+        if (playlistId.isBlank()) return AppResult.Error("Invalid playlist id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+
+        val bookIds = audiobookshelfApi.getPlaylistBookIds(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = playlistId
+        ).getOrElse { throwable ->
+            return AppResult.Error(
+                message = throwable.message ?: "Unable to load playlist items.",
+                cause = throwable
+            )
+        }
+        if (bookIds.isEmpty()) {
+            return AppResult.Success(emptyList())
+        }
+
+        return when (
+            val booksResult = fetchBooksForActiveLibrary(
+                limit = 500,
+                page = 0,
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is AppResult.Success -> {
+                val normalizedIds = bookIds
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .toSet()
+                val books = booksResult.value
+                    .filter { book ->
+                        val id = book.id.trim()
+                        id in normalizedIds ||
+                            normalizedIds.any { candidate ->
+                                candidate.equals(id, ignoreCase = true) ||
+                                    candidate.endsWith(id, ignoreCase = true) ||
+                                    id.endsWith(candidate, ignoreCase = true)
+                            }
+                    }
+                    .sortedWith(compareBy { it.title.lowercase() })
+                AppResult.Success(books)
+            }
+            is AppResult.Error -> booksResult
+        }
+    }
+
+    override suspend fun createCollection(name: String): AppResult<NamedEntitySummary> {
+        val normalized = name.trim()
+        if (normalized.isBlank()) return AppResult.Error("Collection name is required.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val result = audiobookshelfApi.createCollection(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = library.id,
+            name = normalized
+        )
+        val created = if (result.isSuccess) {
+            result.getOrThrow()
+        } else {
+            val createError = result.exceptionOrNull()
+            val errorTrace = buildString {
+                var cursor: Throwable? = createError
+                while (cursor != null) {
+                    val text = cursor.message.orEmpty()
+                    if (text.isNotBlank()) {
+                        if (isNotEmpty()) append(" | ")
+                        append(text)
+                    }
+                    cursor = cursor.cause
+                }
+            }
+            val needsSeedBook = errorTrace.contains("no books", ignoreCase = true) ||
+                errorTrace.contains("invalid collection data", ignoreCase = true)
+            if (!needsSeedBook) {
+                return AppResult.Error(
+                    message = createError?.message ?: "Unable to create collection.",
+                    cause = createError
+                )
+            }
+
+            val seedBookId = audiobookshelfApi.getLibraryItems(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                libraryId = library.id,
+                limit = 1,
+                page = 0,
+                sortBy = "media.metadata.title",
+                desc = false
+            ).getOrNull()?.firstOrNull()?.id
+
+            if (seedBookId.isNullOrBlank()) {
+                return AppResult.Error(
+                    message = createError?.message ?: "Unable to create collection.",
+                    cause = createError
+                )
+            }
+
+            val seededCreate = audiobookshelfApi.createCollectionWithBook(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                libraryId = library.id,
+                name = normalized,
+                bookId = seedBookId
+            )
+            if (seededCreate.isFailure) {
+                return AppResult.Error(
+                    message = seededCreate.exceptionOrNull()?.message
+                        ?: createError?.message
+                        ?: "Unable to create collection.",
+                    cause = seededCreate.exceptionOrNull() ?: createError
+                )
+            }
+            val seededCollection = seededCreate.getOrThrow()
+            // Best effort: keep UX as empty collection if server allows removing the seed item.
+            runCatching {
+                audiobookshelfApi.removeBookFromCollection(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    collectionId = seededCollection.id,
+                    bookId = seedBookId
+                )
+            }
+            seededCollection
+        }
+
+        clearContentCaches()
+        return AppResult.Success(
+            NamedEntitySummary(
+                id = created.id,
+                name = created.name.ifBlank { normalized }
+            )
+        )
+    }
+
+    override suspend fun renameCollection(collectionId: String, name: String): AppResult<Unit> {
+        val normalizedId = collectionId.trim()
+        val normalizedName = name.trim()
+        if (normalizedId.isBlank()) return AppResult.Error("Invalid collection id.")
+        if (normalizedName.isBlank()) return AppResult.Error("Collection name is required.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val result = audiobookshelfApi.renameCollection(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            collectionId = normalizedId,
+            name = normalizedName
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to rename collection.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun renamePlaylist(playlistId: String, name: String): AppResult<Unit> {
+        val normalizedId = playlistId.trim()
+        val normalizedName = name.trim()
+        if (normalizedId.isBlank()) return AppResult.Error("Invalid playlist id.")
+        if (normalizedName.isBlank()) return AppResult.Error("Playlist name is required.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val result = audiobookshelfApi.renamePlaylist(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = normalizedId,
+            name = normalizedName
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to rename playlist.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun createCollectionWithBook(
+        name: String,
+        bookId: String
+    ): AppResult<NamedEntitySummary> {
+        val normalizedName = name.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedName.isBlank()) return AppResult.Error("Collection name is required.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val createResult = audiobookshelfApi.createCollectionWithBook(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = library.id,
+            name = normalizedName,
+            bookId = normalizedBookId
+        )
+        if (createResult.isFailure) {
+            return AppResult.Error(
+                message = createResult.exceptionOrNull()?.message ?: "Unable to create collection.",
+                cause = createResult.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        val created = createResult.getOrThrow()
+        return AppResult.Success(
+            NamedEntitySummary(
+                id = created.id,
+                name = created.name.ifBlank { normalizedName }
+            )
+        )
+    }
+
+    override suspend fun createPlaylist(name: String): AppResult<NamedEntitySummary> {
+        val normalized = name.trim()
+        if (normalized.isBlank()) return AppResult.Error("Playlist name is required.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val result = audiobookshelfApi.createPlaylist(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = library.id,
+            name = normalized
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to create playlist.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        val created = result.getOrThrow()
+        return AppResult.Success(
+            NamedEntitySummary(
+                id = created.id,
+                name = created.name.ifBlank { normalized }
+            )
+        )
+    }
+
+    override suspend fun createPlaylistWithBook(
+        name: String,
+        bookId: String
+    ): AppResult<NamedEntitySummary> {
+        val normalizedName = name.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedName.isBlank()) return AppResult.Error("Playlist name is required.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val createResult = audiobookshelfApi.createPlaylistWithBook(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = library.id,
+            name = normalizedName,
+            bookId = normalizedBookId
+        )
+        if (createResult.isFailure) {
+            return AppResult.Error(
+                message = createResult.exceptionOrNull()?.message ?: "Unable to create playlist.",
+                cause = createResult.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        val created = createResult.getOrThrow()
+        return AppResult.Success(
+            NamedEntitySummary(
+                id = created.id,
+                name = created.name.ifBlank { normalizedName }
+            )
+        )
+    }
+
+    override suspend fun deleteCollection(collectionId: String): AppResult<Unit> {
+        val normalizedId = collectionId.trim()
+        if (normalizedId.isBlank()) return AppResult.Error("Invalid collection id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val result = audiobookshelfApi.deleteCollection(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            collectionId = normalizedId,
+            libraryId = connection.library?.id
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to delete collection.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun deletePlaylist(playlistId: String): AppResult<Unit> {
+        val normalizedId = playlistId.trim()
+        if (normalizedId.isBlank()) return AppResult.Error("Invalid playlist id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val result = audiobookshelfApi.deletePlaylist(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = normalizedId,
+            libraryId = connection.library?.id
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message ?: "Unable to delete playlist.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun addBookToCollection(collectionId: String, bookId: String): AppResult<Unit> {
+        val normalizedCollectionId = collectionId.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedCollectionId.isBlank()) return AppResult.Error("Invalid collection id.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val addResult = audiobookshelfApi.addBookToCollection(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            collectionId = normalizedCollectionId,
+            bookId = normalizedBookId
+        )
+        if (addResult.isFailure) {
+            return AppResult.Error(
+                message = addResult.exceptionOrNull()?.message ?: "Unable to add book to collection.",
+                cause = addResult.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun addBookToPlaylist(playlistId: String, bookId: String): AppResult<Unit> {
+        val normalizedPlaylistId = playlistId.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedPlaylistId.isBlank()) return AppResult.Error("Invalid playlist id.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val addResult = audiobookshelfApi.addBookToPlaylist(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = normalizedPlaylistId,
+            bookId = normalizedBookId
+        )
+        if (addResult.isFailure) {
+            return AppResult.Error(
+                message = addResult.exceptionOrNull()?.message ?: "Unable to add book to playlist.",
+                cause = addResult.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun removeBookFromCollection(collectionId: String, bookId: String): AppResult<Unit> {
+        val normalizedCollectionId = collectionId.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedCollectionId.isBlank()) return AppResult.Error("Invalid collection id.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val removeResult = audiobookshelfApi.removeBookFromCollection(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            collectionId = normalizedCollectionId,
+            bookId = normalizedBookId
+        )
+        if (removeResult.isFailure) {
+            return AppResult.Error(
+                message = removeResult.exceptionOrNull()?.message ?: "Unable to remove book from collection.",
+                cause = removeResult.exceptionOrNull()
+            )
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun removeBookFromPlaylist(playlistId: String, bookId: String): AppResult<Unit> {
+        val normalizedPlaylistId = playlistId.trim()
+        val normalizedBookId = bookId.trim()
+        if (normalizedPlaylistId.isBlank()) return AppResult.Error("Invalid playlist id.")
+        if (normalizedBookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val activeLibrary = connection.library ?: return AppResult.Error("No active library selected.")
+        val existingPlaylistName = audiobookshelfApi.getPlaylists(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            libraryId = activeLibrary.id
+        ).getOrNull()?.firstOrNull { playlist ->
+            playlist.id.trim().equals(normalizedPlaylistId, ignoreCase = true)
+        }?.name
+        val removeResult = audiobookshelfApi.removeBookFromPlaylist(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = normalizedPlaylistId,
+            bookId = normalizedBookId
+        )
+        if (removeResult.isFailure) {
+            return AppResult.Error(
+                message = removeResult.exceptionOrNull()?.message ?: "Unable to remove book from playlist.",
+                cause = removeResult.exceptionOrNull()
+            )
+        }
+        val verifyResult = audiobookshelfApi.getPlaylistBookIds(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            playlistId = normalizedPlaylistId
+        )
+        if (verifyResult.isSuccess) {
+            val remainingIds = verifyResult.getOrThrow()
+            if (containsLikelyMatchingId(remainingIds, normalizedBookId)) {
+                return AppResult.Error("Unable to remove book from playlist.")
+            }
+        } else {
+            val verifyError = verifyResult.exceptionOrNull()
+            val verifyMessage = verifyError?.message.orEmpty()
+            val playlistWasRemoved = verifyMessage.contains("404")
+            if (playlistWasRemoved && !existingPlaylistName.isNullOrBlank()) {
+                val recreateResult = audiobookshelfApi.createPlaylist(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    libraryId = activeLibrary.id,
+                    name = existingPlaylistName
+                )
+                if (recreateResult.isFailure) {
+                    return AppResult.Error(
+                        message = recreateResult.exceptionOrNull()?.message
+                            ?: "Removed book but failed to recreate empty playlist.",
+                        cause = recreateResult.exceptionOrNull()
+                    )
+                }
+            } else if (!playlistWasRemoved) {
+                return AppResult.Error(
+                    message = verifyError?.message ?: "Unable to verify playlist update.",
+                    cause = verifyError
+                )
+            }
+        }
+        clearContentCaches()
+        return AppResult.Success(Unit)
     }
 
     override suspend fun fetchBookDetail(
@@ -759,6 +1362,52 @@ class SessionRepositoryImpl @Inject constructor(
         return AppResult.Success(Unit)
     }
 
+    override suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit> {
+        if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val targetDuration = if (finished) {
+            val detailDuration = audiobookshelfApi.getItemDetail(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = bookId
+            ).getOrNull()?.durationSeconds
+            val progressDuration = audiobookshelfApi.getMediaProgressForItem(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = bookId
+            ).getOrNull()?.durationSeconds
+            (detailDuration ?: progressDuration)?.coerceAtLeast(0.0)
+        } else {
+            null
+        }
+        val targetCurrentTime = when {
+            finished && targetDuration != null -> targetDuration
+            finished -> 0.0
+            else -> 0.0
+        }
+        val result = audiobookshelfApi.updateMediaProgressForItem(
+            baseUrl = connection.server.baseUrl,
+            authToken = connection.token,
+            itemId = bookId,
+            currentTimeSeconds = targetCurrentTime,
+            durationSeconds = targetDuration,
+            isFinished = finished
+        )
+        if (result.isFailure) {
+            return AppResult.Error(
+                message = result.exceptionOrNull()?.message
+                    ?: if (finished) "Unable to mark as finished." else "Unable to mark as unfinished.",
+                cause = result.exceptionOrNull()
+            )
+        }
+        runCatching { sessionPreferences.clearCachedHomeFeed() }
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
     override suspend fun addBookToDefaultCollection(bookId: String): AppResult<String> {
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
@@ -791,24 +1440,34 @@ class SessionRepositoryImpl @Inject constructor(
                 bookId = bookId
             )
             if (createdWithBook.isSuccess) {
-                return AppResult.Success("Collections")
-            }
-
-            val created = audiobookshelfApi.createCollection(
-                baseUrl = connection.server.baseUrl,
-                authToken = connection.token,
-                libraryId = library.id,
-                name = defaultCollectionName
-            )
-            if (created.isFailure) {
-                return AppResult.Error(
-                    message = createdWithBook.exceptionOrNull()?.message
-                        ?: created.exceptionOrNull()?.message
-                        ?: "Unable to create collection.",
-                    cause = createdWithBook.exceptionOrNull() ?: created.exceptionOrNull()
+                val createdCollectionId = createdWithBook.getOrThrow().id
+                val verifiedIds = audiobookshelfApi.getCollectionBookIds(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    collectionId = createdCollectionId
+                ).getOrNull()
+                if (verifiedIds == null || verifiedIds.contains(bookId)) {
+                    clearContentCaches()
+                    return AppResult.Success("Collections")
+                }
+                createdCollectionId
+            } else {
+                val created = audiobookshelfApi.createCollection(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    libraryId = library.id,
+                    name = defaultCollectionName
                 )
+                if (created.isFailure) {
+                    return AppResult.Error(
+                        message = createdWithBook.exceptionOrNull()?.message
+                            ?: created.exceptionOrNull()?.message
+                            ?: "Unable to create collection.",
+                        cause = createdWithBook.exceptionOrNull() ?: created.exceptionOrNull()
+                    )
+                }
+                created.getOrThrow().id
             }
-            created.getOrThrow().id
         }
 
         val addResult = audiobookshelfApi.addBookToCollection(
@@ -823,6 +1482,7 @@ class SessionRepositoryImpl @Inject constructor(
                 cause = addResult.exceptionOrNull()
             )
         }
+        clearContentCaches()
         return AppResult.Success("Collections")
     }
 
@@ -1375,6 +2035,17 @@ class SessionRepositoryImpl @Inject constructor(
 
     private fun normalizedBaseUrl(value: String): String = value.trim().removeSuffix("/")
 
+    private fun containsLikelyMatchingId(ids: Set<String>, targetId: String): Boolean {
+        val normalizedTarget = targetId.trim()
+        if (normalizedTarget.isBlank()) return false
+        return ids.any { candidate ->
+            val normalizedCandidate = candidate.trim()
+            normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+                normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+                normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
+        }
+    }
+
     private fun contentCacheKey(serverId: String, libraryId: String, suffix: String): String {
         return "$serverId|$libraryId|$suffix"
     }
@@ -1418,6 +2089,7 @@ class SessionRepositoryImpl @Inject constructor(
         narratorsCache.clear()
         seriesCache.clear()
         collectionsCache.clear()
+        playlistsCache.clear()
         bookDetailCache.clear()
     }
 

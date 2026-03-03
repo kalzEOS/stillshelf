@@ -33,10 +33,8 @@ class PlaybackForegroundService : Service() {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, PlaybackForegroundService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+            latestNotification = null
+            context.stopService(Intent(context, PlaybackForegroundService::class.java))
         }
     }
 

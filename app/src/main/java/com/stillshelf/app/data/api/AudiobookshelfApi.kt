@@ -499,18 +499,20 @@ class AudiobookshelfApi @Inject constructor(
                 ?.count { bookmark ->
                     bookmark.libraryItemId.matchesLibraryItemId(normalizedItemId)
                 }
-                ?: 0
             var lastError: Throwable? = null
             requestBuilders.forEach { request ->
                 val attempt = runCatching { executeRequestWithRetry(request) }
                 if (attempt.isSuccess) {
                     invalidateMePayloadCache()
                     val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull()
+                    if (latestBookmarks == null) {
+                        return@runCatching Unit
+                    }
                     val bookmarksForItem = latestBookmarks
                         ?.filter { bookmark -> bookmark.libraryItemId.matchesLibraryItemId(normalizedItemId) }
                         .orEmpty()
                     val verified = when {
-                        bookmarksForItem.size > baselineForItemCount -> true
+                        baselineForItemCount != null && bookmarksForItem.size > baselineForItemCount -> true
                         else -> {
                             bookmarksForItem.any { bookmark ->
                                 val timeMatches = bookmark.timeSeconds?.let { bookmarkTime ->

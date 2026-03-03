@@ -148,7 +148,13 @@ class MiniPlayerViewModel @Inject constructor(
                     hadActivePlayback = false
                     refresh()
                 } else {
-                    mutableUiState.update { it.copy(isPlaying = false, displayTitle = "Nothing playing") }
+                    mutableUiState.update { currentState ->
+                        val cachedItem = currentState.item
+                        currentState.copy(
+                            isPlaying = false,
+                            displayTitle = resolvePlayerTitle(cachedItem)
+                        )
+                    }
                 }
             }
         }

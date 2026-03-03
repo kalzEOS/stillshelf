@@ -14,6 +14,7 @@ import com.stillshelf.app.ui.screens.auth.ServersRoute
 fun NavGraphBuilder.authNavGraph(
     navController: NavHostController,
     startDestination: String,
+    hasAnyServer: Boolean,
     onAuthCompleted: () -> Unit
 ) {
     navigation(
@@ -59,7 +60,12 @@ fun NavGraphBuilder.authNavGraph(
                 onLibrarySelected = onAuthCompleted,
                 onManageServers = {
                     if (!navController.popBackStack(AuthRoute.SERVERS, inclusive = false)) {
-                        navController.navigate(AuthRoute.ADD_SERVER) {
+                        val fallbackRoute = if (hasAnyServer) {
+                            AuthRoute.SERVERS
+                        } else {
+                            AuthRoute.ADD_SERVER
+                        }
+                        navController.navigate(fallbackRoute) {
                             launchSingleTop = true
                         }
                     }

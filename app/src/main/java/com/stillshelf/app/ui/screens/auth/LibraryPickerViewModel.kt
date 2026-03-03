@@ -7,6 +7,7 @@ import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,13 +32,7 @@ class LibraryPickerViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 loadingState.value = true
-                when (
-                    val result = runCatching {
-                        sessionRepository.refreshLibrariesForActiveServer()
-                    }.getOrElse {
-                        AppResult.Error("Unable to load libraries for this server.", it)
-                    }
-                ) {
+                when (val result = refreshLibrariesForActiveServerWithRetry()) {
                     is AppResult.Success -> errorState.value = null
                     is AppResult.Error -> {
                         val message = result.message
@@ -57,6 +52,28 @@ class LibraryPickerViewModel @Inject constructor(
                 loadingState.value = false
             }
         }
+    }
+
+    private suspend fun refreshLibrariesForActiveServerWithRetry(): AppResult<Unit> {
+        repeat(3) { attempt ->
+            val result = runCatching {
+                sessionRepository.refreshLibrariesForActiveServer()
+            }.getOrElse {
+                AppResult.Error("Unable to load libraries for this server.", it)
+            }
+
+            if (result is AppResult.Success) {
+                return result
+            }
+
+            val isLastAttempt = attempt == 2
+            if (isLastAttempt || !isTransientPostLoginState((result as AppResult.Error).message)) {
+                return result
+            }
+
+            delay(250)
+        }
+        return AppResult.Error("Unable to load libraries for this server.")
     }
 
     val uiState: StateFlow<LibraryPickerUiState> = combine(
@@ -98,9 +115,13 @@ class LibraryPickerViewModel @Inject constructor(
 
     private fun isUnrecoverableLibraryPickerState(message: String?): Boolean {
         val normalized = message?.lowercase().orEmpty()
+        return normalized.contains("no saved session")
+    }
+
+    private fun isTransientPostLoginState(message: String?): Boolean {
+        val normalized = message?.lowercase().orEmpty()
         return normalized.contains("active server not found") ||
-            normalized.contains("no active server selected") ||
-            normalized.contains("no saved session")
+            normalized.contains("no active server selected")
     }
 }
 

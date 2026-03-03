@@ -71,6 +71,7 @@ fun RootNavGraph(
             authNavGraph(
                 navController = navController,
                 startDestination = authStartDestination,
+                hasAnyServer = uiState.hasAnyServer,
                 onAuthCompleted = {
                     navController.navigate(GraphRoute.MAIN) {
                         popUpTo(GraphRoute.AUTH) { inclusive = true }

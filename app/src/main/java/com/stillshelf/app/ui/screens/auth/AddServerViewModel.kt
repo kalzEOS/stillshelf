@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -9,6 +10,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -18,6 +20,15 @@ class AddServerViewModel @Inject constructor(
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(AddServerUiState())
     val uiState: StateFlow<AddServerUiState> = mutableUiState.asStateFlow()
+    private var knownServers: List<Server> = emptyList()
+
+    init {
+        viewModelScope.launch {
+            sessionRepository.observeServers().collect { servers ->
+                knownServers = servers
+            }
+        }
+    }
 
     fun onServerNameChange(value: String) {
         val serverNameError = validateServerName(value)
@@ -92,6 +103,15 @@ class AddServerViewModel @Inject constructor(
         }
     }
 
+    fun duplicateServerMessage(baseUrl: String): String? {
+        val normalized = normalizeBaseUrl(baseUrl)
+        if (normalized.isBlank()) return null
+        val existing = knownServers.firstOrNull { server ->
+            normalizeBaseUrl(server.baseUrl).equals(normalized, ignoreCase = true)
+        } ?: return null
+        return "This server already exists as \"${existing.name}\". Use the existing entry instead."
+    }
+
     private fun canContinue(name: String, baseUrl: String, serverNameError: String?): Boolean {
         return name.isNotBlank() && baseUrl.isNotBlank() && serverNameError == null
     }
@@ -107,6 +127,10 @@ class AddServerViewModel @Inject constructor(
             return "Use letters, numbers, spaces, or . - _ ' only."
         }
         return null
+    }
+
+    private fun normalizeBaseUrl(baseUrl: String): String {
+        return baseUrl.trim().removeSuffix("/")
     }
 }
 

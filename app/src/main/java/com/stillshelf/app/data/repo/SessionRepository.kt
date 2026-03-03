@@ -6,6 +6,8 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.BookDetail
+import com.stillshelf.app.core.model.BookBookmark
+import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
@@ -91,6 +93,18 @@ interface SessionRepository {
         bookId: String,
         timeSeconds: Double,
         title: String? = null
+    ): AppResult<Unit>
+    suspend fun fetchBookmarksForActiveLibrary(
+        forceRefresh: Boolean = false
+    ): AppResult<List<BookmarkEntry>>
+    suspend fun updateBookmark(
+        bookId: String,
+        bookmark: BookBookmark,
+        newTitle: String
+    ): AppResult<Unit>
+    suspend fun deleteBookmark(
+        bookId: String,
+        bookmark: BookBookmark
     ): AppResult<Unit>
     suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit>
     suspend fun addBookToDefaultCollection(bookId: String): AppResult<String>

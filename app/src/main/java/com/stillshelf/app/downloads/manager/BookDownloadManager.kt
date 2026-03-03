@@ -141,7 +141,8 @@ class BookDownloadManager @Inject constructor(
             .setDescription(book.authorName)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(true)
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
+            .setVisibleInDownloadsUi(false)
             .setDestinationInExternalFilesDir(
                 appContext,
                 Environment.DIRECTORY_PODCASTS,
@@ -194,15 +195,11 @@ class BookDownloadManager @Inject constructor(
 
     suspend fun removeDownload(bookId: String) {
         val item = items.value.firstOrNull { it.bookId == bookId } ?: return
+        val localRef = item.localPath ?: queryLocalPathByDownloadId(item.downloadId)
         item.downloadId?.let { id ->
             runCatching { downloadManager.remove(id) }
         }
-        val localPath = item.localPath ?: queryLocalPathByDownloadId(item.downloadId)
-        localPath
-            ?.takeIf { it.isNotBlank() }
-            ?.let { path ->
-                runCatching { File(path).delete() }
-            }
+        deleteLocalCopy(localRef)
         deleteItem(bookId)
     }
 
@@ -212,7 +209,7 @@ class BookDownloadManager @Inject constructor(
         return items.value.firstOrNull { item ->
             item.bookId == normalized &&
                 item.status == DownloadStatus.Completed &&
-                item.localPath?.let { File(it).exists() } == true
+                localResourceExists(item.localPath)
         }
     }
 
@@ -290,6 +287,41 @@ class BookDownloadManager @Inject constructor(
         }
     }
 
+    private fun localResourceExists(localPath: String?): Boolean {
+        val ref = localPath?.trim().orEmpty()
+        if (ref.isBlank()) return false
+        return runCatching {
+            if (ref.startsWith("content://")) {
+                appContext.contentResolver.openFileDescriptor(Uri.parse(ref), "r")?.use { true } ?: false
+            } else if (ref.startsWith("file://")) {
+                val path = Uri.parse(ref).path.orEmpty()
+                path.isNotBlank() && File(path).exists()
+            } else {
+                File(ref).exists()
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun deleteLocalCopy(localPath: String?) {
+        val ref = localPath?.trim().orEmpty()
+        if (ref.isBlank()) return
+        runCatching {
+            when {
+                ref.startsWith("content://") -> {
+                    appContext.contentResolver.delete(Uri.parse(ref), null, null)
+                }
+                ref.startsWith("file://") -> {
+                    Uri.parse(ref).path?.let { path ->
+                        if (path.isNotBlank()) File(path).delete()
+                    }
+                }
+                else -> {
+                    File(ref).delete()
+                }
+            }
+        }
+    }
+
     private fun queryLocalPathByDownloadId(downloadId: Long?): String? {
         if (downloadId == null || downloadId <= 0L) return null
         val query = DownloadManager.Query().setFilterById(downloadId)
@@ -362,7 +394,7 @@ class BookDownloadManager @Inject constructor(
         mutex.withLock {
             val sanitized = mutableItems.value.filterNot { item ->
                 item.status == DownloadStatus.Completed &&
-                    (item.localPath.isNullOrBlank() || !File(item.localPath).exists())
+                    !localResourceExists(item.localPath)
             }
             if (sanitized != mutableItems.value) {
                 persistItemsLocked(sanitized)
@@ -417,7 +449,7 @@ class BookDownloadManager @Inject constructor(
         scope.launch {
             val ids = items
                 .filter { it.status == DownloadStatus.Completed }
-                .filter { item -> item.localPath?.let { File(it).exists() } == true }
+                .filter { item -> localResourceExists(item.localPath) }
                 .map { it.bookId }
                 .toSet()
             sessionPreferences.setDownloadedBookIds(ids)

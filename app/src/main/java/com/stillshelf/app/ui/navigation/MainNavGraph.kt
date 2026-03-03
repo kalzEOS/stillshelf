@@ -37,8 +37,8 @@ import com.stillshelf.app.ui.components.RootScaffold
 import com.stillshelf.app.ui.screens.AuthorsBrowseScreen
 import com.stillshelf.app.ui.screens.AuthorDetailScreen
 import com.stillshelf.app.ui.screens.BookDetailScreen
+import com.stillshelf.app.ui.screens.BookmarksBrowseScreen
 import com.stillshelf.app.ui.screens.BrowsePlaceholderScreen
-import com.stillshelf.app.ui.screens.BrowseSectionPlaceholderScreen
 import com.stillshelf.app.ui.screens.CollectionDetailScreen
 import com.stillshelf.app.ui.screens.CollectionsBrowseScreen
 import com.stillshelf.app.ui.screens.CustomizePlaceholderScreen
@@ -59,8 +59,6 @@ import com.stillshelf.app.ui.screens.SettingsPlaceholderScreen
 import com.stillshelf.app.ui.screens.auth.AddServerRoute
 import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.BookmarkBorder
 
 fun NavGraphBuilder.mainNavGraph() {
     navigation(
@@ -292,6 +290,11 @@ private fun MainTabsNavHost(
                     type = NavType.StringType
                     nullable = true
                     defaultValue = null
+                },
+                navArgument(MainRoute.PLAYER_START_SECONDS_ARG) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
                 }
             ),
             enterTransition = {
@@ -320,7 +323,12 @@ private fun MainTabsNavHost(
             }
         ) {
             PlayerPlaceholderScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onGoToBook = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(MainRoute.SERVERS) {
@@ -459,12 +467,14 @@ private fun MainTabsNavHost(
             )
         }
         composable(BrowseRoute.BOOKMARKS) {
-            BrowseSectionPlaceholderScreen(
-                title = "Bookmarks",
-                emptyMessage = "Bookmarks you add will appear here.",
-                icon = Icons.Outlined.BookmarkBorder,
+            BookmarksBrowseScreen(
                 onBackClick = { navController.popBackStack() },
-                onHomeClick = onHomeClick
+                onHomeClick = onHomeClick,
+                onBookmarkClick = { bookId, startSeconds ->
+                    navController.navigate(MainRoute.player(bookId = bookId, startSeconds = startSeconds)) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(BrowseRoute.PLAYLISTS) {

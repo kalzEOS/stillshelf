@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -38,6 +39,12 @@ data class CollectionsBrowseUiState(
     val coverStackByCollectionId: Map<String, List<String>> = emptyMap(),
     val errorMessage: String? = null,
     val actionMessage: String? = null
+)
+
+data class BookmarksBrowseUiState(
+    val isLoading: Boolean = false,
+    val bookmarks: List<BookmarkEntry> = emptyList(),
+    val errorMessage: String? = null
 )
 
 @HiltViewModel
@@ -526,6 +533,55 @@ class PlaylistsBrowseViewModel @Inject constructor(
                     }
                 } finally {
                     inFlightCoverLoads.remove(playlist.id)
+                }
+            }
+        }
+    }
+}
+
+@HiltViewModel
+class BookmarksBrowseViewModel @Inject constructor(
+    private val sessionRepository: SessionRepository
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(BookmarksBrowseUiState())
+    val uiState: StateFlow<BookmarksBrowseUiState> = mutableUiState.asStateFlow()
+
+    init {
+        refresh(forceRefresh = false, silent = false)
+    }
+
+    fun refresh() {
+        refresh(forceRefresh = true, silent = false)
+    }
+
+    fun refreshSilent() {
+        refresh(forceRefresh = false, silent = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean, silent: Boolean) {
+        if (uiState.value.isLoading) return
+        if (!silent || uiState.value.bookmarks.isEmpty()) {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        }
+
+        viewModelScope.launch {
+            when (val result = sessionRepository.fetchBookmarksForActiveLibrary(forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            bookmarks = result.value
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = result.message
+                        )
+                    }
                 }
             }
         }

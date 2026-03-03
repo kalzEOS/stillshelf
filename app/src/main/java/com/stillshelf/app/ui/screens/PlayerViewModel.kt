@@ -9,6 +9,9 @@ import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
 import com.stillshelf.app.ui.navigation.MainRoute
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 data class PlayerControlPrefs(
     val skipForwardSeconds: Int = 15,
@@ -30,7 +34,8 @@ class PlayerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val playbackController: PlaybackController,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     val uiState: StateFlow<PlaybackUiState> = playbackController.uiState
     private val mutablePreviewItem = MutableStateFlow<ContinueListeningItem?>(null)
@@ -43,25 +48,38 @@ class PlayerViewModel @Inject constructor(
     val actionMessage: StateFlow<String?> = mutableActionMessage.asStateFlow()
     private val mutableControlPrefs = MutableStateFlow(PlayerControlPrefs())
     val controlPrefs: StateFlow<PlayerControlPrefs> = mutableControlPrefs.asStateFlow()
+    private val mutableDownloadedBookIds = MutableStateFlow<Set<String>>(emptySet())
+    val downloadedBookIds: StateFlow<Set<String>> = mutableDownloadedBookIds.asStateFlow()
+    private val mutableDownloadProgressPercent = MutableStateFlow<Int?>(null)
+    val downloadProgressPercent: StateFlow<Int?> = mutableDownloadProgressPercent.asStateFlow()
+    private var currentDownloadItems: List<DownloadItem> = emptyList()
     private var loadedBookId: String? = null
 
     init {
         observeControlPrefs()
+        observeDownloads()
         val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
+        val startSeconds = savedStateHandle
+            .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
+            ?.toDoubleOrNull()
+            ?.coerceAtLeast(0.0)
+        val startPositionMs = startSeconds?.let { (it * 1000.0).toLong() }
         if (bookId.isNotBlank()) {
             loadBookMetadata(bookId)
-            playbackController.playBook(bookId)
+            playbackController.playBook(bookId, startPositionMs = startPositionMs)
         } else if (playbackController.uiState.value.book == null) {
             val cachedItem = playbackController.getCachedContinueListeningItem()
             if (cachedItem != null) {
                 mutablePreviewItem.value = cachedItem
                 loadBookMetadata(cachedItem.book.id)
+                syncCurrentDownloadState()
             } else {
                 viewModelScope.launch {
                     when (val result = sessionRepository.fetchMiniPlayerItem()) {
                         is AppResult.Success -> {
                             mutablePreviewItem.value = result.value
                             result.value?.book?.id?.let(::loadBookMetadata)
+                            syncCurrentDownloadState()
                         }
 
                         is AppResult.Error -> Unit
@@ -76,6 +94,7 @@ class PlayerViewModel @Inject constructor(
                     mutablePreviewItem.value = null
                     loadBookMetadata(playbackState.book.id)
                 }
+                syncCurrentDownloadState()
             }
         }
     }
@@ -114,6 +133,73 @@ class PlayerViewModel @Inject constructor(
 
     fun seekToPositionMs(positionMs: Long, commit: Boolean) {
         playbackController.seekToPositionMs(positionMs = positionMs, commit = commit)
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        playbackController.setPlaybackSpeed(speed)
+    }
+
+    fun startSleepTimerMinutes(minutes: Int) {
+        playbackController.startSleepTimerMinutes(minutes)
+    }
+
+    fun startSleepTimerEndOfChapter() {
+        viewModelScope.launch {
+            val started = playbackController.startSleepTimerEndOfChapter()
+            if (!started) {
+                mutableActionMessage.value = "Unable to set end-of-chapter timer."
+            }
+        }
+    }
+
+    fun clearSleepTimer() {
+        playbackController.clearSleepTimer()
+    }
+
+    fun extendSleepTimerOneMinute() {
+        playbackController.extendSleepTimerOneMinute()
+    }
+
+    fun dismissSleepTimerExpiredPrompt() {
+        playbackController.dismissSleepTimerExpiredPrompt()
+    }
+
+    fun refreshAudioOutputs() {
+        playbackController.refreshAudioOutputDevices()
+    }
+
+    fun selectAudioOutputDevice(deviceId: Int?) {
+        val applied = playbackController.selectAudioOutputDevice(deviceId)
+        if (!applied) {
+            mutableActionMessage.value = "Unable to switch output on this device."
+        }
+    }
+
+    fun toggleDownload() {
+        val book = uiState.value.book ?: previewItem.value?.book
+        if (book == null) {
+            mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        viewModelScope.launch {
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> {
+                    mutableActionMessage.value = result.value.message
+                }
+
+                is AppResult.Error -> {
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun markAsFinished() {
+        setBookFinishedState(finished = true)
+    }
+
+    fun markAsUnfinished() {
+        setBookFinishedState(finished = false)
     }
 
     fun jumpToSeconds(seconds: Double) {
@@ -156,8 +242,99 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun editBookmark(bookmark: BookBookmark, newTitle: String) {
+        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        if (bookId.isNullOrBlank()) {
+            mutableActionMessage.value = "Unable to edit bookmark right now."
+            return
+        }
+        val normalizedTitle = newTitle.trim()
+        if (normalizedTitle.isBlank()) {
+            mutableActionMessage.value = "Bookmark title can't be empty."
+            return
+        }
+        val previousBookmarks = mutableBookmarks.value
+        mutableBookmarks.update { current ->
+            current.map { existing ->
+                if (bookmarkMatches(existing, bookmark)) {
+                    existing.copy(title = normalizedTitle)
+                } else {
+                    existing
+                }
+            }
+        }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.updateBookmark(
+                    bookId = bookId,
+                    bookmark = bookmark,
+                    newTitle = normalizedTitle
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableActionMessage.value = "Bookmark updated."
+                    loadBookMetadata(bookId = bookId, forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableBookmarks.value = previousBookmarks
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun deleteBookmark(bookmark: BookBookmark) {
+        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        if (bookId.isNullOrBlank()) {
+            mutableActionMessage.value = "Unable to delete bookmark right now."
+            return
+        }
+        val previousBookmarks = mutableBookmarks.value
+        mutableBookmarks.update { current ->
+            current.filterNot { existing -> bookmarkMatches(existing, bookmark) }
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.deleteBookmark(bookId = bookId, bookmark = bookmark)) {
+                is AppResult.Success -> {
+                    mutableActionMessage.value = "Bookmark deleted."
+                    loadBookMetadata(bookId = bookId, forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableBookmarks.value = previousBookmarks
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
+    }
+
     fun clearActionMessage() {
         mutableActionMessage.value = null
+    }
+
+    private fun setBookFinishedState(finished: Boolean) {
+        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        if (bookId.isNullOrBlank()) {
+            mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = finished)) {
+                is AppResult.Success -> {
+                    mutableActionMessage.value = if (finished) {
+                        "Marked as finished. Progress is now 100%."
+                    } else {
+                        "Marked as unfinished. Progress reset to 0%."
+                    }
+                    loadBookMetadata(bookId = bookId, forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
     }
 
     private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false) {
@@ -194,5 +371,47 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun observeDownloads() {
+        viewModelScope.launch {
+            bookDownloadManager.items.collect { items ->
+                syncCurrentDownloadState(items)
+            }
+        }
+    }
+
+    private fun syncCurrentDownloadState(items: List<DownloadItem> = currentDownloadItems) {
+        currentDownloadItems = items
+        mutableDownloadedBookIds.value = items
+            .filter { it.status == DownloadStatus.Completed }
+            .map { it.bookId }
+            .toSet()
+        val activeBookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        val progress = activeBookId?.let { id ->
+            items.firstOrNull { item ->
+                item.bookId == id &&
+                    (item.status == DownloadStatus.Queued || item.status == DownloadStatus.Downloading)
+            }?.progressPercent
+        }
+        mutableDownloadProgressPercent.value = progress
+    }
+
+    private fun bookmarkMatches(source: BookBookmark, target: BookBookmark): Boolean {
+        val sourceId = source.id.trim()
+        val targetId = target.id.trim()
+        if (sourceId.isNotBlank() && targetId.isNotBlank() && sourceId.equals(targetId, ignoreCase = true)) {
+            return true
+        }
+        if (!source.libraryItemId.equals(target.libraryItemId, ignoreCase = true)) {
+            return false
+        }
+        val sourceTime = source.timeSeconds
+        val targetTime = target.timeSeconds
+        val timeMatches = sourceTime != null && targetTime != null && abs(sourceTime - targetTime) <= 2.0
+        val titleMatches = !source.title.isNullOrBlank() &&
+            !target.title.isNullOrBlank() &&
+            source.title.trim().equals(target.title.trim(), ignoreCase = true)
+        return timeMatches || titleMatches
     }
 }

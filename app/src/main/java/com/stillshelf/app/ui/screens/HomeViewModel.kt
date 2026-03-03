@@ -1,6 +1,9 @@
 package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
@@ -12,6 +15,11 @@ import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlin.random.Random
+import kotlin.math.max
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,23 +35,60 @@ class HomeViewModel @Inject constructor(
     private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     companion object {
-        private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
+        private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 15 * 60 * 1000L
+        private const val HOME_FEED_CONTINUE_LIMIT = 10
+        private const val HOME_FEED_RECENTLY_ADDED_LIMIT = 120
+        private const val HOME_DISCOVER_LIMIT = 16
+        private const val SILENT_REFRESH_INTERVAL_MS: Long = 5 * 60 * 1000L
+        private const val SILENT_REFRESH_TICK_MS: Long = 30 * 1000L
     }
 
     private val mutableUiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = mutableUiState.asStateFlow()
+    private val homeScreenVisible = MutableStateFlow(false)
+    private val appInForeground = MutableStateFlow(true)
+    private val activeLibraryIdState = MutableStateFlow<String?>(null)
+    private var removedListenAgainBookIds: Set<String> = emptySet()
+    private var isHomeFeedRefreshInFlight = false
+    private var lastHomeFeedRefreshAtMs: Long = 0L
+    private var homeVisibilityRefreshInFlight = false
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            appInForeground.value = true
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            appInForeground.value = false
+        }
+    }
+
+    private data class NormalizedHomeSections(
+        val continueListening: List<ContinueListeningItem>,
+        val recentlyAdded: List<BookSummary>,
+        val listenAgain: List<BookSummary>,
+        val recentSeries: List<SeriesStackSummary>,
+        val discoverBooks: List<BookSummary>
+    )
 
     init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
         observeDownloadedState()
+        observeSilentRefreshTicker()
     }
 
     private fun observeActiveLibrary() {
         viewModelScope.launch {
+            var previousLibraryId: String? = null
             sessionRepository.observeSessionState()
                 .map { it.activeLibraryId }
                 .distinctUntilChanged()
                 .collect { libraryId ->
+                    if (libraryId != previousLibraryId) {
+                        removedListenAgainBookIds = emptySet()
+                        previousLibraryId = libraryId
+                    }
+                    activeLibraryIdState.value = libraryId
                     if (libraryId.isNullOrBlank()) {
                         mutableUiState.update { HomeUiState() }
                     } else {
@@ -62,14 +107,23 @@ class HomeViewModel @Inject constructor(
                 backendRecentSeries = cachedResult.value.recentSeries,
                 recentlyAdded = cachedResult.value.recentlyAdded
             )
+            val normalizedSections = normalizeHomeSections(
+                continueListening = cachedResult.value.continueListening,
+                recentlyAdded = cachedResult.value.recentlyAdded,
+                listenAgain = filterRemovedListenAgain(cachedResult.value.listenAgain),
+                recentSeries = resolvedRecentSeries,
+                discoverBooks = buildDiscoverBooks(cachedResult.value.recentlyAdded)
+            )
             mutableUiState.update {
                 it.copy(
                     isLoading = false,
                     errorMessage = null,
                     libraryName = cachedResult.value.libraryName,
-                    continueListening = cachedResult.value.continueListening,
-                    recentlyAdded = cachedResult.value.recentlyAdded,
-                    recentSeries = resolvedRecentSeries,
+                    continueListening = normalizedSections.continueListening,
+                    recentlyAdded = normalizedSections.recentlyAdded,
+                    listenAgain = normalizedSections.listenAgain,
+                    recentSeries = normalizedSections.recentSeries,
+                    discoverBooks = normalizedSections.discoverBooks,
                     authorImageUrls = cachedResult.value.authorImageUrls
                 )
             }
@@ -99,6 +153,8 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId, finished = true)) {
                 is AppResult.Success -> {
+                    removedListenAgainBookIds = removedListenAgainBookIds - bookId
+                    applyBookFinishedState(bookId = bookId, finished = true)
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
                     refreshNetwork(showLoading = false)
                 }
@@ -113,6 +169,8 @@ class HomeViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    removedListenAgainBookIds = removedListenAgainBookIds + bookId
+                    applyBookFinishedState(bookId = bookId, finished = false)
                     refreshNetwork(showLoading = false)
                 }
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -137,6 +195,17 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun removeFromListenAgain(bookId: String) {
+        if (bookId.isBlank()) return
+        removedListenAgainBookIds = removedListenAgainBookIds + bookId
+        mutableUiState.update { state ->
+            state.copy(
+                listenAgain = state.listenAgain.filterNot { it.id == bookId },
+                actionMessage = "Removed from Listen Again"
+            )
+        }
+    }
+
     fun toggleDownload(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -156,44 +225,78 @@ class HomeViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
+    fun onHomeScreenVisibilityChanged(isVisible: Boolean) {
+        homeScreenVisible.value = isVisible
+        if (isVisible) {
+            viewModelScope.launch {
+                refreshIfCacheMissing(showLoading = false)
+            }
+        }
+    }
+
     private suspend fun refreshNetwork(showLoading: Boolean) {
+        if (isHomeFeedRefreshInFlight) return
         if (uiState.value.isLoading) return
+        isHomeFeedRefreshInFlight = true
         if (showLoading) {
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         } else {
             mutableUiState.update { it.copy(errorMessage = null) }
         }
 
-        when (val result = sessionRepository.fetchHomeFeed()) {
-            is AppResult.Success -> {
-                val resolvedRecentSeries = resolveRecentSeries(
-                    backendRecentSeries = result.value.recentSeries,
-                    recentlyAdded = result.value.recentlyAdded
+        try {
+            when (
+                val result = sessionRepository.fetchHomeFeed(
+                    continueLimit = HOME_FEED_CONTINUE_LIMIT,
+                    recentlyAddedLimit = HOME_FEED_RECENTLY_ADDED_LIMIT
                 )
-                mutableUiState.update {
-                    it.copy(
-                        isLoading = false,
-                        libraryName = result.value.libraryName,
+            ) {
+                is AppResult.Success -> {
+                    lastHomeFeedRefreshAtMs = System.currentTimeMillis()
+                    val resolvedRecentSeries = resolveRecentSeries(
+                        backendRecentSeries = result.value.recentSeries,
+                        recentlyAdded = result.value.recentlyAdded
+                    )
+                    val normalizedSections = normalizeHomeSections(
                         continueListening = result.value.continueListening,
                         recentlyAdded = result.value.recentlyAdded,
+                        listenAgain = filterRemovedListenAgain(result.value.listenAgain),
                         recentSeries = resolvedRecentSeries,
-                        authorImageUrls = result.value.authorImageUrls
+                        discoverBooks = buildDiscoverBooks(result.value.recentlyAdded)
                     )
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            libraryName = result.value.libraryName,
+                            continueListening = normalizedSections.continueListening,
+                            recentlyAdded = normalizedSections.recentlyAdded,
+                            listenAgain = normalizedSections.listenAgain,
+                            recentSeries = normalizedSections.recentSeries,
+                            discoverBooks = normalizedSections.discoverBooks,
+                            authorImageUrls = result.value.authorImageUrls
+                        )
+                    }
                 }
-            }
 
-            is AppResult.Error -> {
-                mutableUiState.update { state ->
-                    state.copy(
-                        isLoading = false,
-                        errorMessage = if (state.recentlyAdded.isNotEmpty() || state.continueListening.isNotEmpty()) {
-                            null
-                        } else {
-                            result.message
-                        }
-                    )
+                is AppResult.Error -> {
+                    mutableUiState.update { state ->
+                        state.copy(
+                            isLoading = false,
+                            errorMessage = if (
+                                state.recentlyAdded.isNotEmpty() ||
+                                state.continueListening.isNotEmpty() ||
+                                state.listenAgain.isNotEmpty()
+                            ) {
+                                null
+                            } else {
+                                result.message
+                            }
+                        )
+                    }
                 }
             }
+        } finally {
+            isHomeFeedRefreshInFlight = false
         }
     }
 
@@ -263,9 +366,181 @@ class HomeViewModel @Inject constructor(
         val state = uiState.value
         return state.continueListening.firstOrNull { it.book.id == bookId }?.book
             ?: state.recentlyAdded.firstOrNull { it.id == bookId }
+            ?: state.listenAgain.firstOrNull { it.id == bookId }
             ?: state.recentSeries.firstOrNull { it.leadBook.id == bookId }?.leadBook
     }
 
+    private fun buildDiscoverBooks(recentlyAdded: List<BookSummary>): List<BookSummary> {
+        val unique = recentlyAdded
+            .asSequence()
+            .filter { it.title.isNotBlank() }
+            .distinctBy { "${it.title.trim().lowercase()}|${it.authorName.trim().lowercase()}" }
+            .toList()
+        if (unique.isEmpty()) return emptyList()
+        return unique
+            .shuffled(Random(System.currentTimeMillis()))
+            .take(HOME_DISCOVER_LIMIT)
+    }
+
+    private fun observeSilentRefreshTicker() {
+        viewModelScope.launch {
+            combine(
+                appInForeground,
+                homeScreenVisible,
+                activeLibraryIdState
+            ) { foreground, homeVisible, libraryId ->
+                foreground && !homeVisible && !libraryId.isNullOrBlank()
+            }
+                .distinctUntilChanged()
+                .collectLatest { shouldRun ->
+                    if (!shouldRun) return@collectLatest
+                    while (true) {
+                        val ageMs = System.currentTimeMillis() - lastHomeFeedRefreshAtMs
+                        if (ageMs >= SILENT_REFRESH_INTERVAL_MS) {
+                            refreshNetwork(showLoading = false)
+                        }
+                        delay(SILENT_REFRESH_TICK_MS)
+                    }
+                }
+        }
+    }
+
+    private fun filterRemovedListenAgain(source: List<BookSummary>): List<BookSummary> {
+        if (removedListenAgainBookIds.isEmpty()) return source
+        return source.filterNot { removedListenAgainBookIds.contains(it.id) }
+    }
+
+    private suspend fun refreshIfCacheMissing(showLoading: Boolean) {
+        if (homeVisibilityRefreshInFlight) return
+        homeVisibilityRefreshInFlight = true
+        try {
+            val activeLibraryId = activeLibraryIdState.value
+            if (activeLibraryId.isNullOrBlank()) return
+            val cached = sessionRepository.fetchCachedHomeFeed(maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS)
+            if (cached is AppResult.Success && cached.value != null) return
+            refreshNetwork(showLoading = showLoading)
+        } finally {
+            homeVisibilityRefreshInFlight = false
+        }
+    }
+
+    private fun applyBookFinishedState(bookId: String, finished: Boolean) {
+        mutableUiState.update { state ->
+            fun BookSummary.withFinished(updated: Boolean): BookSummary {
+                return copy(
+                    isFinished = updated,
+                    progressPercent = if (updated) 1.0 else progressPercent?.takeIf { it < 0.995 }
+                )
+            }
+
+            val updatedRecentlyAdded = state.recentlyAdded.map { book ->
+                if (book.id == bookId) book.withFinished(finished) else book
+            }
+            val updatedDiscover = state.discoverBooks.map { book ->
+                if (book.id == bookId) book.withFinished(finished) else book
+            }
+            val updatedContinue = state.continueListening.map { item ->
+                if (item.book.id == bookId) {
+                    item.copy(
+                        book = item.book.withFinished(finished),
+                        progressPercent = if (finished) 1.0 else item.progressPercent
+                    )
+                } else {
+                    item
+                }
+            }
+            val updatedRecentSeries = state.recentSeries.map { series ->
+                if (series.leadBook.id == bookId) {
+                    series.copy(leadBook = series.leadBook.withFinished(finished))
+                } else {
+                    series
+                }
+            }
+            val updatedListenAgainBase = if (finished) {
+                state.listenAgain
+            } else {
+                state.listenAgain.filterNot { it.id == bookId }
+            }
+            val updatedListenAgain = if (finished) {
+                val sourceBook = updatedRecentlyAdded.firstOrNull { it.id == bookId }
+                    ?: updatedDiscover.firstOrNull { it.id == bookId }
+                    ?: updatedContinue.firstOrNull { it.book.id == bookId }?.book
+                    ?: updatedRecentSeries.firstOrNull { it.leadBook.id == bookId }?.leadBook
+                if (sourceBook == null) {
+                    updatedListenAgainBase
+                } else {
+                    (listOf(sourceBook.withFinished(true)) + updatedListenAgainBase)
+                        .distinctBy { it.id }
+                }
+            } else {
+                updatedListenAgainBase
+            }
+
+            state.copy(
+                continueListening = updatedContinue,
+                recentlyAdded = updatedRecentlyAdded,
+                discoverBooks = updatedDiscover,
+                recentSeries = updatedRecentSeries,
+                listenAgain = updatedListenAgain
+            )
+        }
+    }
+
+    private fun normalizeHomeSections(
+        continueListening: List<ContinueListeningItem>,
+        recentlyAdded: List<BookSummary>,
+        listenAgain: List<BookSummary>,
+        recentSeries: List<SeriesStackSummary>,
+        discoverBooks: List<BookSummary>
+    ): NormalizedHomeSections {
+        val finishedIds = buildSet {
+            continueListening.forEach { item ->
+                if (item.book.isFinished || (item.progressPercent ?: 0.0) >= 0.995) {
+                    add(item.book.id)
+                }
+            }
+            recentlyAdded.forEach { if (it.isFinished) add(it.id) }
+            listenAgain.forEach { if (it.isFinished) add(it.id) }
+            recentSeries.forEach { if (it.leadBook.isFinished) add(it.leadBook.id) }
+            discoverBooks.forEach { if (it.isFinished) add(it.id) }
+        }
+
+        fun normalizeBook(book: BookSummary): BookSummary {
+            if (!finishedIds.contains(book.id)) return book
+            val mergedProgress = max(book.progressPercent ?: 0.0, 1.0)
+            return book.copy(
+                isFinished = true,
+                progressPercent = mergedProgress
+            )
+        }
+
+        val normalizedContinue = continueListening.map { item ->
+            val normalizedBook = normalizeBook(item.book)
+            if (!finishedIds.contains(item.book.id)) {
+                item
+            } else {
+                item.copy(
+                    book = normalizedBook,
+                    progressPercent = max(item.progressPercent ?: 0.0, 1.0)
+                )
+            }
+        }
+
+        return NormalizedHomeSections(
+            continueListening = normalizedContinue,
+            recentlyAdded = recentlyAdded.map(::normalizeBook),
+            listenAgain = listenAgain.map(::normalizeBook),
+            recentSeries = recentSeries.map { series ->
+                series.copy(leadBook = normalizeBook(series.leadBook))
+            },
+            discoverBooks = discoverBooks.map(::normalizeBook)
+        )
+    }
+
+    override fun onCleared() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(processLifecycleObserver)
+        super.onCleared()
+    }
 }
 
 data class HomeUiState(
@@ -273,7 +548,9 @@ data class HomeUiState(
     val libraryName: String = "Library",
     val continueListening: List<ContinueListeningItem> = emptyList(),
     val recentlyAdded: List<BookSummary> = emptyList(),
+    val listenAgain: List<BookSummary> = emptyList(),
     val recentSeries: List<SeriesStackSummary> = emptyList(),
+    val discoverBooks: List<BookSummary> = emptyList(),
     val authorImageUrls: Map<String, String> = emptyMap(),
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),

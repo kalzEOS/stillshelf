@@ -16,7 +16,7 @@ class PlaybackForegroundService : Service() {
         private const val ACTION_UPDATE = "com.stillshelf.app.playback.service.UPDATE"
         private const val ACTION_STOP = "com.stillshelf.app.playback.service.STOP"
         private const val NOTIFICATION_ID = 1101
-        private const val CHANNEL_ID = "stillshelf_playback_v3"
+        private const val CHANNEL_ID = "stillshelf_playback_v4"
         @Volatile
         private var latestNotification: Notification? = null
 
@@ -85,6 +85,7 @@ class PlaybackForegroundService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle("StillShelf")
             .setContentText("Preparing playback...")
+            .setSilent(true)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
@@ -93,14 +94,29 @@ class PlaybackForegroundService : Service() {
     private fun ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (
+            existing != null &&
+            (
+                existing.importance > NotificationManager.IMPORTANCE_LOW ||
+                    existing.shouldVibrate() ||
+                    existing.sound != null
+                )
+        ) {
+            manager.deleteNotificationChannel(CHANNEL_ID)
+        } else if (existing != null) {
+            return
+        }
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Playback",
-            NotificationManager.IMPORTANCE_HIGH
+            NotificationManager.IMPORTANCE_LOW
         ).apply {
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
+            vibrationPattern = longArrayOf(0L)
         }
         manager.createNotificationChannel(channel)
     }

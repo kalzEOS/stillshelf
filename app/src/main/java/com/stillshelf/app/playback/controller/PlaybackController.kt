@@ -7,9 +7,16 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.Build.VERSION.SDK_INT
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -46,10 +53,29 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.Headers
 
+enum class SleepTimerMode {
+    Off,
+    Duration,
+    EndOfChapter
+}
+
+data class PlaybackOutputDevice(
+    val id: Int?,
+    val name: String,
+    val typeLabel: String
+)
+
 data class PlaybackUiState(
     val isLoading: Boolean = false,
     val book: BookSummary? = null,
     val isPlaying: Boolean = false,
+    val playbackSpeed: Float = 1.0f,
+    val sleepTimerMode: SleepTimerMode = SleepTimerMode.Off,
+    val sleepTimerRemainingMs: Long? = null,
+    val sleepTimerTotalMs: Long? = null,
+    val sleepTimerExpiredPromptVisible: Boolean = false,
+    val outputDevices: List<PlaybackOutputDevice> = emptyList(),
+    val selectedOutputDeviceId: Int? = null,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val errorMessage: String? = null
@@ -63,7 +89,7 @@ class PlaybackController @Inject constructor(
     private val bookDownloadManager: BookDownloadManager
 ) {
     companion object {
-        private const val CHANNEL_ID = "stillshelf_playback_v3"
+        private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
 
@@ -83,13 +109,41 @@ class PlaybackController @Inject constructor(
     private var playRequestJob: Job? = null
     private var playRequestToken: Long = 0L
     private var artworkJob: Job? = null
+    private var sleepTimerTickerJob: Job? = null
+    private var sleepTimerChapterBoundariesMs: List<Long> = emptyList()
+    private var sleepTimerTargetBoundaryMs: Long? = null
     private var artworkBookId: String? = null
     private var artworkBitmap: Bitmap? = null
+    private var preferredOutputDeviceId: Int? = null
+    private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
+    private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private val attemptedAutoAdvanceTargetsMs = mutableSetOf<Long>()
+    private var suppressNextAutoAdvanceOnCompletion = false
+    private var lastNotificationSignature: NotificationSignature? = null
 
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfPlayback")
+    private val audioManager: AudioManager =
+        appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            refreshAudioOutputDevices()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+            refreshAudioOutputDevices()
+        }
+    }
     private var rewindSeconds: Int = 15
     private var forwardSeconds: Int = 15
+    private var currentPlaybackSpeed: Float = 1.0f
+
+    private data class NotificationSignature(
+        val bookId: String,
+        val title: String,
+        val author: String?,
+        val isPlaying: Boolean,
+        val hasArtwork: Boolean
+    )
 
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
 
@@ -106,6 +160,8 @@ class PlaybackController @Inject constructor(
             override fun onSkipToNext() = performForwardControl()
         })
         mediaSession.isActive = true
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        refreshAudioOutputDevices()
         observePlaybackPreferences()
     }
 
@@ -123,7 +179,13 @@ class PlaybackController @Inject constructor(
             return
         }
 
-        updateUiState { it.copy(isLoading = true, errorMessage = null) }
+        updateUiState {
+            it.copy(
+                isLoading = true,
+                errorMessage = null,
+                sleepTimerExpiredPromptVisible = false
+            )
+        }
         playRequestJob = scope.launch {
             val localDownload = bookDownloadManager.getCompletedDownload(bookId)
             if (localDownload?.localPath != null) {
@@ -277,6 +339,121 @@ class PlaybackController @Inject constructor(
         seekToPosition(targetMs = positionMs.coerceAtLeast(0L), forceSync = commit)
     }
 
+    fun setPlaybackSpeed(speed: Float) {
+        val clampedSpeed = speed.coerceIn(0.7f, 2.0f)
+        currentPlaybackSpeed = clampedSpeed
+        val wasPlaying = uiState.value.isPlaying
+        mediaPlayer?.let { player ->
+            applyPlaybackSpeed(player = player, speed = clampedSpeed)
+            // Some devices resume playback when playbackParams are changed while paused.
+            // Force paused state to stay paused when the user only adjusts speed.
+            if (!wasPlaying) {
+                runCatching { if (player.isPlaying) player.pause() }
+            }
+            updateProgress(player)
+        }
+        updateUiState {
+            it.copy(
+                playbackSpeed = clampedSpeed,
+                isPlaying = if (wasPlaying) it.isPlaying else false
+            )
+        }
+    }
+
+    fun startSleepTimerMinutes(minutes: Int) {
+        if (uiState.value.book == null) return
+        val durationMs = (minutes.coerceAtLeast(1) * 60_000L).coerceAtMost(24L * 60L * 60L * 1000L)
+        startSleepTimer(durationMs = durationMs, mode = SleepTimerMode.Duration)
+    }
+
+    suspend fun startSleepTimerEndOfChapter(): Boolean {
+        if (uiState.value.book == null) return false
+        val bookId = currentBookId ?: uiState.value.book?.id ?: return false
+        val chapterBoundariesMs = resolveChapterBoundariesMs(bookId) ?: return false
+        val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+        val nextBoundaryMs = chapterBoundariesMs.firstOrNull { boundaryMs ->
+            boundaryMs > (currentPositionMs + 200L)
+        } ?: return false
+        val remainingMs = (nextBoundaryMs - currentPositionMs).coerceAtLeast(0L)
+        if (remainingMs <= 750L) return false
+        startSleepTimer(
+            durationMs = remainingMs,
+            mode = SleepTimerMode.EndOfChapter,
+            chapterBoundariesMs = chapterBoundariesMs
+        )
+        return true
+    }
+
+    fun clearSleepTimer() {
+        cancelSleepTimer(updateUi = true)
+    }
+
+    fun extendSleepTimerOneMinute() {
+        if (uiState.value.book == null) return
+        startSleepTimer(durationMs = 60_000L, mode = SleepTimerMode.Duration)
+        resume()
+    }
+
+    fun dismissSleepTimerExpiredPrompt() {
+        updateUiState { it.copy(sleepTimerExpiredPromptVisible = false) }
+    }
+
+    fun refreshAudioOutputDevices() {
+        val available = queryOutputDevices()
+        val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
+            available.any { it.id == preferredId }
+        }
+        val resolvedPreferredId = validPreferredId ?: available.firstOrNull()?.id
+        if (preferredOutputDeviceId != resolvedPreferredId) {
+            preferredOutputDeviceId = resolvedPreferredId
+        }
+        mediaPlayer?.let { player ->
+            applyPreferredOutputDevice(player)
+        }
+        updateUiState {
+            it.copy(
+                outputDevices = available,
+                selectedOutputDeviceId = preferredOutputDeviceId
+            )
+        }
+    }
+
+    fun selectAudioOutputDevice(deviceId: Int?): Boolean {
+        val available = queryOutputDevices()
+        if (available.none { output -> output.id == deviceId }) {
+            refreshAudioOutputDevices()
+            return false
+        }
+        preferredOutputDeviceId = deviceId
+        val player = mediaPlayer
+        if (player != null) {
+            if (deviceId == null) {
+                applySystemDefaultOutputRouting(player)
+            } else {
+                applySystemDefaultOutputRouting(player)
+                val isSpeakerTarget = isSpeakerOutputDevice(displayedDeviceId = deviceId)
+                var applied = if (isSpeakerTarget) {
+                    applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
+                } else {
+                    applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
+                }
+                if (!applied) {
+                    applied = if (isSpeakerTarget) {
+                        applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
+                    } else {
+                        applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
+                    }
+                }
+                if (!applied) {
+                    refreshAudioOutputDevices()
+                    return false
+                }
+            }
+        }
+        refreshAudioOutputDevices()
+        return true
+    }
+
     private fun seekToPosition(targetMs: Long, forceSync: Boolean = true) {
         val player = mediaPlayer ?: return
         val duration = safeDuration(player)
@@ -317,11 +494,14 @@ class PlaybackController @Inject constructor(
         mediaPlayer = player
         currentBookId = bookId
         lastSyncedPositionMs = -1L
+        applyPreferredOutputDevice(player)
         updateUiState {
             it.copy(
                 isLoading = true,
                 book = book,
                 isPlaying = false,
+                playbackSpeed = currentPlaybackSpeed,
+                sleepTimerExpiredPromptVisible = false,
                 positionMs = 0L,
                 durationMs = 0L,
                 errorMessage = null
@@ -330,6 +510,7 @@ class PlaybackController @Inject constructor(
         updateCachedFromUiState()
 
         player.setOnPreparedListener { prepared ->
+            applyPlaybackSpeed(player = prepared, speed = currentPlaybackSpeed)
             val duration = safeDuration(prepared)
             val clampedResume = if (duration > 0L) {
                 resumeMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
@@ -344,6 +525,7 @@ class PlaybackController @Inject constructor(
                 it.copy(
                     isLoading = false,
                     isPlaying = true,
+                    playbackSpeed = currentPlaybackSpeed,
                     positionMs = clampedResume,
                     durationMs = duration
                 )
@@ -515,6 +697,456 @@ class PlaybackController @Inject constructor(
         updatePlaybackSurface()
     }
 
+    private fun startSleepTimer(
+        durationMs: Long,
+        mode: SleepTimerMode,
+        chapterBoundariesMs: List<Long> = emptyList()
+    ) {
+        cancelSleepTimer(updateUi = false)
+        val totalDurationMs = durationMs.coerceAtLeast(1_000L)
+        var durationRemainingMs = totalDurationMs
+        var lastTickElapsedRealtime = SystemClock.elapsedRealtime()
+        sleepTimerChapterBoundariesMs = if (mode == SleepTimerMode.EndOfChapter) {
+            chapterBoundariesMs.sorted()
+        } else {
+            emptyList()
+        }
+        sleepTimerTargetBoundaryMs = if (mode == SleepTimerMode.EndOfChapter) {
+            nextChapterBoundaryForPosition(uiState.value.positionMs)
+        } else {
+            null
+        }
+        suppressNextAutoAdvanceOnCompletion = false
+        val wasPlaying = uiState.value.isPlaying
+
+        val initialRemainingMs = if (mode == SleepTimerMode.EndOfChapter) {
+            remainingToTargetChapterBoundaryMs(uiState.value.positionMs)
+        } else {
+            durationRemainingMs
+        }
+        updateUiState {
+            it.copy(
+                sleepTimerMode = mode,
+                sleepTimerRemainingMs = initialRemainingMs,
+                sleepTimerTotalMs = totalDurationMs,
+                sleepTimerExpiredPromptVisible = false,
+                isPlaying = if (wasPlaying) it.isPlaying else false
+            )
+        }
+        if (!wasPlaying) {
+            mediaPlayer?.let { player ->
+                runCatching { if (player.isPlaying) player.pause() }
+                updateProgress(player)
+            }
+        }
+
+        sleepTimerTickerJob = scope.launch {
+            while (isActive) {
+                val nowElapsedRealtime = SystemClock.elapsedRealtime()
+                val state = uiState.value
+                val remainingMs = if (mode == SleepTimerMode.EndOfChapter) {
+                    remainingToTargetChapterBoundaryMs(state.positionMs)
+                } else {
+                    if (state.isPlaying) {
+                        val elapsedSinceLastTick = (nowElapsedRealtime - lastTickElapsedRealtime).coerceAtLeast(0L)
+                        durationRemainingMs = (durationRemainingMs - elapsedSinceLastTick).coerceAtLeast(0L)
+                    }
+                    durationRemainingMs
+                }
+                lastTickElapsedRealtime = nowElapsedRealtime
+                mutableUiState.update {
+                    it.copy(
+                        sleepTimerMode = mode,
+                        sleepTimerRemainingMs = remainingMs,
+                        sleepTimerTotalMs = totalDurationMs,
+                        sleepTimerExpiredPromptVisible = false
+                    )
+                }
+                if (remainingMs <= 0L) break
+                delay(if (mode == SleepTimerMode.EndOfChapter) 250L else 500L)
+            }
+            expireSleepTimer()
+        }
+    }
+
+    private fun cancelSleepTimer(updateUi: Boolean) {
+        sleepTimerTickerJob?.cancel()
+        sleepTimerTickerJob = null
+        sleepTimerChapterBoundariesMs = emptyList()
+        sleepTimerTargetBoundaryMs = null
+        if (updateUi) {
+            updateUiState {
+                it.copy(
+                    sleepTimerMode = SleepTimerMode.Off,
+                    sleepTimerRemainingMs = null,
+                    sleepTimerTotalMs = null,
+                    sleepTimerExpiredPromptVisible = false
+                )
+            }
+        }
+    }
+
+    private fun expireSleepTimer(positionOverrideMs: Long? = null) {
+        if (uiState.value.sleepTimerMode == SleepTimerMode.EndOfChapter) {
+            suppressNextAutoAdvanceOnCompletion = true
+        }
+        pause()
+        cancelSleepTimer(updateUi = false)
+        updateUiState { current ->
+            current.copy(
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = true,
+                isPlaying = false,
+                positionMs = positionOverrideMs?.coerceAtLeast(current.positionMs) ?: current.positionMs
+            )
+        }
+    }
+
+    private suspend fun resolveChapterBoundariesMs(bookId: String): List<Long>? {
+        return when (val detail = sessionRepository.fetchBookDetail(bookId = bookId, forceRefresh = false)) {
+            is AppResult.Success -> {
+                val chapters = detail.value.chapters.sortedBy { it.startSeconds }
+                if (chapters.isEmpty()) {
+                    null
+                } else {
+                    val fallbackDurationMs = uiState.value.durationMs
+                        .takeIf { it > 0L }
+                        ?: uiState.value.book?.durationSeconds?.times(1000.0)?.toLong()
+                        ?: 0L
+                    chapters.mapIndexedNotNull { index, chapter ->
+                        val chapterEndSeconds = chapter.endSeconds
+                            ?: chapters.getOrNull(index + 1)?.startSeconds
+                            ?: (fallbackDurationMs / 1000.0).takeIf { it > 0.0 }
+                        chapterEndSeconds
+                            ?.let { endSeconds -> (endSeconds * 1000.0).toLong().coerceAtLeast(0L) }
+                    }.distinct().sorted()
+                }
+            }
+
+            is AppResult.Error -> null
+        }
+    }
+
+    private fun remainingToNextChapterBoundaryMs(positionMs: Long): Long {
+        val safePositionMs = positionMs.coerceAtLeast(0L)
+        val nextBoundaryMs = sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
+            boundaryMs > (safePositionMs + 200L)
+        }
+        return if (nextBoundaryMs == null) 0L else (nextBoundaryMs - safePositionMs).coerceAtLeast(0L)
+    }
+
+    private fun nextChapterBoundaryForPosition(positionMs: Long): Long? {
+        val safePositionMs = positionMs.coerceAtLeast(0L)
+        return sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
+            boundaryMs > (safePositionMs + 200L)
+        }
+    }
+
+    private fun remainingToTargetChapterBoundaryMs(positionMs: Long): Long {
+        val targetBoundaryMs = sleepTimerTargetBoundaryMs ?: return remainingToNextChapterBoundaryMs(positionMs)
+        val safePositionMs = positionMs.coerceAtLeast(0L)
+        if (safePositionMs >= targetBoundaryMs - 200L) {
+            return 0L
+        }
+        return (targetBoundaryMs - safePositionMs).coerceAtLeast(0L)
+    }
+
+    private fun queryOutputDevices(): List<PlaybackOutputDevice> {
+        val rawDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val groupedCandidates = rawDevices
+            .asSequence()
+            .filter { device -> isMainOutputType(device.type) }
+            .mapNotNull { device ->
+                val routeKey = outputRouteKey(device) ?: return@mapNotNull null
+                val routePriority = outputRoutePriority(device.type)
+                OutputRouteCandidate(
+                    routeKey = routeKey,
+                    priority = routePriority,
+                    device = device
+                )
+            }
+            .groupBy { it.routeKey }
+            .mapValues { (_, candidates) ->
+                candidates.sortedByDescending { candidate -> candidate.priority }
+            }
+            .values
+            .filterNotNull()
+            .filter { it.isNotEmpty() }
+            .map { it.first() }
+            .sortedWith(
+                compareByDescending<OutputRouteCandidate> { it.priority }
+                    .thenBy { resolveOutputDeviceName(it.device).lowercase() }
+            )
+        outputRouteDeviceIdsByRouteKey = groupedCandidates.associate { candidate ->
+            val routeKey = candidate.routeKey
+            val candidateIds = rawDevices
+                .asSequence()
+                .filter { device -> outputRouteKey(device) == routeKey }
+                .sortedByDescending { device -> outputRoutePriority(device.type) }
+                .map { device -> device.id }
+                .distinct()
+                .toList()
+            routeKey to candidateIds
+        }
+        outputRouteKeyByDisplayedId = groupedCandidates.associate { candidate ->
+            candidate.device.id to candidate.routeKey
+        }
+        return groupedCandidates.map { candidate ->
+            PlaybackOutputDevice(
+                id = candidate.device.id,
+                name = resolveOutputDeviceName(candidate.device),
+                typeLabel = outputTypeLabel(candidate.device.type)
+            )
+        }
+    }
+
+    private fun resolveOutputDeviceName(device: AudioDeviceInfo): String {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headphones"
+            else -> {
+                val productName = device.productName?.toString()?.trim().orEmpty()
+                productName.ifBlank { outputTypeLabel(device.type) }
+            }
+        }
+    }
+
+    private fun isMainOutputType(type: Int): Boolean {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC,
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_DOCK,
+            AudioDeviceInfo.TYPE_AUX_LINE,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> true
+            else -> false
+        }
+    }
+
+    private fun outputRouteKey(device: AudioDeviceInfo): String? {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "usb"
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC -> "hdmi"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_AUX_LINE -> "line"
+            AudioDeviceInfo.TYPE_DOCK -> "dock"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> {
+                val name = resolveBluetoothRouteName(device) ?: return null
+                "bt:${name.lowercase()}"
+            }
+            else -> null
+        }
+    }
+
+    private fun resolveBluetoothRouteName(device: AudioDeviceInfo): String? {
+        val productName = device.productName?.toString()?.trim().orEmpty()
+        if (productName.isBlank()) return null
+        val model = Build.MODEL.orEmpty().trim()
+        val deviceName = Build.DEVICE.orEmpty().trim()
+        if (productName.equals(model, ignoreCase = true) || productName.equals(deviceName, ignoreCase = true)) {
+            return null
+        }
+        if (SDK_INT >= Build.VERSION_CODES.P) {
+            val address = device.address.orEmpty()
+            if (address.isBlank() || address == "00:00:00:00:00:00") {
+                return null
+            }
+        }
+        return productName
+    }
+
+    private fun outputRoutePriority(type: Int): Int {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 100
+            AudioDeviceInfo.TYPE_BLE_SPEAKER -> 95
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> 92
+            AudioDeviceInfo.TYPE_HEARING_AID -> 90
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> 88
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> 85
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> 84
+            AudioDeviceInfo.TYPE_USB_HEADSET -> 80
+            AudioDeviceInfo.TYPE_USB_DEVICE -> 79
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> 78
+            AudioDeviceInfo.TYPE_HDMI_EARC -> 75
+            AudioDeviceInfo.TYPE_HDMI_ARC -> 74
+            AudioDeviceInfo.TYPE_HDMI -> 73
+            AudioDeviceInfo.TYPE_DOCK -> 72
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> 71
+            AudioDeviceInfo.TYPE_LINE_ANALOG -> 70
+            AudioDeviceInfo.TYPE_AUX_LINE -> 69
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 20
+            else -> 0
+        }
+    }
+
+    private fun outputTypeLabel(type: Int): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "Bluetooth"
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB"
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC -> "HDMI"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_AUX_LINE -> "Line out"
+            AudioDeviceInfo.TYPE_DOCK -> "Dock"
+            else -> "Output"
+        }
+    }
+
+    private data class OutputRouteCandidate(
+        val routeKey: String,
+        val priority: Int,
+        val device: AudioDeviceInfo
+    )
+
+    private fun applyPlaybackSpeed(player: MediaPlayer, speed: Float) {
+        runCatching {
+            val params = player.playbackParams ?: android.media.PlaybackParams()
+            player.playbackParams = params
+                .setSpeed(speed)
+                .setPitch(1.0f)
+        }
+    }
+
+    private fun applyPreferredOutputDevice(player: MediaPlayer) {
+        val preferredId = preferredOutputDeviceId
+        if (preferredId == null) {
+            applySystemDefaultOutputRouting(player)
+            return
+        }
+        val preferredApplied = applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = preferredId)
+        if (!preferredApplied) {
+            applyOutputViaAudioManagerFallback(displayedDeviceId = preferredId)
+        }
+    }
+
+    private fun isSpeakerOutputDevice(displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        return candidates.firstOrNull()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+
+    private fun applySystemDefaultOutputRouting(player: MediaPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputDevice(player)
+        val communicationCleared = if (SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                audioManager.clearCommunicationDevice()
+                true
+            }.getOrDefault(false)
+        } else {
+            true
+        }
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
+    }
+
+    private fun resolveOutputCandidatesForDisplayedId(displayedDeviceId: Int): List<AudioDeviceInfo> {
+        val currentOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+        val routeKey = outputRouteKeyByDisplayedId[displayedDeviceId]
+        val candidateIds = routeKey
+            ?.let { key -> outputRouteDeviceIdsByRouteKey[key] }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(displayedDeviceId)
+        return candidateIds
+            .mapNotNull { candidateId -> currentOutputs.firstOrNull { output -> output.id == candidateId } }
+            .ifEmpty {
+                routeKey
+                    ?.let { key ->
+                        currentOutputs.filter { output -> outputRouteKey(output) == key }
+                            .sortedByDescending { output -> outputRoutePriority(output.type) }
+                    }
+                    .orEmpty()
+            }
+    }
+
+    private fun applyPreferredOutputForDisplayedId(player: MediaPlayer, displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        return candidates.any { targetDevice ->
+            setPreferredOutputDevice(player, targetDevice)
+        }
+    }
+
+    private fun clearPreferredOutputDevice(player: MediaPlayer): Boolean {
+        if (SDK_INT < Build.VERSION_CODES.P) return false
+        return runCatching { player.setPreferredDevice(null) }.getOrDefault(false)
+    }
+
+    private fun setPreferredOutputDevice(player: MediaPlayer, targetDevice: AudioDeviceInfo): Boolean {
+        if (SDK_INT < Build.VERSION_CODES.P) return false
+        return runCatching { player.setPreferredDevice(targetDevice) }.getOrDefault(false)
+    }
+
+    private fun applyOutputViaAudioManagerFallback(displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        if (candidates.isEmpty()) return false
+        val primaryType = candidates.first().type
+        val speakerRoute = primaryType == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        if (speakerRoute) {
+            return runCatching {
+                if (SDK_INT >= Build.VERSION_CODES.S) {
+                    audioManager.clearCommunicationDevice()
+                }
+                audioManager.mode = AudioManager.MODE_NORMAL
+                audioManager.isSpeakerphoneOn = true
+                true
+            }.getOrDefault(false)
+        }
+        if (SDK_INT >= Build.VERSION_CODES.S) {
+            val communicationApplied = candidates.any { candidate ->
+                runCatching { audioManager.setCommunicationDevice(candidate) }.getOrDefault(false)
+            }
+            if (communicationApplied) return true
+        }
+        runCatching {
+            if (SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+        }
+        return false
+    }
+
     private fun updatePlaybackSurface() {
         val state = uiState.value
         val playbackState = PlaybackStateCompat.Builder()
@@ -528,7 +1160,7 @@ class PlaybackController @Inject constructor(
             .setState(
                 if (state.isPlaying) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
                 state.positionMs,
-                if (state.isPlaying) 1f else 0f
+                if (state.isPlaying) state.playbackSpeed else 0f
             )
             .build()
         mediaSession.setPlaybackState(playbackState)
@@ -536,10 +1168,28 @@ class PlaybackController @Inject constructor(
 
         val book = state.book
         if (book == null) {
+            cancelSleepTimer(updateUi = false)
+            suppressNextAutoAdvanceOnCompletion = false
+            if (
+                state.sleepTimerMode != SleepTimerMode.Off ||
+                state.sleepTimerRemainingMs != null ||
+                state.sleepTimerTotalMs != null ||
+                state.sleepTimerExpiredPromptVisible
+            ) {
+                mutableUiState.update {
+                    it.copy(
+                        sleepTimerMode = SleepTimerMode.Off,
+                        sleepTimerRemainingMs = null,
+                        sleepTimerTotalMs = null,
+                        sleepTimerExpiredPromptVisible = false
+                    )
+                }
+            }
             artworkJob?.cancel()
             artworkJob = null
             artworkBookId = null
             artworkBitmap = null
+            lastNotificationSignature = null
             PlaybackForegroundService.stop(appContext)
             NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
             return
@@ -569,6 +1219,16 @@ class PlaybackController @Inject constructor(
 
     private fun showPlaybackNotification(state: PlaybackUiState) {
         val book = state.book ?: return
+        val notificationSignature = NotificationSignature(
+            bookId = book.id,
+            title = book.title,
+            author = book.authorName,
+            isPlaying = state.isPlaying,
+            hasArtwork = artworkBitmap != null
+        )
+        if (notificationSignature == lastNotificationSignature) {
+            return
+        }
 
         val contentIntent = appContext.packageManager
             .getLaunchIntentForPackage(appContext.packageName)
@@ -613,9 +1273,10 @@ class PlaybackController @Inject constructor(
             .setContentTitle(book.title)
             .setContentText(book.authorName)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setOngoing(true)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -638,6 +1299,8 @@ class PlaybackController @Inject constructor(
             PlaybackForegroundService.startOrUpdate(appContext, notification)
         }.onFailure {
             // Avoid playback crashes if OEM notification policy rejects a publish attempt.
+        }.onSuccess {
+            lastNotificationSignature = notificationSignature
         }
     }
 
@@ -680,19 +1343,45 @@ class PlaybackController @Inject constructor(
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (
+            existing != null &&
+            (
+                existing.importance > NotificationManager.IMPORTANCE_LOW ||
+                    existing.shouldVibrate() ||
+                    existing.sound != null
+                )
+        ) {
+            manager.deleteNotificationChannel(CHANNEL_ID)
+        } else if (existing != null) {
+            return
+        }
         val channel = NotificationChannel(
             CHANNEL_ID,
             CHANNEL_NAME,
-            NotificationManager.IMPORTANCE_HIGH
+            NotificationManager.IMPORTANCE_LOW
         ).apply {
             lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
+            vibrationPattern = longArrayOf(0L)
         }
         manager.createNotificationChannel(channel)
     }
 
     private fun handleCompletion(book: BookSummary?, durationMs: Long) {
+        if (suppressNextAutoAdvanceOnCompletion) {
+            suppressNextAutoAdvanceOnCompletion = false
+            return
+        }
+        if (
+            uiState.value.sleepTimerMode == SleepTimerMode.EndOfChapter ||
+            sleepTimerTargetBoundaryMs != null
+        ) {
+            expireSleepTimer(positionOverrideMs = durationMs)
+            return
+        }
         if (book == null) {
             completePlayback(durationMs)
             return
@@ -733,9 +1422,15 @@ class PlaybackController @Inject constructor(
     }
 
     private fun completePlayback(durationMs: Long) {
+        cancelSleepTimer(updateUi = false)
+        suppressNextAutoAdvanceOnCompletion = false
         updateUiState {
             it.copy(
                 isPlaying = false,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false,
                 positionMs = durationMs,
                 durationMs = durationMs
             )

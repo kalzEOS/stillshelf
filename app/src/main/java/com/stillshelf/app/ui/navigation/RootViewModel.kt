@@ -22,15 +22,18 @@ class RootViewModel @Inject constructor(
     ) { session, servers, libraries ->
         val activeServerId = session.activeServerId
         val activeLibraryId = session.activeLibraryId
+        val requiresLibrarySelection = session.requiresLibrarySelection
         val hasAnyServer = servers.isNotEmpty()
         val hasActiveServer = !activeServerId.isNullOrBlank() &&
             servers.any { it.id == activeServerId }
         val hasActiveLibrary = hasActiveServer &&
+            !requiresLibrarySelection &&
             !activeLibraryId.isNullOrBlank() &&
             libraries.any { it.id == activeLibraryId }
 
         RootUiState(
             isLoading = false,
+            serverCount = servers.size,
             hasAnyServer = hasAnyServer,
             hasActiveServer = hasActiveServer,
             hasActiveLibrary = hasActiveLibrary
@@ -45,6 +48,7 @@ class RootViewModel @Inject constructor(
 
 data class RootUiState(
     val isLoading: Boolean = true,
+    val serverCount: Int = 0,
     val hasAnyServer: Boolean = false,
     val hasActiveServer: Boolean = false,
     val hasActiveLibrary: Boolean = false

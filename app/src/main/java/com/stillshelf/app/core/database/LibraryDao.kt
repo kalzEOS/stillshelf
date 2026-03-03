@@ -23,6 +23,6 @@ interface LibraryDao {
     @Query("DELETE FROM libraries WHERE serverId = :serverId")
     suspend fun deleteByServerId(serverId: String)
 
-    @Query("SELECT * FROM libraries WHERE id = :libraryId LIMIT 1")
-    suspend fun getById(libraryId: String): LibraryEntity?
+    @Query("SELECT * FROM libraries WHERE serverId = :serverId AND id = :libraryId LIMIT 1")
+    suspend fun getByServerAndId(serverId: String, libraryId: String): LibraryEntity?
 }

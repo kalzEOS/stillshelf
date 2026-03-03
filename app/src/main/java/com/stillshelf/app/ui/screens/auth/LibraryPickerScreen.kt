@@ -1,6 +1,7 @@
 package com.stillshelf.app.ui.screens.auth
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoStories
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -85,16 +89,56 @@ private fun LibraryPickerScreen(
                 .padding(paddingValues)
                 .padding(horizontal = 16.dp, vertical = 20.dp)
         ) {
-            Text(
-                text = "Choose Library",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Text(
-                text = "Select the library you want to browse.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp, bottom = 14.dp)
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                tonalElevation = 2.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AutoStories,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                    Column(
+                        modifier = Modifier.padding(start = 10.dp)
+                    ) {
+                        Text(
+                            text = "Choose Library",
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                        Text(
+                            text = "Select the library you want to browse.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                        uiState.activeServerName?.let { serverName ->
+                            Text(
+                                text = "Server: $serverName",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
 
             if (uiState.libraries.isEmpty() && uiState.isLoading) {
                 Column(

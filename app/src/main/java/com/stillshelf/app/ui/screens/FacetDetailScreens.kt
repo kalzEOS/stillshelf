@@ -212,6 +212,22 @@ class AuthorDetailViewModel @Inject constructor(
         }
     }
 
+    fun markAsUnfinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun toggleDownload(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -349,6 +365,20 @@ class SeriesDetailViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun markAsUnfinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
                     refresh(forceRefresh = true)
                 }
 
@@ -551,7 +581,10 @@ private fun BookSummary.hasStartedStatusProgress(): Boolean {
 
 private fun BookSummary.hasFinishedStatusProgress(): Boolean {
     val normalized = normalizedStatusProgressPercent()
-    return isFinished || (normalized != null && normalized >= 0.995)
+    return when {
+        normalized != null -> normalized >= 0.995
+        else -> isFinished
+    }
 }
 
 private fun BookSummary.normalizedStatusProgressPercent(): Double? {
@@ -879,7 +912,13 @@ fun AuthorDetailScreen(
                                     downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                     onClick = { onBookClick(entry.book.id) },
                                     onAddToCollection = { addToListBookId = entry.book.id },
-                                    onMarkAsFinished = { viewModel.markAsFinished(entry.book.id) },
+                                    onMarkAsFinished = {
+                                        if (entry.book.hasFinishedStatusProgress()) {
+                                            viewModel.markAsUnfinished(entry.book.id)
+                                        } else {
+                                            viewModel.markAsFinished(entry.book.id)
+                                        }
+                                    },
                                     onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
@@ -960,7 +999,13 @@ fun AuthorDetailScreen(
                                     downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
                                     onClick = { onBookClick(entry.book.id) },
                                     onAddToCollection = { addToListBookId = entry.book.id },
-                                    onMarkAsFinished = { viewModel.markAsFinished(entry.book.id) },
+                                    onMarkAsFinished = {
+                                        if (entry.book.hasFinishedStatusProgress()) {
+                                            viewModel.markAsUnfinished(entry.book.id)
+                                        } else {
+                                            viewModel.markAsFinished(entry.book.id)
+                                        }
+                                    },
                                     onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
@@ -1271,7 +1316,15 @@ private fun AuthorGridBookItem(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as Finished") },
+                        text = {
+                            Text(
+                                if (book.hasFinishedStatusProgress()) {
+                                    "Mark as Unfinished"
+                                } else {
+                                    "Mark as Finished"
+                                }
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()
@@ -1453,7 +1506,15 @@ private fun AuthorBookRow(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as Finished") },
+                        text = {
+                            Text(
+                                if (book.hasFinishedStatusProgress()) {
+                                    "Mark as Unfinished"
+                                } else {
+                                    "Mark as Finished"
+                                }
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()
@@ -1792,7 +1853,13 @@ fun SeriesDetailScreen(
                                 isDownloaded = uiState.downloadedBookIds.contains(book.id),
                                 downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
                                 onAddToCollection = { addToListBookId = book.id },
-                                onMarkAsFinished = { viewModel.markAsFinished(book.id) },
+                                onMarkAsFinished = {
+                                    if (book.hasFinishedStatusProgress()) {
+                                        viewModel.markAsUnfinished(book.id)
+                                    } else {
+                                        viewModel.markAsFinished(book.id)
+                                    }
+                                },
                                 onToggleDownload = { viewModel.toggleDownload(book.id) }
                             )
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
@@ -1815,7 +1882,13 @@ fun SeriesDetailScreen(
                                         isDownloaded = uiState.downloadedBookIds.contains(book.id),
                                         downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
                                         onAddToCollection = { addToListBookId = book.id },
-                                        onMarkAsFinished = { viewModel.markAsFinished(book.id) },
+                                        onMarkAsFinished = {
+                                            if (book.hasFinishedStatusProgress()) {
+                                                viewModel.markAsUnfinished(book.id)
+                                            } else {
+                                                viewModel.markAsFinished(book.id)
+                                            }
+                                        },
                                         onToggleDownload = { viewModel.toggleDownload(book.id) }
                                     )
                                 }
@@ -3179,7 +3252,15 @@ private fun SeriesDetailBookRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Mark as finished") },
+                    text = {
+                        Text(
+                            if (book.hasFinishedStatusProgress()) {
+                                "Mark as Unfinished"
+                            } else {
+                                "Mark as Finished"
+                            }
+                        )
+                    },
                     onClick = {
                         menuExpanded = false
                         onMarkAsFinished()
@@ -3317,7 +3398,15 @@ private fun SeriesDetailGridCard(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Mark as finished") },
+                        text = {
+                            Text(
+                                if (book.hasFinishedStatusProgress()) {
+                                    "Mark as Unfinished"
+                                } else {
+                                    "Mark as Finished"
+                                }
+                            )
+                        },
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()

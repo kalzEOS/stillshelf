@@ -7,7 +7,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 @HiltViewModel
@@ -15,14 +15,27 @@ class RootViewModel @Inject constructor(
     sessionRepository: SessionRepository
 ) : ViewModel() {
 
-    val uiState: StateFlow<RootUiState> = sessionRepository.observeSessionState()
-        .map { session ->
-            RootUiState(
-                isLoading = false,
-                hasActiveServer = !session.activeServerId.isNullOrBlank(),
-                hasActiveLibrary = !session.activeLibraryId.isNullOrBlank()
-            )
-        }
+    val uiState: StateFlow<RootUiState> = combine(
+        sessionRepository.observeSessionState(),
+        sessionRepository.observeServers(),
+        sessionRepository.observeLibrariesForActiveServer()
+    ) { session, servers, libraries ->
+        val activeServerId = session.activeServerId
+        val activeLibraryId = session.activeLibraryId
+        val hasAnyServer = servers.isNotEmpty()
+        val hasActiveServer = !activeServerId.isNullOrBlank() &&
+            servers.any { it.id == activeServerId }
+        val hasActiveLibrary = hasActiveServer &&
+            !activeLibraryId.isNullOrBlank() &&
+            libraries.any { it.id == activeLibraryId }
+
+        RootUiState(
+            isLoading = false,
+            hasAnyServer = hasAnyServer,
+            hasActiveServer = hasActiveServer,
+            hasActiveLibrary = hasActiveLibrary
+        )
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -32,6 +45,7 @@ class RootViewModel @Inject constructor(
 
 data class RootUiState(
     val isLoading: Boolean = true,
+    val hasAnyServer: Boolean = false,
     val hasActiveServer: Boolean = false,
     val hasActiveLibrary: Boolean = false
 )

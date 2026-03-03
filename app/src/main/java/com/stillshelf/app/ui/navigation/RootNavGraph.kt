@@ -39,7 +39,7 @@ fun RootNavGraph(
         AuthRoute.ADD_SERVER
     }
 
-    key(startGraph, authStartDestination) {
+    key(startGraph) {
         NavHost(
             navController = navController,
             startDestination = startGraph,

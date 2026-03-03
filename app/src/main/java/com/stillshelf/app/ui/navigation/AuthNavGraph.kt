@@ -23,16 +23,21 @@ fun NavGraphBuilder.authNavGraph(
         composable(AuthRoute.SERVERS) {
             ServersRoute(
                 onAddServer = { navController.navigate(AuthRoute.ADD_SERVER) },
-                onServerSelected = { navController.navigate(AuthRoute.LIBRARY_PICKER) }
+                onServerSelected = { navController.navigate(AuthRoute.LIBRARY_PICKER) },
+                onReauthenticate = { serverName, baseUrl ->
+                    navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
+                }
             )
         }
 
         composable(AuthRoute.ADD_SERVER) {
+            val canNavigateBack = navController.previousBackStackEntry != null
             AddServerRoute(
                 onContinue = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                showBackButton = canNavigateBack
             )
         }
 
@@ -53,7 +58,11 @@ fun NavGraphBuilder.authNavGraph(
             LibraryPickerRoute(
                 onLibrarySelected = onAuthCompleted,
                 onManageServers = {
-                    navController.popBackStack(AuthRoute.SERVERS, inclusive = false)
+                    if (!navController.popBackStack(AuthRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(AuthRoute.ADD_SERVER) {
+                            launchSingleTop = true
+                        }
+                    }
                 }
             )
         }

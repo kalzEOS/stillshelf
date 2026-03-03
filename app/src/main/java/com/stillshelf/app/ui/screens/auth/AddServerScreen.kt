@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 fun AddServerRoute(
     onContinue: (serverName: String, baseUrl: String) -> Unit,
     onBack: () -> Unit,
+    showBackButton: Boolean = true,
     viewModel: AddServerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -48,7 +49,8 @@ fun AddServerRoute(
         onBaseUrlChange = viewModel::onBaseUrlChange,
         onTestConnection = viewModel::onTestConnectionClick,
         onContinue = onContinue,
-        onBack = onBack
+        onBack = onBack,
+        showBackButton = showBackButton
     )
 }
 
@@ -59,7 +61,8 @@ private fun AddServerScreen(
     onBaseUrlChange: (String) -> Unit,
     onTestConnection: () -> Unit,
     onContinue: (serverName: String, baseUrl: String) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    showBackButton: Boolean
 ) {
     var showInsecureHttpWarning by remember { mutableStateOf(false) }
     val trimmedBaseUrl = uiState.baseUrl.trim()
@@ -163,11 +166,13 @@ private fun AddServerScreen(
                     )
                 }
 
-                Button(
-                    onClick = onBack,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Back")
+                if (showBackButton) {
+                    Button(
+                        onClick = onBack,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Back")
+                    }
                 }
             }
         }

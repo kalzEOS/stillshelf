@@ -335,13 +335,15 @@ private fun MainTabsNavHost(
             )
         }
         composable(AuthRoute.ADD_SERVER) {
+            val canNavigateBack = navController.previousBackStackEntry != null
             AddServerRoute(
                 onContinue = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl)) {
                         launchSingleTop = true
                     }
                 },
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                showBackButton = canNavigateBack
             )
         }
         composable(

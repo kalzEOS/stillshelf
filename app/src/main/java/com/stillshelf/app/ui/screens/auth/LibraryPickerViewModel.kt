@@ -39,10 +39,20 @@ class LibraryPickerViewModel @Inject constructor(
                     }
                 ) {
                     is AppResult.Success -> errorState.value = null
-                    is AppResult.Error -> errorState.value = result.message
+                    is AppResult.Error -> {
+                        val message = result.message
+                        errorState.value = message
+                        if (isUnrecoverableLibraryPickerState(message)) {
+                            mutableEvents.emit(LibraryPickerEvent.NavigateToManageServers)
+                        }
+                    }
                 }
             } catch (t: Throwable) {
-                errorState.value = t.message ?: "Unable to load libraries for this server."
+                val message = t.message ?: "Unable to load libraries for this server."
+                errorState.value = message
+                if (isUnrecoverableLibraryPickerState(message)) {
+                    mutableEvents.emit(LibraryPickerEvent.NavigateToManageServers)
+                }
             } finally {
                 loadingState.value = false
             }
@@ -85,6 +95,13 @@ class LibraryPickerViewModel @Inject constructor(
     fun clearError() {
         errorState.value = null
     }
+
+    private fun isUnrecoverableLibraryPickerState(message: String?): Boolean {
+        val normalized = message?.lowercase().orEmpty()
+        return normalized.contains("active server not found") ||
+            normalized.contains("no active server selected") ||
+            normalized.contains("no saved session")
+    }
 }
 
 data class LibraryPickerUiState(
@@ -96,4 +113,5 @@ data class LibraryPickerUiState(
 
 sealed interface LibraryPickerEvent {
     data object NavigateToMain : LibraryPickerEvent
+    data object NavigateToManageServers : LibraryPickerEvent
 }

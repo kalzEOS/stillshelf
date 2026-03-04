@@ -168,6 +168,8 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -6277,17 +6279,16 @@ private fun PlayerChapterBookmarkSheet(
     onEditBookmark: (BookBookmark, String) -> Unit,
     onDeleteBookmark: (BookBookmark) -> Unit
 ) {
-    val context = LocalContext.current
+    val view = androidx.compose.ui.platform.LocalView.current
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val statusBarTopPx = remember(context) {
-        val resourceId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-        if (resourceId > 0) {
-            context.resources.getDimensionPixelSize(resourceId).toFloat()
-        } else {
-            0f
-        }
+    val statusBarTopPx = remember(view) {
+        ViewCompat.getRootWindowInsets(view)
+            ?.getInsets(WindowInsetsCompat.Type.statusBars())
+            ?.top
+            ?.toFloat()
+            ?: 0f
     }
     val sheetHeightFraction = if (screenHeightPx > 0f) {
         ((screenHeightPx - statusBarTopPx) / screenHeightPx).coerceIn(0.82f, 0.97f)
@@ -8201,29 +8202,26 @@ fun CustomizePlaceholderScreen(
     var selectedTab by remember { mutableStateOf("Lists") }
     var pendingListRows by remember { mutableStateOf<List<ToggleSectionItem>?>(null) }
     var pendingPersonalizedRows by remember { mutableStateOf<List<ToggleSectionItem>?>(null) }
-
-    fun ensurePersonalizedRows(rows: List<ToggleSectionItem>): List<ToggleSectionItem> {
-        return if (rows.any { it.id == HomeSectionIds.LISTEN_AGAIN }) {
-            rows
-        } else {
-            rows + ToggleSectionItem(
-                id = HomeSectionIds.LISTEN_AGAIN,
-                title = "Listen Again"
-            )
-        }
-    }
+    var pendingHiddenListSectionIds by remember { mutableStateOf<Set<String>?>(null) }
+    var pendingHiddenPersonalizedSectionIds by remember { mutableStateOf<Set<String>?>(null) }
 
     fun cancelAndExit() {
         pendingListRows = null
         pendingPersonalizedRows = null
+        pendingHiddenListSectionIds = null
+        pendingHiddenPersonalizedSectionIds = null
         onCancel()
     }
 
     fun saveAndExit() {
         pendingListRows?.let { viewModel.setListOrder(it.map(ToggleSectionItem::id)) }
         pendingPersonalizedRows?.let { viewModel.setPersonalizedOrder(it.map(ToggleSectionItem::id)) }
+        pendingHiddenListSectionIds?.let(viewModel::setHiddenListSectionIds)
+        pendingHiddenPersonalizedSectionIds?.let(viewModel::setHiddenPersonalizedSectionIds)
         pendingListRows = null
         pendingPersonalizedRows = null
+        pendingHiddenListSectionIds = null
+        pendingHiddenPersonalizedSectionIds = null
         onDone()
     }
 
@@ -8250,6 +8248,8 @@ fun CustomizePlaceholderScreen(
                     onClick = {
                         pendingListRows = null
                         pendingPersonalizedRows = null
+                        pendingHiddenListSectionIds = null
+                        pendingHiddenPersonalizedSectionIds = null
                         onHomeClick()
                     }
                 )
@@ -8285,22 +8285,17 @@ fun CustomizePlaceholderScreen(
         Spacer(modifier = Modifier.height(10.dp))
 
         val effectiveListRows = pendingListRows ?: uiState.listSections
-        val effectivePersonalizedRows = pendingPersonalizedRows ?: ensurePersonalizedRows(uiState.personalizedSections)
+        val effectivePersonalizedRows = pendingPersonalizedRows ?: ensureListenAgainSection(uiState.personalizedSections)
+        val effectiveHiddenListSectionIds = pendingHiddenListSectionIds ?: uiState.hiddenListSectionIds
+        val effectiveHiddenPersonalizedSectionIds =
+            pendingHiddenPersonalizedSectionIds ?: uiState.hiddenPersonalizedSectionIds
         val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
         fun moveRow(
             source: List<ToggleSectionItem>,
             from: Int,
             to: Int
-        ): List<ToggleSectionItem> {
-            if (source.isEmpty() || from !in source.indices || to !in source.indices || from == to) {
-                return source
-            }
-            val mutable = source.toMutableList()
-            val item = mutable.removeAt(from)
-            mutable.add(to, item)
-            return mutable
-        }
+        ): List<ToggleSectionItem> = moveSectionRow(source = source, from = from, to = to)
 
         fun moveRowByDelta(rowId: String, delta: Int) {
             if (delta == 0) return
@@ -8323,9 +8318,9 @@ fun CustomizePlaceholderScreen(
         ) {
             itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
                 val enabled = if (selectedTab == "Lists") {
-                    !uiState.hiddenListSectionIds.contains(row.id)
+                    !effectiveHiddenListSectionIds.contains(row.id)
                 } else {
-                    !uiState.hiddenPersonalizedSectionIds.contains(row.id)
+                    !effectiveHiddenPersonalizedSectionIds.contains(row.id)
                 }
                 Row(
                     modifier = Modifier
@@ -8333,9 +8328,15 @@ fun CustomizePlaceholderScreen(
                         .height(42.dp)
                         .clickable {
                             if (selectedTab == "Lists") {
-                                viewModel.toggleListSection(row.id)
+                                pendingHiddenListSectionIds = toggleHiddenSection(
+                                    hidden = effectiveHiddenListSectionIds,
+                                    id = row.id
+                                )
                             } else {
-                                viewModel.togglePersonalizedSection(row.id)
+                                pendingHiddenPersonalizedSectionIds = toggleHiddenSection(
+                                    hidden = effectiveHiddenPersonalizedSectionIds,
+                                    id = row.id
+                                )
                             }
                         },
                     verticalAlignment = Alignment.CenterVertically

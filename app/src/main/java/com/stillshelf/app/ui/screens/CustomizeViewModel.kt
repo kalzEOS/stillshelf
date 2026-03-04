@@ -107,6 +107,18 @@ class CustomizeViewModel @Inject constructor(
         }
     }
 
+    fun setHiddenListSectionIds(ids: Set<String>) {
+        viewModelScope.launch {
+            sessionPreferences.setHiddenBrowseSectionIds(ids)
+        }
+    }
+
+    fun setHiddenPersonalizedSectionIds(ids: Set<String>) {
+        viewModelScope.launch {
+            sessionPreferences.setHiddenHomeSectionIds(ids)
+        }
+    }
+
     fun moveListSection(id: String) {
         val current = uiState.value.listSections
         val updated = moveDown(current, id)

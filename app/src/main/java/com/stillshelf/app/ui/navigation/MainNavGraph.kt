@@ -132,6 +132,7 @@ private fun MainShell() {
             currentRoute != MainTab.Settings.route &&
             currentRoute != MainRoute.SETTINGS &&
             currentRoute != MainRoute.SERVERS &&
+            currentRoute != MainRoute.LIBRARY_PICKER &&
             currentRoute?.startsWith("auth/") != true
     ) { paddingValues ->
         MainTabsNavHost(
@@ -340,6 +341,26 @@ private fun MainTabsNavHost(
                     }
                 },
                 onHomeClick = onHomeClick
+            )
+        }
+        composable(MainRoute.LIBRARY_PICKER) {
+            LibraryPickerRoute(
+                onLibrarySelected = {
+                    if (!navController.popBackStack(MainTab.Home.route, inclusive = false)) {
+                        navController.navigate(MainTab.Home.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    }
+                },
+                onManageServers = {
+                    navController.navigate(MainRoute.SERVERS) {
+                        launchSingleTop = true
+                    }
+                }
             )
         }
         composable(AuthRoute.ADD_SERVER) {

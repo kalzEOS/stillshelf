@@ -70,6 +70,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.FastForward
 import androidx.compose.material.icons.outlined.FastRewind
@@ -143,6 +144,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -207,6 +209,7 @@ import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -283,6 +286,8 @@ fun HomePlaceholderScreen(
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     var isMenuExpanded by remember { mutableStateOf(false) }
+    var isLibraryMenuExpanded by remember { mutableStateOf(false) }
+    var libraryMenuAnchorWidthPx by remember { mutableIntStateOf(0) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
@@ -367,6 +372,13 @@ fun HomePlaceholderScreen(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         collectionPickerViewModel.clearMessages()
     }
+    LaunchedEffect(menuViewModel) {
+        menuViewModel.events.collect { event ->
+            when (event) {
+                HomeMenuEvent.NavigateToLibraryPicker -> onNavigateToRoute(MainRoute.LIBRARY_PICKER)
+            }
+        }
+    }
     DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -396,13 +408,73 @@ fun HomePlaceholderScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = uiState.libraryName,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Box(
                         modifier = Modifier.weight(1f)
-                    )
+                    ) {
+                        val hasLibraries = menuUiState.libraries.isNotEmpty()
+                        val libraryMenuWidth = with(LocalDensity.current) { libraryMenuAnchorWidthPx.toDp() }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .onGloballyPositioned { coordinates ->
+                                    libraryMenuAnchorWidthPx = coordinates.size.width
+                                }
+                                .clickable(enabled = hasLibraries && !menuUiState.isSwitchingLibrary) {
+                                    isLibraryMenuExpanded = true
+                                }
+                                .padding(vertical = 2.dp, horizontal = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = uiState.libraryName,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (hasLibraries) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = if (isLibraryMenuExpanded) {
+                                        Icons.Outlined.KeyboardArrowUp
+                                    } else {
+                                        Icons.Outlined.KeyboardArrowDown
+                                    },
+                                    contentDescription = "Switch library",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = isLibraryMenuExpanded && hasLibraries,
+                            onDismissRequest = { isLibraryMenuExpanded = false },
+                            modifier = if (libraryMenuAnchorWidthPx > 0) {
+                                Modifier.width(libraryMenuWidth)
+                            } else {
+                                Modifier
+                            }
+                        ) {
+                            menuUiState.libraries.forEach { library ->
+                                val isActive = menuUiState.activeLibraryId == library.id
+                                DropdownMenuItem(
+                                    text = { Text(library.name) },
+                                    trailingIcon = {
+                                        if (isActive) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = "Active library"
+                                            )
+                                        }
+                                    },
+                                    enabled = !menuUiState.isSwitchingLibrary || isActive,
+                                    onClick = {
+                                        menuViewModel.switchLibrary(library.id)
+                                        isLibraryMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                     if (onHomeClick != null) {
                         CircleActionButton(
                             icon = Icons.Outlined.Home,
@@ -453,23 +525,40 @@ fun HomePlaceholderScreen(
                                     onNavigateToRoute(MainRoute.CUSTOMIZE)
                                 }
                             )
-                            if (menuUiState.libraries.isNotEmpty()) {
+                            if (menuUiState.servers.size > 1) {
                                 HorizontalDivider()
-                                menuUiState.libraries.forEach { library ->
-                                    val isActive = menuUiState.activeLibraryId == library.id
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Servers",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    enabled = false,
+                                    onClick = {}
+                                )
+                                menuUiState.servers.forEach { server ->
+                                    val isActive = menuUiState.activeServerId == server.id
                                     DropdownMenuItem(
-                                        text = { Text(library.name) },
+                                        text = { Text(server.name) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Dns,
+                                                contentDescription = null
+                                            )
+                                        },
                                         trailingIcon = {
                                             if (isActive) {
                                                 Icon(
                                                     imageVector = Icons.Filled.Check,
-                                                    contentDescription = "Active library"
+                                                    contentDescription = "Active server"
                                                 )
                                             }
                                         },
-                                        enabled = !menuUiState.isSwitchingLibrary || isActive,
+                                        enabled = !menuUiState.isSwitchingServer,
                                         onClick = {
-                                            menuViewModel.switchLibrary(library.id)
+                                            menuViewModel.onServerSelected(server.id)
                                             isMenuExpanded = false
                                         }
                                     )

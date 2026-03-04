@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.MarqueeSpacing
@@ -11,7 +12,6 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.text.BasicTextField
@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -68,7 +69,6 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
-import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.FastForward
@@ -76,6 +76,8 @@ import androidx.compose.material.icons.outlined.FastRewind
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Pause
@@ -92,6 +94,8 @@ import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.VolumeDown
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -266,6 +270,7 @@ fun HomePlaceholderScreen(
     viewModel: HomeViewModel = hiltViewModel(),
     menuViewModel: HomeMenuViewModel = hiltViewModel(),
     customizeViewModel: CustomizeViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel(),
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -273,6 +278,7 @@ fun HomePlaceholderScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val menuUiState by menuViewModel.uiState.collectAsStateWithLifecycle()
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     var isMenuExpanded by remember { mutableStateOf(false) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -473,39 +479,56 @@ fun HomePlaceholderScreen(
             }
 
             item {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    orderedListItems.forEachIndexed { index, item ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(46.dp)
-                                .clickable { onNavigateToRoute(item.route) },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = item.icon,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(23.dp)
-                            )
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.titleMedium,
+                val sectionContent: @Composable () -> Unit = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        orderedListItems.forEachIndexed { index, item ->
+                            Row(
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .padding(start = 14.dp),
-                                maxLines = 1
-                            )
-                            Icon(
-                                imageVector = Icons.Outlined.ChevronRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (index < orderedListItems.lastIndex) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .clickable { onNavigateToRoute(item.route) },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(23.dp)
+                                )
+                                Text(
+                                    text = item.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 14.dp),
+                                    maxLines = 1
+                                )
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (index < orderedListItems.lastIndex) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                            }
                         }
                     }
+                }
+                if (appearanceUiState.materialDesignEnabled) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            sectionContent()
+                        }
+                    }
+                } else {
+                    sectionContent()
                 }
             }
 
@@ -1781,6 +1804,7 @@ private fun BookListItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
             .clickable(onClick = onClick)
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1883,6 +1907,7 @@ private fun SeriesStackListItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
             .clickable(onClick = onClick)
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2091,10 +2116,12 @@ fun BookmarksBrowseScreen(
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     onBookmarkClick: (bookId: String, startSeconds: Double?) -> Unit = { _, _ -> },
-    viewModel: BookmarksBrowseViewModel = hiltViewModel()
+    viewModel: BookmarksBrowseViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading && uiState.bookmarks.isEmpty(),
         onRefresh = viewModel::refresh
@@ -2129,7 +2156,7 @@ fun BookmarksBrowseScreen(
             when {
                 uiState.bookmarks.isNotEmpty() -> {
                     LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(bottom = 120.dp)
                     ) {
                         items(
@@ -2138,68 +2165,73 @@ fun BookmarksBrowseScreen(
                                 "${item.book.id}:${item.bookmark.id}:${item.bookmark.createdAtMs ?: 0L}:${item.bookmark.timeSeconds ?: 0.0}"
                             }
                         ) { item ->
-                            Column {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onBookmarkClick(
-                                                item.book.id,
-                                                item.bookmark.timeSeconds
-                                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (appearanceUiState.materialDesignEnabled) {
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.68f)
+                                        } else {
+                                            Color.Transparent
                                         }
-                                        .padding(vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    BookPoster(
-                                        book = item.book,
-                                        width = 42.dp,
-                                        height = 56.dp,
-                                        fillMaxWidth = false,
-                                        shape = RoundedCornerShape(6.dp),
-                                        contentScale = ContentScale.Crop
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = item.bookmark.title?.ifBlank { null } ?: "Bookmark",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = item.book.title,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        val bookmarkMeta = buildString {
-                                            append(formatBookmarkDate(item.bookmark.createdAtMs))
-                                            append(" ")
-                                            append(formatBookmarkTime24(item.bookmark.createdAtMs))
-                                            item.bookmark.timeSeconds?.let {
-                                                append(" • ")
-                                                append(formatSecondsAsHms(it))
-                                            }
-                                        }
-                                        Text(
-                                            text = bookmarkMeta,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
+                                    .clickable {
+                                        onBookmarkClick(
+                                            item.book.id,
+                                            item.bookmark.timeSeconds
                                         )
                                     }
-                                    Icon(
-                                        imageVector = Icons.Outlined.ChevronRight,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                BookPoster(
+                                    book = item.book,
+                                    width = 42.dp,
+                                    height = 56.dp,
+                                    fillMaxWidth = false,
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = item.bookmark.title?.ifBlank { null } ?: "Bookmark",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = item.book.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    val bookmarkMeta = buildString {
+                                        append(formatBookmarkDate(item.bookmark.createdAtMs))
+                                        append(" ")
+                                        append(formatBookmarkTime24(item.bookmark.createdAtMs))
+                                        item.bookmark.timeSeconds?.let {
+                                            append(" • ")
+                                            append(formatSecondsAsHms(it))
+                                        }
+                                    }
+                                    Text(
+                                        text = bookmarkMeta,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
                                     )
                                 }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -3026,8 +3058,10 @@ fun NarratorsBrowseScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
                                 .clickable { onNarratorClick(entity.name) }
-                                .padding(vertical = 14.dp),
+                                .padding(horizontal = 10.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
@@ -3065,7 +3099,6 @@ fun SeriesBrowseScreen(
     viewModel: SeriesBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var gridMode by rememberSaveable { mutableStateOf(true) }
 
     Column(
         modifier = Modifier
@@ -3083,9 +3116,9 @@ fun SeriesBrowseScreen(
                 modifier = Modifier.weight(1f)
             )
             CircleActionButton(
-                icon = if (gridMode) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
-                contentDescription = if (gridMode) "List mode" else "Grid mode",
-                onClick = { gridMode = !gridMode }
+                icon = if (uiState.gridMode) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
+                contentDescription = if (uiState.gridMode) "List mode" else "Grid mode",
+                onClick = { viewModel.setGridMode(!uiState.gridMode) }
             )
         }
         Spacer(modifier = Modifier.height(10.dp))
@@ -3116,7 +3149,7 @@ fun SeriesBrowseScreen(
             }
 
             else -> {
-                if (gridMode) {
+                if (uiState.gridMode) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3220,8 +3253,10 @@ fun SeriesBrowseScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
                                     .clickable { onSeriesClick(series.name) }
-                                    .padding(vertical = 6.dp),
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -3345,37 +3380,43 @@ fun SearchPlaceholderScreen(
         matchedSeries.isEmpty() &&
         matchedNarrators.isEmpty()
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 14.dp)
+            .padding(horizontal = 14.dp)
     ) {
-        if (normalized.isBlank()) {
-            Column(
-                modifier = Modifier.align(Alignment.Center),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(52.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(text = "Search your library", style = MaterialTheme.typography.headlineMedium)
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "Search by Title, Author, Series, and More",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(top = 14.dp)
+        ) {
+            if (normalized.isBlank()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    Icon(
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(52.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(text = "Search your library", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Search by Title, Author, Series, and More",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            } else {
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = 112.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (matchedBooks.isNotEmpty()) {
@@ -3421,9 +3462,7 @@ fun SearchPlaceholderScreen(
 
                 if (noMatches) {
                     Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(bottom = 72.dp),
+                        modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
@@ -3443,12 +3482,14 @@ fun SearchPlaceholderScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(8.dp))
+
         Row(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .imePadding()
                 .navigationBarsPadding()
-                .padding(bottom = 6.dp),
+                .padding(top = 8.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
@@ -3468,7 +3509,6 @@ fun SearchPlaceholderScreen(
         }
     }
 }
-
 @Composable
 private fun SearchBookRow(
     book: BookSummary,
@@ -3828,6 +3868,16 @@ fun SettingsPlaceholderScreen(
     var skipForwardDialogVisible by remember { mutableStateOf(false) }
     var skipBackwardDialogVisible by remember { mutableStateOf(false) }
     val skipSecondChoices = remember { listOf(10, 15, 30, 45, 60) }
+    val sectionCardColor = if (uiState.materialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (uiState.materialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
 
     Column(
         modifier = Modifier
@@ -3843,8 +3893,9 @@ fun SettingsPlaceholderScreen(
         )
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(20.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(20.dp),
+            border = sectionCardBorder
         ) {
             Row(
                 modifier = Modifier
@@ -3879,8 +3930,9 @@ fun SettingsPlaceholderScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             Row(
                 modifier = Modifier
@@ -3910,8 +3962,9 @@ fun SettingsPlaceholderScreen(
         }
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             SettingsRow(
                 title = "Follow System Theme",
@@ -3941,8 +3994,9 @@ fun SettingsPlaceholderScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             SettingsRow(
                 title = "Skip Forward",
@@ -3963,8 +4017,9 @@ fun SettingsPlaceholderScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             SettingsRow(
                 title = "Next/Previous",
@@ -3988,8 +4043,9 @@ fun SettingsPlaceholderScreen(
         }
 
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             SettingsRow(
                 title = "About",
@@ -3997,8 +4053,9 @@ fun SettingsPlaceholderScreen(
             )
         }
         Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(18.dp)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
         ) {
             SettingsRow(title = "Manage Servers", onClick = onManageServers)
             HorizontalDivider()
@@ -4658,12 +4715,14 @@ fun BookDetailScreen(
     onOpenAuthor: (String) -> Unit = {},
     onHomeClick: (() -> Unit)? = null,
     viewModel: BookDetailViewModel = hiltViewModel(),
-    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val playbackUiState by viewModel.playbackUiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     var actionsExpanded by remember { mutableStateOf(false) }
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var aboutExpanded by remember { mutableStateOf(false) }
@@ -5012,20 +5071,41 @@ fun BookDetailScreen(
                     }
                 }
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(
+                        modifier = if (appearanceUiState.materialDesignEnabled) {
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f))
+                                .border(
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .padding(4.dp)
+                        } else {
+                            Modifier
+                        },
+                        horizontalArrangement = Arrangement.spacedBy(if (appearanceUiState.materialDesignEnabled) 6.dp else 16.dp)
+                    ) {
                         DetailTabChip(
                             title = "About",
                             selected = uiState.selectedTab == "About",
+                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
+                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
                             onClick = { viewModel.setSelectedTab("About") }
                         )
                         DetailTabChip(
                             title = "Chapters",
                             selected = uiState.selectedTab == "Chapters",
+                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
+                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
                             onClick = { viewModel.setSelectedTab("Chapters") }
                         )
                         DetailTabChip(
                             title = "Bookmarks",
                             selected = uiState.selectedTab == "Bookmarks",
+                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
+                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
                             onClick = { viewModel.setSelectedTab("Bookmarks") }
                         )
                     }
@@ -5103,6 +5183,8 @@ fun BookDetailScreen(
                                         .background(
                                             if (isActive) {
                                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                            } else if (appearanceUiState.materialDesignEnabled) {
+                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
                                             } else {
                                                 Color.Transparent
                                             }
@@ -5174,6 +5256,8 @@ fun BookDetailScreen(
                                         .background(
                                             if (isActiveBookmark) {
                                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                            } else if (appearanceUiState.materialDesignEnabled) {
+                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.68f)
                                             } else {
                                                 Color.Transparent
                                             }
@@ -5677,14 +5761,15 @@ fun PlayerPlaceholderScreen(
                     }
                 }
                 if (timerIsActive) {
+                    val timerYOffset = if (playerSeriesOrderLabel != null) 30.dp else 6.dp
                     PlayerTimerRunningBadge(
                         remainingMs = timerRemainingMs,
                         totalMs = timerTotalMs,
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
+                            .align(Alignment.TopStart)
                             .offset(
-                                x = 4.dp,
-                                y = if (isBookDownloaded || hasActivePlayerDownload) 30.dp else (-4).dp
+                                x = 6.dp,
+                                y = timerYOffset
                             )
                     )
                 }
@@ -6090,7 +6175,11 @@ fun PlayerPlaceholderScreen(
             ) {
                 PlayerSpeedSheet(
                     currentSpeed = playbackUiState.playbackSpeed,
-                    onSpeedChange = viewModel::setPlaybackSpeed
+                    softToneLevel = playbackUiState.softToneLevel,
+                    boostLevel = playbackUiState.boostLevel,
+                    onSpeedChange = viewModel::setPlaybackSpeed,
+                    onSoftToneLevelChange = viewModel::setSoftToneLevel,
+                    onBoostLevelChange = viewModel::setBoostLevel
                 )
             }
         }
@@ -6106,6 +6195,7 @@ fun PlayerPlaceholderScreen(
                     book = book,
                     chapters = chapters,
                     bookmarks = bookmarks,
+                    materialDesignEnabled = appearanceUiState.materialDesignEnabled,
                     selectedTab = chapterSheetTab,
                     activeChapterIndex = activeChapterIndex,
                     positionSeconds = positionSeconds,
@@ -6175,6 +6265,7 @@ private fun PlayerChapterBookmarkSheet(
     book: BookSummary,
     chapters: List<BookChapter>,
     bookmarks: List<BookBookmark>,
+    materialDesignEnabled: Boolean,
     selectedTab: PlayerSheetTab,
     activeChapterIndex: Int,
     positionSeconds: Double,
@@ -6287,19 +6378,35 @@ private fun PlayerChapterBookmarkSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                .background(
+                    if (materialDesignEnabled) {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    }
+                )
+                .border(
+                    if (materialDesignEnabled) {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+                    } else {
+                        BorderStroke(0.dp, Color.Transparent)
+                    },
+                    shape = RoundedCornerShape(14.dp)
+                )
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             PlayerSheetTabButton(
                 title = "Chapters",
                 selected = selectedTab == PlayerSheetTab.Chapters,
+                materialDesignEnabled = materialDesignEnabled,
                 onClick = { onSelectTab(PlayerSheetTab.Chapters) },
                 modifier = Modifier.weight(1f)
             )
             PlayerSheetTabButton(
                 title = "Bookmarks",
                 selected = selectedTab == PlayerSheetTab.Bookmarks,
+                materialDesignEnabled = materialDesignEnabled,
                 onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
                 modifier = Modifier.weight(1f)
             )
@@ -6337,6 +6444,8 @@ private fun PlayerChapterBookmarkSheet(
                                     .background(
                                         if (isActiveChapter) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        } else if (materialDesignEnabled) {
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         } else {
                                             Color.Transparent
                                         }
@@ -6416,6 +6525,8 @@ private fun PlayerChapterBookmarkSheet(
                                     .background(
                                         if (isActiveBookmark) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        } else if (materialDesignEnabled) {
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         } else {
                                             Color.Transparent
                                         }
@@ -6573,6 +6684,7 @@ private fun PlayerChapterBookmarkSheet(
 private fun PlayerSheetTabButton(
     title: String,
     selected: Boolean,
+    materialDesignEnabled: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -6581,10 +6693,22 @@ private fun PlayerSheetTabButton(
             .clip(RoundedCornerShape(11.dp))
             .background(
                 if (selected) {
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                    if (materialDesignEnabled) {
+                        MaterialTheme.colorScheme.surfaceContainerHighest
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                    }
                 } else {
                     Color.Transparent
                 }
+            )
+            .border(
+                if (materialDesignEnabled && selected) {
+                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                } else {
+                    BorderStroke(0.dp, Color.Transparent)
+                },
+                shape = RoundedCornerShape(11.dp)
             )
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
@@ -7294,15 +7418,23 @@ private fun PlayerTimerSheet(
 @Composable
 private fun PlayerSpeedSheet(
     currentSpeed: Float,
-    onSpeedChange: (Float) -> Unit
+    softToneLevel: Float,
+    boostLevel: Float,
+    onSpeedChange: (Float) -> Unit,
+    onSoftToneLevelChange: (Float) -> Unit,
+    onBoostLevelChange: (Float) -> Unit
 ) {
     val normalizedSpeed = normalizePlaybackSpeed(currentSpeed)
+    val normalizedSoftTone = softToneLevel.coerceIn(0f, 1f)
+    val normalizedBoost = boostLevel.coerceIn(0f, 1f)
     val sliderSteps = (((PlayerSpeedMax - PlayerSpeedMin) / PlayerSpeedStep).toInt() - 1).coerceAtLeast(0)
     val buttonShape = RoundedCornerShape(12.dp)
     val selectedButtonColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
     val selectedButtonBorder = MaterialTheme.colorScheme.primary.copy(alpha = 0.56f)
     val defaultSubLabelColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
     val hapticFeedback = LocalHapticFeedback.current
+    var showSoftToneDialog by remember { mutableStateOf(false) }
+    var showBoostDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -7323,17 +7455,39 @@ private fun PlayerSpeedSheet(
             )
         }
         Spacer(modifier = Modifier.height(14.dp))
-        Text(
-            text = "Speed",
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = formatPlaybackSpeedExact(normalizedSpeed),
-            style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.SemiBold),
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PlayerEffectSlot(
+                title = "Soft",
+                valueLabel = formatEffectLevelLabel(normalizedSoftTone),
+                icon = Icons.Outlined.VolumeDown,
+                onClick = { showSoftToneDialog = true },
+                modifier = Modifier.weight(1f)
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Speed",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = formatPlaybackSpeedExact(normalizedSpeed),
+                    style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.SemiBold)
+                )
+            }
+            PlayerEffectSlot(
+                title = "Boost",
+                valueLabel = formatEffectLevelLabel(normalizedBoost),
+                icon = Icons.Outlined.VolumeUp,
+                onClick = { showBoostDialog = true },
+                modifier = Modifier.weight(1f)
+            )
+        }
         Spacer(modifier = Modifier.height(14.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -7438,6 +7592,115 @@ private fun PlayerSpeedSheet(
             }
         }
     }
+
+    if (showSoftToneDialog) {
+        PlayerEffectSliderDialog(
+            title = "Soft",
+            subtitle = "Reduce sharpness in higher frequencies.",
+            value = normalizedSoftTone,
+            onValueChange = onSoftToneLevelChange,
+            onDismiss = { showSoftToneDialog = false }
+        )
+    }
+
+    if (showBoostDialog) {
+        PlayerEffectSliderDialog(
+            title = "Boost",
+            subtitle = "Increase spoken voice loudness.",
+            value = normalizedBoost,
+            onValueChange = onBoostLevelChange,
+            onDismiss = { showBoostDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun PlayerEffectSlot(
+    title: String,
+    valueLabel: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .padding(horizontal = 8.dp)
+            .height(54.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
+                )
+                Text(
+                    text = valueLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayerEffectSliderDialog(
+    title: String,
+    subtitle: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    onValueChange(0f)
+                    onDismiss()
+                }
+            ) {
+                Text("Reset")
+            }
+        },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = formatEffectLevelLabel(value),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Slider(
+                    value = value.coerceIn(0f, 1f),
+                    onValueChange = { onValueChange(it.coerceIn(0f, 1f)) },
+                    valueRange = 0f..1f
+                )
+            }
+        }
+    )
 }
 
 private fun normalizePlaybackSpeed(rawSpeed: Float): Float {
@@ -7460,6 +7723,11 @@ private fun formatPlaybackSpeedShort(speed: Float): String {
         .trimEnd('0')
         .trimEnd('.')
     return "${text}x"
+}
+
+private fun formatEffectLevelLabel(level: Float): String {
+    val percent = (level.coerceIn(0f, 1f) * 100f).roundToInt()
+    return "$percent%"
 }
 
 private fun formatTimerChipLabel(remainingMs: Long): String {
@@ -7864,22 +8132,59 @@ private fun PlayerToolsCard(
 private fun DetailTabChip(
     title: String,
     selected: Boolean,
+    materialDesignEnabled: Boolean = false,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Column(
-        modifier = Modifier.clickable(onClick = onClick),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (selected) {
-            HorizontalDivider(
-                modifier = Modifier.width(32.dp),
-                color = MaterialTheme.colorScheme.onSurface
+    if (materialDesignEnabled) {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (selected) {
+                        MaterialTheme.colorScheme.surfaceContainerHighest
+                    } else {
+                        Color.Transparent
+                    }
+                )
+                .border(
+                    BorderStroke(
+                        1.dp,
+                        if (selected) {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                        } else {
+                            Color.Transparent
+                        }
+                    ),
+                    shape = RoundedCornerShape(10.dp)
+                )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    } else {
+        Column(
+            modifier = modifier.clickable(onClick = onClick),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (selected) {
+                HorizontalDivider(
+                    modifier = Modifier.width(32.dp),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
 }
@@ -7887,17 +8192,42 @@ private fun DetailTabChip(
 @Composable
 fun CustomizePlaceholderScreen(
     onDone: () -> Unit,
+    onCancel: () -> Unit,
     onHomeClick: (() -> Unit)? = null,
     viewModel: CustomizeViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val hapticFeedback = LocalHapticFeedback.current
     var selectedTab by remember { mutableStateOf("Lists") }
-    var draggedRowId by remember(selectedTab) { mutableStateOf<String?>(null) }
-    var draggedOffsetPx by remember(selectedTab) { mutableStateOf(0f) }
-    var draggedStartIndex by remember(selectedTab) { mutableStateOf(-1) }
-    var draggedTargetIndex by remember(selectedTab) { mutableStateOf(-1) }
-    var dragBaseRows by remember(selectedTab) { mutableStateOf<List<ToggleSectionItem>>(emptyList()) }
+    var pendingListRows by remember { mutableStateOf<List<ToggleSectionItem>?>(null) }
+    var pendingPersonalizedRows by remember { mutableStateOf<List<ToggleSectionItem>?>(null) }
+
+    fun ensurePersonalizedRows(rows: List<ToggleSectionItem>): List<ToggleSectionItem> {
+        return if (rows.any { it.id == HomeSectionIds.LISTEN_AGAIN }) {
+            rows
+        } else {
+            rows + ToggleSectionItem(
+                id = HomeSectionIds.LISTEN_AGAIN,
+                title = "Listen Again"
+            )
+        }
+    }
+
+    fun cancelAndExit() {
+        pendingListRows = null
+        pendingPersonalizedRows = null
+        onCancel()
+    }
+
+    fun saveAndExit() {
+        pendingListRows?.let { viewModel.setListOrder(it.map(ToggleSectionItem::id)) }
+        pendingPersonalizedRows?.let { viewModel.setPersonalizedOrder(it.map(ToggleSectionItem::id)) }
+        pendingListRows = null
+        pendingPersonalizedRows = null
+        onDone()
+    }
+
+    BackHandler(onBack = ::cancelAndExit)
 
     Column(
         modifier = Modifier
@@ -7917,14 +8247,18 @@ fun CustomizePlaceholderScreen(
                 CircleActionButton(
                     icon = Icons.Outlined.Home,
                     contentDescription = "Home",
-                    onClick = onHomeClick
+                    onClick = {
+                        pendingListRows = null
+                        pendingPersonalizedRows = null
+                        onHomeClick()
+                    }
                 )
                 Spacer(modifier = Modifier.width(8.dp))
             }
             CircleActionButton(
                 icon = Icons.Filled.Check,
                 contentDescription = "Done",
-                onClick = onDone
+                onClick = ::saveAndExit
             )
         }
         Spacer(modifier = Modifier.height(12.dp))
@@ -7950,25 +8284,9 @@ fun CustomizePlaceholderScreen(
         }
         Spacer(modifier = Modifier.height(10.dp))
 
-        val rows = if (selectedTab == "Lists") {
-            uiState.listSections
-        } else {
-            if (uiState.personalizedSections.any { it.id == HomeSectionIds.LISTEN_AGAIN }) {
-                uiState.personalizedSections
-            } else {
-                uiState.personalizedSections + ToggleSectionItem(
-                    id = HomeSectionIds.LISTEN_AGAIN,
-                    title = "Listen Again"
-                )
-            }
-        }
-        var draggableRows by remember(selectedTab, rows) { mutableStateOf(rows) }
-        val rowStridePx = with(LocalDensity.current) { (42.dp + 6.dp).toPx() }
-        LaunchedEffect(rows, selectedTab, draggedRowId) {
-            if (draggedRowId == null) {
-                draggableRows = rows
-            }
-        }
+        val effectiveListRows = pendingListRows ?: uiState.listSections
+        val effectivePersonalizedRows = pendingPersonalizedRows ?: ensurePersonalizedRows(uiState.personalizedSections)
+        val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
         fun moveRow(
             source: List<ToggleSectionItem>,
@@ -7984,66 +8302,36 @@ fun CustomizePlaceholderScreen(
             return mutable
         }
 
-        fun persistOrder(updated: List<ToggleSectionItem>) {
-            val ids = updated.map { it.id }
+        fun moveRowByDelta(rowId: String, delta: Int) {
+            if (delta == 0) return
+            val fromIndex = orderedRows.indexOfFirst { it.id == rowId }
+            if (fromIndex < 0) return
+            val toIndex = fromIndex + delta
+            if (toIndex !in orderedRows.indices) return
+            val updated = moveRow(orderedRows, fromIndex, toIndex)
             if (selectedTab == "Lists") {
-                viewModel.setListOrder(ids)
+                pendingListRows = updated
             } else {
-                viewModel.setPersonalizedOrder(ids)
+                pendingPersonalizedRows = updated
             }
-        }
-
-        fun finishDrag(commit: Boolean) {
-            if (commit && draggedRowId != null && draggedStartIndex >= 0 && draggedTargetIndex >= 0) {
-                draggableRows = moveRow(dragBaseRows, draggedStartIndex, draggedTargetIndex)
-                persistOrder(draggableRows)
-            }
-            draggedRowId = null
-            draggedOffsetPx = 0f
-            draggedStartIndex = -1
-            draggedTargetIndex = -1
-            dragBaseRows = emptyList()
-        }
-
-        val renderedRows = if (
-            draggedRowId != null &&
-            draggedStartIndex >= 0 &&
-            draggedTargetIndex >= 0 &&
-            dragBaseRows.isNotEmpty()
-        ) {
-            moveRow(dragBaseRows, draggedStartIndex, draggedTargetIndex)
-        } else {
-            draggableRows
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
 
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
-            items(renderedRows, key = { it.id }) { row ->
+            itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
                 val enabled = if (selectedTab == "Lists") {
                     !uiState.hiddenListSectionIds.contains(row.id)
                 } else {
                     !uiState.hiddenPersonalizedSectionIds.contains(row.id)
                 }
-                val dragIndexDelta = if (draggedStartIndex >= 0 && draggedTargetIndex >= 0) {
-                    draggedTargetIndex - draggedStartIndex
-                } else {
-                    0
-                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(42.dp)
-                        .zIndex(if (row.id == draggedRowId) 1f else 0f)
-                        .graphicsLayer {
-                            translationY = if (row.id == draggedRowId) {
-                                draggedOffsetPx - (dragIndexDelta * rowStridePx)
-                            } else {
-                                0f
-                            }
-                        }
-                        .clickable(enabled = draggedRowId == null) {
+                        .clickable {
                             if (selectedTab == "Lists") {
                                 viewModel.toggleListSection(row.id)
                             } else {
@@ -8077,42 +8365,41 @@ fun CustomizePlaceholderScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Icon(
-                        imageVector = Icons.Outlined.DragHandle,
-                        contentDescription = "Reorder",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.pointerInput(row.id, selectedTab) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    val startIndex = draggableRows.indexOfFirst { it.id == row.id }
-                                    if (startIndex < 0) return@detectDragGesturesAfterLongPress
-                                    dragBaseRows = draggableRows
-                                    draggedRowId = row.id
-                                    draggedOffsetPx = 0f
-                                    draggedStartIndex = startIndex
-                                    draggedTargetIndex = startIndex
-                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                                },
-                                onDragCancel = { finishDrag(commit = false) },
-                                onDragEnd = { finishDrag(commit = true) },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    if (draggedRowId == null || draggedStartIndex < 0 || dragBaseRows.isEmpty()) {
-                                        return@detectDragGesturesAfterLongPress
-                                    }
-
-                                    draggedOffsetPx += dragAmount.y
-                                    val proposedIndex = (
-                                        draggedStartIndex + (draggedOffsetPx / rowStridePx).roundToInt()
-                                        ).coerceIn(0, dragBaseRows.lastIndex)
-                                    if (proposedIndex != draggedTargetIndex) {
-                                        draggedTargetIndex = proposedIndex
-                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { moveRowByDelta(row.id, -1) },
+                            enabled = index > 0,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.KeyboardArrowUp,
+                                contentDescription = "Move up",
+                                tint = if (index > 0) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
                                 }
                             )
                         }
-                    )
+                        IconButton(
+                            onClick = { moveRowByDelta(row.id, 1) },
+                            enabled = index < orderedRows.lastIndex,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.KeyboardArrowDown,
+                                contentDescription = "Move down",
+                                tint = if (index < orderedRows.lastIndex) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -8130,16 +8417,26 @@ private fun CustomizeTabChip(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(
-                if (selected) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.surface
+                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            )
+            .border(
+                width = 1.dp,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                } else {
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                },
+                shape = RoundedCornerShape(12.dp)
             )
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 9.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -8188,7 +8485,9 @@ private fun EntityBrowseScreen(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 14.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
+                                        .padding(horizontal = 10.dp, vertical = 14.dp)
                                         .clickable(enabled = onEntityClick != null) {
                                             onEntityClick?.invoke(entity)
                                         },

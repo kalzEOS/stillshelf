@@ -3,6 +3,8 @@ package com.stillshelf.app.ui.screens
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -190,6 +192,8 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
+import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.playback.controller.PlaybackOutputDevice
 import com.stillshelf.app.playback.controller.SleepTimerMode
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
@@ -266,7 +270,7 @@ private sealed interface BooksGridEntry {
 
 @OptIn(ExperimentalMaterialApi::class)
 @Composable
-fun HomePlaceholderScreen(
+fun HomeScreen(
     onNavigateToRoute: (String) -> Unit,
     onOpenBook: (String) -> Unit = {},
     onOpenSeries: (String) -> Unit = {},
@@ -286,6 +290,33 @@ fun HomePlaceholderScreen(
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
+    val configuration = LocalConfiguration.current
+    val homeStartInset = AppScreenHorizontalPadding
+    val homeEndInset = AppScreenHorizontalPadding
+    val homeInsetTotal = AppScreenHorizontalPadding * 2
+    val homeShelfPosterWidth = StandardGridCoverWidth
+    val homeShelfPosterHeight = StandardGridCoverHeight
+    val continueListeningPosterWidth = 72.dp
+    val continueListeningPosterHeight = 80.dp
+    val continueListeningCardHeight = remember(configuration.fontScale) {
+        (
+            continueListeningPosterHeight +
+                12.dp +
+                ((configuration.fontScale - 1f).coerceAtLeast(0f) * 8f).dp
+            ).coerceIn(96.dp, 124.dp)
+    }
+    val newestAuthorsGap = 8.dp
+    val homeFullBleedModifier = remember(homeStartInset, homeEndInset) {
+        Modifier
+            .fillMaxWidth()
+            .padding(start = homeStartInset, end = homeEndInset)
+    }
+    val homeCarouselModifier = remember {
+        Modifier.fillMaxWidth()
+    }
+    val homeCarouselContentPadding = remember(homeStartInset) {
+        PaddingValues(start = homeStartInset, end = 0.dp)
+    }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var isLibraryMenuExpanded by remember { mutableStateOf(false) }
     var libraryMenuAnchorWidthPx by remember { mutableIntStateOf(0) }
@@ -396,19 +427,41 @@ fun HomePlaceholderScreen(
             viewModel.onHomeScreenVisibilityChanged(false)
         }
     }
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .pullRefresh(refreshState)
     ) {
+        val availableHomeContentWidth = remember(maxWidth, homeInsetTotal) {
+            (maxWidth - homeInsetTotal).coerceAtLeast(0.dp)
+        }
+        val continueListeningCardWidth = remember(availableHomeContentWidth, configuration.fontScale) {
+            val widthFactor = if (configuration.fontScale > 1.05f) 0.84f else 0.8f
+            (availableHomeContentWidth * widthFactor).coerceIn(266.dp, 336.dp)
+        }
+        val newestAuthorsChipWidth = remember(availableHomeContentWidth, newestAuthorsGap) {
+            (
+                (availableHomeContentWidth - (newestAuthorsGap * 2)) / 3f
+                ).coerceIn(94.dp, 124.dp)
+        }
+        val newestAuthorsAvatarSize = remember(newestAuthorsChipWidth) {
+            (newestAuthorsChipWidth * 0.78f).coerceIn(78.dp, 96.dp)
+        }
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 120.dp),
+            contentPadding = PaddingValues(
+                start = 0.dp,
+                end = 0.dp,
+                top = 12.dp,
+                bottom = 120.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = homeStartInset, end = homeEndInset),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -609,20 +662,27 @@ fun HomePlaceholderScreen(
                         }
                     }
                 }
-                if (appearanceUiState.materialDesignEnabled) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-                        shape = RoundedCornerShape(18.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            sectionContent()
+                Card(
+                    modifier = homeFullBleedModifier,
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (appearanceUiState.materialDesignEnabled) {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        } else {
+                            Color.Transparent
                         }
+                    ),
+                    border = if (appearanceUiState.materialDesignEnabled) {
+                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                    } else {
+                        null
+                    },
+                    shape = RoundedCornerShape(18.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        sectionContent()
                     }
-                } else {
-                    sectionContent()
                 }
             }
 
@@ -635,16 +695,28 @@ fun HomePlaceholderScreen(
                 }
                 when (section.id) {
                     HomeSectionIds.CONTINUE -> {
-                        item { SectionTitle("Continue Listening") }
+                        item {
+                            SectionTitle(
+                                title = "Continue Listening",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             when {
                                 uiState.isLoading && uiState.continueListening.isEmpty() -> {
                                     LazyRow(
-                                        modifier = Modifier
-                                            .fillMaxWidth(),
+                                        modifier = homeCarouselModifier,
+                                        contentPadding = homeCarouselContentPadding,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        item { ContinueListeningSkeletonCard() }
+                                        item {
+                                            ContinueListeningSkeletonCard(
+                                                cardWidth = continueListeningCardWidth,
+                                                cardHeight = continueListeningCardHeight,
+                                                posterWidth = continueListeningPosterWidth,
+                                                posterHeight = continueListeningPosterHeight
+                                            )
+                                        }
                                         item { PosterStub(86.dp, 108.dp, Color(0xFF3B2E45)) }
                                         item { PosterStub(86.dp, 108.dp, Color(0xFF2D3840)) }
                                     }
@@ -654,19 +726,24 @@ fun HomePlaceholderScreen(
                                     Text(
                                         text = "No books in progress yet.",
                                         style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                                     )
                                 }
 
                                 else -> {
                                     LazyRow(
-                                        modifier = Modifier
-                                            .fillMaxWidth(),
+                                        modifier = homeCarouselModifier,
+                                        contentPadding = homeCarouselContentPadding,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
                                         items(uiState.continueListening, key = { it.book.id }) { item ->
                                             ContinueListeningCard(
                                                 item = item,
+                                                cardWidth = continueListeningCardWidth,
+                                                cardHeight = continueListeningCardHeight,
+                                                posterWidth = continueListeningPosterWidth,
+                                                posterHeight = continueListeningPosterHeight,
                                                 isDownloaded = uiState.downloadedBookIds.contains(item.book.id),
                                                 downloadProgressPercent = uiState.downloadProgressByBookId[item.book.id],
                                                 onClick = { onOpenPlayer(item.book.id) },
@@ -692,11 +769,17 @@ fun HomePlaceholderScreen(
                     }
 
                     HomeSectionIds.LISTEN_AGAIN -> {
-                        item { SectionTitle("Listen Again") }
+                        item {
+                            SectionTitle(
+                                title = "Listen Again",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             val books = uiState.listenAgain
                             LazyRow(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = homeCarouselModifier,
+                                contentPadding = homeCarouselContentPadding,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 items(books, key = { it.id }) { book ->
@@ -707,14 +790,14 @@ fun HomePlaceholderScreen(
                                     ) {
                                         BookPoster(
                                             book = book,
-                                            width = 92.dp,
-                                            height = 118.dp,
-                                            backgroundBlur = 64.dp,
+                                            width = homeShelfPosterWidth,
+                                            height = homeShelfPosterHeight,
+                                            contentScale = ContentScale.Fit,
                                             showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
                                             downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
                                         )
                                         Row(
-                                            modifier = Modifier.width(92.dp),
+                                            modifier = Modifier.width(homeShelfPosterWidth),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
@@ -811,18 +894,23 @@ fun HomePlaceholderScreen(
                     }
 
                     HomeSectionIds.RECENTLY_ADDED -> {
-                        item { SectionTitle("Recently Added") }
+                        item {
+                            SectionTitle(
+                                title = "Recently Added",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             when {
                                 uiState.isLoading && uiState.recentlyAdded.isEmpty() -> {
                                     LazyRow(
-                                        modifier = Modifier
-                                            .fillMaxWidth(),
+                                        modifier = homeCarouselModifier,
+                                        contentPadding = homeCarouselContentPadding,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        item { PosterStub(92.dp, 118.dp, Color(0xFFA33A31)) }
-                                        item { PosterStub(92.dp, 118.dp, Color(0xFF2F4A58)) }
-                                        item { PosterStub(92.dp, 118.dp, Color(0xFF8D6C3F)) }
+                                        item { PosterStub(homeShelfPosterWidth, homeShelfPosterHeight, Color(0xFFA33A31)) }
+                                        item { PosterStub(homeShelfPosterWidth, homeShelfPosterHeight, Color(0xFF2F4A58)) }
+                                        item { PosterStub(homeShelfPosterWidth, homeShelfPosterHeight, Color(0xFF8D6C3F)) }
                                     }
                                 }
 
@@ -830,14 +918,15 @@ fun HomePlaceholderScreen(
                                     Text(
                                         text = "No recently added books.",
                                         style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                                     )
                                 }
 
                                 else -> {
                                     LazyRow(
-                                        modifier = Modifier
-                                            .fillMaxWidth(),
+                                        modifier = homeCarouselModifier,
+                                        contentPadding = homeCarouselContentPadding,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
                                         items(uiState.recentlyAdded, key = { it.id }) { book ->
@@ -848,14 +937,14 @@ fun HomePlaceholderScreen(
                                             ) {
                                                 BookPoster(
                                                     book = book,
-                                                    width = 92.dp,
-                                                    height = 118.dp,
-                                                    backgroundBlur = 64.dp,
+                                                    width = homeShelfPosterWidth,
+                                                    height = homeShelfPosterHeight,
+                                                    contentScale = ContentScale.Fit,
                                                     showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
                                                     downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
                                                 )
                                                 Row(
-                                                    modifier = Modifier.width(92.dp),
+                                                    modifier = Modifier.width(homeShelfPosterWidth),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Text(
@@ -948,19 +1037,25 @@ fun HomePlaceholderScreen(
                     }
 
                     HomeSectionIds.RECENT_SERIES -> {
-                        item { SectionTitle("Recent Series") }
+                        item {
+                            SectionTitle(
+                                title = "Recent Series",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             val seriesItems = uiState.recentSeries
                             if (seriesItems.isEmpty()) {
                                 Text(
                                     text = "No recent series.",
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                                 )
                             } else {
                                 LazyRow(
-                                    modifier = Modifier
-                                        .fillMaxWidth(),
+                                    modifier = homeCarouselModifier,
+                                    contentPadding = homeCarouselContentPadding,
                                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
                                     items(seriesItems, key = { it.seriesName }) { series ->
@@ -977,19 +1072,25 @@ fun HomePlaceholderScreen(
                     }
 
                     HomeSectionIds.DISCOVER -> {
-                        item { SectionTitle("Discover") }
+                        item {
+                            SectionTitle(
+                                title = "Discover",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             val discoverBooks = uiState.discoverBooks
                             if (discoverBooks.isEmpty()) {
                                 Text(
                                     text = "No discover picks yet.",
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                                 )
                             } else {
                                 LazyRow(
-                                    modifier = Modifier
-                                        .fillMaxWidth(),
+                                    modifier = homeCarouselModifier,
+                                    contentPadding = homeCarouselContentPadding,
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                                     items(discoverBooks, key = { it.id }) { book ->
@@ -1000,85 +1101,91 @@ fun HomePlaceholderScreen(
                                         ) {
                                             BookPoster(
                                                 book = book,
-                                                width = 92.dp,
-                                                height = 118.dp,
-                                                backgroundBlur = 64.dp,
+                                                width = homeShelfPosterWidth,
+                                                height = homeShelfPosterHeight,
+                                                contentScale = ContentScale.Fit,
                                                 showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
                                                 downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
                                             )
-                                            Text(
-                                                text = formatDurationHoursMinutes(book.durationSeconds),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            Box {
-                                                IconButton(
-                                                    onClick = { menuExpanded = true },
-                                                    modifier = Modifier.size(22.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Outlined.MoreHoriz,
-                                                        contentDescription = "Book actions",
-                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
-                                                DropdownMenu(
-                                                    expanded = menuExpanded,
-                                                    onDismissRequest = { menuExpanded = false }
-                                                ) {
-                                                    DropdownMenuItem(
-                                                        text = { Text("Add to Collection") },
-                                                        leadingIcon = {
-                                                            Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
-                                                        },
-                                                        onClick = {
-                                                            addToListBookId = book.id
-                                                            menuExpanded = false
-                                                        }
-                                                    )
-                                                    DropdownMenuItem(
-                                                        text = {
-                                                            Text(
-                                                                if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
-                                                            )
-                                                        },
-                                                        leadingIcon = {
-                                                            Icon(
-                                                                imageVector = if (book.hasFinishedProgress()) {
-                                                                    Icons.Outlined.Refresh
-                                                                } else {
-                                                                    Icons.Outlined.CheckCircle
-                                                                },
-                                                                contentDescription = null
-                                                            )
-                                                        },
-                                                        onClick = {
-                                                            if (book.hasFinishedProgress()) {
-                                                                viewModel.markAsUnfinished(book.id)
-                                                            } else {
-                                                                viewModel.markAsFinished(book.id)
+                                            Row(
+                                                modifier = Modifier.width(homeShelfPosterWidth),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Box {
+                                                    IconButton(
+                                                        onClick = { menuExpanded = true },
+                                                        modifier = Modifier.size(22.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Outlined.MoreHoriz,
+                                                            contentDescription = "Book actions",
+                                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    DropdownMenu(
+                                                        expanded = menuExpanded,
+                                                        onDismissRequest = { menuExpanded = false }
+                                                    ) {
+                                                        DropdownMenuItem(
+                                                            text = { Text("Add to Collection") },
+                                                            leadingIcon = {
+                                                                Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
+                                                            },
+                                                            onClick = {
+                                                                addToListBookId = book.id
+                                                                menuExpanded = false
                                                             }
-                                                            menuExpanded = false
-                                                        }
-                                                    )
-                                                    DropdownMenuItem(
-                                                        text = {
-                                                            Text(
-                                                                if (uiState.downloadedBookIds.contains(book.id)) {
-                                                                    "Remove Download"
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = {
+                                                                Text(
+                                                                    if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
+                                                                )
+                                                            },
+                                                            leadingIcon = {
+                                                                Icon(
+                                                                    imageVector = if (book.hasFinishedProgress()) {
+                                                                        Icons.Outlined.Refresh
+                                                                    } else {
+                                                                        Icons.Outlined.CheckCircle
+                                                                    },
+                                                                    contentDescription = null
+                                                                )
+                                                            },
+                                                            onClick = {
+                                                                if (book.hasFinishedProgress()) {
+                                                                    viewModel.markAsUnfinished(book.id)
                                                                 } else {
-                                                                    "Download"
+                                                                    viewModel.markAsFinished(book.id)
                                                                 }
-                                                            )
-                                                        },
-                                                        leadingIcon = {
-                                                            Icon(Icons.Outlined.Download, contentDescription = null)
-                                                        },
-                                                        onClick = {
-                                                            viewModel.toggleDownload(book.id)
-                                                            menuExpanded = false
-                                                        }
-                                                    )
+                                                                menuExpanded = false
+                                                            }
+                                                        )
+                                                        DropdownMenuItem(
+                                                            text = {
+                                                                Text(
+                                                                    if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                        "Remove Download"
+                                                                    } else {
+                                                                        "Download"
+                                                                    }
+                                                                )
+                                                            },
+                                                            leadingIcon = {
+                                                                Icon(Icons.Outlined.Download, contentDescription = null)
+                                                            },
+                                                            onClick = {
+                                                                viewModel.toggleDownload(book.id)
+                                                                menuExpanded = false
+                                                            }
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -1089,7 +1196,12 @@ fun HomePlaceholderScreen(
                     }
 
                     HomeSectionIds.NEWEST_AUTHORS -> {
-                        item { SectionTitle("Newest Authors") }
+                        item {
+                            SectionTitle(
+                                title = "Newest Authors",
+                                modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
+                            )
+                        }
                         item {
                             val authorNames = uiState.recentlyAdded
                                 .flatMap { splitAuthorNames(it.authorName) }
@@ -1100,18 +1212,21 @@ fun HomePlaceholderScreen(
                                 Text(
                                     text = "No authors available.",
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                                 )
                             } else {
                                 LazyRow(
-                                    modifier = Modifier
-                                        .fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                    modifier = homeCarouselModifier,
+                                    contentPadding = homeCarouselContentPadding,
+                                    horizontalArrangement = Arrangement.spacedBy(newestAuthorsGap)
                                 ) {
                                     items(authorNames, key = { it }) { author ->
                                         AuthorCircleChip(
                                             name = author,
                                             imageUrl = uiState.authorImageUrls[author.trim().lowercase()],
+                                            chipWidth = newestAuthorsChipWidth,
+                                            avatarSize = newestAuthorsAvatarSize,
                                             onClick = { onOpenAuthor(author) }
                                         )
                                     }
@@ -1124,7 +1239,10 @@ fun HomePlaceholderScreen(
 
             uiState.errorMessage?.let { message ->
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(
+                        modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text(
                             text = message,
                             style = MaterialTheme.typography.bodyMedium,
@@ -1139,7 +1257,10 @@ fun HomePlaceholderScreen(
 
             menuUiState.errorMessage?.let { message ->
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(
+                        modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text(
                             text = message,
                             style = MaterialTheme.typography.bodyMedium,
@@ -1198,7 +1319,7 @@ fun HomePlaceholderScreen(
 
 @OptIn(ExperimentalMaterialApi::class)
 @Composable
-fun BrowsePlaceholderScreen(
+fun BrowseScreen(
     onBookClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
@@ -1251,7 +1372,7 @@ fun BrowsePlaceholderScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2234,7 +2355,7 @@ fun BookmarksBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         BackTitle(
             title = "Bookmarks",
@@ -2430,7 +2551,7 @@ fun CollectionsBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2760,7 +2881,7 @@ fun PlaylistsBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3095,7 +3216,7 @@ fun NarratorsBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         BackTitle(
             title = "Narrators",
@@ -3197,7 +3318,7 @@ fun SeriesBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3412,7 +3533,7 @@ fun SeriesBrowseScreen(
 }
 
 @Composable
-fun BrowseSectionPlaceholderScreen(
+fun BrowseSectionScreen(
     title: String,
     emptyMessage: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Outlined.GridView,
@@ -3422,7 +3543,7 @@ fun BrowseSectionPlaceholderScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         BackTitle(
             title = title,
@@ -3452,7 +3573,7 @@ fun BrowseSectionPlaceholderScreen(
 }
 
 @Composable
-fun SearchPlaceholderScreen(
+fun SearchScreen(
     onBookClick: (String) -> Unit,
     onAuthorClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit,
@@ -3477,7 +3598,7 @@ fun SearchPlaceholderScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding)
     ) {
         Box(
             modifier = Modifier
@@ -3681,12 +3802,12 @@ private fun SearchEntityRow(
 }
 
 @Composable
-fun DownloadsPlaceholderScreen() {
-    DownloadsPlaceholderScreen(onBackClick = null, onHomeClick = null, onBookClick = {})
+fun DownloadsScreen() {
+    DownloadsScreen(onBackClick = null, onHomeClick = null, onBookClick = {})
 }
 
 @Composable
-fun DownloadsPlaceholderScreen(
+fun DownloadsScreen(
     onBookClick: (String) -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
@@ -3706,7 +3827,7 @@ fun DownloadsPlaceholderScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3952,12 +4073,18 @@ fun DownloadsPlaceholderScreen(
 }
 
 @Composable
-fun SettingsPlaceholderScreen(
+fun SettingsScreen(
     onManageServers: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val avatarPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { selected ->
+        viewModel.setServerAvatarFromUri(selected)
+    }
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var skipForwardDialogVisible by remember { mutableStateOf(false) }
     var skipBackwardDialogVisible by remember { mutableStateOf(false) }
@@ -3978,7 +4105,7 @@ fun SettingsPlaceholderScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 18.dp),
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         BackTitle(
@@ -3997,11 +4124,38 @@ fun SettingsPlaceholderScreen(
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Person,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
+                            shape = CircleShape
+                        )
+                        .clickable { avatarPickerLauncher.launch("image/*") },
+                    contentAlignment = Alignment.Center
+                ) {
+                    val avatarUri = uiState.serverAvatarUri
+                    if (!avatarUri.isNullOrBlank()) {
+                        AsyncImage(
+                            model = avatarUri,
+                            contentDescription = "Server profile photo",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = "Add server profile photo",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
                 Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(uiState.serverDisplayName, style = MaterialTheme.typography.titleMedium)
                     Text(
@@ -4143,7 +4297,7 @@ fun SettingsPlaceholderScreen(
         ) {
             SettingsRow(
                 title = "About",
-                onClick = { infoMessage = "StillShelf alpha build." }
+                onClick = onOpenAbout
             )
         }
         Card(
@@ -4233,6 +4387,136 @@ fun SettingsPlaceholderScreen(
                     }
                 }
             )
+        }
+    }
+}
+
+private object AboutPagePlaceholders {
+    // ABOUT_PAGE_PLACEHOLDER: edit these constants to update About content quickly.
+    const val APP_NAME = "StillShelf"
+    const val TAGLINE = "TODO: Add one-sentence app description."
+    const val VERSION = "TODO: Add version/build information."
+    const val WEBSITE = "TODO: Add website URL."
+    const val SUPPORT = "TODO: Add support contact email or URL."
+    const val PRIVACY_POLICY = "TODO: Add privacy policy URL."
+    const val ACKNOWLEDGEMENTS = "TODO: Add contributors, libraries, and credits."
+    const val CHANGELOG = "TODO: Add release notes for this build."
+}
+
+@Composable
+fun AboutScreen(
+    onBackClick: (() -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        BackTitle(
+            title = "About",
+            onBackClick = onBackClick
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = AboutPagePlaceholders.APP_NAME,
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(
+                    text = AboutPagePlaceholders.TAGLINE,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                Text(
+                    text = "Version",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Text(
+                    text = AboutPagePlaceholders.VERSION,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(text = "Links", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "Website: ${AboutPagePlaceholders.WEBSITE}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Support: ${AboutPagePlaceholders.SUPPORT}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Privacy: ${AboutPagePlaceholders.PRIVACY_POLICY}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(text = "Acknowledgements", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = AboutPagePlaceholders.ACKNOWLEDGEMENTS,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(text = "Release Notes", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = AboutPagePlaceholders.CHANGELOG,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -4601,7 +4885,7 @@ fun ServersManagementScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 18.dp),
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Row(
@@ -4818,19 +5102,12 @@ fun BookDetailScreen(
     val playbackUiState by viewModel.playbackUiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     var actionsExpanded by remember { mutableStateOf(false) }
-    var infoMessage by remember { mutableStateOf<String?>(null) }
     var aboutExpanded by remember { mutableStateOf(false) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     var bookmarkMenuId by remember { mutableStateOf<String?>(null) }
     var editingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
     var editingDetailBookmarkTitle by rememberSaveable { mutableStateOf("") }
     var deletingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
-
-    LaunchedEffect(infoMessage) {
-        val message = infoMessage ?: return@LaunchedEffect
-        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        infoMessage = null
-    }
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -4883,7 +5160,7 @@ fun BookDetailScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 120.dp)
     ) {
@@ -4936,9 +5213,9 @@ fun BookDetailScreen(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Skip Intro & Outro (coming soon)") },
+                            text = { Text("Skip Intro & Outro") },
                             onClick = {
-                                infoMessage = "Skip Intro/Outro is planned. It is not active yet."
+                                viewModel.skipIntroOrOutro()
                                 actionsExpanded = false
                             }
                         )
@@ -5524,7 +5801,7 @@ fun BookDetailScreen(
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun PlayerPlaceholderScreen(
+fun PlayerScreen(
     onBackClick: (() -> Unit)? = null,
     viewModel: PlayerViewModel = hiltViewModel(),
     onGoToBook: ((String) -> Unit)? = null,
@@ -6111,23 +6388,26 @@ fun PlayerPlaceholderScreen(
                             },
                             onClick = {
                                 bottomMenuExpanded = false
-                                val activeChapter = chapters.getOrNull(activeChapterIndex)
-                                if (activeChapter == null || !isIntroOutroChapterTitle(activeChapter.title)) {
-                                    Toast.makeText(
-                                        context,
-                                        "No intro/outro marker found in this chapter.",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                val skipResult = SkipIntroOutroUseCase.resolve(
+                                    chapters = chapters,
+                                    currentPositionSeconds = positionSeconds,
+                                    bookDurationSeconds = durationSeconds.takeIf { it > 0.0 }
+                                )
+                                val targetSeconds = skipResult.targetSeconds
+                                if (targetSeconds == null) {
+                                    val message = skipResult.failureReason?.toUserMessage()
+                                        ?: "Unable to skip chapter."
+                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                                 } else {
-                                    val nextChapter = chapters.getOrNull(activeChapterIndex + 1)
-                                    if (nextChapter != null) {
-                                        viewModel.jumpToSeconds(nextChapter.startSeconds)
-                                        Toast.makeText(context, "Skipped chapter.", Toast.LENGTH_SHORT).show()
+                                    if (playbackUiState.book != null) {
+                                        viewModel.seekToPositionMs(
+                                            positionMs = (targetSeconds * 1000.0).toLong().coerceAtLeast(0L),
+                                            commit = true
+                                        )
                                     } else {
-                                        val endPositionMs = (durationSeconds * 1000.0).toLong().coerceAtLeast(0L)
-                                        viewModel.seekToPositionMs(positionMs = endPositionMs, commit = true)
-                                        Toast.makeText(context, "Skipped chapter.", Toast.LENGTH_SHORT).show()
+                                        viewModel.jumpToSeconds(targetSeconds)
                                     }
+                                    Toast.makeText(context, "Skipped chapter.", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         )
@@ -8283,7 +8563,7 @@ private fun DetailTabChip(
 }
 
 @Composable
-fun CustomizePlaceholderScreen(
+fun CustomizeScreen(
     onDone: () -> Unit,
     onCancel: () -> Unit,
     onHomeClick: (() -> Unit)? = null,
@@ -8322,7 +8602,7 @@ fun CustomizePlaceholderScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -8356,9 +8636,7 @@ fun CustomizePlaceholderScreen(
         Spacer(modifier = Modifier.height(12.dp))
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surface),
+                .fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             CustomizeTabChip(
@@ -8404,94 +8682,107 @@ fun CustomizePlaceholderScreen(
             hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(bottom = 120.dp)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            shape = RoundedCornerShape(18.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
         ) {
-            itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
-                val enabled = if (selectedTab == "Lists") {
-                    !effectiveHiddenListSectionIds.contains(row.id)
-                } else {
-                    !effectiveHiddenPersonalizedSectionIds.contains(row.id)
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(42.dp)
-                        .clickable {
-                            if (selectedTab == "Lists") {
-                                pendingHiddenListSectionIds = toggleHiddenSection(
-                                    hidden = effectiveHiddenListSectionIds,
-                                    id = row.id
-                                )
-                            } else {
-                                pendingHiddenPersonalizedSectionIds = toggleHiddenSection(
-                                    hidden = effectiveHiddenPersonalizedSectionIds,
-                                    id = row.id
-                                )
-                            }
-                        },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (enabled) {
-                            Icon(
-                                imageVector = Icons.Filled.Check,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
+                    val enabled = if (selectedTab == "Lists") {
+                        !effectiveHiddenListSectionIds.contains(row.id)
+                    } else {
+                        !effectiveHiddenPersonalizedSectionIds.contains(row.id)
                     }
-                    Text(
-                        text = row.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 12.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .clickable {
+                                if (selectedTab == "Lists") {
+                                    pendingHiddenListSectionIds = toggleHiddenSection(
+                                        hidden = effectiveHiddenListSectionIds,
+                                        id = row.id
+                                    )
+                                } else {
+                                    pendingHiddenPersonalizedSectionIds = toggleHiddenSection(
+                                        hidden = effectiveHiddenPersonalizedSectionIds,
+                                        id = row.id
+                                    )
+                                }
+                            },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(
-                            onClick = { moveRowByDelta(row.id, -1) },
-                            enabled = index > 0,
-                            modifier = Modifier.size(36.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.KeyboardArrowUp,
-                                contentDescription = "Move up",
-                                tint = if (index > 0) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                }
-                            )
+                            if (enabled) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
                         }
-                        IconButton(
-                            onClick = { moveRowByDelta(row.id, 1) },
-                            enabled = index < orderedRows.lastIndex,
-                            modifier = Modifier.size(36.dp)
+                        Text(
+                            text = row.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 12.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.KeyboardArrowDown,
-                                contentDescription = "Move down",
-                                tint = if (index < orderedRows.lastIndex) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                }
-                            )
+                            IconButton(
+                                onClick = { moveRowByDelta(row.id, -1) },
+                                enabled = index > 0,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowUp,
+                                    contentDescription = "Move up",
+                                    tint = if (index > 0) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                                    }
+                                )
+                            }
+                            IconButton(
+                                onClick = { moveRowByDelta(row.id, 1) },
+                                enabled = index < orderedRows.lastIndex,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                                    contentDescription = "Move down",
+                                    tint = if (index < orderedRows.lastIndex) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                                    }
+                                )
+                            }
                         }
+                    }
+                    if (index < orderedRows.lastIndex) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                     }
                 }
             }
@@ -8553,7 +8844,7 @@ private fun EntityBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         BackTitle(
             title = title,
@@ -8690,11 +8981,11 @@ private fun SeriesStackCard(
     onClick: () -> Unit
 ) {
     val book = series.leadBook
-    val posterWidth = 92.dp
-    val posterHeight = 118.dp
+    val posterWidth = StandardGridCoverWidth
+    val posterHeight = StandardGridCoverHeight
     val layerCount = series.count.coerceIn(2, 3)
     val stackStepX = 5.dp
-    val stackStepY = 8.dp
+    val stackStepY = 10.dp
     val frameWidth = posterWidth + (stackStepX * (layerCount - 1))
     val frameHeight = posterHeight + (stackStepY * (layerCount - 1))
     Column(
@@ -8786,18 +9077,20 @@ private fun SeriesStackCard(
 private fun AuthorCircleChip(
     name: String,
     imageUrl: String?,
+    chipWidth: Dp = 100.dp,
+    avatarSize: Dp = 80.dp,
     onClick: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier
-            .width(92.dp)
+            .width(chipWidth)
             .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(avatarSize)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
@@ -8833,17 +9126,24 @@ private fun AuthorCircleChip(
 }
 
 @Composable
-private fun SectionTitle(title: String) {
+private fun SectionTitle(
+    title: String,
+    modifier: Modifier = Modifier
+) {
     Text(
         text = title,
         style = MaterialTheme.typography.titleLarge,
-        modifier = Modifier.padding(top = 4.dp)
+        modifier = modifier.padding(top = 4.dp)
     )
 }
 
 @Composable
 private fun ContinueListeningCard(
     item: ContinueListeningItem,
+    cardWidth: Dp = 266.dp,
+    cardHeight: Dp = 98.dp,
+    posterWidth: Dp = 72.dp,
+    posterHeight: Dp = 80.dp,
     isDownloaded: Boolean,
     downloadProgressPercent: Int?,
     onGoToBook: () -> Unit,
@@ -8856,57 +9156,102 @@ private fun ContinueListeningCard(
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val fallbackCardColor = Color(0xFF665A2E)
+    val dominantCoverColor = rememberDominantCoverColor(
+        coverUrl = item.book.coverUrl,
+        enabled = true
+    )
+    val containerColor = remember(dominantCoverColor) {
+        val baseColor = dominantCoverColor ?: fallbackCardColor
+        // Keep the cover identity, but boost saturation/value so cards don't look too muted.
+        val vividBase = brightenAndSaturateCardColor(baseColor)
+        val darkenAmount = when {
+            vividBase.luminance() > 0.62f -> 0.32f
+            vividBase.luminance() > 0.45f -> 0.2f
+            else -> 0.1f
+        }
+        lerp(vividBase, Color.Black, darkenAmount)
+    }
+    val primaryTextColor = if (containerColor.luminance() > 0.45f) Color(0xFF1B1B1B) else Color.White
+    val secondaryTextColor = if (containerColor.luminance() > 0.45f) Color(0xFF2F2F2F) else Color(0xFFD8D8D8)
     Card(
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier
+            .width(cardWidth)
+            .height(cardHeight)
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF665A2E))
+        colors = CardDefaults.cardColors(containerColor = containerColor)
     ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .width(236.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            BookPoster(
-                book = item.book,
-                width = 64.dp,
-                height = 84.dp,
-                shape = RoundedCornerShape(6.dp),
-                showDownloadIndicator = isDownloaded,
-                downloadProgressPercent = downloadProgressPercent
-            )
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = item.book.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+        Box(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BookPoster(
+                    book = item.book,
+                    width = posterWidth,
+                    height = posterHeight,
+                    shape = RoundedCornerShape(6.dp),
+                    contentScale = ContentScale.Fit,
+                    backgroundBlur = 42.dp,
+                    showDownloadIndicator = isDownloaded,
+                    downloadProgressPercent = downloadProgressPercent
                 )
-                Text(
-                    text = item.book.authorName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFD8D8D8),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = formatTimeLeft(item),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFD8D8D8),
-                    maxLines = 1
-                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 28.dp),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = item.book.title,
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            lineHeight = 16.sp
+                        ),
+                        color = primaryTextColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = item.book.authorName,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp
+                        ),
+                        color = secondaryTextColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = formatTimeLeft(item),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp
+                        ),
+                        color = secondaryTextColor,
+                        maxLines = 1
+                    )
+                }
             }
-            Box {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 8.dp, end = 8.dp)
+            ) {
                 IconButton(
                     onClick = { menuExpanded = true },
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.MoreHoriz,
                         contentDescription = "Continue listening actions",
-                        tint = Color.White
+                        tint = primaryTextColor
                     )
                 }
                 DropdownMenu(
@@ -8978,22 +9323,45 @@ private fun ContinueListeningCard(
     }
 }
 
+private fun brightenAndSaturateCardColor(color: Color): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.RGBToHSV(
+        (color.red * 255f).roundToInt().coerceIn(0, 255),
+        (color.green * 255f).roundToInt().coerceIn(0, 255),
+        (color.blue * 255f).roundToInt().coerceIn(0, 255),
+        hsv
+    )
+    // Favor richer saturation and avoid pastel wash-out.
+    hsv[1] = (hsv[1] * 1.48f + 0.12f).coerceIn(0f, 1f)
+    hsv[2] = (hsv[2] * 0.94f + 0.02f).coerceIn(0.22f, 0.86f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
 @Composable
-private fun ContinueListeningSkeletonCard() {
+private fun ContinueListeningSkeletonCard(
+    cardWidth: Dp = 266.dp,
+    cardHeight: Dp = 98.dp,
+    posterWidth: Dp = 72.dp,
+    posterHeight: Dp = 80.dp
+) {
     Card(
+        modifier = Modifier
+            .width(cardWidth)
+            .height(cardHeight),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF665A2E))
     ) {
         Row(
             modifier = Modifier
+                .fillMaxSize()
                 .padding(12.dp)
-                .width(236.dp),
+                .clipToBounds(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             PosterStub(
-                width = 64.dp,
-                height = 84.dp,
+                width = posterWidth,
+                height = posterHeight,
                 color = Color(0xFF1F1F23),
                 shape = RoundedCornerShape(6.dp)
             )
@@ -9219,17 +9587,6 @@ private fun List<BookSummary>.filterByStatus(filter: BooksStatusFilter): List<Bo
         BooksStatusFilter.NotStarted -> filter { !it.hasStartedProgress() && !it.hasFinishedProgress() }
         BooksStatusFilter.NotFinished -> filter { !it.hasFinishedProgress() }
     }
-}
-
-private fun isIntroOutroChapterTitle(raw: String?): Boolean {
-    val title = raw?.trim()?.lowercase(Locale.ROOT).orEmpty()
-    if (title.isBlank()) return false
-    return title.contains("intro") ||
-        title.contains("introduction") ||
-        title.contains("prologue") ||
-        title.contains("outro") ||
-        title.contains("epilogue") ||
-        title.contains("credits")
 }
 
 private fun sortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {

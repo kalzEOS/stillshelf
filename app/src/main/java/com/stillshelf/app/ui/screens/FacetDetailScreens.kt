@@ -852,7 +852,7 @@ fun AuthorDetailScreen(
             columns = GridCells.Fixed(2),
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 18.dp, vertical = 14.dp),
+                .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(bottom = 120.dp)
@@ -940,7 +940,7 @@ fun AuthorDetailScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 18.dp, vertical = 14.dp),
+                .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(bottom = 120.dp)
         ) {
@@ -1674,7 +1674,7 @@ fun SeriesDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
             .pullRefresh(refreshState)
     ) {
         when {
@@ -2094,7 +2094,7 @@ fun CollectionDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         FacetTopBar(
             title = uiState.title.ifBlank { "Collection" },
@@ -2370,7 +2370,7 @@ fun PlaylistDetailScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         FacetTopBar(
             title = uiState.title.ifBlank { "Playlist" },
@@ -2708,7 +2708,7 @@ fun GenresBrowseScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         FacetTopBar(
             title = "Genres",
@@ -2848,7 +2848,7 @@ private fun FacetBooksScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
     ) {
         FacetTopBar(
             title = uiState.title,

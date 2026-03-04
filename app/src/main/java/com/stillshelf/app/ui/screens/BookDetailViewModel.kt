@@ -7,6 +7,8 @@ import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
+import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
@@ -163,6 +165,33 @@ class BookDetailViewModel @Inject constructor(
         if (bookId.isBlank()) return
         val positionMs = (startSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+    }
+
+    fun skipIntroOrOutro() {
+        if (bookId.isBlank()) return
+        val detail = uiState.value.detail ?: run {
+            mutableUiState.update { it.copy(actionMessage = "Book details not ready yet.") }
+            return
+        }
+        val currentSeconds = if (playbackUiState.value.book?.id == bookId) {
+            playbackUiState.value.positionMs.coerceAtLeast(0L) / 1000.0
+        } else {
+            uiState.value.currentTimeSeconds?.coerceAtLeast(0.0) ?: 0.0
+        }
+        val skipResult = SkipIntroOutroUseCase.resolve(
+            chapters = detail.chapters,
+            currentPositionSeconds = currentSeconds,
+            bookDurationSeconds = detail.book.durationSeconds
+        )
+        val targetSeconds = skipResult.targetSeconds
+        if (targetSeconds == null) {
+            val message = skipResult.failureReason?.toUserMessage() ?: "Unable to skip chapter."
+            mutableUiState.update { it.copy(actionMessage = message) }
+            return
+        }
+        val positionMs = (targetSeconds * 1000.0).toLong().coerceAtLeast(0L)
+        playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+        mutableUiState.update { it.copy(actionMessage = "Skipped chapter.") }
     }
 
     fun playBookmark(bookmark: BookBookmark) {

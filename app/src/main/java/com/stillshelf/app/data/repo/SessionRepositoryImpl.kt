@@ -139,6 +139,7 @@ class SessionRepositoryImpl @Inject constructor(
             val nextServer = serverDao.getAll().firstOrNull { it.id != existing.id }
             secureTokenStorage.clearToken(existing.id)
             serverDao.deleteById(existing.id)
+            sessionPreferences.setServerAvatarUri(existing.id, null)
             clearContentCaches()
             val session = sessionPreferences.state.first()
             if (session.activeServerId == existing.id) {
@@ -213,6 +214,7 @@ class SessionRepositoryImpl @Inject constructor(
                 runCatching { libraryDao.deleteByServerId(activeServerId) }
                 serverDao.deleteById(activeServerId)
             }
+            sessionPreferences.setServerAvatarUri(activeServerId, null)
             sessionPreferences.setLastPlayedBookId(null)
             sessionPreferences.clearCachedHomeFeed()
             sessionPreferences.setActiveSelection(
@@ -317,6 +319,7 @@ class SessionRepositoryImpl @Inject constructor(
                     .forEach { duplicate ->
                         libraryDao.deleteByServerId(duplicate.id)
                         serverDao.deleteById(duplicate.id)
+                        sessionPreferences.setServerAvatarUri(duplicate.id, null)
                     }
             }
 
@@ -2258,6 +2261,7 @@ class SessionRepositoryImpl @Inject constructor(
         runCatching { secureTokenStorage.clearToken(serverId) }
         runCatching { libraryDao.deleteByServerId(serverId) }
         runCatching { serverDao.deleteById(serverId) }
+        runCatching { sessionPreferences.setServerAvatarUri(serverId, null) }
         clearContentCaches()
     }
 

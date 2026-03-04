@@ -34,28 +34,29 @@ import androidx.navigation.navigation
 import androidx.navigation.navArgument
 import com.stillshelf.app.ui.components.MiniPlayerViewModel
 import com.stillshelf.app.ui.components.RootScaffold
+import com.stillshelf.app.ui.screens.AboutScreen
 import com.stillshelf.app.ui.screens.AuthorsBrowseScreen
 import com.stillshelf.app.ui.screens.AuthorDetailScreen
 import com.stillshelf.app.ui.screens.BookDetailScreen
 import com.stillshelf.app.ui.screens.BookmarksBrowseScreen
-import com.stillshelf.app.ui.screens.BrowsePlaceholderScreen
+import com.stillshelf.app.ui.screens.BrowseScreen
 import com.stillshelf.app.ui.screens.CollectionDetailScreen
 import com.stillshelf.app.ui.screens.CollectionsBrowseScreen
-import com.stillshelf.app.ui.screens.CustomizePlaceholderScreen
-import com.stillshelf.app.ui.screens.DownloadsPlaceholderScreen
+import com.stillshelf.app.ui.screens.CustomizeScreen
+import com.stillshelf.app.ui.screens.DownloadsScreen
 import com.stillshelf.app.ui.screens.GenreDetailScreen
 import com.stillshelf.app.ui.screens.GenresBrowseScreen
-import com.stillshelf.app.ui.screens.HomePlaceholderScreen
+import com.stillshelf.app.ui.screens.HomeScreen
 import com.stillshelf.app.ui.screens.NarratorsBrowseScreen
 import com.stillshelf.app.ui.screens.NarratorDetailScreen
-import com.stillshelf.app.ui.screens.PlayerPlaceholderScreen
+import com.stillshelf.app.ui.screens.PlayerScreen
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
-import com.stillshelf.app.ui.screens.SearchPlaceholderScreen
+import com.stillshelf.app.ui.screens.SearchScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
 import com.stillshelf.app.ui.screens.SeriesDetailScreen
 import com.stillshelf.app.ui.screens.SeriesBrowseScreen
-import com.stillshelf.app.ui.screens.SettingsPlaceholderScreen
+import com.stillshelf.app.ui.screens.SettingsScreen
 import com.stillshelf.app.ui.screens.auth.AddServerRoute
 import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
@@ -131,6 +132,7 @@ private fun MainShell() {
             currentRoute != MainTab.Search.route &&
             currentRoute != MainTab.Settings.route &&
             currentRoute != MainRoute.SETTINGS &&
+            currentRoute != MainRoute.ABOUT &&
             currentRoute != MainRoute.SERVERS &&
             currentRoute != MainRoute.LIBRARY_PICKER &&
             currentRoute?.startsWith("auth/") != true
@@ -187,7 +189,7 @@ private fun MainTabsNavHost(
         }
     ) {
         composable(MainTab.Home.route) {
-            HomePlaceholderScreen(
+            HomeScreen(
                 onNavigateToRoute = { route ->
                     navController.navigate(route) {
                         launchSingleTop = true
@@ -216,7 +218,7 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainTab.Browse.route) {
-            BrowsePlaceholderScreen(
+            BrowseScreen(
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
@@ -231,7 +233,7 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainTab.Search.route) {
-            SearchPlaceholderScreen(
+            SearchScreen(
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
@@ -255,7 +257,7 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainTab.Downloads.route) {
-            DownloadsPlaceholderScreen(
+            DownloadsScreen(
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
@@ -265,8 +267,13 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainTab.Settings.route) {
-            SettingsPlaceholderScreen(
+            SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onOpenAbout = {
+                    navController.navigate(MainRoute.ABOUT) {
+                        launchSingleTop = true
+                    }
+                },
                 onManageServers = {
                     navController.navigate(MainRoute.SERVERS) {
                         launchSingleTop = true
@@ -275,13 +282,23 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainRoute.SETTINGS) {
-            SettingsPlaceholderScreen(
+            SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onOpenAbout = {
+                    navController.navigate(MainRoute.ABOUT) {
+                        launchSingleTop = true
+                    }
+                },
                 onManageServers = {
                     navController.navigate(MainRoute.SERVERS) {
                         launchSingleTop = true
                     }
                 }
+            )
+        }
+        composable(MainRoute.ABOUT) {
+            AboutScreen(
+                onBackClick = { navController.popBackStack() }
             )
         }
         composable(
@@ -323,7 +340,7 @@ private fun MainTabsNavHost(
                 )
             }
         ) {
-            PlayerPlaceholderScreen(
+            PlayerScreen(
                 onBackClick = { navController.popBackStack() },
                 onGoToBook = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
@@ -410,7 +427,7 @@ private fun MainTabsNavHost(
             )
         }
         composable(MainRoute.CUSTOMIZE) {
-            CustomizePlaceholderScreen(
+            CustomizeScreen(
                 onDone = { navController.popBackStack() },
                 onCancel = { navController.popBackStack() },
                 onHomeClick = onHomeClick
@@ -418,7 +435,7 @@ private fun MainTabsNavHost(
         }
 
         composable(BrowseRoute.BOOKS) {
-            BrowsePlaceholderScreen(
+            BrowseScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
@@ -511,7 +528,7 @@ private fun MainTabsNavHost(
             )
         }
         composable(BrowseRoute.DOWNLOADED) {
-            DownloadsPlaceholderScreen(
+            DownloadsScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->

@@ -3,12 +3,11 @@ package com.stillshelf.app.ui.components
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.AnimatedVisibility
@@ -25,7 +24,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.stillshelf.app.ui.navigation.MainTab
 
 @Composable
@@ -42,14 +45,33 @@ fun RootScaffold(
     content: @Composable (PaddingValues) -> Unit
 ) {
     val contentBottomInset = 0.dp
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val systemInsets = ViewCompat.getRootWindowInsets(view)
+        ?.getInsets(WindowInsetsCompat.Type.systemBars())
+    val safeTopInset = with(density) { (systemInsets?.top ?: 0).toDp() }
+    val safeBottomInset = with(density) { (systemInsets?.bottom ?: 0).toDp() }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
+                .padding(top = safeTopInset)
         ) {
             content(PaddingValues(bottom = contentBottomInset))
+        }
+        if (safeBottomInset > 0.dp) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(safeBottomInset)
+                    .background(MaterialTheme.colorScheme.background)
+            )
         }
         AnimatedVisibility(
             visible = showMiniPlayer,
@@ -67,8 +89,7 @@ fun RootScaffold(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
-                    .navigationBarsPadding()
-                    .padding(bottom = 6.dp),
+                    .padding(bottom = safeBottomInset + 6.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 MiniPlayerBar(

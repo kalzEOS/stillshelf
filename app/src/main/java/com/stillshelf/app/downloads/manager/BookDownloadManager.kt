@@ -10,6 +10,8 @@ import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.storage.DownloadStorage
+import com.stillshelf.app.downloads.worker.DownloadProgressPoller
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -17,16 +19,12 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
-import org.json.JSONObject
 
 enum class DownloadStatus {
     Queued,
@@ -58,31 +56,26 @@ data class DownloadToggleResult(
 class BookDownloadManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val downloadStorage: DownloadStorage
 ) {
-    companion object {
-        private const val PREF_NAME = "stillshelf_downloads"
-        private const val PREF_KEY_ITEMS = "items"
-    }
-
     private val downloadManager =
         appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    private val prefs = appContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
-    private val mutableItems = MutableStateFlow(loadItemsFromPrefs())
+    private val mutableItems = MutableStateFlow(downloadStorage.loadItems())
+    private val progressPoller = DownloadProgressPoller(
+        scope = scope,
+        pollIntervalMs = 1000L,
+        onTick = ::refreshProgress
+    )
     val items: StateFlow<List<DownloadItem>> = mutableItems.asStateFlow()
 
     init {
         scope.launch {
             sanitizeCompletedItems()
         }
-        scope.launch {
-            while (isActive) {
-                refreshProgress()
-                delay(1000L)
-            }
-        }
+        progressPoller.start()
         syncDownloadedIds(mutableItems.value)
     }
 
@@ -368,25 +361,7 @@ class BookDownloadManager @Inject constructor(
 
     private suspend fun persistItemsLocked(items: List<DownloadItem>) {
         mutableItems.value = items
-        val payload = JSONArray().apply {
-            items.forEach { item ->
-                put(
-                    JSONObject()
-                        .put("bookId", item.bookId)
-                        .put("title", item.title)
-                        .put("authorName", item.authorName)
-                        .put("coverUrl", item.coverUrl)
-                        .put("durationSeconds", item.durationSeconds)
-                        .put("status", item.status.name)
-                        .put("progressPercent", item.progressPercent)
-                        .put("downloadId", item.downloadId)
-                        .put("localPath", item.localPath)
-                        .put("errorMessage", item.errorMessage)
-                        .put("updatedAtMs", item.updatedAtMs)
-                )
-            }
-        }.toString()
-        prefs.edit().putString(PREF_KEY_ITEMS, payload).apply()
+        downloadStorage.persistItems(items)
         syncDownloadedIds(items)
     }
 
@@ -402,38 +377,6 @@ class BookDownloadManager @Inject constructor(
                 syncDownloadedIds(sanitized)
             }
         }
-    }
-
-    private fun loadItemsFromPrefs(): List<DownloadItem> {
-        val raw = prefs.getString(PREF_KEY_ITEMS, null).orEmpty()
-        if (raw.isBlank()) return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            buildList {
-                for (index in 0 until array.length()) {
-                    val node = array.optJSONObject(index) ?: continue
-                    val bookId = node.optString("bookId").trim()
-                    if (bookId.isBlank()) continue
-                    add(
-                        DownloadItem(
-                            bookId = bookId,
-                            title = node.optString("title"),
-                            authorName = node.optString("authorName"),
-                            coverUrl = node.optString("coverUrl").ifBlank { null },
-                            durationSeconds = node.optDouble("durationSeconds").takeIf { !it.isNaN() },
-                            status = runCatching {
-                                DownloadStatus.valueOf(node.optString("status"))
-                            }.getOrDefault(DownloadStatus.Queued),
-                            progressPercent = node.optInt("progressPercent", 0).coerceIn(0, 100),
-                            downloadId = node.optLong("downloadId").takeIf { it > 0L },
-                            localPath = node.optString("localPath").ifBlank { null },
-                            errorMessage = node.optString("errorMessage").ifBlank { null },
-                            updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis())
-                        )
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
     }
 
     private fun buildDestinationFilename(book: BookSummary): String {

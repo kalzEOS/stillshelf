@@ -139,6 +139,14 @@ class PlayerViewModel @Inject constructor(
         playbackController.setPlaybackSpeed(speed)
     }
 
+    fun setSoftToneLevel(level: Float) {
+        playbackController.setSoftToneLevel(level)
+    }
+
+    fun setBoostLevel(level: Float) {
+        playbackController.setBoostLevel(level)
+    }
+
     fun startSleepTimerMinutes(minutes: Int) {
         playbackController.startSleepTimerMinutes(minutes)
     }

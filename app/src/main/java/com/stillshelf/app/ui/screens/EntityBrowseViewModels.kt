@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
@@ -11,6 +12,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -30,6 +32,7 @@ data class SeriesBrowseCard(
 data class SeriesBrowseUiState(
     val isLoading: Boolean = false,
     val series: List<SeriesBrowseCard> = emptyList(),
+    val gridMode: Boolean = true,
     val errorMessage: String? = null
 )
 
@@ -136,17 +139,33 @@ class NarratorsBrowseViewModel @Inject constructor(
 
 @HiltViewModel
 class SeriesBrowseViewModel @Inject constructor(
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SeriesBrowseUiState())
     val uiState: StateFlow<SeriesBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
+        restoreGridMode()
         refresh(forceRefresh = false)
     }
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun setGridMode(gridMode: Boolean) {
+        mutableUiState.update { it.copy(gridMode = gridMode) }
+        viewModelScope.launch {
+            sessionPreferences.setSeriesBrowseGridMode(gridMode)
+        }
+    }
+
+    private fun restoreGridMode() {
+        viewModelScope.launch {
+            val pref = sessionPreferences.state.first()
+            mutableUiState.update { it.copy(gridMode = pref.seriesBrowseGridMode) }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean) {

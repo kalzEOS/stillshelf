@@ -11,6 +11,8 @@ import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Build.VERSION.SDK_INT
@@ -70,6 +72,8 @@ data class PlaybackUiState(
     val book: BookSummary? = null,
     val isPlaying: Boolean = false,
     val playbackSpeed: Float = 1.0f,
+    val softToneLevel: Float = 0f,
+    val boostLevel: Float = 0f,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.Off,
     val sleepTimerRemainingMs: Long? = null,
     val sleepTimerTotalMs: Long? = null,
@@ -136,6 +140,11 @@ class PlaybackController @Inject constructor(
     private var rewindSeconds: Int = 15
     private var forwardSeconds: Int = 15
     private var currentPlaybackSpeed: Float = 1.0f
+    private var currentSoftToneLevel: Float = 0f
+    private var currentBoostLevel: Float = 0f
+    private var audioEffectsSessionId: Int? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var equalizer: Equalizer? = null
 
     private data class NotificationSignature(
         val bookId: String,
@@ -360,6 +369,32 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    fun setSoftToneLevel(level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        currentSoftToneLevel = clamped
+        mediaPlayer?.let { player ->
+            applyAudioEffects(player)
+            updateProgress(player)
+        }
+        updateUiState { it.copy(softToneLevel = clamped) }
+        scope.launch(Dispatchers.IO) {
+            sessionPreferences.setSoftToneLevel(clamped)
+        }
+    }
+
+    fun setBoostLevel(level: Float) {
+        val clamped = level.coerceIn(0f, 1f)
+        currentBoostLevel = clamped
+        mediaPlayer?.let { player ->
+            applyAudioEffects(player)
+            updateProgress(player)
+        }
+        updateUiState { it.copy(boostLevel = clamped) }
+        scope.launch(Dispatchers.IO) {
+            sessionPreferences.setBoostLevel(clamped)
+        }
+    }
+
     fun startSleepTimerMinutes(minutes: Int) {
         if (uiState.value.book == null) return
         val durationMs = (minutes.coerceAtLeast(1) * 60_000L).coerceAtMost(24L * 60L * 60L * 1000L)
@@ -501,6 +536,8 @@ class PlaybackController @Inject constructor(
                 book = book,
                 isPlaying = false,
                 playbackSpeed = currentPlaybackSpeed,
+                softToneLevel = currentSoftToneLevel,
+                boostLevel = currentBoostLevel,
                 sleepTimerExpiredPromptVisible = false,
                 positionMs = 0L,
                 durationMs = 0L,
@@ -511,6 +548,7 @@ class PlaybackController @Inject constructor(
 
         player.setOnPreparedListener { prepared ->
             applyPlaybackSpeed(player = prepared, speed = currentPlaybackSpeed)
+            applyAudioEffects(prepared)
             val duration = safeDuration(prepared)
             val clampedResume = if (duration > 0L) {
                 resumeMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
@@ -610,6 +648,7 @@ class PlaybackController @Inject constructor(
         syncProgress(force = true, isFinished = false)
         progressJob?.cancel()
         progressJob = null
+        releaseAudioEffects()
         mediaPlayer?.runCatching { release() }
         mediaPlayer = null
         updatePlaybackSurface()
@@ -679,7 +718,25 @@ class PlaybackController @Inject constructor(
             sessionPreferences.state.collect { pref ->
                 rewindSeconds = pref.skipBackwardSeconds.coerceIn(10, 60)
                 forwardSeconds = pref.skipForwardSeconds.coerceIn(10, 60)
-                updatePlaybackSurface()
+                val desiredSoftTone = pref.softToneLevel.coerceIn(0f, 1f)
+                val desiredBoost = pref.boostLevel.coerceIn(0f, 1f)
+                val toneChanged = abs(currentSoftToneLevel - desiredSoftTone) > 0.001f
+                val boostChanged = abs(currentBoostLevel - desiredBoost) > 0.001f
+                currentSoftToneLevel = desiredSoftTone
+                currentBoostLevel = desiredBoost
+
+                if (toneChanged || boostChanged) {
+                    mediaPlayer?.let { player ->
+                        applyAudioEffects(player)
+                        updateProgress(player)
+                    }
+                }
+                updateUiState {
+                    it.copy(
+                        softToneLevel = desiredSoftTone,
+                        boostLevel = desiredBoost
+                    )
+                }
             }
         }
     }
@@ -1043,6 +1100,64 @@ class PlaybackController @Inject constructor(
                 .setSpeed(speed)
                 .setPitch(1.0f)
         }
+    }
+
+    private fun applyAudioEffects(player: MediaPlayer) {
+        ensureAudioEffects(player)
+        applyBoostEffect()
+        applySoftToneEffect()
+    }
+
+    private fun ensureAudioEffects(player: MediaPlayer) {
+        val sessionId = runCatching { player.audioSessionId }.getOrDefault(0)
+        if (sessionId <= 0) return
+        if (audioEffectsSessionId == sessionId) return
+
+        releaseAudioEffects()
+        audioEffectsSessionId = sessionId
+
+        loudnessEnhancer = runCatching {
+            LoudnessEnhancer(sessionId).apply { enabled = true }
+        }.getOrNull()
+        equalizer = runCatching {
+            Equalizer(0, sessionId).apply { enabled = true }
+        }.getOrNull()
+    }
+
+    private fun applyBoostEffect() {
+        val enhancer = loudnessEnhancer ?: return
+        val targetGainMb = (currentBoostLevel * 1800f).toInt().coerceIn(0, 2000)
+        runCatching {
+            enhancer.setTargetGain(targetGainMb)
+            enhancer.enabled = targetGainMb > 0
+        }
+    }
+
+    private fun applySoftToneEffect() {
+        val toneEq = equalizer ?: return
+        runCatching {
+            val bandCount = toneEq.numberOfBands.toInt()
+            val levelRange = toneEq.bandLevelRange
+            val minLevel = levelRange.getOrNull(0)?.toInt() ?: -1500
+            val maxLevel = levelRange.getOrNull(1)?.toInt() ?: 1500
+
+            for (band in 0 until bandCount) {
+                val ratio = if (bandCount <= 1) 0f else band.toFloat() / (bandCount - 1).toFloat()
+                val attenuationWeight = ((ratio - 0.35f) / 0.65f).coerceIn(0f, 1f)
+                val attenuationMb = (currentSoftToneLevel * attenuationWeight * 900f).toInt()
+                val targetLevel = (0 - attenuationMb).coerceIn(minLevel, maxLevel)
+                toneEq.setBandLevel(band.toShort(), targetLevel.toShort())
+            }
+            toneEq.enabled = currentSoftToneLevel > 0f
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        runCatching { loudnessEnhancer?.release() }
+        runCatching { equalizer?.release() }
+        loudnessEnhancer = null
+        equalizer = null
+        audioEffectsSessionId = null
     }
 
     private fun applyPreferredOutputDevice(player: MediaPlayer) {

@@ -391,6 +391,7 @@ private fun MainTabsNavHost(
         composable(MainRoute.CUSTOMIZE) {
             CustomizePlaceholderScreen(
                 onDone = { navController.popBackStack() },
+                onCancel = { navController.popBackStack() },
                 onHomeClick = onHomeClick
             )
         }

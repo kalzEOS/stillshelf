@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -11,6 +12,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
@@ -63,7 +65,7 @@ fun StillShelfTheme(
         AppThemeMode.Light -> false
         AppThemeMode.Dark -> true
     }
-    val colorScheme = when {
+    val baseColorScheme = when {
         materialDesignEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
@@ -71,6 +73,11 @@ fun StillShelfTheme(
         materialDesignEnabled -> if (darkTheme) darkColorScheme() else lightColorScheme()
         darkTheme -> DarkColors
         else -> LightColors
+    }
+    val colorScheme = if (materialDesignEnabled) {
+        baseColorScheme.withPronouncedSectionSurfaces(darkTheme = darkTheme)
+    } else {
+        baseColorScheme
     }
     if (!view.isInEditMode) {
         SideEffect {
@@ -85,5 +92,25 @@ fun StillShelfTheme(
         colorScheme = colorScheme,
         typography = if (materialDesignEnabled) Typography() else StillShelfTypography,
         content = content
+    )
+}
+
+private fun ColorScheme.withPronouncedSectionSurfaces(darkTheme: Boolean): ColorScheme {
+    val sectionLift = if (darkTheme) 0.035f else 0.025f
+    val cardLift = if (darkTheme) 0.02f else 0.015f
+    val outlineLift = if (darkTheme) 0.1f else 0.06f
+
+    // Keep Material mode panels close to the base dark surface, with gentle separation.
+    val elevatedSurface = lerp(surface, surfaceVariant, cardLift)
+    val groupedSurface = lerp(surfaceVariant, surface, if (darkTheme) 0.35f else 0.2f)
+
+    return copy(
+        surface = elevatedSurface,
+        surfaceVariant = groupedSurface,
+        outline = lerp(outline, onSurface, outlineLift),
+        surfaceContainerLow = lerp(surfaceContainerLow, surface, if (darkTheme) 0.3f else 0.18f),
+        surfaceContainer = lerp(surfaceContainer, surface, if (darkTheme) 0.35f else 0.22f),
+        surfaceContainerHigh = lerp(surfaceContainerHigh, surface, if (darkTheme) 0.4f else 0.26f),
+        surfaceContainerHighest = lerp(surfaceContainerHighest, surface, if (darkTheme) 0.45f else 0.3f)
     )
 }

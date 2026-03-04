@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -31,6 +32,7 @@ class SessionPreferences @Inject constructor(
     private val booksCollapseSeriesKey = booleanPreferencesKey("books_collapse_series")
     private val authorLayoutModeKey = stringPreferencesKey("author_layout_mode")
     private val authorCollapseSeriesKey = booleanPreferencesKey("author_collapse_series")
+    private val seriesBrowseGridModeKey = booleanPreferencesKey("series_browse_grid_mode")
     private val seriesDetailListModeKey = booleanPreferencesKey("series_detail_list_mode")
     private val collectionDetailListModeKey = booleanPreferencesKey("collection_detail_list_mode")
     private val playlistDetailListModeKey = booleanPreferencesKey("playlist_detail_list_mode")
@@ -40,6 +42,8 @@ class SessionPreferences @Inject constructor(
     private val materialDesignEnabledKey = booleanPreferencesKey("material_design_enabled")
     private val skipForwardSecondsKey = intPreferencesKey("skip_forward_seconds")
     private val skipBackwardSecondsKey = intPreferencesKey("skip_backward_seconds")
+    private val softToneLevelKey = floatPreferencesKey("soft_tone_level")
+    private val boostLevelKey = floatPreferencesKey("boost_level")
     private val lockScreenControlModeKey = stringPreferencesKey("lock_screen_control_mode")
     private val lastBookDetailTabKey = stringPreferencesKey("last_book_detail_tab")
     private val downloadedBookIdsKey = stringPreferencesKey("downloaded_book_ids")
@@ -63,6 +67,7 @@ class SessionPreferences @Inject constructor(
             booksCollapseSeries = prefs[booksCollapseSeriesKey] ?: true,
             authorLayoutMode = prefs[authorLayoutModeKey],
             authorCollapseSeries = prefs[authorCollapseSeriesKey] ?: true,
+            seriesBrowseGridMode = prefs[seriesBrowseGridModeKey] ?: true,
             seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
             collectionDetailListMode = prefs[collectionDetailListModeKey] ?: true,
             playlistDetailListMode = prefs[playlistDetailListModeKey] ?: true,
@@ -72,6 +77,8 @@ class SessionPreferences @Inject constructor(
             materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false,
             skipForwardSeconds = (prefs[skipForwardSecondsKey] ?: 15).coerceIn(5, 600),
             skipBackwardSeconds = (prefs[skipBackwardSecondsKey] ?: 15).coerceIn(5, 600),
+            softToneLevel = (prefs[softToneLevelKey] ?: 0f).coerceIn(0f, 1f),
+            boostLevel = (prefs[boostLevelKey] ?: 0f).coerceIn(0f, 1f),
             lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
             lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
             downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey])
@@ -221,6 +228,12 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setSeriesBrowseGridMode(gridMode: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[seriesBrowseGridModeKey] = gridMode
+        }
+    }
+
     suspend fun setSeriesDetailListMode(listMode: Boolean) {
         dataStore.edit { prefs ->
             prefs[seriesDetailListModeKey] = listMode
@@ -276,6 +289,18 @@ class SessionPreferences @Inject constructor(
     suspend fun setSkipBackwardSeconds(seconds: Int) {
         dataStore.edit { prefs ->
             prefs[skipBackwardSecondsKey] = seconds.coerceIn(5, 600)
+        }
+    }
+
+    suspend fun setSoftToneLevel(level: Float) {
+        dataStore.edit { prefs ->
+            prefs[softToneLevelKey] = level.coerceIn(0f, 1f)
+        }
+    }
+
+    suspend fun setBoostLevel(level: Float) {
+        dataStore.edit { prefs ->
+            prefs[boostLevelKey] = level.coerceIn(0f, 1f)
         }
     }
 
@@ -386,6 +411,7 @@ data class SessionPreferenceState(
     val booksCollapseSeries: Boolean = true,
     val authorLayoutMode: String? = null,
     val authorCollapseSeries: Boolean = true,
+    val seriesBrowseGridMode: Boolean = true,
     val seriesDetailListMode: Boolean = true,
     val collectionDetailListMode: Boolean = true,
     val playlistDetailListMode: Boolean = true,
@@ -395,6 +421,8 @@ data class SessionPreferenceState(
     val materialDesignEnabled: Boolean = false,
     val skipForwardSeconds: Int = 15,
     val skipBackwardSeconds: Int = 15,
+    val softToneLevel: Float = 0f,
+    val boostLevel: Float = 0f,
     val lockScreenControlMode: String = "skip",
     val lastBookDetailTab: String = "About",
     val downloadedBookIds: Set<String> = emptySet()

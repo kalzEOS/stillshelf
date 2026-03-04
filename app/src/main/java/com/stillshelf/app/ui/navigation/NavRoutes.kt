@@ -26,6 +26,7 @@ object MainRoute {
     const val SHELL = "main/shell"
     const val CUSTOMIZE = "main/customize"
     const val SETTINGS = "main/settings"
+    const val ABOUT = "main/settings/about"
     const val PLAYER = "main/player"
     const val PLAYER_BOOK_ID_ARG = "bookId"
     const val PLAYER_START_SECONDS_ARG = "startSeconds"

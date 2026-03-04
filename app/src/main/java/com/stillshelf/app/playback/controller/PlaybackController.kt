@@ -34,7 +34,8 @@ import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
-import com.stillshelf.app.playback.notification.PlaybackForegroundService
+import com.stillshelf.app.playback.service.PlaybackServiceController
+import com.stillshelf.app.playback.sync.PlaybackSyncGate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -107,8 +108,7 @@ class PlaybackController @Inject constructor(
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
     private var currentBookId: String? = null
-    private var lastSyncedPositionMs: Long = -1L
-    private var syncInFlight = false
+    private val playbackSyncGate = PlaybackSyncGate()
     private var cachedContinueListeningItem: ContinueListeningItem? = null
     private var playRequestJob: Job? = null
     private var playRequestToken: Long = 0L
@@ -528,7 +528,7 @@ class PlaybackController @Inject constructor(
         val player = MediaPlayer()
         mediaPlayer = player
         currentBookId = bookId
-        lastSyncedPositionMs = -1L
+        playbackSyncGate.reset()
         applyPreferredOutputDevice(player)
         updateUiState {
             it.copy(
@@ -678,21 +678,23 @@ class PlaybackController @Inject constructor(
         val bookId = currentBookId ?: return
         val state = uiState.value
         val currentMs = state.positionMs.coerceAtLeast(0L)
-        if (!force && lastSyncedPositionMs >= 0L && abs(currentMs - lastSyncedPositionMs) < 15_000L) {
-            return
-        }
-        if (syncInFlight) return
-
-        syncInFlight = true
+        if (!playbackSyncGate.shouldSync(currentPositionMs = currentMs, force = force)) return
+        playbackSyncGate.markSyncStarted()
         scope.launch(Dispatchers.IO) {
-            sessionRepository.syncPlaybackProgress(
-                bookId = bookId,
-                currentTimeSeconds = currentMs / 1000.0,
-                durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0),
-                isFinished = isFinished
-            )
-            lastSyncedPositionMs = currentMs
-            syncInFlight = false
+            val syncResult = runCatching {
+                sessionRepository.syncPlaybackProgress(
+                    bookId = bookId,
+                    currentTimeSeconds = currentMs / 1000.0,
+                    durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0),
+                    isFinished = isFinished
+                )
+            }
+            val result = syncResult.getOrNull()
+            if (syncResult.isSuccess && result is AppResult.Success) {
+                playbackSyncGate.markSyncFinished(currentPositionMs = currentMs)
+            } else {
+                playbackSyncGate.markSyncFailed()
+            }
         }
     }
 
@@ -1305,7 +1307,7 @@ class PlaybackController @Inject constructor(
             artworkBookId = null
             artworkBitmap = null
             lastNotificationSignature = null
-            PlaybackForegroundService.stop(appContext)
+            PlaybackServiceController.stop(appContext)
             NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
             return
         }
@@ -1411,7 +1413,7 @@ class PlaybackController @Inject constructor(
             .build()
 
         runCatching {
-            PlaybackForegroundService.startOrUpdate(appContext, notification)
+            PlaybackServiceController.startOrUpdate(appContext, notification)
         }.onFailure {
             // Avoid playback crashes if OEM notification policy rejects a publish attempt.
         }.onSuccess {

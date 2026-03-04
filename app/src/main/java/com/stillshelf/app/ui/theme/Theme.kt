@@ -13,6 +13,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
@@ -70,7 +71,7 @@ fun StillShelfTheme(
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
 
-        materialDesignEnabled -> if (darkTheme) darkColorScheme() else lightColorScheme()
+        materialDesignEnabled -> if (darkTheme) DarkColors else LightColors
         darkTheme -> DarkColors
         else -> LightColors
     }
@@ -83,9 +84,18 @@ fun StillShelfTheme(
         SideEffect {
             val activity = view.context as? Activity ?: return@SideEffect
             val insetsController = WindowCompat.getInsetsController(activity.window, view)
-            insetsController.isAppearanceLightStatusBars = !darkTheme
-            insetsController.isAppearanceLightNavigationBars = !darkTheme
-            activity.window.navigationBarColor = colorScheme.surface.toArgb()
+            val statusBarColor = colorScheme.surface
+            val navigationBarColor = if (materialDesignEnabled) {
+                colorScheme.surfaceContainer
+            } else {
+                colorScheme.surface
+            }
+            insetsController.isAppearanceLightStatusBars = statusBarColor.luminance() > 0.5f
+            insetsController.isAppearanceLightNavigationBars = navigationBarColor.luminance() > 0.5f
+            @Suppress("DEPRECATION")
+            activity.window.statusBarColor = statusBarColor.toArgb()
+            @Suppress("DEPRECATION")
+            activity.window.navigationBarColor = navigationBarColor.toArgb()
         }
     }
     MaterialTheme(
@@ -105,6 +115,7 @@ private fun ColorScheme.withPronouncedSectionSurfaces(darkTheme: Boolean): Color
     val groupedSurface = lerp(surfaceVariant, surface, if (darkTheme) 0.35f else 0.2f)
 
     return copy(
+        background = lerp(background, surface, sectionLift),
         surface = elevatedSurface,
         surfaceVariant = groupedSurface,
         outline = lerp(outline, onSurface, outlineLift),

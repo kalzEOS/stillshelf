@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.json.JSONObject
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -47,6 +48,7 @@ class SessionPreferences @Inject constructor(
     private val lockScreenControlModeKey = stringPreferencesKey("lock_screen_control_mode")
     private val lastBookDetailTabKey = stringPreferencesKey("last_book_detail_tab")
     private val downloadedBookIdsKey = stringPreferencesKey("downloaded_book_ids")
+    private val serverAvatarUrisKey = stringPreferencesKey("server_avatar_uris")
     private val cachedHomeFeedLibraryIdKey = stringPreferencesKey("cached_home_feed_library_id")
     private val cachedHomeFeedPayloadKey = stringPreferencesKey("cached_home_feed_payload")
     private val cachedHomeFeedSavedAtKey = longPreferencesKey("cached_home_feed_saved_at")
@@ -81,7 +83,8 @@ class SessionPreferences @Inject constructor(
             boostLevel = (prefs[boostLevelKey] ?: 0f).coerceIn(0f, 1f),
             lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
             lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
-            downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey])
+            downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey]),
+            serverAvatarUris = parseServerAvatarUris(prefs[serverAvatarUrisKey])
         )
     }
 
@@ -326,6 +329,24 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setServerAvatarUri(serverId: String, avatarUri: String?) {
+        val normalizedServerId = serverId.trim()
+        if (normalizedServerId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseServerAvatarUris(prefs[serverAvatarUrisKey]).toMutableMap()
+            if (avatarUri.isNullOrBlank()) {
+                current.remove(normalizedServerId)
+            } else {
+                current[normalizedServerId] = avatarUri.trim()
+            }
+            if (current.isEmpty()) {
+                prefs.remove(serverAvatarUrisKey)
+            } else {
+                prefs[serverAvatarUrisKey] = encodeServerAvatarUris(current)
+            }
+        }
+    }
+
     suspend fun toggleDownloadedBookId(bookId: String): Boolean {
         val trimmedId = bookId.trim()
         if (trimmedId.isEmpty()) return false
@@ -394,6 +415,36 @@ class SessionPreferences @Inject constructor(
             .map { it.trim() }
             .filter { it.isNotBlank() }
     }
+
+    private fun parseServerAvatarUris(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val node = JSONObject(raw)
+            buildMap {
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next().trim()
+                    if (key.isBlank()) continue
+                    val value = node.optString(key).trim()
+                    if (value.isNotBlank()) {
+                        put(key, value)
+                    }
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeServerAvatarUris(values: Map<String, String>): String {
+        val node = JSONObject()
+        values.forEach { (key, value) ->
+            val normalizedKey = key.trim()
+            val normalizedValue = value.trim()
+            if (normalizedKey.isNotBlank() && normalizedValue.isNotBlank()) {
+                node.put(normalizedKey, normalizedValue)
+            }
+        }
+        return node.toString()
+    }
 }
 
 data class SessionPreferenceState(
@@ -425,7 +476,8 @@ data class SessionPreferenceState(
     val boostLevel: Float = 0f,
     val lockScreenControlMode: String = "skip",
     val lastBookDetailTab: String = "About",
-    val downloadedBookIds: Set<String> = emptySet()
+    val downloadedBookIds: Set<String> = emptySet(),
+    val serverAvatarUris: Map<String, String> = emptyMap()
 )
 
 data class CachedHomeFeedPayload(

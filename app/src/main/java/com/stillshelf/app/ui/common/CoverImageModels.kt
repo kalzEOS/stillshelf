@@ -13,6 +13,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -26,8 +28,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 val StandardGridCoverWidth: Dp = 150.dp
 val StandardGridCoverHeight: Dp = 150.dp
-val WideCoverBackgroundBlur: Dp = 36.dp
+val WideCoverBackgroundBlur: Dp = 30.dp
 private const val TypicalCoverAspectRatio = 0.66f
+private const val CoverBlurZoomScale = 1.20f
 
 @Composable
 fun rememberCoverImageModel(coverUrl: String?): Any? {
@@ -87,8 +90,13 @@ fun FramedCoverImage(
     BoxWithConstraints(
         modifier = modifier
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f))
     ) {
+        val blurLightenOverlayAlpha = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
+            0.25f
+        } else {
+            0.19f
+        }
         val painter = rememberAsyncImagePainter(model = model)
         val isSuccessState = painter.state is AsyncImagePainter.State.Success
         val preferredInset = (maxWidth * 0.20f).coerceIn(2.dp, 34.dp)
@@ -101,8 +109,18 @@ fun FramedCoverImage(
                 contentDescription = contentDescription,
                 modifier = Modifier
                     .fillMaxSize()
-                    .blur(backgroundBlur),
+                    .blur(backgroundBlur)
+                    .graphicsLayer(
+                        alpha = 0.84f,
+                        scaleX = CoverBlurZoomScale,
+                        scaleY = CoverBlurZoomScale
+                    ),
                 contentScale = ContentScale.Crop
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = blurLightenOverlayAlpha))
             )
         }
         Image(

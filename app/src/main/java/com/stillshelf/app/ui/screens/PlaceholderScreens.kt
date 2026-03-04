@@ -197,6 +197,7 @@ import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.WideCoverBackgroundBlur
 import com.stillshelf.app.ui.common.rememberCoverImageModel
+import com.stillshelf.app.ui.navigation.AuthRoute
 import com.stillshelf.app.ui.navigation.BrowseRoute
 import com.stillshelf.app.ui.navigation.MainRoute
 import com.stillshelf.app.ui.navigation.MainTab
@@ -376,6 +377,8 @@ fun HomePlaceholderScreen(
         menuViewModel.events.collect { event ->
             when (event) {
                 HomeMenuEvent.NavigateToLibraryPicker -> onNavigateToRoute(MainRoute.LIBRARY_PICKER)
+                is HomeMenuEvent.NavigateToLogin ->
+                    onNavigateToRoute(AuthRoute.loginRoute(event.serverName, event.baseUrl))
             }
         }
     }

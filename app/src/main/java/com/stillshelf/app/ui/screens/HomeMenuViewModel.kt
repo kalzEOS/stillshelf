@@ -29,6 +29,10 @@ data class HomeMenuUiState(
 
 sealed interface HomeMenuEvent {
     data object NavigateToLibraryPicker : HomeMenuEvent
+    data class NavigateToLogin(
+        val serverName: String,
+        val baseUrl: String
+    ) : HomeMenuEvent
 }
 
 @HiltViewModel
@@ -63,6 +67,7 @@ class HomeMenuViewModel @Inject constructor(
 
     fun onServerSelected(serverId: String) {
         if (uiState.value.isSwitchingServer) return
+        val selectedServer = uiState.value.servers.firstOrNull { it.id == serverId }
         if (serverId == uiState.value.activeServerId) {
             viewModelScope.launch {
                 mutableEvents.emit(HomeMenuEvent.NavigateToLibraryPicker)
@@ -79,11 +84,27 @@ class HomeMenuViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    mutableUiState.update {
-                        it.copy(
-                            isSwitchingServer = false,
-                            errorMessage = result.message
+                    val requiresReauth = result.message.contains("no saved session", ignoreCase = true)
+                    if (requiresReauth && selectedServer != null) {
+                        mutableUiState.update {
+                            it.copy(
+                                isSwitchingServer = false,
+                                errorMessage = null
+                            )
+                        }
+                        mutableEvents.emit(
+                            HomeMenuEvent.NavigateToLogin(
+                                serverName = selectedServer.name,
+                                baseUrl = selectedServer.baseUrl
+                            )
                         )
+                    } else {
+                        mutableUiState.update {
+                            it.copy(
+                                isSwitchingServer = false,
+                                errorMessage = result.message
+                            )
+                        }
                     }
                 }
             }

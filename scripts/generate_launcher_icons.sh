@@ -29,36 +29,54 @@ mkdir -p \
   "$RES_DIR/mipmap-xxxhdpi" \
   "$RES_DIR/mipmap-anydpi-v26" \
   "$RES_DIR/drawable" \
+  "$RES_DIR/drawable-nodpi" \
   "$RES_DIR/values"
 
 # Keep content safely away from adaptive icon mask cut edges.
 # 432px canvas (Android adaptive foreground recommendation), with centered 344px artwork.
 TMP_FOREGROUND="$(mktemp --suffix=.png)"
 TMP_LEGACY="$(mktemp --suffix=.png)"
-trap 'rm -f "$TMP_FOREGROUND" "$TMP_LEGACY"' EXIT
+TMP_LEGACY_ROUND="$(mktemp --suffix=.png)"
+trap 'rm -f "$TMP_FOREGROUND" "$TMP_LEGACY" "$TMP_LEGACY_ROUND"' EXIT
 
 magick "$SRC" -resize 344x344 -background none -gravity center -extent 432x432 "$TMP_FOREGROUND"
 # Slightly larger for legacy launcher icons so they do not look too small.
 magick "$SRC" -resize 900x900 -background none -gravity center -extent 1024x1024 "$TMP_LEGACY"
+magick "$TMP_LEGACY" \
+  \( -size 1024x1024 xc:none -fill white -draw "circle 512,512 512,0" \) \
+  -compose copyopacity \
+  -composite \
+  "$TMP_LEGACY_ROUND"
 
 magick "$TMP_LEGACY" -resize 48x48 "$RES_DIR/mipmap-mdpi/ic_launcher.png"
-magick "$TMP_LEGACY" -resize 48x48 "$RES_DIR/mipmap-mdpi/ic_launcher_round.png"
+magick "$TMP_LEGACY_ROUND" -resize 48x48 "$RES_DIR/mipmap-mdpi/ic_launcher_round.png"
 magick "$TMP_LEGACY" -resize 72x72 "$RES_DIR/mipmap-hdpi/ic_launcher.png"
-magick "$TMP_LEGACY" -resize 72x72 "$RES_DIR/mipmap-hdpi/ic_launcher_round.png"
+magick "$TMP_LEGACY_ROUND" -resize 72x72 "$RES_DIR/mipmap-hdpi/ic_launcher_round.png"
 magick "$TMP_LEGACY" -resize 96x96 "$RES_DIR/mipmap-xhdpi/ic_launcher.png"
-magick "$TMP_LEGACY" -resize 96x96 "$RES_DIR/mipmap-xhdpi/ic_launcher_round.png"
+magick "$TMP_LEGACY_ROUND" -resize 96x96 "$RES_DIR/mipmap-xhdpi/ic_launcher_round.png"
 magick "$TMP_LEGACY" -resize 144x144 "$RES_DIR/mipmap-xxhdpi/ic_launcher.png"
-magick "$TMP_LEGACY" -resize 144x144 "$RES_DIR/mipmap-xxhdpi/ic_launcher_round.png"
+magick "$TMP_LEGACY_ROUND" -resize 144x144 "$RES_DIR/mipmap-xxhdpi/ic_launcher_round.png"
 magick "$TMP_LEGACY" -resize 192x192 "$RES_DIR/mipmap-xxxhdpi/ic_launcher.png"
-magick "$TMP_LEGACY" -resize 192x192 "$RES_DIR/mipmap-xxxhdpi/ic_launcher_round.png"
+magick "$TMP_LEGACY_ROUND" -resize 192x192 "$RES_DIR/mipmap-xxxhdpi/ic_launcher_round.png"
 
-cp "$TMP_FOREGROUND" "$RES_DIR/drawable/ic_launcher_foreground.png"
+cp "$TMP_FOREGROUND" "$RES_DIR/drawable-nodpi/ic_launcher_foreground.png"
+
+cat > "$RES_DIR/drawable/ic_launcher_monochrome.xml" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:inset="0dp">
+    <bitmap
+        android:gravity="center"
+        android:src="@drawable/ic_launcher_foreground" />
+</inset>
+XML
 
 cat > "$RES_DIR/mipmap-anydpi-v26/ic_launcher.xml" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>
 XML
 
@@ -67,6 +85,7 @@ cat > "$RES_DIR/mipmap-anydpi-v26/ic_launcher_round.xml" <<'XML'
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>
 XML
 

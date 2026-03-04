@@ -32,6 +32,7 @@ object MainRoute {
     const val PLAYER_PATTERN =
         "$PLAYER?$PLAYER_BOOK_ID_ARG={$PLAYER_BOOK_ID_ARG}&$PLAYER_START_SECONDS_ARG={$PLAYER_START_SECONDS_ARG}"
     const val SERVERS = "main/servers"
+    const val LIBRARY_PICKER = "main/library_picker"
 
     fun player(bookId: String? = null, startSeconds: Double? = null): String {
         if (bookId.isNullOrBlank()) return PLAYER

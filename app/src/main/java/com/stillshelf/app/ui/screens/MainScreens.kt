@@ -144,6 +144,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -5825,11 +5826,12 @@ fun PlayerScreen(
     val isBookDownloaded = bookId != null && downloadedBookIds.contains(bookId)
     val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
-    val downloadToolLabel = if (isBookDownloaded || hasActivePlayerDownload) "Remove" else "Download"
-    val downloadToolValue = if (hasActivePlayerDownload) {
+    val downloadToolText = if (hasActivePlayerDownload) {
         "${activeDownloadProgressPercent}%"
+    } else if (isBookDownloaded) {
+        "Remove"
     } else {
-        null
+        "Download"
     }
     val durationSeconds = when {
         book?.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
@@ -5913,6 +5915,7 @@ fun PlayerScreen(
         playerDragOffsetPx = (playerDragOffsetPx + delta).coerceAtLeast(0f)
     }
     var bottomMenuExpanded by remember { mutableStateOf(false) }
+    var bottomToolsStyle by rememberSaveable { mutableStateOf(PlayerBottomToolsStyle.SlimStrip) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     var bookmarkFeedbackActive by remember { mutableStateOf(false) }
     val bookmarkIconScale by animateFloatAsState(
@@ -5932,12 +5935,96 @@ fun PlayerScreen(
     val speedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showSpeedSheet by rememberSaveable { mutableStateOf(false) }
     val speedLabel = formatPlaybackSpeedShort(playbackUiState.playbackSpeed)
-    val timerRemainingMs = playbackUiState.sleepTimerRemainingMs ?: 0L
-    val timerTotalMs = playbackUiState.sleepTimerTotalMs ?: timerRemainingMs
-    val timerIsActive = playbackUiState.sleepTimerMode != SleepTimerMode.Off && timerRemainingMs > 0L
-    val timerLabel = if (timerIsActive) formatTimerChipLabel(timerRemainingMs) else null
+    val speedToolValue = "Speed $speedLabel"
+    val timerMode = playbackUiState.sleepTimerMode
+    val timerRemainingMs = playbackUiState.sleepTimerRemainingMs?.coerceAtLeast(0L) ?: 0L
+    val timerTotalMs = (playbackUiState.sleepTimerTotalMs ?: timerRemainingMs)
+        .coerceAtLeast(if (timerMode != SleepTimerMode.Off) 1_000L else 0L)
+    val timerIsActive = timerMode != SleepTimerMode.Off
+    val timerLabel = if (timerIsActive) {
+        if (timerRemainingMs > 0L) formatTimerChipLabel(timerRemainingMs) else "On"
+    } else {
+        null
+    }
+    val timerToolValue = if (timerLabel != null) "Timer $timerLabel" else "Timer"
     val selectedOutput = playbackUiState.outputDevices.firstOrNull { it.id == playbackUiState.selectedOutputDeviceId }
-    val outputLabel = selectedOutput?.typeLabel ?: "Output"
+    val outputLabel = selectedOutput?.let { device ->
+        if (device.typeLabel.equals("Phone speaker", ignoreCase = true)) {
+            "Phone"
+        } else {
+            device.typeLabel
+        }
+    } ?: "Audio"
+    val outputIcon = playerOutputToolIcon(selectedOutput?.typeLabel)
+    val speedToolHighlighted = kotlin.math.abs(playbackUiState.playbackSpeed - 1.0f) >= 0.01f
+    val bottomToolsBaseColor = if (immersiveEnabled) {
+        // Keep immersive controls consistently dark/translucent across light and dark app themes.
+        lerp(MaterialTheme.colorScheme.surface, Color.Black, 0.7f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val bottomToolsPrimaryColor = if (immersiveEnabled) {
+        Color.White
+    } else if (bottomToolsBaseColor.luminance() > 0.52f) {
+        Color(0xFF1C1C1C)
+    } else {
+        Color(0xFFF5F5F5)
+    }
+    val bottomToolsSecondaryColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.72f)
+    } else if (bottomToolsBaseColor.luminance() > 0.52f) {
+        Color(0xFF666666)
+    } else {
+        Color(0xFFCBCBCB)
+    }
+    val bottomToolsBorderColor = if (bottomToolsBaseColor.luminance() > 0.52f) {
+        Color.Black.copy(alpha = 0.12f)
+    } else {
+        Color.White.copy(alpha = 0.2f)
+    }
+    val useFloatingChipsTools = bottomToolsStyle == PlayerBottomToolsStyle.FloatingChips
+    val useSlimStripTools = bottomToolsStyle == PlayerBottomToolsStyle.SlimStrip
+    val toolsOuterContainerColor = when {
+        useFloatingChipsTools -> Color.Transparent
+        useSlimStripTools -> bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.28f)
+        else -> Color.Transparent
+    }
+    val toolsOuterBorderColor = when {
+        useFloatingChipsTools -> Color.Transparent
+        useSlimStripTools -> bottomToolsBorderColor.copy(alpha = 0.4f)
+        else -> Color.Transparent
+    }
+    val toolsItemContainerColor = when {
+        useFloatingChipsTools -> bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.14f)
+        useSlimStripTools -> Color.Transparent
+        else -> Color.Transparent
+    }
+    val toolsItemBorderColor = when {
+        useFloatingChipsTools -> bottomToolsBorderColor.copy(alpha = if (immersiveEnabled) 0.4f else 0.2f)
+        useSlimStripTools -> Color.Transparent
+        else -> Color.Transparent
+    }
+    val toolsRowHorizontalPadding = when {
+        useFloatingChipsTools -> 6.dp
+        useSlimStripTools -> 8.dp
+        else -> 0.dp
+    }
+    val toolsRowVerticalPadding = when {
+        useFloatingChipsTools -> 5.dp
+        useSlimStripTools -> 6.dp
+        else -> 0.dp
+    }
+    val toolsRowSpacing = when {
+        useFloatingChipsTools -> 4.dp
+        useSlimStripTools -> 2.dp
+        else -> 4.dp
+    }
+    val toolsShowIconBubble = useFloatingChipsTools
+    val toolsItemHeight = when {
+        useFloatingChipsTools -> 76.dp
+        useSlimStripTools -> 74.dp
+        else -> 70.dp
+    }
     val mainPlayButtonContainer = if (immersiveEnabled) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
     } else {
@@ -6320,64 +6407,175 @@ fun PlayerScreen(
         Column(
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = bottomToolsTopPadding, bottom = bottomToolsBottomPadding),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.SpaceEvenly
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = toolsOuterContainerColor),
+                border = BorderStroke(1.dp, toolsOuterBorderColor)
             ) {
-                PlayerBottomToolItem(
-                    label = "Speed",
-                    valueText = speedLabel,
-                    primaryColor = primaryTextColor,
-                    secondaryColor = secondaryTextColor,
-                    onClick = {
-                        showSpeedSheet = true
-                    }
-                )
-                PlayerBottomToolItem(
-                    label = "Timer",
-                    imageVector = if (timerLabel == null) Icons.Outlined.Timer else null,
-                    valueText = timerLabel,
-                    primaryColor = primaryTextColor,
-                    secondaryColor = secondaryTextColor,
-                    onClick = {
-                        timerSheetSessionKey += 1
-                        showTimerSheet = true
-                    }
-                )
-                PlayerBottomToolItem(
-                    label = "Output",
-                    imageVector = Icons.Outlined.SettingsVoice,
-                    valueText = outputLabel,
-                    primaryColor = primaryTextColor,
-                    secondaryColor = secondaryTextColor,
-                    onClick = {
-                        viewModel.refreshAudioOutputs()
-                        showOutputSheet = true
-                    }
-                )
-                PlayerBottomToolItem(
-                    label = downloadToolLabel,
-                    imageVector = Icons.Outlined.Download,
-                    valueText = downloadToolValue,
-                    primaryColor = primaryTextColor,
-                    secondaryColor = secondaryTextColor,
-                    onClick = { viewModel.toggleDownload() }
-                )
-                Box {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = toolsRowHorizontalPadding, vertical = toolsRowVerticalPadding),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(toolsRowSpacing)
+                ) {
                     PlayerBottomToolItem(
-                        label = "More",
-                        imageVector = Icons.Outlined.MoreHoriz,
-                        primaryColor = primaryTextColor,
-                        secondaryColor = secondaryTextColor,
-                        onClick = { bottomMenuExpanded = true }
+                        modifier = Modifier.weight(1f),
+                        itemHeight = toolsItemHeight,
+                        label = "Speed",
+                        imageVector = Icons.Outlined.Tune,
+                        valueText = speedToolValue,
+                        primaryColor = bottomToolsPrimaryColor,
+                        secondaryColor = bottomToolsSecondaryColor,
+                        containerColor = toolsItemContainerColor,
+                        containerBorderColor = toolsItemBorderColor,
+                        showIconBubble = toolsShowIconBubble,
+                        showSecondaryLabelWhenValue = false,
+                        isHighlighted = speedToolHighlighted,
+                        onClick = {
+                            showSpeedSheet = true
+                        }
                     )
-                    DropdownMenu(
-                        expanded = bottomMenuExpanded,
-                        onDismissRequest = { bottomMenuExpanded = false }
-                    ) {
+                    PlayerBottomToolItem(
+                        modifier = Modifier.weight(1f),
+                        itemHeight = toolsItemHeight,
+                        label = "Timer",
+                        imageVector = Icons.Outlined.Timer,
+                        valueText = timerToolValue,
+                        primaryColor = bottomToolsPrimaryColor,
+                        secondaryColor = bottomToolsSecondaryColor,
+                        containerColor = toolsItemContainerColor,
+                        containerBorderColor = toolsItemBorderColor,
+                        showIconBubble = toolsShowIconBubble,
+                        showSecondaryLabelWhenValue = false,
+                        isHighlighted = timerLabel != null,
+                        onClick = {
+                            timerSheetSessionKey += 1
+                            showTimerSheet = true
+                        }
+                    )
+                    PlayerBottomToolItem(
+                        modifier = Modifier.weight(1f),
+                        itemHeight = toolsItemHeight,
+                        label = "Output",
+                        imageVector = outputIcon,
+                        valueText = outputLabel,
+                        primaryColor = bottomToolsPrimaryColor,
+                        secondaryColor = bottomToolsSecondaryColor,
+                        containerColor = toolsItemContainerColor,
+                        containerBorderColor = toolsItemBorderColor,
+                        showIconBubble = toolsShowIconBubble,
+                        showSecondaryLabelWhenValue = false,
+                        onClick = {
+                            viewModel.refreshAudioOutputs()
+                            showOutputSheet = true
+                        }
+                    )
+                    PlayerBottomToolItem(
+                        modifier = Modifier.weight(1f),
+                        itemHeight = toolsItemHeight,
+                        label = "Download",
+                        imageVector = Icons.Outlined.Download,
+                        valueText = downloadToolText,
+                        primaryColor = bottomToolsPrimaryColor,
+                        secondaryColor = bottomToolsSecondaryColor,
+                        containerColor = toolsItemContainerColor,
+                        containerBorderColor = toolsItemBorderColor,
+                        showIconBubble = toolsShowIconBubble,
+                        showSecondaryLabelWhenValue = false,
+                        isHighlighted = isBookDownloaded || hasActivePlayerDownload,
+                        onClick = { viewModel.toggleDownload() }
+                    )
+                    Box(modifier = Modifier.weight(1f)) {
+                        PlayerBottomToolItem(
+                            modifier = Modifier.fillMaxWidth(),
+                            itemHeight = toolsItemHeight,
+                            label = "More",
+                            imageVector = Icons.Outlined.MoreHoriz,
+                            primaryColor = bottomToolsPrimaryColor,
+                            secondaryColor = bottomToolsSecondaryColor,
+                            containerColor = toolsItemContainerColor,
+                            containerBorderColor = toolsItemBorderColor,
+                            showIconBubble = toolsShowIconBubble,
+                            onClick = { bottomMenuExpanded = true }
+                        )
+                        DropdownMenu(
+                            expanded = bottomMenuExpanded,
+                            onDismissRequest = { bottomMenuExpanded = false }
+                        ) {
+                        Text(
+                            text = "Bottom Tools Style",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp)
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Flat") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Dns,
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                if (bottomToolsStyle == PlayerBottomToolsStyle.Flat) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null
+                                    )
+                                }
+                            },
+                            onClick = {
+                                bottomToolsStyle = PlayerBottomToolsStyle.Flat
+                                bottomMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Buttons") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.GridView,
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                if (bottomToolsStyle == PlayerBottomToolsStyle.FloatingChips) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null
+                                    )
+                                }
+                            },
+                            onClick = {
+                                bottomToolsStyle = PlayerBottomToolsStyle.FloatingChips
+                                bottomMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Dock") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.ViewList,
+                                    contentDescription = null
+                                )
+                            },
+                            trailingIcon = {
+                                if (bottomToolsStyle == PlayerBottomToolsStyle.SlimStrip) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null
+                                    )
+                                }
+                            },
+                            onClick = {
+                                bottomToolsStyle = PlayerBottomToolsStyle.SlimStrip
+                                bottomMenuExpanded = false
+                            }
+                        )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("Skip Intro & Outro") },
                             leadingIcon = {
@@ -6467,7 +6665,8 @@ fun PlayerScreen(
                                     onGoToBook?.invoke(bookId)
                                 }
                             }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -7218,53 +7417,102 @@ private fun PlayerProgressBar(
 
 @Composable
 private fun PlayerBottomToolItem(
+    modifier: Modifier = Modifier,
+    itemHeight: Dp = 76.dp,
     label: String,
-    imageVector: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    imageVector: ImageVector,
     valueText: String? = null,
     primaryColor: Color = MaterialTheme.colorScheme.onSurface,
     secondaryColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    containerColor: Color = Color.Transparent,
+    containerBorderColor: Color = Color.Transparent,
+    showIconBubble: Boolean = true,
+    showSecondaryLabelWhenValue: Boolean = true,
+    isHighlighted: Boolean = false,
     onClick: () -> Unit
 ) {
-    val topSlotHeight = 22.dp
+    val value = valueText?.trim().orEmpty()
+    val iconChipColor = if (isHighlighted) {
+        primaryColor.copy(alpha = 0.2f)
+    } else {
+        primaryColor.copy(alpha = 0.12f)
+    }
+    val primaryValueColor = if (isHighlighted) primaryColor else primaryColor.copy(alpha = 0.96f)
+    val itemShape = RoundedCornerShape(14.dp)
     Column(
-        modifier = Modifier
-            .width(66.dp)
-            .clickable(onClick = onClick),
+        modifier = modifier
+            .height(itemHeight)
+            .clip(itemShape)
+            .background(containerColor)
+            .border(
+                width = if (containerBorderColor.alpha > 0f) 1.dp else 0.dp,
+                color = containerBorderColor,
+                shape = itemShape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        verticalArrangement = Arrangement.Center
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(topSlotHeight),
+            modifier = if (showIconBubble) {
+                Modifier
+                    .padding(top = 2.dp)
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(iconChipColor)
+            } else {
+                Modifier
+                    .padding(top = 4.dp)
+                    .size(24.dp)
+            },
             contentAlignment = Alignment.Center
         ) {
-            if (!valueText.isNullOrBlank()) {
-                Text(
-                    text = valueText,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
-                    color = primaryColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else if (imageVector != null) {
-                Icon(
-                    imageVector = imageVector,
-                    contentDescription = label,
-                    tint = primaryColor,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            Icon(
+                imageVector = imageVector,
+                contentDescription = label,
+                tint = primaryColor,
+                modifier = Modifier.size(if (showIconBubble) 21.dp else 20.dp)
+            )
         }
         Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 9.sp),
-            color = secondaryColor,
+            text = if (value.isNotBlank()) value else label,
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Medium,
+                fontSize = 10.5.sp
+            ),
+            color = primaryValueColor,
             maxLines = 1,
-            overflow = TextOverflow.Clip,
+            overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
+        if (value.isNotBlank() && showSecondaryLabelWhenValue) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 8.5.sp
+                ),
+                color = secondaryColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            Spacer(modifier = Modifier.height(11.dp))
+        }
+    }
+}
+
+private fun playerOutputToolIcon(typeLabel: String?): ImageVector {
+    val label = typeLabel?.trim()?.lowercase(Locale.ROOT).orEmpty()
+    return when {
+        label.contains("bluetooth") -> Icons.Outlined.GraphicEq
+        label.contains("wired") || label.contains("usb") -> Icons.Outlined.GraphicEq
+        label.contains("speaker") || label.contains("phone") -> Icons.Outlined.VolumeUp
+        else -> Icons.Outlined.SettingsVoice
     }
 }
 
@@ -7281,6 +7529,12 @@ private enum class PlayerTimerSelectionType {
     Preset,
     Custom,
     EndOfChapter
+}
+
+private enum class PlayerBottomToolsStyle {
+    Flat,
+    FloatingChips,
+    SlimStrip
 }
 
 @Composable

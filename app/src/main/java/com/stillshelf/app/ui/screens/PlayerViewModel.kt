@@ -29,6 +29,11 @@ data class PlayerControlPrefs(
     val skipBackwardSeconds: Int = 15
 )
 
+private sealed interface PendingSleepTimerRequest {
+    data class Minutes(val minutes: Int) : PendingSleepTimerRequest
+    object EndOfChapter : PendingSleepTimerRequest
+}
+
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -54,6 +59,7 @@ class PlayerViewModel @Inject constructor(
     val downloadProgressPercent: StateFlow<Int?> = mutableDownloadProgressPercent.asStateFlow()
     private var currentDownloadItems: List<DownloadItem> = emptyList()
     private var loadedBookId: String? = null
+    private var pendingSleepTimerRequest: PendingSleepTimerRequest? = null
 
     init {
         observeControlPrefs()
@@ -93,6 +99,7 @@ class PlayerViewModel @Inject constructor(
                 if (playbackState.book != null) {
                     mutablePreviewItem.value = null
                     loadBookMetadata(playbackState.book.id)
+                    applyPendingSleepTimerRequestIfNeeded()
                 }
                 syncCurrentDownloadState()
             }
@@ -148,10 +155,27 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun startSleepTimerMinutes(minutes: Int) {
-        playbackController.startSleepTimerMinutes(minutes)
+        val normalizedMinutes = minutes.coerceAtLeast(1)
+        if (uiState.value.book != null) {
+            playbackController.startSleepTimerMinutes(normalizedMinutes)
+            return
+        }
+        val queued = queueSleepTimerAndStartPlayback(
+            request = PendingSleepTimerRequest.Minutes(normalizedMinutes)
+        )
+        if (!queued) {
+            mutableActionMessage.value = "Start playback to use the timer."
+        }
     }
 
     fun startSleepTimerEndOfChapter() {
+        if (uiState.value.book == null) {
+            val queued = queueSleepTimerAndStartPlayback(request = PendingSleepTimerRequest.EndOfChapter)
+            if (!queued) {
+                mutableActionMessage.value = "Unable to set end-of-chapter timer."
+            }
+            return
+        }
         viewModelScope.launch {
             val started = playbackController.startSleepTimerEndOfChapter()
             if (!started) {
@@ -319,6 +343,40 @@ class PlayerViewModel @Inject constructor(
 
     fun clearActionMessage() {
         mutableActionMessage.value = null
+    }
+
+    private fun queueSleepTimerAndStartPlayback(request: PendingSleepTimerRequest): Boolean {
+        val preview = previewItem.value ?: return false
+        val previewBookId = preview.book.id
+        if (previewBookId.isBlank()) return false
+        pendingSleepTimerRequest = request
+        val startPositionSeconds = preview.currentTimeSeconds
+            ?: preview.book.currentTimeSeconds
+            ?: 0.0
+        val startPositionMs = (startPositionSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        playbackController.playBook(bookId = previewBookId, startPositionMs = startPositionMs)
+        mutableActionMessage.value = "Timer will start when playback starts."
+        return true
+    }
+
+    private fun applyPendingSleepTimerRequestIfNeeded() {
+        val pending = pendingSleepTimerRequest ?: return
+        if (uiState.value.book == null) return
+        pendingSleepTimerRequest = null
+        when (pending) {
+            is PendingSleepTimerRequest.Minutes -> {
+                playbackController.startSleepTimerMinutes(pending.minutes)
+            }
+
+            PendingSleepTimerRequest.EndOfChapter -> {
+                viewModelScope.launch {
+                    val started = playbackController.startSleepTimerEndOfChapter()
+                    if (!started) {
+                        mutableActionMessage.value = "Unable to set end-of-chapter timer."
+                    }
+                }
+            }
+        }
     }
 
     private fun setBookFinishedState(finished: Boolean) {

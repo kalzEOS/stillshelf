@@ -26,6 +26,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.drawable.toBitmap
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.network.authorizationHeaderValue
@@ -97,6 +98,12 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val LOCK_SCREEN_MODE_SKIP = "skip"
+        private const val LOCK_SCREEN_MODE_NEXT = "next"
+        private const val LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS = 1_500L
+        private const val LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS = 6_000L
+        private const val LOCK_SCREEN_BOOK_NAV_PAGE_SIZE = 200
+        private const val LOCK_SCREEN_BOOK_NAV_MAX_PAGES = 20
 
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
@@ -139,12 +146,14 @@ class PlaybackController @Inject constructor(
     }
     private var rewindSeconds: Int = 15
     private var forwardSeconds: Int = 15
+    private var lockScreenControlMode: String = LOCK_SCREEN_MODE_SKIP
     private var currentPlaybackSpeed: Float = 1.0f
     private var currentSoftToneLevel: Float = 0f
     private var currentBoostLevel: Float = 0f
     private var audioEffectsSessionId: Int? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var equalizer: Equalizer? = null
+    private var previousRestartState: PreviousRestartState? = null
 
     private data class NotificationSignature(
         val bookId: String,
@@ -152,6 +161,13 @@ class PlaybackController @Inject constructor(
         val author: String?,
         val isPlaying: Boolean,
         val hasArtwork: Boolean
+    )
+
+    private data class PreviousRestartState(
+        val bookId: String,
+        val restartStartMs: Long,
+        val chapterMode: Boolean,
+        val triggeredAtElapsedMs: Long
     )
 
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
@@ -165,8 +181,8 @@ class PlaybackController @Inject constructor(
         mediaSession.setCallback(object : MediaSessionCompat.Callback() {
             override fun onPlay() = resume()
             override fun onPause() = pause()
-            override fun onSkipToPrevious() = performRewindControl()
-            override fun onSkipToNext() = performForwardControl()
+            override fun onSkipToPrevious() = performLockScreenPreviousControl()
+            override fun onSkipToNext() = performLockScreenNextControl()
         })
         mediaSession.isActive = true
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
@@ -720,6 +736,7 @@ class PlaybackController @Inject constructor(
             sessionPreferences.state.collect { pref ->
                 rewindSeconds = pref.skipBackwardSeconds.coerceIn(10, 60)
                 forwardSeconds = pref.skipForwardSeconds.coerceIn(10, 60)
+                lockScreenControlMode = normalizeLockScreenControlMode(pref.lockScreenControlMode)
                 val desiredSoftTone = pref.softToneLevel.coerceIn(0f, 1f)
                 val desiredBoost = pref.boostLevel.coerceIn(0f, 1f)
                 val toneChanged = abs(currentSoftToneLevel - desiredSoftTone) > 0.001f
@@ -749,6 +766,171 @@ class PlaybackController @Inject constructor(
 
     private fun performForwardControl() {
         seekBy(deltaMs = (forwardSeconds * 1000L))
+    }
+
+    private fun performLockScreenPreviousControl() {
+        if (lockScreenControlMode != LOCK_SCREEN_MODE_NEXT) {
+            previousRestartState = null
+            performRewindControl()
+            return
+        }
+        scope.launch {
+            navigateLockScreenPrevious()
+        }
+    }
+
+    private fun performLockScreenNextControl() {
+        if (lockScreenControlMode != LOCK_SCREEN_MODE_NEXT) {
+            previousRestartState = null
+            performForwardControl()
+            return
+        }
+        previousRestartState = null
+        scope.launch {
+            navigateLockScreenNext()
+        }
+    }
+
+    private suspend fun navigateLockScreenNext() {
+        val bookId = currentBookId ?: uiState.value.book?.id ?: return
+        val chapterStartsMs = resolveChapterStartsMs(bookId)
+        if (chapterStartsMs.isNotEmpty()) {
+            val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val nextChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex + 1)
+            if (nextChapterStartMs != null) {
+                seekToPosition(targetMs = nextChapterStartMs, forceSync = true)
+                return
+            }
+        }
+        playAdjacentBook(direction = 1)
+    }
+
+    private suspend fun navigateLockScreenPrevious() {
+        val bookId = currentBookId ?: uiState.value.book?.id ?: return
+        val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+        val chapterStartsMs = resolveChapterStartsMs(bookId)
+        if (chapterStartsMs.isNotEmpty()) {
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val currentChapterStartMs = chapterStartsMs
+                .getOrNull(currentChapterIndex)
+                ?.coerceAtLeast(0L)
+                ?: 0L
+            if (!shouldGoToPreviousAfterRestart(bookId, currentChapterStartMs, chapterMode = true, currentPositionMs)) {
+                rememberRestart(bookId, currentChapterStartMs, chapterMode = true)
+                seekToPosition(targetMs = currentChapterStartMs, forceSync = true)
+                return
+            }
+            previousRestartState = null
+            val previousChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex - 1)
+            if (previousChapterStartMs != null) {
+                seekToPosition(targetMs = previousChapterStartMs, forceSync = true)
+                return
+            }
+            playAdjacentBook(direction = -1)
+            return
+        }
+
+        if (!shouldGoToPreviousAfterRestart(bookId, 0L, chapterMode = false, currentPositionMs)) {
+            rememberRestart(bookId, restartStartMs = 0L, chapterMode = false)
+            seekToPosition(targetMs = 0L, forceSync = true)
+            return
+        }
+        previousRestartState = null
+        playAdjacentBook(direction = -1)
+    }
+
+    private suspend fun playAdjacentBook(direction: Int) {
+        if (direction != -1 && direction != 1) return
+        val currentId = currentBookId ?: uiState.value.book?.id ?: return
+        val books = fetchBooksForLockScreenNavigation()
+        if (books.isEmpty()) return
+        val currentIndex = books.indexOfFirst { it.id == currentId }
+        if (currentIndex < 0) return
+        val targetBook = books.getOrNull(currentIndex + direction) ?: return
+        previousRestartState = null
+        playBookFromPosition(bookId = targetBook.id, startPositionMs = 0L)
+    }
+
+    private suspend fun fetchBooksForLockScreenNavigation(): List<BookSummary> {
+        val collected = mutableListOf<BookSummary>()
+        var page = 0
+        while (page < LOCK_SCREEN_BOOK_NAV_MAX_PAGES) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = LOCK_SCREEN_BOOK_NAV_PAGE_SIZE,
+                    page = page
+                )
+            ) {
+                is AppResult.Success -> {
+                    val batch = result.value
+                    if (batch.isEmpty()) break
+                    collected += batch
+                    if (batch.size < LOCK_SCREEN_BOOK_NAV_PAGE_SIZE) break
+                }
+
+                is AppResult.Error -> return emptyList()
+            }
+            page += 1
+        }
+        return collected.distinctBy { it.id }
+    }
+
+    private suspend fun resolveChapterStartsMs(bookId: String): List<Long> {
+        return when (val detail = sessionRepository.fetchBookDetail(bookId = bookId, forceRefresh = false)) {
+            is AppResult.Success -> detail.value.chapters
+                .toChapterStartsMs()
+            is AppResult.Error -> emptyList()
+        }
+    }
+
+    private fun resolveCurrentChapterIndex(chapterStartsMs: List<Long>, positionMs: Long): Int {
+        if (chapterStartsMs.isEmpty()) return 0
+        val seekPositionMs = positionMs.coerceAtLeast(0L) + 200L
+        return chapterStartsMs.indexOfLast { startMs -> startMs <= seekPositionMs }
+            .takeIf { index -> index >= 0 }
+            ?: 0
+    }
+
+    private fun normalizeLockScreenControlMode(rawMode: String?): String {
+        return if (rawMode.equals(LOCK_SCREEN_MODE_NEXT, ignoreCase = true)) {
+            LOCK_SCREEN_MODE_NEXT
+        } else {
+            LOCK_SCREEN_MODE_SKIP
+        }
+    }
+
+    private fun shouldGoToPreviousAfterRestart(
+        bookId: String,
+        restartStartMs: Long,
+        chapterMode: Boolean,
+        currentPositionMs: Long
+    ): Boolean {
+        val state = previousRestartState ?: return false
+        if (state.bookId != bookId) return false
+        if (state.restartStartMs != restartStartMs) return false
+        if (state.chapterMode != chapterMode) return false
+        val elapsedSinceTriggerMs = SystemClock.elapsedRealtime() - state.triggeredAtElapsedMs
+        if (elapsedSinceTriggerMs > LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS) return false
+        return currentPositionMs <= (restartStartMs + LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS)
+    }
+
+    private fun rememberRestart(bookId: String, restartStartMs: Long, chapterMode: Boolean) {
+        previousRestartState = PreviousRestartState(
+            bookId = bookId,
+            restartStartMs = restartStartMs.coerceAtLeast(0L),
+            chapterMode = chapterMode,
+            triggeredAtElapsedMs = SystemClock.elapsedRealtime()
+        )
+    }
+
+    private fun List<BookChapter>.toChapterStartsMs(): List<Long> {
+        if (isEmpty()) return emptyList()
+        return asSequence()
+            .map { chapter -> (chapter.startSeconds * 1000.0).toLong().coerceAtLeast(0L) }
+            .distinct()
+            .sorted()
+            .toList()
     }
 
     private inline fun updateUiState(transform: (PlaybackUiState) -> PlaybackUiState) {

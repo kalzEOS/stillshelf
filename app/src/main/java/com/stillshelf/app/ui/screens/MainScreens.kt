@@ -109,6 +109,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.UpdateNotesDialogContent
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -4512,30 +4513,14 @@ fun SettingsScreen(
         }
 
         uiState.availableUpdate?.let { release ->
-            val releaseNotesScrollState = rememberScrollState()
             AlertDialog(
                 onDismissRequest = viewModel::dismissAvailableUpdateDialog,
                 title = { Text("Update available") },
                 text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 240.dp)
-                            .verticalScroll(releaseNotesScrollState),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("StillShelf ${release.versionName} is available.")
-                        release.body
-                            ?.trim()
-                            ?.takeIf { it.isNotEmpty() }
-                            ?.let { notes ->
-                                Text(
-                                    text = notes,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                    }
+                    UpdateNotesDialogContent(
+                        versionName = release.versionName,
+                        notes = release.body
+                    )
                 },
                 confirmButton = {
                     TextButton(onClick = viewModel::installAvailableUpdate) {

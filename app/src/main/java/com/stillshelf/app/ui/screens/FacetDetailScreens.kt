@@ -68,6 +68,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -114,6 +115,58 @@ data class FacetBooksUiState(
 )
 
 private val FacetBackTitleSpacing = 12.dp
+private val FacetSeriesStackMinLayerExtent = 42.dp
+private val FacetSeriesStackStep = 5.dp
+private val FacetSeriesStackFrontShadow = 1.dp
+private val FacetSeriesStackBackShadow = 2.8.dp
+private val FacetSeriesStackCornerShape = RoundedCornerShape(6.dp)
+private val FacetSeriesStackBackgroundBlur = 44.dp
+
+private fun facetStackedLayerExtent(baseExtent: Dp, layer: Int, shiftStep: Dp): Dp {
+    val shrink = shiftStep * (layer.coerceAtLeast(0) * 5)
+    return (baseExtent - shrink).coerceAtLeast(FacetSeriesStackMinLayerExtent)
+}
+
+private fun facetStackedLayerShadow(layer: Int, layerCount: Int): Dp {
+    return if (layer == layerCount - 1) FacetSeriesStackFrontShadow else FacetSeriesStackBackShadow
+}
+
+@Composable
+private fun FacetSeriesStackCoverLayers(
+    coverUrl: String?,
+    contentDescription: String?,
+    layerCount: Int,
+    frameWidth: Dp,
+    frameHeight: Dp,
+    modifier: Modifier = Modifier
+) {
+    val resolvedLayerCount = layerCount.coerceIn(2, 3)
+    val layerShape = FacetSeriesStackCornerShape
+    Box(
+        modifier = modifier.clipToBounds()
+    ) {
+        repeat(resolvedLayerCount) { layer ->
+            val cardWidth = facetStackedLayerExtent(frameWidth, layer, FacetSeriesStackStep)
+            val cardHeight = facetStackedLayerExtent(frameHeight, layer, FacetSeriesStackStep)
+            val xOffset = (frameWidth - cardWidth).coerceAtLeast(0.dp)
+            val yOffset = (frameHeight - cardHeight).coerceAtLeast(0.dp)
+            val layerShadow = facetStackedLayerShadow(layer = layer, layerCount = resolvedLayerCount)
+            FramedCoverImage(
+                coverUrl = coverUrl,
+                contentDescription = contentDescription,
+                modifier = Modifier
+                    .offset(x = xOffset, y = yOffset)
+                    .width(cardWidth)
+                    .height(cardHeight)
+                    .shadow(elevation = layerShadow, shape = layerShape, clip = false)
+                    .graphicsLayer(alpha = 1f),
+                shape = layerShape,
+                contentScale = ContentScale.Fit,
+                backgroundBlur = FacetSeriesStackBackgroundBlur
+            )
+        }
+    }
+}
 
 data class GenreSummary(
     val name: String,
@@ -1353,15 +1406,6 @@ private fun AuthorSeriesGridItem(
     val lead = entry.leadBook
     val layerCount = entry.count.coerceIn(2, 3)
     val frameHeight = StandardGridCoverHeight
-    val stackStepX = 5.dp
-    val stackStepY = 10.dp
-    val totalShiftX = stackStepX * (layerCount - 1)
-    val totalShiftY = stackStepY * (layerCount - 1)
-    val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
-    val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
-    val baseShiftX = (-4).dp
-    val baseShiftY = 1.dp
-    val layerShape = RoundedCornerShape(8.dp)
     Column(
         modifier = Modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1373,25 +1417,16 @@ private fun AuthorSeriesGridItem(
                 .clipToBounds(),
             contentAlignment = Alignment.TopCenter
         ) {
-            repeat(layerCount) { layer ->
-                val xOffset = baseShiftX + (stackStepX * layer)
-                val yOffset = baseShiftY + (stackStepY * layer)
-                val alpha = 1f
-                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
-                FramedCoverImage(
-                    coverUrl = lead.coverUrl,
-                    contentDescription = entry.seriesName,
-                    modifier = Modifier
-                        .offset(x = xOffset, y = yOffset)
-                        .width(cardWidth)
-                        .height(cardHeight)
-                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                        .graphicsLayer(alpha = alpha),
-                    shape = layerShape,
-                    contentScale = ContentScale.Fit,
-                    backgroundBlur = WideCoverBackgroundBlur
-                )
-            }
+            FacetSeriesStackCoverLayers(
+                coverUrl = lead.coverUrl,
+                contentDescription = entry.seriesName,
+                layerCount = layerCount,
+                frameWidth = StandardGridCoverWidth,
+                frameHeight = StandardGridCoverHeight,
+                modifier = Modifier
+                    .width(StandardGridCoverWidth)
+                    .height(StandardGridCoverHeight)
+            )
             DownloadBadge(
                 isDownloaded = isDownloaded,
                 downloadProgressPercent = downloadProgressPercent,
@@ -1565,34 +1600,14 @@ private fun AuthorSeriesListRow(
             ) {
                 val layerCount = entry.count.coerceIn(2, 3)
                 val frameSize = 72.dp
-                val stackStepX = 4.dp
-                val stackStepY = 7.dp
-                val totalShiftX = stackStepX * (layerCount - 1)
-                val totalShiftY = stackStepY * (layerCount - 1)
-                val cardWidth = frameSize - totalShiftX - 3.dp
-                val cardHeight = frameSize - totalShiftY - 3.dp
-                val baseShiftX = (-4).dp
-                val baseShiftY = 1.dp
-                val layerShape = RoundedCornerShape(8.dp)
-                repeat(layerCount) { layer ->
-                    val xOffset = baseShiftX + (stackStepX * layer)
-                    val yOffset = baseShiftY + (stackStepY * layer)
-                    val alpha = 1f
-                    val layerShadow = if (layer == layerCount - 1) 1.dp else 2.8.dp
-                    FramedCoverImage(
-                        coverUrl = lead.coverUrl,
-                        contentDescription = entry.seriesName,
-                        modifier = Modifier
-                            .offset(x = xOffset, y = yOffset)
-                            .width(cardWidth)
-                            .height(cardHeight)
-                            .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                            .graphicsLayer(alpha = alpha),
-                        shape = layerShape,
-                        contentScale = ContentScale.Fit,
-                        backgroundBlur = WideCoverBackgroundBlur
-                    )
-                }
+                FacetSeriesStackCoverLayers(
+                    coverUrl = lead.coverUrl,
+                    contentDescription = entry.seriesName,
+                    layerCount = layerCount,
+                    frameWidth = frameSize,
+                    frameHeight = frameSize,
+                    modifier = Modifier.matchParentSize()
+                )
                 DownloadBadge(
                     isDownloaded = isDownloaded,
                     downloadProgressPercent = downloadProgressPercent,
@@ -1824,7 +1839,7 @@ fun SeriesDetailScreen(
                     item {
                         SeriesCoverStack(
                             leadBook = leadBook,
-                            layerCount = books.size.coerceIn(2, 3),
+                            layerCount = books.size,
                             isDownloaded = uiState.downloadedBookIds.contains(leadBook.id),
                             downloadProgressPercent = uiState.downloadProgressByBookId[leadBook.id]
                         )
@@ -3050,81 +3065,78 @@ private fun SeriesCoverStack(
     isDownloaded: Boolean,
     downloadProgressPercent: Int?
 ) {
-    val count = layerCount.coerceIn(2, 3)
-    val frameWidth = 168.dp
-    val frameHeight = 172.dp
-    val stepX = 7.dp
-    val stepY = 12.dp
-    val totalShiftX = stepX * (count - 1)
-    val totalShiftY = stepY * (count - 1)
-    val cardWidth = frameWidth - totalShiftX - 3.dp
-    val cardHeight = frameHeight - totalShiftY - 3.dp
-    val baseShiftX = (-4).dp
-    val baseShiftY = 1.dp
-    val layerShape = RoundedCornerShape(10.dp)
+    val availableBackLayers = (layerCount - 1).coerceAtLeast(0)
+    val backLayerCount = availableBackLayers.coerceAtMost(2)
+    val frontWidth = 190.dp
+    val frontHeight = 190.dp
+    val middleWidth = frontWidth + 51.dp
+    val middleHeight = frontHeight - 18.dp
+    val backWidth = middleWidth + 50.dp
+    val backHeight = middleHeight - 15.dp
+    val middleYOffset = 12.dp
+    val backYOffset = 23.dp
+    val layerShape = FacetSeriesStackCornerShape
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(210.dp),
+            .height(224.dp),
         contentAlignment = Alignment.TopCenter
     ) {
-        for (layer in 0 until count) {
-            val offsetX = baseShiftX + (stepX * layer)
-            val offsetY = baseShiftY + (stepY * layer)
-            val alpha = 1f
-            val layerShadow = if (layer == count - 1) 1.2.dp else 3.4.dp
+        Box(
+            modifier = Modifier
+                .width(358.dp)
+                .height(208.dp),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            if (backLayerCount >= 2) {
+                FramedCoverImage(
+                    coverUrl = leadBook.coverUrl,
+                    contentDescription = leadBook.title,
+                    modifier = Modifier
+                        .offset(y = backYOffset)
+                        .width(backWidth)
+                        .height(backHeight)
+                        .shadow(elevation = 3.6.dp, shape = layerShape, clip = false),
+                    shape = layerShape,
+                    contentScale = ContentScale.Fit,
+                    backgroundBlur = FacetSeriesStackBackgroundBlur,
+                    frameOverlayAlphaMultiplier = 0.22f
+                )
+            }
+            if (backLayerCount >= 1) {
+                FramedCoverImage(
+                    coverUrl = leadBook.coverUrl,
+                    contentDescription = leadBook.title,
+                    modifier = Modifier
+                        .offset(y = middleYOffset)
+                        .width(middleWidth)
+                        .height(middleHeight)
+                        .shadow(elevation = 2.9.dp, shape = layerShape, clip = false),
+                    shape = layerShape,
+                    contentScale = ContentScale.Fit,
+                    backgroundBlur = FacetSeriesStackBackgroundBlur,
+                    frameOverlayAlphaMultiplier = 0.48f
+                )
+            }
             FramedCoverImage(
                 coverUrl = leadBook.coverUrl,
                 contentDescription = leadBook.title,
                 modifier = Modifier
-                    .offset(x = offsetX, y = offsetY)
-                    .width(cardWidth)
-                    .height(cardHeight)
-                    .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                    .graphicsLayer(alpha = alpha),
+                    .width(frontWidth)
+                    .height(frontHeight)
+                    .shadow(elevation = FacetSeriesStackFrontShadow, shape = layerShape, clip = false),
                 shape = layerShape,
                 contentScale = ContentScale.Fit,
-                backgroundBlur = 44.dp
+                backgroundBlur = FacetSeriesStackBackgroundBlur,
+                frameOverlayAlphaMultiplier = 0.86f
             )
-        }
-        val progress = downloadProgressPercent?.coerceIn(0, 100)
-        val showProgress = progress != null && progress in 0..99
-        val showCompleted = isDownloaded && !showProgress
-        if (showProgress || showCompleted) {
-            Box(
+            DownloadBadge(
+                isDownloaded = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-6).dp, y = 6.dp)
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (showProgress) {
-                    CircularProgressIndicator(
-                        progress = { progress / 100f },
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.4.dp,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "$progress%",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 8.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Outlined.Download,
-                        contentDescription = "Downloaded",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
+                    .offset(x = (-8).dp, y = 8.dp)
+            )
         }
     }
 }

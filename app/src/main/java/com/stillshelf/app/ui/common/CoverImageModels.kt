@@ -31,6 +31,8 @@ val StandardGridCoverHeight: Dp = 150.dp
 val WideCoverBackgroundBlur: Dp = 30.dp
 private const val TypicalCoverAspectRatio = 0.66f
 private const val CoverBlurZoomScale = 1.20f
+private const val SquareCoverMinAspectRatio = 0.90f
+private const val SquareCoverMaxAspectRatio = 1.10f
 
 @Composable
 fun rememberCoverImageModel(coverUrl: String?): Any? {
@@ -75,7 +77,8 @@ fun FramedCoverImage(
     modifier: Modifier,
     shape: RoundedCornerShape = RoundedCornerShape(8.dp),
     contentScale: ContentScale = ContentScale.Fit,
-    backgroundBlur: Dp = WideCoverBackgroundBlur
+    backgroundBlur: Dp = WideCoverBackgroundBlur,
+    frameOverlayAlphaMultiplier: Float = 1f
 ) {
     val model = rememberCoverImageModel(coverUrl)
     if (model == null) {
@@ -92,18 +95,34 @@ fun FramedCoverImage(
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f))
     ) {
-        val blurLightenOverlayAlpha = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
+        val blurLightenOverlayAlphaBase = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
             0.25f
         } else {
             0.19f
         }
+        val blurLightenOverlayAlpha = (blurLightenOverlayAlphaBase * frameOverlayAlphaMultiplier)
+            .coerceIn(0f, 1f)
         val painter = rememberAsyncImagePainter(model = model)
         val isSuccessState = painter.state is AsyncImagePainter.State.Success
+        val successState = painter.state as? AsyncImagePainter.State.Success
+        val intrinsicWidth = successState?.result?.drawable?.intrinsicWidth?.takeIf { it > 0 }
+        val intrinsicHeight = successState?.result?.drawable?.intrinsicHeight?.takeIf { it > 0 }
+        val resolvedAspectRatio = if (intrinsicWidth != null && intrinsicHeight != null) {
+            intrinsicWidth.toFloat() / intrinsicHeight.toFloat()
+        } else {
+            TypicalCoverAspectRatio
+        }
+        val isSquareLikeCover = resolvedAspectRatio in SquareCoverMinAspectRatio..SquareCoverMaxAspectRatio
+        val shouldUseBlurredFrame = !isSquareLikeCover
         val preferredInset = (maxWidth * 0.20f).coerceIn(2.dp, 34.dp)
         val maxInsetWithoutVerticalLetterbox =
             ((maxWidth - (maxHeight * TypicalCoverAspectRatio)) / 2f).coerceAtLeast(0.dp)
-        val sideInset = minOf(preferredInset, maxInsetWithoutVerticalLetterbox)
-        if (isSuccessState) {
+        val sideInset = if (shouldUseBlurredFrame) {
+            minOf(preferredInset, maxInsetWithoutVerticalLetterbox)
+        } else {
+            0.dp
+        }
+        if (isSuccessState && shouldUseBlurredFrame) {
             Image(
                 painter = painter,
                 contentDescription = contentDescription,

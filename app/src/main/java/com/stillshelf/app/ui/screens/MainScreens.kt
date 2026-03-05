@@ -255,6 +255,61 @@ enum class BooksSortKey(
 
 private val BackTitleSpacing = 12.dp
 
+private val SeriesStackMinLayerExtent = 42.dp
+private val SeriesStackStep = 5.dp
+private val SeriesStackFrontShadow = 1.dp
+private val SeriesStackBackShadow = 2.8.dp
+private val SeriesStackCornerShape = RoundedCornerShape(6.dp)
+private val SeriesStackBackgroundBlur = 44.dp
+
+private fun stackedSeriesLayerExtent(baseExtent: Dp, layer: Int, shiftStep: Dp): Dp {
+    // Shrink twice the diagonal shift so back-layer corners stay visible
+    // on both top-right and bottom-left while preserving one-tile footprint.
+    val shrink = shiftStep * (layer.coerceAtLeast(0) * 5)
+    return (baseExtent - shrink).coerceAtLeast(SeriesStackMinLayerExtent)
+}
+
+private fun stackedSeriesLayerShadow(layer: Int, layerCount: Int): Dp {
+    return if (layer == layerCount - 1) SeriesStackFrontShadow else SeriesStackBackShadow
+}
+
+@Composable
+private fun SeriesStackCoverLayers(
+    coverUrl: String?,
+    contentDescription: String?,
+    layerCount: Int,
+    frameWidth: Dp,
+    frameHeight: Dp,
+    modifier: Modifier = Modifier
+) {
+    val resolvedLayerCount = layerCount.coerceIn(2, 3)
+    val layerShape = SeriesStackCornerShape
+    Box(
+        modifier = modifier.clipToBounds()
+    ) {
+        repeat(resolvedLayerCount) { layer ->
+            val layerCardWidth = stackedSeriesLayerExtent(frameWidth, layer, SeriesStackStep)
+            val layerCardHeight = stackedSeriesLayerExtent(frameHeight, layer, SeriesStackStep)
+            val xOffset = (frameWidth - layerCardWidth).coerceAtLeast(0.dp)
+            val yOffset = (frameHeight - layerCardHeight).coerceAtLeast(0.dp)
+            val layerShadow = stackedSeriesLayerShadow(layer = layer, layerCount = resolvedLayerCount)
+            FramedCoverImage(
+                coverUrl = coverUrl,
+                contentDescription = contentDescription,
+                modifier = Modifier
+                    .offset(x = xOffset, y = yOffset)
+                    .width(layerCardWidth)
+                    .height(layerCardHeight)
+                    .shadow(elevation = layerShadow, shape = layerShape, clip = false)
+                    .graphicsLayer(alpha = 1f),
+                shape = layerShape,
+                contentScale = ContentScale.Fit,
+                backgroundBlur = SeriesStackBackgroundBlur
+            )
+        }
+    }
+}
+
 private sealed interface BooksGridEntry {
     val stableKey: String
 
@@ -1883,15 +1938,6 @@ private fun SeriesStackGridItem(
     val layerCount = entry.count.coerceIn(2, 3)
     val frameWidth = StandardGridCoverWidth
     val frameHeight = StandardGridCoverHeight
-    val stackStepX = 5.dp
-    val stackStepY = 10.dp
-    val totalShiftX = stackStepX * (layerCount - 1)
-    val totalShiftY = stackStepY * (layerCount - 1)
-    val cardWidth = frameWidth - totalShiftX - 3.dp
-    val cardHeight = frameHeight - totalShiftY - 3.dp
-    val baseShiftX = (-4).dp
-    val baseShiftY = 1.dp
-    val layerShape = RoundedCornerShape(8.dp)
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.clickable(onClick = onClick)
@@ -1904,25 +1950,16 @@ private fun SeriesStackGridItem(
                 .clipToBounds(),
             contentAlignment = Alignment.TopCenter
         ) {
-            repeat(layerCount) { layer ->
-                val xOffset = baseShiftX + (stackStepX * layer)
-                val yOffset = baseShiftY + (stackStepY * layer)
-                val alpha = 1f
-                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
-                FramedCoverImage(
-                    coverUrl = book.coverUrl,
-                    contentDescription = book.title,
-                    modifier = Modifier
-                        .offset(x = xOffset, y = yOffset)
-                        .width(cardWidth)
-                        .height(cardHeight)
-                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                        .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                    shape = layerShape,
-                    contentScale = ContentScale.Fit,
-                    backgroundBlur = WideCoverBackgroundBlur
-                )
-            }
+            SeriesStackCoverLayers(
+                coverUrl = book.coverUrl,
+                contentDescription = entry.seriesName,
+                layerCount = layerCount,
+                frameWidth = frameWidth,
+                frameHeight = frameHeight,
+                modifier = Modifier
+                    .width(frameWidth)
+                    .height(frameHeight)
+            )
             val progress = downloadProgressPercent?.coerceIn(0, 100)
             val showProgress = progress != null && progress in 0..99
             val showCompleted = isDownloaded && !showProgress
@@ -2162,34 +2199,14 @@ private fun SeriesStackListItem(
         ) {
             val layerCount = entry.books.size.coerceIn(2, 3)
             val frameSize = 88.dp
-            val stackStepX = 4.dp
-            val stackStepY = 7.dp
-            val totalShiftX = stackStepX * (layerCount - 1)
-            val totalShiftY = stackStepY * (layerCount - 1)
-            val cardWidth = frameSize - totalShiftX - 3.dp
-            val cardHeight = frameSize - totalShiftY - 3.dp
-            val baseShiftX = (-4).dp
-            val baseShiftY = 1.dp
-            val layerShape = RoundedCornerShape(6.dp)
-            repeat(layerCount) { layer ->
-                val xOffset = baseShiftX + (stackStepX * layer)
-                val yOffset = baseShiftY + (stackStepY * layer)
-                val alpha = 1f
-                val layerShadow = if (layer == layerCount - 1) 1.dp else 2.8.dp
-                FramedCoverImage(
-                    coverUrl = lead.coverUrl,
-                    contentDescription = entry.seriesName,
-                    modifier = Modifier
-                        .offset(x = xOffset, y = yOffset)
-                        .width(cardWidth)
-                        .height(cardHeight)
-                        .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                        .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                    shape = layerShape,
-                    contentScale = ContentScale.Fit,
-                    backgroundBlur = 44.dp
-                )
-            }
+            SeriesStackCoverLayers(
+                coverUrl = lead.coverUrl,
+                contentDescription = entry.seriesName,
+                layerCount = layerCount,
+                frameWidth = frameSize,
+                frameHeight = frameSize,
+                modifier = Modifier.matchParentSize()
+            )
             val progress = downloadProgressPercent?.coerceIn(0, 100)
             val showProgress = progress != null && progress in 0..99
             val showCompleted = isDownloaded && !showProgress
@@ -3407,34 +3424,16 @@ fun SeriesBrowseScreen(
                                         .substringBefore(" ")
                                         .toIntOrNull()
                                     val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
-                                    val stackStepX = 5.dp
-                                    val stackStepY = 10.dp
-                                    val totalShiftX = stackStepX * (layerCount - 1)
-                                    val totalShiftY = stackStepY * (layerCount - 1)
-                                    val cardWidth = StandardGridCoverWidth - totalShiftX - 3.dp
-                                    val cardHeight = StandardGridCoverHeight - totalShiftY - 3.dp
-                                    val baseShiftX = (-4).dp
-                                    val baseShiftY = 1.dp
-                                    val layerShape = RoundedCornerShape(8.dp)
-                                    repeat(layerCount) { layer ->
-                                        val xOffset = baseShiftX + (stackStepX * layer)
-                                        val yOffset = baseShiftY + (stackStepY * layer)
-                                        val alpha = 1f
-                                        val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
-                                        FramedCoverImage(
-                                            coverUrl = series.coverUrl,
-                                            contentDescription = series.name,
-                                            modifier = Modifier
-                                                .offset(x = xOffset, y = yOffset)
-                                                .width(cardWidth)
-                                                .height(cardHeight)
-                                                .shadow(elevation = layerShadow, shape = layerShape, clip = false)
-                                                .graphicsLayer(alpha = alpha.coerceIn(0f, 1f)),
-                                            shape = layerShape,
-                                            contentScale = ContentScale.Fit,
-                                            backgroundBlur = WideCoverBackgroundBlur
-                                        )
-                                    }
+                                    SeriesStackCoverLayers(
+                                        coverUrl = series.coverUrl,
+                                        contentDescription = series.name,
+                                        layerCount = layerCount,
+                                        frameWidth = StandardGridCoverWidth,
+                                        frameHeight = StandardGridCoverHeight,
+                                        modifier = Modifier
+                                            .width(StandardGridCoverWidth)
+                                            .height(StandardGridCoverHeight)
+                                    )
                                 }
                                 Text(
                                     text = series.name,
@@ -3474,15 +3473,6 @@ fun SeriesBrowseScreen(
                             val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
                             val frameWidth = 92.dp
                             val frameHeight = 102.dp
-                            val stackStepX = 5.dp
-                            val stackStepY = 10.dp
-                            val totalShiftX = stackStepX * (layerCount - 1)
-                            val totalShiftY = stackStepY * (layerCount - 1)
-                            val cardWidth = frameWidth - totalShiftX - 3.dp
-                            val cardHeight = frameHeight - totalShiftY - 3.dp
-                            val baseShiftX = (-4).dp
-                            val baseShiftY = 1.dp
-                            val layerShape = RoundedCornerShape(8.dp)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3499,23 +3489,14 @@ fun SeriesBrowseScreen(
                                         .height(frameHeight)
                                         .clipToBounds()
                                 ) {
-                                    repeat(layerCount) { layer ->
-                                        val xOffset = baseShiftX + (stackStepX * layer)
-                                        val yOffset = baseShiftY + (stackStepY * layer)
-                                        val layerShadow = if (layer == layerCount - 1) 1.2.dp else 3.4.dp
-                                        FramedCoverImage(
-                                            coverUrl = series.coverUrl,
-                                            contentDescription = series.name,
-                                            modifier = Modifier
-                                                .offset(x = xOffset, y = yOffset)
-                                                .width(cardWidth)
-                                                .height(cardHeight)
-                                                .shadow(elevation = layerShadow, shape = layerShape, clip = false),
-                                            shape = layerShape,
-                                            contentScale = ContentScale.Fit,
-                                            backgroundBlur = WideCoverBackgroundBlur
-                                        )
-                                    }
+                                    SeriesStackCoverLayers(
+                                        coverUrl = series.coverUrl,
+                                        contentDescription = series.name,
+                                        layerCount = layerCount,
+                                        frameWidth = frameWidth,
+                                        frameHeight = frameHeight,
+                                        modifier = Modifier.matchParentSize()
+                                    )
                                 }
                                 Column(
                                     modifier = Modifier.weight(1f),
@@ -9505,10 +9486,8 @@ private fun SeriesStackCard(
     val posterWidth = StandardGridCoverWidth
     val posterHeight = StandardGridCoverHeight
     val layerCount = series.count.coerceIn(2, 3)
-    val stackStepX = 5.dp
-    val stackStepY = 10.dp
-    val frameWidth = posterWidth + (stackStepX * (layerCount - 1))
-    val frameHeight = posterHeight + (stackStepY * (layerCount - 1))
+    val frameWidth = posterWidth
+    val frameHeight = posterHeight
     Column(
         modifier = Modifier
             .width(frameWidth)
@@ -9519,25 +9498,17 @@ private fun SeriesStackCard(
             modifier = Modifier
                 .width(frameWidth)
                 .height(frameHeight)
+                .clipToBounds(),
+            contentAlignment = Alignment.TopCenter
         ) {
-            repeat(layerCount) { layer ->
-                val xOffset = stackStepX * layer
-                val yOffset = stackStepY * layer
-                val layerShadow = if (layer == layerCount - 1) 1.2.dp else 2.8.dp
-                FramedCoverImage(
-                    coverUrl = book.coverUrl,
-                    contentDescription = book.title,
-                    modifier = Modifier
-                        .offset(x = xOffset, y = yOffset)
-                        .width(posterWidth)
-                        .height(posterHeight)
-                        .shadow(elevation = layerShadow, shape = RoundedCornerShape(8.dp), clip = false)
-                        .graphicsLayer(alpha = 1f),
-                    shape = RoundedCornerShape(8.dp),
-                    contentScale = ContentScale.Fit,
-                    backgroundBlur = WideCoverBackgroundBlur
-                )
-            }
+            SeriesStackCoverLayers(
+                coverUrl = book.coverUrl,
+                contentDescription = series.seriesName,
+                layerCount = layerCount,
+                frameWidth = frameWidth,
+                frameHeight = frameHeight,
+                modifier = Modifier.matchParentSize()
+            )
             val progress = downloadProgressPercent?.coerceIn(0, 100)
             val showProgress = progress != null && progress in 0..99
             val showCompleted = isDownloaded && !showProgress

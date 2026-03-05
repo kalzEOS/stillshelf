@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -106,8 +107,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.stillshelf.app.ui.components.AppDropdownMenu
+import com.stillshelf.app.ui.components.AppDropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -207,6 +208,7 @@ import com.stillshelf.app.ui.navigation.BrowseRoute
 import com.stillshelf.app.ui.navigation.MainRoute
 import com.stillshelf.app.ui.navigation.MainTab
 import com.stillshelf.app.ui.theme.AppThemeMode
+import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -502,7 +504,7 @@ fun HomeScreen(
                                 )
                             }
                         }
-                        DropdownMenu(
+                        AppDropdownMenu(
                             expanded = isLibraryMenuExpanded && hasLibraries,
                             onDismissRequest = { isLibraryMenuExpanded = false },
                             modifier = if (libraryMenuAnchorWidthPx > 0) {
@@ -513,7 +515,7 @@ fun HomeScreen(
                         ) {
                             menuUiState.libraries.forEach { library ->
                                 val isActive = menuUiState.activeLibraryId == library.id
-                                DropdownMenuItem(
+                                AppDropdownMenuItem(
                                     text = { Text(library.name) },
                                     trailingIcon = {
                                         if (isActive) {
@@ -552,11 +554,11 @@ fun HomeScreen(
                             contentDescription = "More",
                             onClick = { isMenuExpanded = true }
                         )
-                        DropdownMenu(
+                        AppDropdownMenu(
                             expanded = isMenuExpanded,
                             onDismissRequest = { isMenuExpanded = false }
                         ) {
-                            DropdownMenuItem(
+                            AppDropdownMenuItem(
                                 text = { Text("Settings") },
                                 leadingIcon = {
                                     Icon(
@@ -569,7 +571,7 @@ fun HomeScreen(
                                     onNavigateToRoute(MainRoute.SETTINGS)
                                 }
                             )
-                            DropdownMenuItem(
+                            AppDropdownMenuItem(
                                 text = { Text("Customize") },
                                 leadingIcon = {
                                     Icon(
@@ -582,22 +584,35 @@ fun HomeScreen(
                                     onNavigateToRoute(MainRoute.CUSTOMIZE)
                                 }
                             )
-                            if (menuUiState.servers.size > 1) {
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = "Servers",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            HorizontalDivider()
+                            AppDropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Servers",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                enabled = false,
+                                onClick = {}
+                            )
+                            if (menuUiState.servers.isEmpty()) {
+                                AppDropdownMenuItem(
+                                    text = { Text("No servers") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Dns,
+                                            contentDescription = null
                                         )
                                     },
                                     enabled = false,
                                     onClick = {}
                                 )
+                            } else {
+                                val canSwitchServers = menuUiState.servers.size > 1 && !menuUiState.isSwitchingServer
                                 menuUiState.servers.forEach { server ->
                                     val isActive = menuUiState.activeServerId == server.id
-                                    DropdownMenuItem(
+                                    AppDropdownMenuItem(
                                         text = { Text(server.name) },
                                         leadingIcon = {
                                             Icon(
@@ -613,7 +628,7 @@ fun HomeScreen(
                                                 )
                                             }
                                         },
-                                        enabled = !menuUiState.isSwitchingServer,
+                                        enabled = canSwitchServers,
                                         onClick = {
                                             menuViewModel.onServerSelected(server.id)
                                             isMenuExpanded = false
@@ -669,13 +684,22 @@ fun HomeScreen(
                         containerColor = if (appearanceUiState.materialDesignEnabled) {
                             MaterialTheme.colorScheme.surfaceContainerHigh
                         } else {
-                            Color.Transparent
+                            MaterialTheme.colorScheme.surface.copy(
+                                alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
+                            )
                         }
                     ),
                     border = if (appearanceUiState.materialDesignEnabled) {
                         BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
                     } else {
-                        null
+                        BorderStroke(
+                            width = 1.dp,
+                            color = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+                                Color.White.copy(alpha = 0.14f)
+                            } else {
+                                Color.Black.copy(alpha = 0.1f)
+                            }
+                        )
                     },
                     shape = RoundedCornerShape(18.dp)
                 ) {
@@ -818,11 +842,11 @@ fun HomeScreen(
                                                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
                                                 }
-                                                DropdownMenu(
+                                                AppDropdownMenu(
                                                     expanded = menuExpanded,
                                                     onDismissRequest = { menuExpanded = false }
                                                 ) {
-                                                    DropdownMenuItem(
+                                                    AppDropdownMenuItem(
                                                         text = { Text("Add to Collection") },
                                                         leadingIcon = {
                                                             Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
@@ -832,7 +856,7 @@ fun HomeScreen(
                                                             menuExpanded = false
                                                         }
                                                     )
-                                                    DropdownMenuItem(
+                                                    AppDropdownMenuItem(
                                                         text = {
                                                             Text(
                                                                 if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
@@ -857,7 +881,7 @@ fun HomeScreen(
                                                             menuExpanded = false
                                                         }
                                                     )
-                                                    DropdownMenuItem(
+                                                    AppDropdownMenuItem(
                                                         text = {
                                                             Text(
                                                                 if (uiState.downloadedBookIds.contains(book.id)) {
@@ -875,7 +899,7 @@ fun HomeScreen(
                                                             menuExpanded = false
                                                         }
                                                     )
-                                                    DropdownMenuItem(
+                                                    AppDropdownMenuItem(
                                                         text = { Text("Remove from Listen Again") },
                                                         leadingIcon = {
                                                             Icon(Icons.Outlined.RemoveCircleOutline, contentDescription = null)
@@ -965,11 +989,11 @@ fun HomeScreen(
                                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                             )
                                                         }
-                                                        DropdownMenu(
+                                                        AppDropdownMenu(
                                                             expanded = menuExpanded,
                                                             onDismissRequest = { menuExpanded = false }
                                                         ) {
-                                                            DropdownMenuItem(
+                                                            AppDropdownMenuItem(
                                                                 text = { Text("Add to Collection") },
                                                                 leadingIcon = {
                                                                     Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
@@ -979,7 +1003,7 @@ fun HomeScreen(
                                                                     menuExpanded = false
                                                                 }
                                                             )
-                                                            DropdownMenuItem(
+                                                            AppDropdownMenuItem(
                                                                 text = {
                                                                     Text(
                                                                         if (book.hasFinishedProgress()) {
@@ -1008,7 +1032,7 @@ fun HomeScreen(
                                                                     menuExpanded = false
                                                                 }
                                                             )
-                                                            DropdownMenuItem(
+                                                            AppDropdownMenuItem(
                                                                 text = {
                                                                     Text(
                                                                         if (uiState.downloadedBookIds.contains(book.id)) {
@@ -1129,11 +1153,11 @@ fun HomeScreen(
                                                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                         )
                                                     }
-                                                    DropdownMenu(
+                                                    AppDropdownMenu(
                                                         expanded = menuExpanded,
                                                         onDismissRequest = { menuExpanded = false }
                                                     ) {
-                                                        DropdownMenuItem(
+                                                        AppDropdownMenuItem(
                                                             text = { Text("Add to Collection") },
                                                             leadingIcon = {
                                                                 Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null)
@@ -1143,7 +1167,7 @@ fun HomeScreen(
                                                                 menuExpanded = false
                                                             }
                                                         )
-                                                        DropdownMenuItem(
+                                                        AppDropdownMenuItem(
                                                             text = {
                                                                 Text(
                                                                     if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
@@ -1168,7 +1192,7 @@ fun HomeScreen(
                                                                 menuExpanded = false
                                                             }
                                                         )
-                                                        DropdownMenuItem(
+                                                        AppDropdownMenuItem(
                                                             text = {
                                                                 Text(
                                                                     if (uiState.downloadedBookIds.contains(book.id)) {
@@ -1391,12 +1415,12 @@ fun BrowseScreen(
                     contentDescription = "Filter",
                     onClick = { statusMenuExpanded = true }
                 )
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = statusMenuExpanded,
                     onDismissRequest = { statusMenuExpanded = false }
                 ) {
                     BooksStatusFilter.entries.forEach { option ->
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text(option.label) },
                             trailingIcon = {
                                 if (uiState.statusFilter == option) {
@@ -1418,11 +1442,11 @@ fun BrowseScreen(
                     contentDescription = "Options",
                     onClick = { optionsMenuExpanded = true }
                 )
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = optionsMenuExpanded,
                     onDismissRequest = { optionsMenuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Grid") },
                         leadingIcon = { Icon(imageVector = Icons.Outlined.GridView, contentDescription = null) },
                         trailingIcon = {
@@ -1435,7 +1459,7 @@ fun BrowseScreen(
                             optionsMenuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("List") },
                         leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.ViewList, contentDescription = null) },
                         trailingIcon = {
@@ -1449,7 +1473,7 @@ fun BrowseScreen(
                         }
                     )
                     HorizontalDivider()
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Collapse Series") },
                         trailingIcon = {
                             if (uiState.collapseSeries) {
@@ -1464,7 +1488,7 @@ fun BrowseScreen(
                     HorizontalDivider()
                     BooksSortKey.entries.forEach { option ->
                         val isSelected = uiState.sortKey == option
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = {
                                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                     Text(option.label)
@@ -1799,11 +1823,11 @@ private fun BookGridItem(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {
@@ -1811,7 +1835,7 @@ private fun BookGridItem(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                         leadingIcon = {
                             Icon(
@@ -1828,7 +1852,7 @@ private fun BookGridItem(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to Collection") },
                         leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
                         onClick = {
@@ -1958,11 +1982,11 @@ private fun SeriesStackGridItem(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to Collection") },
                         leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
                         onClick = {
@@ -1970,7 +1994,7 @@ private fun SeriesStackGridItem(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = {
                             Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished")
                         },
@@ -1989,7 +2013,7 @@ private fun SeriesStackGridItem(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {
@@ -2063,11 +2087,11 @@ private fun BookListItem(
                     contentDescription = "Book actions"
                 )
             }
-            DropdownMenu(
+            AppDropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false }
             ) {
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text(downloadLabel) },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = {
@@ -2075,7 +2099,7 @@ private fun BookListItem(
                         menuExpanded = false
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                     leadingIcon = {
                         Icon(
@@ -2092,7 +2116,7 @@ private fun BookListItem(
                         menuExpanded = false
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text("Add to Collection") },
                     leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
                     onClick = {
@@ -2228,11 +2252,11 @@ private fun SeriesStackListItem(
                     contentDescription = "Series actions"
                 )
             }
-            DropdownMenu(
+            AppDropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false }
             ) {
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text("Add to Collection") },
                     leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
                     onClick = {
@@ -2240,7 +2264,7 @@ private fun SeriesStackListItem(
                         menuExpanded = false
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text(if (lead.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                     leadingIcon = {
                         Icon(
@@ -2257,7 +2281,7 @@ private fun SeriesStackListItem(
                         menuExpanded = false
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text(downloadLabel) },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = {
@@ -2332,12 +2356,10 @@ fun BookmarksBrowseScreen(
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     onBookmarkClick: (bookId: String, startSeconds: Double?) -> Unit = { _, _ -> },
-    viewModel: BookmarksBrowseViewModel = hiltViewModel(),
-    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+    viewModel: BookmarksBrowseViewModel = hiltViewModel()
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading && uiState.bookmarks.isEmpty(),
         onRefresh = viewModel::refresh
@@ -2385,13 +2407,7 @@ fun BookmarksBrowseScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(
-                                        if (appearanceUiState.materialDesignEnabled) {
-                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.68f)
-                                        } else {
-                                            Color.Transparent
-                                        }
-                                    )
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
                                     .clickable {
                                         onBookmarkClick(
                                             item.book.id,
@@ -2708,11 +2724,11 @@ fun CollectionsBrowseScreen(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                         }
-                                        DropdownMenu(
+                                        AppDropdownMenu(
                                             expanded = menuExpanded,
                                             onDismissRequest = { menuExpanded = false }
                                         ) {
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Rename") },
                                                 onClick = {
                                                     menuExpanded = false
@@ -2720,7 +2736,7 @@ fun CollectionsBrowseScreen(
                                                     renameTarget = collection
                                                 }
                                             )
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Delete") },
                                                 onClick = {
                                                     menuExpanded = false
@@ -3045,11 +3061,11 @@ fun PlaylistsBrowseScreen(
                                                 modifier = Modifier.size(16.dp)
                                             )
                                         }
-                                        DropdownMenu(
+                                        AppDropdownMenu(
                                             expanded = menuExpanded,
                                             onDismissRequest = { menuExpanded = false }
                                         ) {
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Rename") },
                                                 onClick = {
                                                     menuExpanded = false
@@ -3057,7 +3073,7 @@ fun PlaylistsBrowseScreen(
                                                     renameTarget = playlist
                                                 }
                                             )
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Delete") },
                                                 onClick = {
                                                     menuExpanded = false
@@ -3898,8 +3914,10 @@ fun DownloadsScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
                                 .clickable { onBookClick(book.id) }
-                                .padding(vertical = 6.dp),
+                                .padding(horizontal = 6.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             BookPoster(
@@ -3956,18 +3974,18 @@ fun DownloadsScreen(
                                         contentDescription = "More"
                                     )
                                 }
-                                DropdownMenu(
+                                AppDropdownMenu(
                                     expanded = menuExpanded,
                                     onDismissRequest = { menuExpanded = false }
                                 ) {
-                                    DropdownMenuItem(
+                                    AppDropdownMenuItem(
                                         text = { Text("Go to book") },
                                         onClick = {
                                             menuExpanded = false
                                             onBookClick(book.id)
                                         }
                                     )
-                                    DropdownMenuItem(
+                                    AppDropdownMenuItem(
                                         text = { Text("Remove Download") },
                                         onClick = {
                                             menuExpanded = false
@@ -4033,18 +4051,18 @@ fun DownloadsScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
-                                    DropdownMenu(
+                                    AppDropdownMenu(
                                         expanded = menuExpanded,
                                         onDismissRequest = { menuExpanded = false }
                                     ) {
-                                        DropdownMenuItem(
+                                        AppDropdownMenuItem(
                                             text = { Text("Go to book") },
                                             onClick = {
                                                 menuExpanded = false
                                                 onBookClick(book.id)
                                             }
                                         )
-                                        DropdownMenuItem(
+                                        AppDropdownMenuItem(
                                             text = { Text("Remove Download") },
                                             onClick = {
                                                 menuExpanded = false
@@ -4941,11 +4959,11 @@ fun ServersManagementScreen(
                                     contentDescription = "Server actions"
                                 )
                             }
-                            DropdownMenu(
+                            AppDropdownMenu(
                                 expanded = expandedServerMenuId == server.id,
                                 onDismissRequest = { expandedServerMenuId = null }
                             ) {
-                                DropdownMenuItem(
+                                AppDropdownMenuItem(
                                     text = { Text("Edit") },
                                     onClick = {
                                         expandedServerMenuId = null
@@ -4955,7 +4973,7 @@ fun ServersManagementScreen(
                                         editingError = null
                                     }
                                 )
-                                DropdownMenuItem(
+                                AppDropdownMenuItem(
                                     text = { Text("Delete") },
                                     onClick = {
                                         expandedServerMenuId = null
@@ -5190,11 +5208,11 @@ fun BookDetailScreen(
                         contentDescription = "More",
                         onClick = { actionsExpanded = true }
                     )
-                    DropdownMenu(
+                    AppDropdownMenu(
                         expanded = actionsExpanded,
                         onDismissRequest = { actionsExpanded = false }
                     ) {
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = {
                                 val hasActiveDownload = (uiState.downloadProgressPercent ?: -1) in 0..99
                                 Text(
@@ -5213,14 +5231,14 @@ fun BookDetailScreen(
                                 actionsExpanded = false
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Skip Intro & Outro") },
                             onClick = {
                                 viewModel.skipIntroOrOutro()
                                 actionsExpanded = false
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = {
                                 Text(
                                     if (effectiveDetailFinished) {
@@ -5239,7 +5257,7 @@ fun BookDetailScreen(
                                 actionsExpanded = false
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Add to Collection") },
                             onClick = {
                                 addToListBookId = uiState.detail?.book?.id
@@ -5553,14 +5571,14 @@ fun BookDetailScreen(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(
-                                            if (isActive) {
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                            } else if (appearanceUiState.materialDesignEnabled) {
-                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
-                                            } else {
-                                                Color.Transparent
-                                            }
-                                        )
+                                        if (isActive) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                        } else if (appearanceUiState.materialDesignEnabled) {
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
+                                        }
+                                    )
                                         .clickable { viewModel.playChapter(chapter.startSeconds) }
                                         .padding(horizontal = 12.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -5628,10 +5646,8 @@ fun BookDetailScreen(
                                         .background(
                                             if (isActiveBookmark) {
                                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                            } else if (appearanceUiState.materialDesignEnabled) {
-                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.68f)
                                             } else {
-                                                Color.Transparent
+                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f)
                                             }
                                         )
                                         .clickable(enabled = bookmarkSeconds != null) {
@@ -5678,11 +5694,11 @@ fun BookDetailScreen(
                                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
-                                            DropdownMenu(
+                                            AppDropdownMenu(
                                                 expanded = bookmarkMenuId == bookmark.id,
                                                 onDismissRequest = { bookmarkMenuId = null }
                                             ) {
-                                                DropdownMenuItem(
+                                                AppDropdownMenuItem(
                                                     text = { Text("Edit title") },
                                                     onClick = {
                                                         bookmarkMenuId = null
@@ -5690,7 +5706,7 @@ fun BookDetailScreen(
                                                         editingDetailBookmarkTitle = bookmark.title.orEmpty()
                                                     }
                                                 )
-                                                DropdownMenuItem(
+                                                AppDropdownMenuItem(
                                                     text = { Text("Delete bookmark") },
                                                     onClick = {
                                                         bookmarkMenuId = null
@@ -5984,23 +6000,54 @@ fun PlayerScreen(
     }
     val useFloatingChipsTools = bottomToolsStyle == PlayerBottomToolsStyle.FloatingChips
     val useSlimStripTools = bottomToolsStyle == PlayerBottomToolsStyle.SlimStrip
+    val menuLikeContainerColor = if (appearanceUiState.materialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainer
+    } else {
+        MaterialTheme.colorScheme.surface.copy(
+            alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
+        )
+    }
+    val menuLikeBorderColor = if (appearanceUiState.materialDesignEnabled) {
+        Color.Transparent
+    } else if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.1f)
+    }
+    val nonMaterialDockMenuMatch = !appearanceUiState.materialDesignEnabled && !immersiveEnabled && useSlimStripTools
+    val nonMaterialMenuLikeContainer = MaterialTheme.colorScheme.surface.copy(
+        alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
+    )
+    val nonMaterialMenuLikeBorder = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.1f)
+    }
     val toolsOuterContainerColor = when {
         useFloatingChipsTools -> Color.Transparent
-        useSlimStripTools -> bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.28f)
+        useSlimStripTools -> if (nonMaterialDockMenuMatch) {
+            nonMaterialMenuLikeContainer
+        } else {
+            bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.28f)
+        }
         else -> Color.Transparent
     }
     val toolsOuterBorderColor = when {
         useFloatingChipsTools -> Color.Transparent
-        useSlimStripTools -> bottomToolsBorderColor.copy(alpha = 0.4f)
+        useSlimStripTools -> if (nonMaterialDockMenuMatch) {
+            nonMaterialMenuLikeBorder
+        } else {
+            bottomToolsBorderColor.copy(alpha = 0.4f)
+        }
         else -> Color.Transparent
     }
     val toolsItemContainerColor = when {
-        useFloatingChipsTools -> bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.14f)
+        useFloatingChipsTools -> menuLikeContainerColor
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
     val toolsItemBorderColor = when {
-        useFloatingChipsTools -> bottomToolsBorderColor.copy(alpha = if (immersiveEnabled) 0.4f else 0.2f)
+        useFloatingChipsTools -> menuLikeBorderColor
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
@@ -6027,8 +6074,19 @@ fun PlayerScreen(
     }
     val mainPlayButtonContainer = if (immersiveEnabled) {
         MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+    } else if (!appearanceUiState.materialDesignEnabled) {
+        nonMaterialMenuLikeContainer
     } else {
         MaterialTheme.colorScheme.surfaceVariant
+    }
+    val mainPlayButtonBorderColor = when {
+        immersiveEnabled -> if (useSlimStripTools) {
+            toolsOuterBorderColor
+        } else {
+            bottomToolsBorderColor.copy(alpha = 0.4f)
+        }
+        !appearanceUiState.materialDesignEnabled -> nonMaterialMenuLikeBorder
+        else -> Color.Transparent
     }
     val mainPlayButtonIconTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
         Color.Black
@@ -6218,19 +6276,6 @@ fun PlayerScreen(
                         )
                     }
                 }
-                if (timerIsActive) {
-                    val timerYOffset = if (playerSeriesOrderLabel != null) 30.dp else 6.dp
-                    PlayerTimerRunningBadge(
-                        remainingMs = timerRemainingMs,
-                        totalMs = timerTotalMs,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .offset(
-                                x = 6.dp,
-                                y = timerYOffset
-                            )
-                    )
-                }
             }
         }
         Spacer(modifier = Modifier.height(coverTitleGap))
@@ -6288,7 +6333,24 @@ fun PlayerScreen(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(titleProgressGap))
+        if (timerIsActive) {
+            val timerSlotHeight = if (titleProgressGap > 24.dp) titleProgressGap else 24.dp
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(timerSlotHeight),
+                contentAlignment = Alignment.Center
+            ) {
+                PlayerTimerRunningBadge(
+                    remainingMs = timerRemainingMs,
+                    totalMs = timerTotalMs,
+                    useAccentBackground = !immersiveEnabled,
+                    materialDesignEnabled = appearanceUiState.materialDesignEnabled
+                )
+            }
+        } else {
+            Spacer(modifier = Modifier.height(titleProgressGap))
+        }
         PlayerProgressBar(
             progress = effectiveProgress,
             activeColor = progressActiveColor,
@@ -6386,6 +6448,11 @@ fun PlayerScreen(
                         .size(64.dp)
                         .clip(CircleShape)
                         .background(mainPlayButtonContainer)
+                        .border(
+                            width = if (mainPlayButtonBorderColor.alpha > 0f) 1.dp else 0.dp,
+                            color = mainPlayButtonBorderColor,
+                            shape = CircleShape
+                        )
                         .clickable(onClick = viewModel::onPlayPauseClick),
                     contentAlignment = Alignment.Center
                 ) {
@@ -6502,7 +6569,7 @@ fun PlayerScreen(
                             showIconBubble = toolsShowIconBubble,
                             onClick = { bottomMenuExpanded = true }
                         )
-                        DropdownMenu(
+                        AppDropdownMenu(
                             expanded = bottomMenuExpanded,
                             onDismissRequest = { bottomMenuExpanded = false }
                         ) {
@@ -6512,7 +6579,7 @@ fun PlayerScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp)
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Flat") },
                             leadingIcon = {
                                 Icon(
@@ -6533,7 +6600,7 @@ fun PlayerScreen(
                                 bottomMenuExpanded = false
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Buttons") },
                             leadingIcon = {
                                 Icon(
@@ -6554,7 +6621,7 @@ fun PlayerScreen(
                                 bottomMenuExpanded = false
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Dock") },
                             leadingIcon = {
                                 Icon(
@@ -6576,7 +6643,7 @@ fun PlayerScreen(
                             }
                         )
                         HorizontalDivider()
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Skip Intro & Outro") },
                             leadingIcon = {
                                 Icon(
@@ -6609,7 +6676,7 @@ fun PlayerScreen(
                                 }
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = {
                                 Text(
                                     if (effectivePlayerFinished) {
@@ -6638,7 +6705,7 @@ fun PlayerScreen(
                                 }
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Add to Collection") },
                             leadingIcon = {
                                 Icon(
@@ -6651,7 +6718,7 @@ fun PlayerScreen(
                                 addToListBookId = bookId
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Go to Book") },
                             leadingIcon = {
                                 Icon(
@@ -7019,7 +7086,7 @@ private fun PlayerChapterBookmarkSheet(
                                         } else if (materialDesignEnabled) {
                                             MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         } else {
-                                            Color.Transparent
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         }
                                     )
                                     .clickable { onPlayChapter(chapter.startSeconds) }
@@ -7100,7 +7167,7 @@ private fun PlayerChapterBookmarkSheet(
                                         } else if (materialDesignEnabled) {
                                             MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         } else {
-                                            Color.Transparent
+                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         }
                                     )
                                     .clickable(enabled = bookmarkSeconds != null) {
@@ -7166,11 +7233,11 @@ private fun PlayerChapterBookmarkSheet(
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                        DropdownMenu(
+                                        AppDropdownMenu(
                                             expanded = bookmarkMenuId == bookmark.id,
                                             onDismissRequest = { bookmarkMenuId = null }
                                         ) {
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Edit title") },
                                                 onClick = {
                                                     bookmarkMenuId = null
@@ -7178,7 +7245,7 @@ private fun PlayerChapterBookmarkSheet(
                                                     editingBookmarkTitle = bookmark.title.orEmpty()
                                                 }
                                             )
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text("Delete bookmark") },
                                                 onClick = {
                                                     bookmarkMenuId = null
@@ -7643,6 +7710,8 @@ private fun PlayerOutputSheet(
 private fun PlayerTimerRunningBadge(
     remainingMs: Long,
     totalMs: Long,
+    useAccentBackground: Boolean,
+    materialDesignEnabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     val progress = if (totalMs > 0L) {
@@ -7650,10 +7719,65 @@ private fun PlayerTimerRunningBadge(
     } else {
         0f
     }
+    val chipShape = RoundedCornerShape(999.dp)
+    val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val chipContainer = if (useAccentBackground) {
+        if (materialDesignEnabled) {
+            if (isDarkTheme) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
+            } else {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+            }
+        } else {
+            if (isDarkTheme) {
+                Color(0xFF4F5563).copy(alpha = 0.9f)
+            } else {
+                Color(0xFFE5E7ED).copy(alpha = 0.95f)
+            }
+        }
+    } else if (isDarkTheme) {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
+    } else {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)
+    }
+    val chipBorder = if (useAccentBackground) {
+        if (materialDesignEnabled) {
+            MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkTheme) 0.62f else 0.4f)
+        } else {
+            if (isDarkTheme) Color.White.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.12f)
+        }
+    } else if (isDarkTheme) {
+        Color.White.copy(alpha = 0.2f)
+    } else {
+        Color.Black.copy(alpha = 0.12f)
+    }
+    val chipContentColor = if (isDarkTheme) {
+        Color.White
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val timerProgressColor = if (useAccentBackground) {
+        chipContentColor
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val timerTrackColor = if (useAccentBackground) {
+        chipContentColor.copy(alpha = 0.18f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
+            .shadow(
+                elevation = 2.dp,
+                shape = chipShape,
+                ambientColor = Color.Black.copy(alpha = 0.22f),
+                spotColor = Color.Black.copy(alpha = 0.22f)
+            )
+            .clip(chipShape)
+            .background(chipContainer)
+            .border(width = 1.dp, color = chipBorder, shape = chipShape)
             .padding(horizontal = 6.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -7666,31 +7790,27 @@ private fun PlayerTimerRunningBadge(
                 progress = { progress },
                 modifier = Modifier.matchParentSize(),
                 strokeWidth = 1.8.dp,
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                color = timerProgressColor,
+                trackColor = timerTrackColor
             )
             Icon(
                 imageVector = Icons.Outlined.Timer,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface,
+                tint = chipContentColor,
                 modifier = Modifier.size(10.dp)
             )
         }
-        Box(
-            modifier = Modifier.width(52.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = formatTimerCountdownShort(remainingMs),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = FontFamily.Monospace
-                ),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                textAlign = TextAlign.Center
-            )
-        }
+        Text(
+            text = formatTimerCountdownShort(remainingMs),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace
+            ),
+            color = chipContentColor,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(min = 52.dp)
+        )
     }
 }
 
@@ -9051,19 +9171,32 @@ private fun CustomizeTabChip(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
+    val materialDesignEnabled = LocalMaterialDesignEnabled.current
+    val containerColor = when {
+        materialDesignEnabled && selected -> MaterialTheme.colorScheme.primaryContainer
+        materialDesignEnabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        selected -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)
+        else -> MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.82f)
+    }
+    val borderColor = when {
+        materialDesignEnabled && selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+        materialDesignEnabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+        selected -> MaterialTheme.colorScheme.outline.copy(alpha = 0.52f)
+        else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.34f)
+    }
+    val textColor = when {
+        materialDesignEnabled && selected -> MaterialTheme.colorScheme.onPrimaryContainer
+        selected -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-            )
+            .background(containerColor)
             .border(
                 width = 1.dp,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-                } else {
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-                },
+                color = borderColor,
                 shape = RoundedCornerShape(12.dp)
             )
             .clickable(onClick = onClick)
@@ -9074,7 +9207,7 @@ private fun CustomizeTabChip(
             text = label,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            color = textColor
         )
     }
 }
@@ -9508,11 +9641,11 @@ private fun ContinueListeningCard(
                         tint = primaryTextColor
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Go to Book") },
                         leadingIcon = {
                             Icon(Icons.AutoMirrored.Outlined.MenuBook, contentDescription = null)
@@ -9522,7 +9655,7 @@ private fun ContinueListeningCard(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to Collection") },
                         leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
                         onClick = {
@@ -9530,7 +9663,7 @@ private fun ContinueListeningCard(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = {
                             Text(
                                 if (item.book.hasFinishedProgress()) {
@@ -9555,7 +9688,7 @@ private fun ContinueListeningCard(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Remove from Continue Listening") },
                         leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
                         onClick = {
@@ -9563,7 +9696,7 @@ private fun ContinueListeningCard(
                             menuExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {

@@ -43,8 +43,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.stillshelf.app.ui.components.AppDropdownMenu
+import com.stillshelf.app.ui.components.AppDropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -1110,11 +1110,11 @@ private fun AuthorDetailHeader(
                 IconButton(onClick = { optionsExpanded = true }) {
                     Icon(imageVector = Icons.Outlined.MoreHoriz, contentDescription = "More")
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = optionsExpanded,
                     onDismissRequest = { optionsExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Grid") },
                         leadingIcon = {
                             Icon(
@@ -1135,7 +1135,7 @@ private fun AuthorDetailHeader(
                             optionsExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("List") },
                         leadingIcon = {
                             Icon(
@@ -1156,7 +1156,7 @@ private fun AuthorDetailHeader(
                             optionsExpanded = false
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Collapse Series") },
                         trailingIcon = {
                             if (collapseSeries) {
@@ -1304,18 +1304,18 @@ private fun AuthorGridBookItem(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false
                             onToggleDownload()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -1330,7 +1330,7 @@ private fun AuthorGridBookItem(
                             onMarkAsFinished()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to Collection") },
                         onClick = {
                             menuExpanded = false
@@ -1496,18 +1496,18 @@ private fun AuthorBookRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false
                             onToggleDownload()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -1522,7 +1522,7 @@ private fun AuthorBookRow(
                             onMarkAsFinished()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to Collection") },
                         onClick = {
                             menuExpanded = false
@@ -1762,12 +1762,12 @@ fun SeriesDetailScreen(
                                             contentDescription = "Filter"
                                         )
                                     }
-                                    DropdownMenu(
+                                    AppDropdownMenu(
                                         expanded = filterMenuExpanded,
                                         onDismissRequest = { filterMenuExpanded = false }
                                     ) {
                                         BooksStatusFilter.entries.forEach { candidate ->
-                                            DropdownMenuItem(
+                                            AppDropdownMenuItem(
                                                 text = { Text(candidate.label) },
                                                 trailingIcon = {
                                                     if (candidate == statusFilter) {
@@ -2510,18 +2510,18 @@ private fun CollectionBookRow(
                         contentDescription = "Collection item actions"
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Go to book") },
                         onClick = {
                             menuExpanded = false
                             onClick()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Remove from collection") },
                         onClick = {
                             menuExpanded = false
@@ -2584,18 +2584,18 @@ private fun PlaylistBookRow(
                         contentDescription = "Playlist item actions"
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Go to book") },
                         onClick = {
                             menuExpanded = false
                             onClick()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Remove from playlist") },
                         onClick = {
                             menuExpanded = false
@@ -2666,18 +2666,18 @@ private fun FacetBookGridCard(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    DropdownMenu(
+                    AppDropdownMenu(
                         expanded = menuExpanded,
                         onDismissRequest = { menuExpanded = false }
                     ) {
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text("Go to book") },
                             onClick = {
                                 menuExpanded = false
                                 onClick()
                             }
                         )
-                        DropdownMenuItem(
+                        AppDropdownMenuItem(
                             text = { Text(removeActionLabel) },
                             onClick = {
                                 menuExpanded = false
@@ -3252,18 +3252,18 @@ private fun SeriesDetailBookRow(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            DropdownMenu(
+            AppDropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false }
             ) {
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text("Add to collection") },
                     onClick = {
                         menuExpanded = false
                         onAddToCollection()
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = {
                         Text(
                             if (book.hasFinishedStatusProgress()) {
@@ -3278,7 +3278,7 @@ private fun SeriesDetailBookRow(
                         onMarkAsFinished()
                     }
                 )
-                DropdownMenuItem(
+                AppDropdownMenuItem(
                     text = { Text(downloadLabel) },
                     onClick = {
                         menuExpanded = false
@@ -3398,18 +3398,18 @@ private fun SeriesDetailGridCard(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                DropdownMenu(
+                AppDropdownMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text("Add to collection") },
                         onClick = {
                             menuExpanded = false
                             onAddToCollection()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -3424,7 +3424,7 @@ private fun SeriesDetailGridCard(
                             onMarkAsFinished()
                         }
                     )
-                    DropdownMenuItem(
+                    AppDropdownMenuItem(
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false

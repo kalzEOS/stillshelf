@@ -355,7 +355,7 @@ class PlayerViewModel @Inject constructor(
             ?: 0.0
         val startPositionMs = (startPositionSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
         playbackController.playBook(bookId = previewBookId, startPositionMs = startPositionMs)
-        mutableActionMessage.value = "Timer will start when playback starts."
+        mutableActionMessage.value = "Starting playback and timer..."
         return true
     }
 

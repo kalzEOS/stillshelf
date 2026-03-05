@@ -22,8 +22,8 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.stillshelf.app.ui.components.AppDropdownMenu
+import com.stillshelf.app.ui.components.AppDropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -268,11 +268,11 @@ private fun ServersScreen(
                                         contentDescription = "Server actions"
                                     )
                                 }
-                                DropdownMenu(
+                                AppDropdownMenu(
                                     expanded = openMenuServerId == server.id,
                                     onDismissRequest = { openMenuServerId = null }
                                 ) {
-                                    DropdownMenuItem(
+                                    AppDropdownMenuItem(
                                         text = { Text("Edit") },
                                         onClick = {
                                             openMenuServerId = null
@@ -282,7 +282,7 @@ private fun ServersScreen(
                                         },
                                         enabled = !uiState.isBusy
                                     )
-                                    DropdownMenuItem(
+                                    AppDropdownMenuItem(
                                         text = { Text("Remove") },
                                         onClick = {
                                             openMenuServerId = null

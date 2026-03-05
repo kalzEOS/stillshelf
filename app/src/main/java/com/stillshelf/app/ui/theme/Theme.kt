@@ -11,7 +11,9 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
@@ -53,6 +55,8 @@ enum class AppThemeMode {
     Dark
 }
 
+val LocalMaterialDesignEnabled = staticCompositionLocalOf { false }
+
 @Composable
 fun StillShelfTheme(
     themeMode: AppThemeMode,
@@ -78,7 +82,7 @@ fun StillShelfTheme(
     val colorScheme = if (materialDesignEnabled) {
         baseColorScheme.withPronouncedSectionSurfaces(darkTheme = darkTheme)
     } else {
-        baseColorScheme
+        baseColorScheme.withNonMaterialSectionSurfaces(darkTheme = darkTheme)
     }
     if (!view.isInEditMode) {
         SideEffect {
@@ -98,11 +102,13 @@ fun StillShelfTheme(
             activity.window.navigationBarColor = navigationBarColor.toArgb()
         }
     }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = if (materialDesignEnabled) Typography() else StillShelfTypography,
-        content = content
-    )
+    CompositionLocalProvider(LocalMaterialDesignEnabled provides materialDesignEnabled) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = if (materialDesignEnabled) Typography() else StillShelfTypography,
+            content = content
+        )
+    }
 }
 
 private fun ColorScheme.withPronouncedSectionSurfaces(darkTheme: Boolean): ColorScheme {
@@ -123,5 +129,38 @@ private fun ColorScheme.withPronouncedSectionSurfaces(darkTheme: Boolean): Color
         surfaceContainer = lerp(surfaceContainer, surface, if (darkTheme) 0.35f else 0.22f),
         surfaceContainerHigh = lerp(surfaceContainerHigh, surface, if (darkTheme) 0.4f else 0.26f),
         surfaceContainerHighest = lerp(surfaceContainerHighest, surface, if (darkTheme) 0.45f else 0.3f)
+    )
+}
+
+private fun ColorScheme.withNonMaterialSectionSurfaces(darkTheme: Boolean): ColorScheme {
+    val lowMix = if (darkTheme) 0.22f else 0.24f
+    val midMix = if (darkTheme) 0.32f else 0.36f
+    val highMix = if (darkTheme) 0.42f else 0.48f
+    val highestMix = if (darkTheme) 0.5f else 0.58f
+
+    val containerLow = lerp(surface, surfaceVariant, lowMix)
+    val container = lerp(surface, surfaceVariant, midMix)
+    val containerHigh = lerp(surface, surfaceVariant, highMix)
+    val containerHighest = lerp(surface, surfaceVariant, highestMix)
+    val containerLowest = lerp(surface, background, if (darkTheme) 0.24f else 0.16f)
+    val surfaceDimmed = if (darkTheme) {
+        lerp(surface, background, 0.26f)
+    } else {
+        lerp(surface, surfaceVariant, 0.24f)
+    }
+    val surfaceBrighter = if (darkTheme) {
+        lerp(surface, onSurface, 0.08f)
+    } else {
+        lerp(surface, background, 0.06f)
+    }
+
+    return copy(
+        surfaceContainerLowest = containerLowest,
+        surfaceContainerLow = containerLow,
+        surfaceContainer = container,
+        surfaceContainerHigh = containerHigh,
+        surfaceContainerHighest = containerHighest,
+        surfaceDim = surfaceDimmed,
+        surfaceBright = surfaceBrighter
     )
 }

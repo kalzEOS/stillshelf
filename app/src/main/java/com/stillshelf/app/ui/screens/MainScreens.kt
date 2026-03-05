@@ -4512,6 +4512,7 @@ fun SettingsScreen(
         }
 
         uiState.availableUpdate?.let { release ->
+            val releaseNotesScrollState = rememberScrollState()
             AlertDialog(
                 onDismissRequest = viewModel::dismissAvailableUpdateDialog,
                 title = { Text("Update available") },
@@ -4522,11 +4523,18 @@ fun SettingsScreen(
                             ?.trim()
                             ?.takeIf { it.isNotEmpty() }
                             ?.let { notes ->
-                                Text(
-                                    text = notes.take(240),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 240.dp)
+                                        .verticalScroll(releaseNotesScrollState)
+                                ) {
+                                    Text(
+                                        text = notes,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                     }
                 },

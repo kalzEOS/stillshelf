@@ -1,5 +1,6 @@
 package com.stillshelf.app
 
+import android.app.AlertDialog
 import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -19,6 +20,7 @@ class MainActivity : ComponentActivity() {
     private val startupViewModel: StartupViewModel by viewModels()
     @Volatile
     private var keepSplashOnScreen: Boolean = true
+    private var startupUpdateDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
@@ -27,6 +29,31 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             startupViewModel.isReady.collect { isReady ->
                 keepSplashOnScreen = !isReady
+            }
+        }
+        lifecycleScope.launch {
+            startupViewModel.startupUpdatePrompt.collect { release ->
+                if (release == null) {
+                    startupUpdateDialog?.dismiss()
+                    startupUpdateDialog = null
+                    return@collect
+                }
+                if (startupUpdateDialog?.isShowing == true) {
+                    return@collect
+                }
+                startupUpdateDialog = AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Update available")
+                    .setMessage("StillShelf ${release.versionName} is available. Update now?")
+                    .setPositiveButton("Update") { _, _ ->
+                        startupViewModel.installStartupUpdate()
+                    }
+                    .setNegativeButton("Cancel") { _, _ ->
+                        startupViewModel.dismissStartupUpdatePrompt()
+                    }
+                    .setOnDismissListener {
+                        startupUpdateDialog = null
+                    }
+                    .show()
             }
         }
         enableEdgeToEdge(

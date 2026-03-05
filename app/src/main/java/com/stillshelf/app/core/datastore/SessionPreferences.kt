@@ -52,6 +52,11 @@ class SessionPreferences @Inject constructor(
     private val cachedHomeFeedLibraryIdKey = stringPreferencesKey("cached_home_feed_library_id")
     private val cachedHomeFeedPayloadKey = stringPreferencesKey("cached_home_feed_payload")
     private val cachedHomeFeedSavedAtKey = longPreferencesKey("cached_home_feed_saved_at")
+    private val lastLibrarySyncAtMsKey = longPreferencesKey("last_library_sync_at_ms")
+    private val updateCheckOnStartupKey = booleanPreferencesKey("update_check_on_startup")
+    private val updateIncludePrereleasesKey = booleanPreferencesKey("update_include_prereleases")
+    private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
+    private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
 
     val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
         SessionPreferenceState(
@@ -84,7 +89,12 @@ class SessionPreferences @Inject constructor(
             lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
             lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
             downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey]),
-            serverAvatarUris = parseServerAvatarUris(prefs[serverAvatarUrisKey])
+            serverAvatarUris = parseServerAvatarUris(prefs[serverAvatarUrisKey]),
+            lastLibrarySyncAtMs = prefs[lastLibrarySyncAtMsKey],
+            updateCheckOnStartup = prefs[updateCheckOnStartupKey] ?: true,
+            updateIncludePrereleases = prefs[updateIncludePrereleasesKey] ?: false,
+            pendingUpdateApkPath = prefs[pendingUpdateApkPathKey],
+            pendingUpdateVersionName = prefs[pendingUpdateVersionNameKey]
         )
     }
 
@@ -319,6 +329,43 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setLastLibrarySyncAtMs(timestampMs: Long?) {
+        dataStore.edit { prefs ->
+            if (timestampMs == null) {
+                prefs.remove(lastLibrarySyncAtMsKey)
+            } else {
+                prefs[lastLibrarySyncAtMsKey] = timestampMs.coerceAtLeast(0L)
+            }
+        }
+    }
+
+    suspend fun setUpdateCheckOnStartup(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[updateCheckOnStartupKey] = enabled
+        }
+    }
+
+    suspend fun setUpdateIncludePrereleases(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[updateIncludePrereleasesKey] = enabled
+        }
+    }
+
+    suspend fun setPendingUpdateInstall(apkPath: String?, versionName: String?) {
+        dataStore.edit { prefs ->
+            if (apkPath.isNullOrBlank()) {
+                prefs.remove(pendingUpdateApkPathKey)
+            } else {
+                prefs[pendingUpdateApkPathKey] = apkPath.trim()
+            }
+            if (versionName.isNullOrBlank()) {
+                prefs.remove(pendingUpdateVersionNameKey)
+            } else {
+                prefs[pendingUpdateVersionNameKey] = versionName.trim()
+            }
+        }
+    }
+
     suspend fun setDownloadedBookIds(ids: Set<String>) {
         dataStore.edit { prefs ->
             if (ids.isEmpty()) {
@@ -477,7 +524,12 @@ data class SessionPreferenceState(
     val lockScreenControlMode: String = "skip",
     val lastBookDetailTab: String = "About",
     val downloadedBookIds: Set<String> = emptySet(),
-    val serverAvatarUris: Map<String, String> = emptyMap()
+    val serverAvatarUris: Map<String, String> = emptyMap(),
+    val lastLibrarySyncAtMs: Long? = null,
+    val updateCheckOnStartup: Boolean = true,
+    val updateIncludePrereleases: Boolean = false,
+    val pendingUpdateApkPath: String? = null,
+    val pendingUpdateVersionName: String? = null
 )
 
 data class CachedHomeFeedPayload(

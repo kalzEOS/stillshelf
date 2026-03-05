@@ -4098,6 +4098,7 @@ fun SettingsScreen(
     onBackClick: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val avatarPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -4107,6 +4108,7 @@ fun SettingsScreen(
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var skipForwardDialogVisible by remember { mutableStateOf(false) }
     var skipBackwardDialogVisible by remember { mutableStateOf(false) }
+    var signOutDialogVisible by remember { mutableStateOf(false) }
     val skipSecondChoices = remember { listOf(10, 15, 30, 45, 60) }
     val sectionCardColor = if (uiState.materialDesignEnabled) {
         MaterialTheme.colorScheme.surfaceContainerHigh
@@ -4117,6 +4119,14 @@ fun SettingsScreen(
         BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
     } else {
         null
+    }
+    val lastSyncedValue = uiState.lastLibrarySyncAtMs
+        ?.let { timestamp -> "Last synced ${formatLastSyncedTimestamp(timestamp)}" }
+
+    LaunchedEffect(uiState.syncToastMessage) {
+        val toastMessage = uiState.syncToastMessage ?: return@LaunchedEffect
+        Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+        viewModel.consumeSyncToastMessage()
     }
 
     Column(
@@ -4309,16 +4319,62 @@ fun SettingsScreen(
             )
         }
 
+        Text(
+            text = "APP UPDATES",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Card(
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),
             shape = RoundedCornerShape(18.dp),
             border = sectionCardBorder
         ) {
             SettingsRow(
-                title = "About",
-                onClick = onOpenAbout
+                title = "Check for Updates",
+                showChevronWhenUnselected = false,
+                onClick = {
+                    infoMessage = null
+                    if (!uiState.isCheckingForUpdates) {
+                        viewModel.onCheckForUpdatesClick()
+                    }
+                }
             )
+            HorizontalDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Check on Startup",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = uiState.updateCheckOnStartupEnabled,
+                    onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
+                )
+            }
+            HorizontalDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Include Pre-releases",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = uiState.includePrereleaseUpdates,
+                    onCheckedChange = viewModel::setIncludePrereleaseUpdates
+                )
+            }
         }
+
         Card(
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),
             shape = RoundedCornerShape(18.dp),
@@ -4327,11 +4383,32 @@ fun SettingsScreen(
             SettingsRow(title = "Manage Servers", onClick = onManageServers)
             HorizontalDivider()
             SettingsRow(
+                title = "Sync Libraries",
+                value = lastSyncedValue,
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = {
+                    infoMessage = null
+                    viewModel.onSyncLibrariesClick()
+                }
+            )
+            HorizontalDivider()
+            SettingsRow(
                 title = "Sign Out",
                 onClick = {
                     infoMessage = null
-                    viewModel.onSignOutClick()
+                    signOutDialogVisible = true
                 }
+            )
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
+        ) {
+            SettingsRow(
+                title = "About",
+                onClick = onOpenAbout
             )
         }
         uiState.errorMessage?.let { message ->
@@ -4351,7 +4428,6 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-
         if (skipForwardDialogVisible) {
             AlertDialog(
                 onDismissRequest = { skipForwardDialogVisible = false },
@@ -4403,6 +4479,65 @@ fun SettingsScreen(
                 dismissButton = {
                     TextButton(onClick = { skipBackwardDialogVisible = false }) {
                         Text("Close")
+                    }
+                }
+            )
+        }
+
+        if (signOutDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { signOutDialogVisible = false },
+                title = { Text("Sign out of server?") },
+                text = {
+                    Text(
+                        text = "You will be signed out from ${uiState.serverDisplayName}."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            signOutDialogVisible = false
+                            viewModel.onSignOutClick()
+                        }
+                    ) {
+                        Text("Sign Out")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { signOutDialogVisible = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        uiState.availableUpdate?.let { release ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissAvailableUpdateDialog,
+                title = { Text("Update available") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("StillShelf ${release.versionName} is available.")
+                        release.body
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { notes ->
+                                Text(
+                                    text = notes.take(240),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = viewModel::installAvailableUpdate) {
+                        Text("Update")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissAvailableUpdateDialog) {
+                        Text("Cancel")
                     }
                 }
             )
@@ -4545,6 +4680,7 @@ private fun SettingsRow(
     title: String,
     value: String? = null,
     selected: Boolean = false,
+    showChevronWhenValue: Boolean = true,
     showChevronWhenUnselected: Boolean = true,
     onClick: (() -> Unit)? = null
 ) {
@@ -4564,12 +4700,14 @@ private fun SettingsRow(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                imageVector = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (showChevronWhenValue) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         } else if (selected) {
             Icon(imageVector = Icons.Filled.Check, contentDescription = null)
         } else if (showChevronWhenUnselected) {
@@ -4580,6 +4718,11 @@ private fun SettingsRow(
             )
         }
     }
+}
+
+private fun formatLastSyncedTimestamp(timestampMs: Long): String {
+    val formatter = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+    return formatter.format(Date(timestampMs))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -5998,6 +6141,8 @@ fun PlayerScreen(
     } else {
         Color.White.copy(alpha = 0.2f)
     }
+    val immersiveDockContainerColor = bottomToolsBaseColor.copy(alpha = 0.24f)
+    val immersiveDockBorderColor = bottomToolsBorderColor.copy(alpha = 0.4f)
     val useFloatingChipsTools = bottomToolsStyle == PlayerBottomToolsStyle.FloatingChips
     val useSlimStripTools = bottomToolsStyle == PlayerBottomToolsStyle.SlimStrip
     val menuLikeContainerColor = if (appearanceUiState.materialDesignEnabled) {
@@ -6028,7 +6173,7 @@ fun PlayerScreen(
         useSlimStripTools -> if (nonMaterialDockMenuMatch) {
             nonMaterialMenuLikeContainer
         } else {
-            bottomToolsBaseColor.copy(alpha = if (immersiveEnabled) 0.24f else 0.28f)
+            if (immersiveEnabled) immersiveDockContainerColor else bottomToolsBaseColor.copy(alpha = 0.28f)
         }
         else -> Color.Transparent
     }
@@ -6037,54 +6182,50 @@ fun PlayerScreen(
         useSlimStripTools -> if (nonMaterialDockMenuMatch) {
             nonMaterialMenuLikeBorder
         } else {
-            bottomToolsBorderColor.copy(alpha = 0.4f)
+            immersiveDockBorderColor
         }
         else -> Color.Transparent
     }
     val toolsItemContainerColor = when {
-        useFloatingChipsTools -> menuLikeContainerColor
+        useFloatingChipsTools -> if (immersiveEnabled) immersiveDockContainerColor else menuLikeContainerColor
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
     val toolsItemBorderColor = when {
-        useFloatingChipsTools -> menuLikeBorderColor
+        useFloatingChipsTools -> if (immersiveEnabled) immersiveDockBorderColor else menuLikeBorderColor
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
     val toolsRowHorizontalPadding = when {
         useFloatingChipsTools -> 6.dp
-        useSlimStripTools -> 8.dp
-        else -> 0.dp
-    }
-    val toolsRowVerticalPadding = when {
-        useFloatingChipsTools -> 5.dp
         useSlimStripTools -> 6.dp
         else -> 0.dp
     }
-    val toolsRowSpacing = when {
-        useFloatingChipsTools -> 4.dp
+    val toolsRowVerticalPadding = when {
+        useFloatingChipsTools -> 2.dp
         useSlimStripTools -> 2.dp
+        else -> 0.dp
+    }
+    val toolsRowSpacing = when {
+        useFloatingChipsTools -> 3.dp
+        useSlimStripTools -> 3.dp
         else -> 4.dp
     }
     val toolsShowIconBubble = useFloatingChipsTools
     val toolsItemHeight = when {
-        useFloatingChipsTools -> 76.dp
-        useSlimStripTools -> 74.dp
+        useFloatingChipsTools -> 62.dp
+        useSlimStripTools -> 62.dp
         else -> 70.dp
     }
     val mainPlayButtonContainer = if (immersiveEnabled) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.84f)
+        immersiveDockContainerColor
     } else if (!appearanceUiState.materialDesignEnabled) {
         nonMaterialMenuLikeContainer
     } else {
         MaterialTheme.colorScheme.surfaceVariant
     }
     val mainPlayButtonBorderColor = when {
-        immersiveEnabled -> if (useSlimStripTools) {
-            toolsOuterBorderColor
-        } else {
-            bottomToolsBorderColor.copy(alpha = 0.4f)
-        }
+        immersiveEnabled -> immersiveDockBorderColor
         !appearanceUiState.materialDesignEnabled -> nonMaterialMenuLikeBorder
         else -> Color.Transparent
     }
@@ -6121,7 +6262,7 @@ fun PlayerScreen(
     val coverTargetWidth = (effectiveHeightDp * 0.42f).dp.coerceIn(286.dp, 332.dp)
     val controlsRowPadding = (effectiveHeightDp * 0.04f).dp.coerceIn(24.dp, 38.dp)
     val bottomToolsTopPadding = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
-    val bottomToolsBottomPadding = (effectiveHeightDp * 0.01f).dp.coerceIn(6.dp, 10.dp)
+    val bottomToolsBottomPadding = (effectiveHeightDp * 0.006f).dp.coerceIn(2.dp, 6.dp)
     val playerTopOffset = (effectiveHeightDp * 0.02f).dp.coerceIn(8.dp, 16.dp)
 
     LaunchedEffect(actionMessage) {
@@ -6567,6 +6708,7 @@ fun PlayerScreen(
                             containerColor = toolsItemContainerColor,
                             containerBorderColor = toolsItemBorderColor,
                             showIconBubble = toolsShowIconBubble,
+                            showSecondaryLabelWhenValue = false,
                             onClick = { bottomMenuExpanded = true }
                         )
                         AppDropdownMenu(
@@ -7517,7 +7659,7 @@ private fun PlayerBottomToolItem(
                 shape = itemShape
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 4.dp),
+            .padding(start = 4.dp, end = 4.dp, top = 1.dp, bottom = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -7567,7 +7709,7 @@ private fun PlayerBottomToolItem(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
-        } else {
+        } else if (showSecondaryLabelWhenValue) {
             Spacer(modifier = Modifier.height(11.dp))
         }
     }

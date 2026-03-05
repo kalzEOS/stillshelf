@@ -8,6 +8,8 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.ui.theme.AppThemeMode
+import com.stillshelf.app.update.AppUpdateManager
+import com.stillshelf.app.update.AppUpdateRelease
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +33,13 @@ data class SettingsUiState(
     val skipForwardSeconds: Int = 15,
     val skipBackwardSeconds: Int = 15,
     val lockScreenControlMode: String = "skip",
+    val isSyncingLibraries: Boolean = false,
+    val lastLibrarySyncAtMs: Long? = null,
+    val syncToastMessage: String? = null,
+    val updateCheckOnStartupEnabled: Boolean = true,
+    val includePrereleaseUpdates: Boolean = false,
+    val isCheckingForUpdates: Boolean = false,
+    val availableUpdate: AppUpdateRelease? = null,
     val errorMessage: String? = null
 )
 
@@ -38,6 +47,7 @@ data class SettingsUiState(
 class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
+    private val appUpdateManager: AppUpdateManager,
     @param:ApplicationContext private val appContext: Context
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SettingsUiState())
@@ -60,7 +70,10 @@ class SettingsViewModel @Inject constructor(
                         materialDesignEnabled = pref.materialDesignEnabled,
                         skipForwardSeconds = pref.skipForwardSeconds,
                         skipBackwardSeconds = pref.skipBackwardSeconds,
-                        lockScreenControlMode = pref.lockScreenControlMode
+                        lockScreenControlMode = pref.lockScreenControlMode,
+                        lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
+                        updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
+                        includePrereleaseUpdates = pref.updateIncludePrereleases
                     )
                 } else {
                     SettingsUiState(
@@ -73,12 +86,118 @@ class SettingsViewModel @Inject constructor(
                         materialDesignEnabled = pref.materialDesignEnabled,
                         skipForwardSeconds = pref.skipForwardSeconds,
                         skipBackwardSeconds = pref.skipBackwardSeconds,
-                        lockScreenControlMode = pref.lockScreenControlMode
+                        lockScreenControlMode = pref.lockScreenControlMode,
+                        lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
+                        updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
+                        includePrereleaseUpdates = pref.updateIncludePrereleases
                     )
                 }
             }.collect { state ->
                 mutableUiState.update { previous ->
-                    state.copy(errorMessage = previous.errorMessage)
+                    state.copy(
+                        isSyncingLibraries = previous.isSyncingLibraries,
+                        syncToastMessage = previous.syncToastMessage,
+                        isCheckingForUpdates = previous.isCheckingForUpdates,
+                        availableUpdate = previous.availableUpdate,
+                        errorMessage = previous.errorMessage
+                    )
+                }
+            }
+        }
+    }
+
+    fun onCheckForUpdatesClick() {
+        if (uiState.value.isCheckingForUpdates) return
+        viewModelScope.launch {
+            mutableUiState.update {
+                it.copy(
+                    isCheckingForUpdates = true,
+                    availableUpdate = null,
+                    syncToastMessage = null,
+                    errorMessage = null
+                )
+            }
+            when (
+                val result = appUpdateManager.checkForUpdate(
+                    includePrereleases = uiState.value.includePrereleaseUpdates
+                )
+            ) {
+                is AppResult.Success -> {
+                    val update = result.value
+                    mutableUiState.update {
+                        it.copy(
+                            isCheckingForUpdates = false,
+                            availableUpdate = update,
+                            syncToastMessage = if (update == null) "No updates found." else null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isCheckingForUpdates = false,
+                            syncToastMessage = "Update check failed"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissAvailableUpdateDialog() {
+        mutableUiState.update { it.copy(availableUpdate = null) }
+    }
+
+    fun installAvailableUpdate() {
+        val release = uiState.value.availableUpdate ?: return
+        mutableUiState.update { it.copy(availableUpdate = null) }
+        viewModelScope.launch {
+            when (val result = appUpdateManager.downloadAndInstallUpdate(release)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(syncToastMessage = "Update started")
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(errorMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun onSyncLibrariesClick() {
+        if (uiState.value.isSyncingLibraries) return
+        viewModelScope.launch {
+            mutableUiState.update {
+                it.copy(
+                    isSyncingLibraries = true,
+                    syncToastMessage = null,
+                    errorMessage = null
+                )
+            }
+            when (val result = sessionRepository.refreshLibrariesForActiveServer()) {
+                is AppResult.Success -> {
+                    val syncedAtMs = System.currentTimeMillis()
+                    sessionPreferences.setLastLibrarySyncAtMs(syncedAtMs)
+                    mutableUiState.update {
+                        it.copy(
+                            isSyncingLibraries = false,
+                            lastLibrarySyncAtMs = syncedAtMs,
+                            syncToastMessage = "Library synced",
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSyncingLibraries = false,
+                            syncToastMessage = "Sync failed"
+                        )
+                    }
                 }
             }
         }
@@ -100,6 +219,22 @@ class SettingsViewModel @Inject constructor(
 
     fun clearError() {
         mutableUiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun consumeSyncToastMessage() {
+        mutableUiState.update { it.copy(syncToastMessage = null) }
+    }
+
+    fun setUpdateCheckOnStartupEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setUpdateCheckOnStartup(enabled)
+        }
+    }
+
+    fun setIncludePrereleaseUpdates(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setUpdateIncludePrereleases(enabled)
+        }
     }
 
     fun setImmersivePlayerEnabled(enabled: Boolean) {

@@ -134,7 +134,10 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         viewModelScope.launch {
-            refreshNetwork(showLoading = true)
+            val refreshed = refreshNetwork(showLoading = true)
+            if (refreshed) {
+                sessionPreferences.setLastLibrarySyncAtMs(System.currentTimeMillis())
+            }
         }
     }
 
@@ -234,9 +237,9 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refreshNetwork(showLoading: Boolean) {
-        if (isHomeFeedRefreshInFlight) return
-        if (uiState.value.isLoading) return
+    private suspend fun refreshNetwork(showLoading: Boolean): Boolean {
+        if (isHomeFeedRefreshInFlight) return false
+        if (uiState.value.isLoading) return false
         isHomeFeedRefreshInFlight = true
         if (showLoading) {
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -244,6 +247,7 @@ class HomeViewModel @Inject constructor(
             mutableUiState.update { it.copy(errorMessage = null) }
         }
 
+        var didRefresh = false
         try {
             when (
                 val result = sessionRepository.fetchHomeFeed(
@@ -253,6 +257,7 @@ class HomeViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     lastHomeFeedRefreshAtMs = System.currentTimeMillis()
+                    didRefresh = true
                     val resolvedRecentSeries = resolveRecentSeries(
                         backendRecentSeries = result.value.recentSeries,
                         recentlyAdded = result.value.recentlyAdded
@@ -298,6 +303,7 @@ class HomeViewModel @Inject constructor(
         } finally {
             isHomeFeedRefreshInFlight = false
         }
+        return didRefresh
     }
 
     private fun resolveRecentSeries(

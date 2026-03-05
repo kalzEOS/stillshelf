@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.offset
@@ -3075,17 +3076,30 @@ private fun SeriesCoverStack(
     val backHeight = middleHeight - 15.dp
     val middleYOffset = 12.dp
     val backYOffset = 23.dp
+    val stackWidth = 358.dp
+    val stackHeight = 208.dp
     val layerShape = FacetSeriesStackCornerShape
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .height(224.dp),
         contentAlignment = Alignment.TopCenter
     ) {
+        val scale = (maxWidth / stackWidth).coerceIn(0f, 1f)
+        val scaledStackWidth = stackWidth * scale
+        val scaledStackHeight = stackHeight * scale
+        val scaledFrontWidth = frontWidth * scale
+        val scaledFrontHeight = frontHeight * scale
+        val scaledMiddleWidth = middleWidth * scale
+        val scaledMiddleHeight = middleHeight * scale
+        val scaledBackWidth = backWidth * scale
+        val scaledBackHeight = backHeight * scale
+        val scaledMiddleYOffset = middleYOffset * scale
+        val scaledBackYOffset = backYOffset * scale
         Box(
             modifier = Modifier
-                .width(358.dp)
-                .height(208.dp),
+                .width(scaledStackWidth)
+                .height(scaledStackHeight),
             contentAlignment = Alignment.TopCenter
         ) {
             if (backLayerCount >= 2) {
@@ -3093,10 +3107,10 @@ private fun SeriesCoverStack(
                     coverUrl = leadBook.coverUrl,
                     contentDescription = leadBook.title,
                     modifier = Modifier
-                        .offset(y = backYOffset)
-                        .width(backWidth)
-                        .height(backHeight)
-                        .shadow(elevation = 3.6.dp, shape = layerShape, clip = false),
+                        .offset(y = scaledBackYOffset)
+                        .width(scaledBackWidth)
+                        .height(scaledBackHeight)
+                        .shadow(elevation = 3.6.dp * scale, shape = layerShape, clip = false),
                     shape = layerShape,
                     contentScale = ContentScale.Fit,
                     backgroundBlur = FacetSeriesStackBackgroundBlur,
@@ -3108,10 +3122,10 @@ private fun SeriesCoverStack(
                     coverUrl = leadBook.coverUrl,
                     contentDescription = leadBook.title,
                     modifier = Modifier
-                        .offset(y = middleYOffset)
-                        .width(middleWidth)
-                        .height(middleHeight)
-                        .shadow(elevation = 2.9.dp, shape = layerShape, clip = false),
+                        .offset(y = scaledMiddleYOffset)
+                        .width(scaledMiddleWidth)
+                        .height(scaledMiddleHeight)
+                        .shadow(elevation = 2.9.dp * scale, shape = layerShape, clip = false),
                     shape = layerShape,
                     contentScale = ContentScale.Fit,
                     backgroundBlur = FacetSeriesStackBackgroundBlur,
@@ -3122,9 +3136,9 @@ private fun SeriesCoverStack(
                 coverUrl = leadBook.coverUrl,
                 contentDescription = leadBook.title,
                 modifier = Modifier
-                    .width(frontWidth)
-                    .height(frontHeight)
-                    .shadow(elevation = FacetSeriesStackFrontShadow, shape = layerShape, clip = false),
+                    .width(scaledFrontWidth)
+                    .height(scaledFrontHeight)
+                    .shadow(elevation = FacetSeriesStackFrontShadow * scale, shape = layerShape, clip = false),
                 shape = layerShape,
                 contentScale = ContentScale.Fit,
                 backgroundBlur = FacetSeriesStackBackgroundBlur,
@@ -3135,7 +3149,7 @@ private fun SeriesCoverStack(
                 downloadProgressPercent = downloadProgressPercent,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-8).dp, y = 8.dp)
+                    .offset(x = (-8).dp * scale, y = 8.dp * scale)
             )
         }
     }

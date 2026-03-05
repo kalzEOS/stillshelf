@@ -4517,24 +4517,23 @@ fun SettingsScreen(
                 onDismissRequest = viewModel::dismissAvailableUpdateDialog,
                 title = { Text("Update available") },
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(releaseNotesScrollState),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text("StillShelf ${release.versionName} is available.")
                         release.body
                             ?.trim()
                             ?.takeIf { it.isNotEmpty() }
                             ?.let { notes ->
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 240.dp)
-                                        .verticalScroll(releaseNotesScrollState)
-                                ) {
-                                    Text(
-                                        text = notes,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                                Text(
+                                    text = notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                     }
                 },

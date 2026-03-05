@@ -1,11 +1,21 @@
 package com.stillshelf.app.ui
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stillshelf.app.ui.navigation.RootNavGraph
@@ -16,6 +26,8 @@ import com.stillshelf.app.ui.theme.StillShelfTheme
 fun StillShelfApp() {
     val appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
     val appearance by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val startupViewModel: StartupViewModel = hiltViewModel()
+    val startupUpdatePrompt by startupViewModel.startupUpdatePrompt.collectAsStateWithLifecycle()
     StillShelfTheme(
         themeMode = appearance.themeMode,
         materialDesignEnabled = appearance.materialDesignEnabled
@@ -25,6 +37,44 @@ fun StillShelfApp() {
             color = MaterialTheme.colorScheme.background
         ) {
             RootNavGraph()
+            startupUpdatePrompt?.let { release ->
+                val releaseNotesScrollState = rememberScrollState()
+                AlertDialog(
+                    onDismissRequest = startupViewModel::dismissStartupUpdatePrompt,
+                    title = { Text("Update available") },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp)
+                                .verticalScroll(releaseNotesScrollState),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("StillShelf ${release.versionName} is available.")
+                            release.body
+                                ?.trim()
+                                ?.takeIf { it.isNotEmpty() }
+                                ?.let { notes ->
+                                    Text(
+                                        text = notes,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = startupViewModel::installStartupUpdate) {
+                            Text("Update")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = startupViewModel::dismissStartupUpdatePrompt) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
         }
     }
 }

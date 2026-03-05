@@ -1478,7 +1478,7 @@ private fun AuthorBookRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(modifier = Modifier.size(72.dp)) {
+            Box(modifier = Modifier.size(88.dp)) {
                 FramedCoverImage(
                     coverUrl = book.coverUrl,
                     contentDescription = book.title,
@@ -1595,12 +1595,12 @@ private fun AuthorSeriesListRow(
         ) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(88.dp)
                     .clipToBounds(),
                 contentAlignment = Alignment.Center
             ) {
                 val layerCount = entry.count.coerceIn(2, 3)
-                val frameSize = 72.dp
+                val frameSize = 88.dp
                 FacetSeriesStackCoverLayers(
                     coverUrl = lead.coverUrl,
                     contentDescription = entry.seriesName,
@@ -3181,8 +3181,7 @@ private fun SeriesDetailBookRow(
     ) {
         Box(
             modifier = Modifier
-                .width(70.dp)
-                .height(72.dp)
+                .size(88.dp)
         ) {
             FramedCoverImage(
                 coverUrl = book.coverUrl,

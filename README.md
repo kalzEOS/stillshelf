@@ -8,6 +8,8 @@ It started from a personal need: there were not many Audiobookshelf frontend cli
 
 The goal is a smooth, practical Android experience for browsing, managing, and listening to your ABS library.
 
+Both m4b and mp3 formats are supported. 
+
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).

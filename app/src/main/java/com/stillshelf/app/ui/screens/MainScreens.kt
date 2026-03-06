@@ -4543,6 +4543,9 @@ fun SettingsScreen(
 }
 
 private object AboutPageContent {
+    const val ORIGIN_STORY =
+        "StillShelf started as a personal need, then was shared so others could benefit too."
+
     val ACKNOWLEDGEMENTS = """
 StillShelf is open source under GPL-3.0-only.
 
@@ -4599,6 +4602,11 @@ fun AboutScreen(
                 )
                 Text(
                     text = uiState.tagline,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = AboutPageContent.ORIGIN_STORY,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

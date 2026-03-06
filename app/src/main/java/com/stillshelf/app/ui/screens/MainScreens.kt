@@ -125,6 +125,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -161,6 +162,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -213,6 +215,7 @@ import com.stillshelf.app.ui.navigation.MainRoute
 import com.stillshelf.app.ui.navigation.MainTab
 import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -4153,8 +4156,27 @@ fun SettingsScreen(
                 ) {
                     val avatarUri = uiState.serverAvatarUri
                     if (!avatarUri.isNullOrBlank()) {
+                        val avatarRequest = remember(avatarUri, context) {
+                            val localFile = if (!avatarUri.contains("://")) {
+                                File(avatarUri).takeIf { it.exists() }
+                            } else {
+                                null
+                            }
+                            val cacheKey = localFile?.let { file ->
+                                "${file.absolutePath}:${file.length()}:${file.lastModified()}"
+                            }
+                            ImageRequest.Builder(context).apply {
+                                cacheKey?.let {
+                                    memoryCacheKey(it)
+                                    diskCacheKey(it)
+                                }
+                            }
+                                .data(localFile ?: avatarUri)
+                                .crossfade(false)
+                                .build()
+                        }
                         AsyncImage(
-                            model = avatarUri,
+                            model = avatarRequest,
                             contentDescription = "Server profile photo",
                             modifier = Modifier
                                 .fillMaxSize()
@@ -4521,22 +4543,22 @@ fun SettingsScreen(
     }
 }
 
-private object AboutPagePlaceholders {
-    // ABOUT_PAGE_PLACEHOLDER: edit these constants to update About content quickly.
-    const val APP_NAME = "StillShelf"
-    const val TAGLINE = "TODO: Add one-sentence app description."
-    const val VERSION = "TODO: Add version/build information."
-    const val WEBSITE = "TODO: Add website URL."
-    const val SUPPORT = "TODO: Add support contact email or URL."
-    const val PRIVACY_POLICY = "TODO: Add privacy policy URL."
-    const val ACKNOWLEDGEMENTS = "TODO: Add contributors, libraries, and credits."
-    const val CHANGELOG = "TODO: Add release notes for this build."
-}
-
 @Composable
 fun AboutScreen(
-    onBackClick: (() -> Unit)? = null
+    onBackClick: (() -> Unit)? = null,
+    viewModel: AboutViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var showReleaseHistory by rememberSaveable { mutableStateOf(false) }
+    val openUrl: (String) -> Unit = { url ->
+        runCatching { uriHandler.openUri(url) }
+            .onFailure {
+                Toast.makeText(context, "Unable to open link.", Toast.LENGTH_SHORT).show()
+            }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -4561,11 +4583,16 @@ fun AboutScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = AboutPagePlaceholders.APP_NAME,
+                    text = uiState.appName,
                     style = MaterialTheme.typography.titleLarge
                 )
                 Text(
-                    text = AboutPagePlaceholders.TAGLINE,
+                    text = uiState.tagline,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = uiState.originStory,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4575,7 +4602,7 @@ fun AboutScreen(
                     style = MaterialTheme.typography.labelLarge
                 )
                 Text(
-                    text = AboutPagePlaceholders.VERSION,
+                    text = "v${uiState.versionName} (build ${uiState.versionCode})",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4593,21 +4620,11 @@ fun AboutScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(text = "Links", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = "Website: ${AboutPagePlaceholders.WEBSITE}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "Support: ${AboutPagePlaceholders.SUPPORT}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "Privacy: ${AboutPagePlaceholders.PRIVACY_POLICY}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                AboutLinkRow(label = "Website", url = uiState.websiteUrl, onClick = { openUrl(uiState.websiteUrl) })
+                HorizontalDivider()
+                AboutLinkRow(label = "Support", url = uiState.supportUrl, onClick = { openUrl(uiState.supportUrl) })
+                HorizontalDivider()
+                AboutLinkRow(label = "Privacy", url = uiState.privacyUrl, onClick = { openUrl(uiState.privacyUrl) })
             }
         }
 
@@ -4623,10 +4640,18 @@ fun AboutScreen(
             ) {
                 Text(text = "Acknowledgements", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = AboutPagePlaceholders.ACKNOWLEDGEMENTS,
+                    text = uiState.acknowledgements,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { openUrl(uiState.sourceUrl) }) {
+                        Text("Source Code")
+                    }
+                    TextButton(onClick = { openUrl(uiState.licenseUrl) }) {
+                        Text("License")
+                    }
+                }
             }
         }
 
@@ -4641,13 +4666,129 @@ fun AboutScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(text = "Release Notes", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = AboutPagePlaceholders.CHANGELOG,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                uiState.currentRelease?.let { entry ->
+                    AboutReleaseItem(
+                        title = "Current build: ${entry.tagName}",
+                        subtitle = entry.publishedDate?.let { "Published $it" },
+                        notes = entry.notes
+                    )
+                }
+                if (uiState.isLoadingReleaseNotes) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text(
+                            text = "Loading release history...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                uiState.releaseNotesError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    TextButton(onClick = viewModel::refreshReleaseNotes) {
+                        Text("Retry")
+                    }
+                }
+                if (uiState.releaseHistory.isNotEmpty()) {
+                    TextButton(onClick = { showReleaseHistory = !showReleaseHistory }) {
+                        Text(if (showReleaseHistory) "Hide history" else "Show history")
+                    }
+                    if (showReleaseHistory) {
+                        uiState.releaseHistory.take(6).forEach { entry ->
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.26f))
+                            AboutReleaseItem(
+                                title = entry.tagName + if (entry.prerelease) " (prerelease)" else "",
+                                subtitle = entry.publishedDate?.let { "Published $it" },
+                                notes = entry.notes
+                            )
+                        }
+                    }
+                }
+                TextButton(onClick = { openUrl(uiState.releasePageUrl) }) {
+                    Text("View all releases")
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun AboutReleaseItem(
+    title: String,
+    subtitle: String?,
+    notes: String?
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall
+        )
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            text = notes?.takeIf { it.isNotBlank() } ?: "No notes provided.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun AboutLinkRow(
+    label: String,
+    url: String,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(
+                    bounded = true,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                ),
+                onClick = onClick
+            )
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = url,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

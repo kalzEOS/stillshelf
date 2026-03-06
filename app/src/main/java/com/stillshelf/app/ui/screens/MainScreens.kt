@@ -15,6 +15,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -66,6 +68,7 @@ import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -6191,18 +6194,20 @@ fun PlayerScreen(
         else -> 70.dp
     }
     val mainPlayButtonContainer = if (immersiveEnabled) {
-        immersiveDockContainerColor
+        Color.White.copy(alpha = 0.96f)
     } else if (!appearanceUiState.materialDesignEnabled) {
         nonMaterialMenuLikeContainer
     } else {
         MaterialTheme.colorScheme.surfaceVariant
     }
     val mainPlayButtonBorderColor = when {
-        immersiveEnabled -> immersiveDockBorderColor
+        immersiveEnabled -> Color.Transparent
         !appearanceUiState.materialDesignEnabled -> nonMaterialMenuLikeBorder
         else -> Color.Transparent
     }
-    val mainPlayButtonIconTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
+    val mainPlayButtonIconTint = if (immersiveEnabled) {
+        Color.Black
+    } else if (mainPlayButtonContainer.luminance() > 0.5f) {
         Color.Black
     } else {
         Color.White
@@ -6313,10 +6318,10 @@ fun PlayerScreen(
                     .background(
                         Brush.verticalGradient(
                             colorStops = arrayOf(
-                                0.00f to Color.Black.copy(alpha = 0.34f),
-                                0.24f to Color.Black.copy(alpha = 0.16f),
-                                0.58f to MaterialTheme.colorScheme.background.copy(alpha = 0.08f),
-                                1.00f to MaterialTheme.colorScheme.background.copy(alpha = 0.24f)
+                                0.00f to Color.Black.copy(alpha = 0.74f),
+                                0.24f to Color.Black.copy(alpha = 0.66f),
+                                0.58f to Color.Black.copy(alpha = 0.60f),
+                                1.00f to Color.Black.copy(alpha = 0.72f)
                             )
                         )
                     )
@@ -6555,6 +6560,7 @@ fun PlayerScreen(
                     forward = false,
                     seconds = controlPrefs.skipBackwardSeconds,
                     tint = primaryTextColor,
+                    isImmersive = immersiveEnabled,
                     onClick = viewModel::onRewindClick
                 )
                 Box(
@@ -6570,8 +6576,15 @@ fun PlayerScreen(
                         .clickable(onClick = viewModel::onPlayPauseClick),
                     contentAlignment = Alignment.Center
                 ) {
+                    val mainPlayButtonIcon = if (playbackUiState.isPlaying) {
+                        Icons.Outlined.Pause
+                    } else if (immersiveEnabled) {
+                        Icons.Filled.PlayArrow
+                    } else {
+                        Icons.Outlined.PlayArrow
+                    }
                     Icon(
-                        imageVector = if (playbackUiState.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                        imageVector = mainPlayButtonIcon,
                         contentDescription = if (playbackUiState.isPlaying) "Pause" else "Play",
                         tint = mainPlayButtonIconTint,
                         modifier = Modifier.size(36.dp)
@@ -6581,6 +6594,7 @@ fun PlayerScreen(
                     forward = true,
                     seconds = controlPrefs.skipForwardSeconds,
                     tint = primaryTextColor,
+                    isImmersive = immersiveEnabled,
                     onClick = viewModel::onForwardClick
                 )
             }
@@ -6613,6 +6627,7 @@ fun PlayerScreen(
                         secondaryColor = bottomToolsSecondaryColor,
                         containerColor = toolsItemContainerColor,
                         containerBorderColor = toolsItemBorderColor,
+                        isImmersive = immersiveEnabled,
                         showIconBubble = toolsShowIconBubble,
                         showSecondaryLabelWhenValue = false,
                         isHighlighted = speedToolHighlighted,
@@ -6630,6 +6645,7 @@ fun PlayerScreen(
                         secondaryColor = bottomToolsSecondaryColor,
                         containerColor = toolsItemContainerColor,
                         containerBorderColor = toolsItemBorderColor,
+                        isImmersive = immersiveEnabled,
                         showIconBubble = toolsShowIconBubble,
                         showSecondaryLabelWhenValue = false,
                         isHighlighted = timerLabel != null,
@@ -6648,6 +6664,7 @@ fun PlayerScreen(
                         secondaryColor = bottomToolsSecondaryColor,
                         containerColor = toolsItemContainerColor,
                         containerBorderColor = toolsItemBorderColor,
+                        isImmersive = immersiveEnabled,
                         showIconBubble = toolsShowIconBubble,
                         showSecondaryLabelWhenValue = false,
                         onClick = {
@@ -6665,6 +6682,7 @@ fun PlayerScreen(
                         secondaryColor = bottomToolsSecondaryColor,
                         containerColor = toolsItemContainerColor,
                         containerBorderColor = toolsItemBorderColor,
+                        isImmersive = immersiveEnabled,
                         showIconBubble = toolsShowIconBubble,
                         showSecondaryLabelWhenValue = false,
                         isHighlighted = isBookDownloaded || hasActivePlayerDownload,
@@ -6680,6 +6698,7 @@ fun PlayerScreen(
                             secondaryColor = bottomToolsSecondaryColor,
                             containerColor = toolsItemContainerColor,
                             containerBorderColor = toolsItemBorderColor,
+                            isImmersive = immersiveEnabled,
                             showIconBubble = toolsShowIconBubble,
                             showSecondaryLabelWhenValue = false,
                             onClick = { bottomMenuExpanded = true }
@@ -7608,6 +7627,7 @@ private fun PlayerBottomToolItem(
     secondaryColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     containerColor: Color = Color.Transparent,
     containerBorderColor: Color = Color.Transparent,
+    isImmersive: Boolean = false,
     showIconBubble: Boolean = true,
     showSecondaryLabelWhenValue: Boolean = true,
     isHighlighted: Boolean = false,
@@ -7621,17 +7641,32 @@ private fun PlayerBottomToolItem(
     }
     val primaryValueColor = if (isHighlighted) primaryColor else primaryColor.copy(alpha = 0.96f)
     val itemShape = RoundedCornerShape(14.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressedContainerColor = if (isPressed) {
+        if (isImmersive) {
+            Color.White.copy(alpha = 0.22f)
+        } else {
+            primaryColor.copy(alpha = 0.16f)
+        }
+    } else {
+        containerColor
+    }
     Column(
         modifier = modifier
             .height(itemHeight)
             .clip(itemShape)
-            .background(containerColor)
+            .background(pressedContainerColor)
             .border(
                 width = if (containerBorderColor.alpha > 0f) 1.dp else 0.dp,
                 color = containerBorderColor,
                 shape = itemShape
             )
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
             .padding(start = 4.dp, end = 4.dp, top = 1.dp, bottom = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -8698,13 +8733,30 @@ private fun Seek15Button(
     forward: Boolean,
     seconds: Int,
     tint: Color = MaterialTheme.colorScheme.onSurface,
+    isImmersive: Boolean = false,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressedContainerColor = if (isPressed) {
+        if (isImmersive) {
+            Color.White.copy(alpha = 0.22f)
+        } else {
+            tint.copy(alpha = 0.14f)
+        }
+    } else {
+        Color.Transparent
+    }
     Box(
         modifier = Modifier
             .size(56.dp)
             .clip(CircleShape)
-            .clickable(onClick = onClick),
+            .background(pressedContainerColor)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         Canvas(

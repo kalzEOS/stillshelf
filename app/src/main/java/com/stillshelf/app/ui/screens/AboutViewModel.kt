@@ -27,6 +27,16 @@ data class AboutReleaseEntry(
 data class AboutUiState(
     val appName: String = "StillShelf",
     val tagline: String = "A focused Audiobookshelf client for listening anywhere.",
+    val originStory: String = "StillShelf started as a personal need, then was shared so others could benefit too.",
+    val acknowledgements: String = """
+StillShelf is open source under GPL-3.0-only.
+
+Core technologies:
+- Kotlin + Jetpack Compose
+- Hilt, Room, DataStore
+- OkHttp, Coil, AndroidX Media
+- Material 3
+""".trimIndent(),
     val versionName: String = "",
     val versionCode: Int = 0,
     val websiteUrl: String = "https://github.com/kalzEOS/stillshelf",

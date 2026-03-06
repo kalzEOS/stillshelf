@@ -125,6 +125,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -4542,21 +4543,6 @@ fun SettingsScreen(
     }
 }
 
-private object AboutPageContent {
-    const val ORIGIN_STORY =
-        "StillShelf started as a personal need, then was shared so others could benefit too."
-
-    val ACKNOWLEDGEMENTS = """
-StillShelf is open source under GPL-3.0-only.
-
-Core technologies:
-- Kotlin + Jetpack Compose
-- Hilt, Room, DataStore
-- OkHttp, Coil, AndroidX Media
-- Material 3
-""".trimIndent()
-}
-
 @Composable
 fun AboutScreen(
     onBackClick: (() -> Unit)? = null,
@@ -4606,7 +4592,7 @@ fun AboutScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = AboutPageContent.ORIGIN_STORY,
+                    text = uiState.originStory,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4654,7 +4640,7 @@ fun AboutScreen(
             ) {
                 Text(text = "Acknowledgements", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = AboutPageContent.ACKNOWLEDGEMENTS,
+                    text = uiState.acknowledgements,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -4765,11 +4751,19 @@ private fun AboutLinkRow(
     url: String,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(
+                    bounded = true,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                ),
+                onClick = onClick
+            )
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

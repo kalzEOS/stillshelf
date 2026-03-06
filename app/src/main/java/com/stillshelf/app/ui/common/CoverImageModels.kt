@@ -79,7 +79,9 @@ fun FramedCoverImage(
     contentScale: ContentScale = ContentScale.Fit,
     backgroundBlur: Dp = WideCoverBackgroundBlur,
     frameOverlayAlphaMultiplier: Float = 1f,
-    disableBlurredFrame: Boolean = false
+    disableBlurredFrame: Boolean = false,
+    limitInsetToAvoidVerticalLetterbox: Boolean = true,
+    forcedSideInset: Dp? = null
 ) {
     val model = rememberCoverImageModel(coverUrl)
     val frameBackgroundAlpha = if (disableBlurredFrame) 0f else 0.26f
@@ -116,11 +118,16 @@ fun FramedCoverImage(
         }
         val isSquareLikeCover = resolvedAspectRatio in SquareCoverMinAspectRatio..SquareCoverMaxAspectRatio
         val shouldUseBlurredFrame = !isSquareLikeCover && !disableBlurredFrame
-        val preferredInset = (maxWidth * 0.20f).coerceIn(2.dp, 34.dp)
+        val preferredInset = forcedSideInset?.coerceIn(0.dp, maxWidth / 2f)
+            ?: (maxWidth * 0.20f).coerceIn(2.dp, 34.dp)
         val maxInsetWithoutVerticalLetterbox =
-            ((maxWidth - (maxHeight * TypicalCoverAspectRatio)) / 2f).coerceAtLeast(0.dp)
+            ((maxWidth - (maxHeight * resolvedAspectRatio)) / 2f).coerceAtLeast(0.dp)
         val sideInset = if (shouldUseBlurredFrame) {
-            minOf(preferredInset, maxInsetWithoutVerticalLetterbox)
+            if (limitInsetToAvoidVerticalLetterbox) {
+                minOf(preferredInset, maxInsetWithoutVerticalLetterbox)
+            } else {
+                preferredInset
+            }
         } else {
             0.dp
         }

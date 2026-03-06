@@ -4,8 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -29,6 +33,7 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
+import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.util.AppResult
@@ -128,6 +133,7 @@ class PlaybackController @Inject constructor(
     private var preferredOutputDeviceId: Int? = null
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
+    private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
     private val attemptedAutoAdvanceTargetsMs = mutableSetOf<Long>()
     private var suppressNextAutoAdvanceOnCompletion = false
     private var lastNotificationSignature: NotificationSignature? = null
@@ -135,13 +141,39 @@ class PlaybackController @Inject constructor(
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfPlayback")
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val playbackAudioAttributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+    }
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        scope.launch(Dispatchers.Main.immediate) {
+            handleAudioFocusChange(focusChange)
+        }
+    }
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus: Boolean = false
+    private var pendingPlayAfterAudioFocusGain: Boolean = false
+    private var pendingPlayStartsProgressUpdates: Boolean = false
+    private var wasPausedForTransientAudioFocusLoss: Boolean = false
+    private var isDuckedForAudioFocus: Boolean = false
+    private val noisyAudioReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
+            scope.launch(Dispatchers.Main.immediate) {
+                pauseForNoisyOutput()
+            }
+        }
+    }
+    private var noisyAudioReceiverRegistered: Boolean = false
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-            refreshAudioOutputDevices()
+            refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceAdded)
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-            refreshAudioOutputDevices()
+            refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceRemoved)
         }
     }
     private var rewindSeconds: Int = 15
@@ -172,6 +204,20 @@ class PlaybackController @Inject constructor(
         val triggeredAtElapsedMs: Long
     )
 
+    private enum class OutputRefreshReason {
+        General,
+        DeviceAdded,
+        DeviceRemoved
+    }
+
+    private enum class PauseReason {
+        User,
+        AudioFocusTransientLoss,
+        AudioFocusLoss,
+        NoisyOutput,
+        Internal
+    }
+
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
 
     init {
@@ -187,8 +233,9 @@ class PlaybackController @Inject constructor(
             override fun onSkipToNext() = performLockScreenNextControl()
         })
         mediaSession.isActive = true
+        registerNoisyAudioReceiver()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
-        refreshAudioOutputDevices()
+        refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         observePlaybackPreferences()
         observeActiveServerSelection()
     }
@@ -239,27 +286,44 @@ class PlaybackController @Inject constructor(
                     }
                     is AppResult.Error -> 0L
                 }
-                val resumeMs = startPositionMs ?: serverResumeMs
+                val shouldRestartFromBeginning = startPositionMs == null &&
+                    progressResult.shouldRestartFromBeginning(defaultDurationSeconds = localBook.durationSeconds)
+                val playbackBook = if (shouldRestartFromBeginning) {
+                    localBook.copy(
+                        progressPercent = 0.0,
+                        currentTimeSeconds = 0.0,
+                        isFinished = false
+                    )
+                } else {
+                    localBook
+                }
+                val resumeMs = when {
+                    startPositionMs != null -> startPositionMs
+                    shouldRestartFromBeginning -> 0L
+                    else -> serverResumeMs
+                }
                 val progressPercent = when {
                     startPositionMs != null -> null
+                    shouldRestartFromBeginning -> 0.0
                     progressResult is AppResult.Success -> progressResult.value?.progressPercent
                     else -> null
                 }
                 val currentTimeSeconds = when {
                     startPositionMs != null -> (startPositionMs / 1000.0).coerceAtLeast(0.0)
+                    shouldRestartFromBeginning -> 0.0
                     progressResult is AppResult.Success -> progressResult.value?.currentTimeSeconds
                     else -> null
                 }
                 cachedContinueListeningItem = ContinueListeningItem(
-                    book = localBook,
+                    book = playbackBook,
                     progressPercent = progressPercent,
                     currentTimeSeconds = currentTimeSeconds
                 )
                 if (isStalePlayRequest(requestToken)) return@launch
                 val localUri = Uri.fromFile(File(localDownload.localPath)).toString()
                 prepareAndPlay(
-                    bookId = localBook.id,
-                    book = localBook,
+                    bookId = playbackBook.id,
+                    book = playbackBook,
                     streamUrl = localUri,
                     resumeMs = resumeMs
                 )
@@ -279,26 +343,45 @@ class PlaybackController @Inject constructor(
 
                         is AppResult.Error -> 0L
                     }
-                    val resumeMs = startPositionMs ?: serverResumeMs
+                    val shouldRestartFromBeginning = startPositionMs == null &&
+                        progressResult.shouldRestartFromBeginning(
+                            defaultDurationSeconds = sourceResult.value.book.durationSeconds
+                        )
+                    val playbackBook = if (shouldRestartFromBeginning) {
+                        sourceResult.value.book.copy(
+                            progressPercent = 0.0,
+                            currentTimeSeconds = 0.0,
+                            isFinished = false
+                        )
+                    } else {
+                        sourceResult.value.book
+                    }
+                    val resumeMs = when {
+                        startPositionMs != null -> startPositionMs
+                        shouldRestartFromBeginning -> 0L
+                        else -> serverResumeMs
+                    }
                     val progressPercent = when {
                         startPositionMs != null -> null
+                        shouldRestartFromBeginning -> 0.0
                         progressResult is AppResult.Success -> progressResult.value?.progressPercent
                         else -> null
                     }
                     val currentTimeSeconds = when {
                         startPositionMs != null -> (startPositionMs / 1000.0).coerceAtLeast(0.0)
+                        shouldRestartFromBeginning -> 0.0
                         progressResult is AppResult.Success -> progressResult.value?.currentTimeSeconds
                         else -> null
                     }
                     cachedContinueListeningItem = ContinueListeningItem(
-                        book = sourceResult.value.book,
+                        book = playbackBook,
                         progressPercent = progressPercent,
                         currentTimeSeconds = currentTimeSeconds
                     )
                     if (isStalePlayRequest(requestToken)) return@launch
                     prepareAndPlay(
-                        sourceResult.value.book.id,
-                        sourceResult.value.book,
+                        playbackBook.id,
+                        playbackBook,
                         sourceResult.value.streamUrl,
                         resumeMs = resumeMs
                     )
@@ -365,6 +448,144 @@ class PlaybackController @Inject constructor(
 
     fun seekToPositionMs(positionMs: Long, commit: Boolean) {
         seekToPosition(targetMs = positionMs.coerceAtLeast(0L), forceSync = commit)
+    }
+
+    fun stopAndResetBookToStart(bookId: String): Boolean {
+        if (bookId.isBlank()) return false
+        if (currentBookId != bookId) return false
+        val player = mediaPlayer ?: return false
+        if (uiState.value.isPlaying) {
+            pause(reason = PauseReason.Internal)
+        } else {
+            clearDucking(player)
+            runCatching { player.pause() }
+            updateUiState { it.copy(isPlaying = false) }
+        }
+        val state = uiState.value
+        val resolvedDurationMs = safeDuration(player)
+            .takeIf { it > 0L }
+            ?: state.durationMs.takeIf { it > 0L }
+            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
+            ?: 0L
+        seekToPosition(targetMs = resolvedDurationMs, forceSync = false)
+        updateUiState { state ->
+            val currentBook = state.book
+            if (currentBook != null && currentBook.id == bookId) {
+                state.copy(
+                    book = currentBook.copy(
+                        isFinished = true,
+                        progressPercent = 1.0,
+                        currentTimeSeconds = resolvedDurationMs / 1000.0
+                    ),
+                    positionMs = resolvedDurationMs,
+                    durationMs = maxOf(state.durationMs, resolvedDurationMs),
+                    isPlaying = false
+                )
+            } else {
+                state.copy(
+                    positionMs = resolvedDurationMs,
+                    durationMs = maxOf(state.durationMs, resolvedDurationMs),
+                    isPlaying = false
+                )
+            }
+        }
+        updateCachedFromUiState()
+        return true
+    }
+
+    fun stopAndResetBookToBeginning(bookId: String): Boolean {
+        if (bookId.isBlank()) return false
+        if (currentBookId != bookId) return false
+        val player = mediaPlayer ?: return false
+        if (uiState.value.isPlaying) {
+            pause(reason = PauseReason.Internal)
+        } else {
+            clearDucking(player)
+            runCatching { player.pause() }
+            updateUiState { it.copy(isPlaying = false) }
+        }
+        seekToPosition(targetMs = 0L, forceSync = false)
+        updateUiState { state ->
+            val currentBook = state.book
+            if (currentBook != null && currentBook.id == bookId) {
+                state.copy(
+                    book = currentBook.copy(
+                        isFinished = false,
+                        progressPercent = 0.0,
+                        currentTimeSeconds = 0.0
+                    ),
+                    positionMs = 0L,
+                    isPlaying = false
+                )
+            } else {
+                state.copy(
+                    positionMs = 0L,
+                    isPlaying = false
+                )
+            }
+        }
+        updateCachedFromUiState()
+        return true
+    }
+
+    fun stopAndRestoreBookProgress(
+        bookId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): Boolean {
+        if (bookId.isBlank()) return false
+        if (currentBookId != bookId) return false
+        val player = mediaPlayer ?: return false
+        if (uiState.value.isPlaying) {
+            pause(reason = PauseReason.Internal)
+        } else {
+            clearDucking(player)
+            runCatching { player.pause() }
+            updateUiState { it.copy(isPlaying = false) }
+        }
+        val state = uiState.value
+        val resolvedDurationMs = safeDuration(player)
+            .takeIf { it > 0L }
+            ?: state.durationMs.takeIf { it > 0L }
+            ?: durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
+            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
+            ?: 0L
+        val rawTargetMs = (currentTimeSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val targetMs = if (resolvedDurationMs > 0L) {
+            rawTargetMs.coerceIn(0L, resolvedDurationMs)
+        } else {
+            rawTargetMs.coerceAtLeast(0L)
+        }
+        seekToPosition(targetMs = targetMs, forceSync = false)
+        val progressPercent = when {
+            isFinished -> 1.0
+            resolvedDurationMs > 0L -> (targetMs.toDouble() / resolvedDurationMs.toDouble()).coerceIn(0.0, 1.0)
+            else -> null
+        }
+        updateUiState { latest ->
+            val currentBook = latest.book
+            if (currentBook != null && currentBook.id == bookId) {
+                latest.copy(
+                    book = currentBook.copy(
+                        isFinished = isFinished,
+                        progressPercent = progressPercent,
+                        currentTimeSeconds = targetMs / 1000.0
+                    ),
+                    positionMs = targetMs,
+                    durationMs = maxOf(latest.durationMs, resolvedDurationMs),
+                    isPlaying = false
+                )
+            } else {
+                latest.copy(
+                    positionMs = targetMs,
+                    durationMs = maxOf(latest.durationMs, resolvedDurationMs),
+                    isPlaying = false
+                )
+            }
+        }
+        updateCachedFromUiState()
+        return true
     }
 
     fun setPlaybackSpeed(speed: Float) {
@@ -453,11 +674,27 @@ class PlaybackController @Inject constructor(
     }
 
     fun refreshAudioOutputDevices() {
+        refreshAudioOutputDevices(reason = OutputRefreshReason.General)
+    }
+
+    private fun refreshAudioOutputDevices(reason: OutputRefreshReason) {
         val available = queryOutputDevices()
+        val availableIds = available.mapNotNull { it.id }.toSet()
+        val bluetoothOutputId = available.firstOrNull { output ->
+            val displayedId = output.id ?: return@firstOrNull false
+            outputRouteKeyByDisplayedId[displayedId]?.startsWith("bt:") == true
+        }?.id
+        val shouldAutoSwitchToBluetooth = reason == OutputRefreshReason.DeviceAdded &&
+            bluetoothOutputId != null &&
+            bluetoothOutputId !in lastKnownOutputDeviceIds
         val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
             available.any { it.id == preferredId }
         }
-        val resolvedPreferredId = validPreferredId ?: available.firstOrNull()?.id
+        val resolvedPreferredId = when {
+            shouldAutoSwitchToBluetooth -> bluetoothOutputId
+            validPreferredId != null -> validPreferredId
+            else -> available.firstOrNull()?.id
+        }
         if (preferredOutputDeviceId != resolvedPreferredId) {
             preferredOutputDeviceId = resolvedPreferredId
         }
@@ -470,6 +707,7 @@ class PlaybackController @Inject constructor(
                 selectedOutputDeviceId = preferredOutputDeviceId
             )
         }
+        lastKnownOutputDeviceIds = availableIds
     }
 
     fun selectAudioOutputDevice(deviceId: Int?): Boolean {
@@ -524,17 +762,35 @@ class PlaybackController @Inject constructor(
     }
 
     private fun pause() {
-        val player = mediaPlayer ?: return
-        runCatching { player.pause() }
-        updateProgress(player)
-        syncProgress(force = true, isFinished = false)
-        updateUiState { it.copy(isPlaying = false) }
+        pause(reason = PauseReason.User)
     }
 
     private fun resume() {
         val player = mediaPlayer ?: return
-        runCatching { player.start() }
-        updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+        clearDucking(player)
+        wasPausedForTransientAudioFocusLoss = false
+        val focusResult = requestAudioFocusForPlayback()
+        if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            pendingPlayAfterAudioFocusGain = false
+            pendingPlayStartsProgressUpdates = false
+            runCatching { player.start() }
+            updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            return
+        }
+        if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
+            pendingPlayAfterAudioFocusGain = true
+            pendingPlayStartsProgressUpdates = false
+            updateUiState { it.copy(isPlaying = false, errorMessage = null) }
+            return
+        }
+        pendingPlayAfterAudioFocusGain = false
+        pendingPlayStartsProgressUpdates = false
+        updateUiState {
+            it.copy(
+                isPlaying = false,
+                errorMessage = "Could not take audio output right now."
+            )
+        }
     }
 
     private fun prepareAndPlay(bookId: String, book: BookSummary, streamUrl: String, resumeMs: Long) {
@@ -548,6 +804,7 @@ class PlaybackController @Inject constructor(
         mediaPlayer = player
         currentBookId = bookId
         playbackSyncGate.reset()
+        configurePlayerAudioAttributes(player)
         applyPreferredOutputDevice(player)
         updateUiState {
             it.copy(
@@ -577,18 +834,39 @@ class PlaybackController @Inject constructor(
             if (clampedResume > 0L) {
                 runCatching { prepared.seekTo(clampedResume.toInt()) }
             }
-            runCatching { prepared.start() }
+            val focusResult = requestAudioFocusForPlayback()
             updateUiState {
                 it.copy(
                     isLoading = false,
-                    isPlaying = true,
+                    isPlaying = false,
                     playbackSpeed = currentPlaybackSpeed,
                     positionMs = clampedResume,
                     durationMs = duration
                 )
             }
             updateCachedFromUiState()
-            startProgressUpdates()
+            when (focusResult) {
+                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                    pendingPlayAfterAudioFocusGain = false
+                    pendingPlayStartsProgressUpdates = false
+                    runCatching { prepared.start() }
+                    updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+                    startProgressUpdates()
+                }
+
+                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                    pendingPlayAfterAudioFocusGain = true
+                    pendingPlayStartsProgressUpdates = true
+                }
+
+                else -> {
+                    pendingPlayAfterAudioFocusGain = false
+                    pendingPlayStartsProgressUpdates = false
+                    updateUiState {
+                        it.copy(errorMessage = "Could not take audio output right now.")
+                    }
+                }
+            }
         }
         player.setOnCompletionListener { completed ->
             val duration = safeDuration(completed)
@@ -621,6 +899,7 @@ class PlaybackController @Inject constructor(
             }
             player.prepareAsync()
         }.onFailure { throwable ->
+            abandonAudioFocus()
             updateUiState {
                 it.copy(
                     isLoading = false,
@@ -631,17 +910,197 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    private fun pause(reason: PauseReason) {
+        val player = mediaPlayer
+        if (player != null) {
+            clearDucking(player)
+            runCatching { player.pause() }
+            updateProgress(player)
+        }
+        pendingPlayAfterAudioFocusGain = false
+        pendingPlayStartsProgressUpdates = false
+        if (reason != PauseReason.AudioFocusTransientLoss) {
+            wasPausedForTransientAudioFocusLoss = false
+        }
+        if (
+            reason == PauseReason.User ||
+            reason == PauseReason.NoisyOutput ||
+            reason == PauseReason.Internal
+        ) {
+            abandonAudioFocus()
+        }
+        syncProgress(force = true, isFinished = false)
+        updateUiState { it.copy(isPlaying = false) }
+    }
+
+    private fun configurePlayerAudioAttributes(player: MediaPlayer) {
+        runCatching {
+            if (SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                player.setAudioAttributes(playbackAudioAttributes)
+            } else {
+                @Suppress("DEPRECATION")
+                player.setAudioStreamType(AudioManager.STREAM_MUSIC)
+            }
+        }
+    }
+
+    private fun requestAudioFocusForPlayback(): Int {
+        if (hasAudioFocus) return AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        val requestResult = if (SDK_INT >= Build.VERSION_CODES.O) {
+            val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(playbackAudioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener, Handler(Looper.getMainLooper()))
+                .build()
+            audioFocusRequest = request
+            audioManager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+        if (requestResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            hasAudioFocus = true
+        }
+        return requestResult
+    }
+
+    private fun abandonAudioFocus() {
+        hasAudioFocus = false
+        val request = audioFocusRequest
+        if (SDK_INT >= Build.VERSION_CODES.O && request != null) {
+            runCatching { audioManager.abandonAudioFocusRequest(request) }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { audioManager.abandonAudioFocus(audioFocusChangeListener) }
+        }
+    }
+
+    private fun handleAudioFocusChange(focusChange: Int) {
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                hasAudioFocus = true
+                clearDucking(mediaPlayer)
+                if (pendingPlayAfterAudioFocusGain) {
+                    val player = mediaPlayer
+                    if (player != null) {
+                        pendingPlayAfterAudioFocusGain = false
+                        val shouldStartProgress = pendingPlayStartsProgressUpdates
+                        pendingPlayStartsProgressUpdates = false
+                        wasPausedForTransientAudioFocusLoss = false
+                        runCatching { player.start() }
+                        updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+                        if (shouldStartProgress) {
+                            startProgressUpdates()
+                        }
+                    }
+                } else if (wasPausedForTransientAudioFocusLoss) {
+                    wasPausedForTransientAudioFocusLoss = false
+                    resume()
+                }
+            }
+
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                hasAudioFocus = false
+                val player = mediaPlayer ?: return
+                val isPlayingNow = runCatching { player.isPlaying }.getOrDefault(false)
+                if (isPlayingNow) {
+                    applyDucking(player)
+                }
+            }
+
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                hasAudioFocus = false
+                clearDucking(mediaPlayer)
+                val player = mediaPlayer ?: return
+                val isPlayingNow = runCatching { player.isPlaying }.getOrDefault(false)
+                if (isPlayingNow) {
+                    wasPausedForTransientAudioFocusLoss = true
+                    pause(reason = PauseReason.AudioFocusTransientLoss)
+                }
+            }
+
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                hasAudioFocus = false
+                clearDucking(mediaPlayer)
+                pendingPlayAfterAudioFocusGain = false
+                pendingPlayStartsProgressUpdates = false
+                wasPausedForTransientAudioFocusLoss = false
+                val player = mediaPlayer
+                val isPlayingNow = player?.let { runCatching { it.isPlaying }.getOrDefault(false) } ?: false
+                if (isPlayingNow) {
+                    pause(reason = PauseReason.AudioFocusLoss)
+                } else {
+                    updateUiState { it.copy(isPlaying = false) }
+                }
+            }
+        }
+    }
+
+    private fun applyDucking(player: MediaPlayer) {
+        runCatching {
+            player.setVolume(0.30f, 0.30f)
+            isDuckedForAudioFocus = true
+        }
+    }
+
+    private fun clearDucking(player: MediaPlayer?) {
+        if (!isDuckedForAudioFocus || player == null) return
+        runCatching { player.setVolume(1.0f, 1.0f) }
+        isDuckedForAudioFocus = false
+    }
+
+    private fun registerNoisyAudioReceiver() {
+        if (noisyAudioReceiverRegistered) return
+        val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        val registered = runCatching {
+            if (SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appContext.registerReceiver(noisyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                appContext.registerReceiver(noisyAudioReceiver, filter)
+            }
+            true
+        }.getOrDefault(false)
+        noisyAudioReceiverRegistered = registered
+    }
+
+    private fun pauseForNoisyOutput() {
+        val player = mediaPlayer ?: return
+        val isPlayingNow = runCatching { player.isPlaying }.getOrDefault(false)
+        if (!isPlayingNow) return
+        pause(reason = PauseReason.NoisyOutput)
+    }
+
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = scope.launch {
             while (isActive) {
                 mediaPlayer?.let {
                     updateProgress(it)
-                    syncProgress(force = false, isFinished = false)
+                    if (uiState.value.isPlaying) {
+                        syncProgress(force = false, isFinished = false)
+                    }
                 }
                 delay(500L)
             }
         }
+    }
+
+    private fun AppResult<PlaybackProgress?>.shouldRestartFromBeginning(
+        defaultDurationSeconds: Double?
+    ): Boolean {
+        val progress = (this as? AppResult.Success)?.value ?: return false
+        val progressPercent = progress.progressPercent
+        if (progressPercent != null && progressPercent >= 0.995) {
+            return true
+        }
+        val current = progress.currentTimeSeconds ?: return false
+        val duration = (progress.durationSeconds ?: defaultDurationSeconds)?.takeIf { it > 0.0 } ?: return false
+        return (current / duration) >= 0.995
     }
 
     private fun updateProgress(player: MediaPlayer) {
@@ -673,9 +1132,14 @@ class PlaybackController @Inject constructor(
         }
         progressJob?.cancel()
         progressJob = null
+        pendingPlayAfterAudioFocusGain = false
+        pendingPlayStartsProgressUpdates = false
+        wasPausedForTransientAudioFocusLoss = false
         releaseAudioEffects()
+        clearDucking(mediaPlayer)
         mediaPlayer?.runCatching { release() }
         mediaPlayer = null
+        abandonAudioFocus()
         updatePlaybackSurface()
     }
 
@@ -1776,6 +2240,11 @@ class PlaybackController @Inject constructor(
     private fun completePlayback(durationMs: Long) {
         cancelSleepTimer(updateUi = false)
         suppressNextAutoAdvanceOnCompletion = false
+        clearDucking(mediaPlayer)
+        pendingPlayAfterAudioFocusGain = false
+        pendingPlayStartsProgressUpdates = false
+        wasPausedForTransientAudioFocusLoss = false
+        abandonAudioFocus()
         updateUiState {
             it.copy(
                 isPlaying = false,

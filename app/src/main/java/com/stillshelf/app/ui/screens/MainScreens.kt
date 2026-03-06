@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -121,6 +122,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -140,6 +144,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -191,6 +196,7 @@ import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
 import coil.imageLoader
 import com.stillshelf.app.core.network.authorizationHeaderValue
@@ -5387,10 +5393,23 @@ fun BookDetailScreen(
     var editingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
     var editingDetailBookmarkTitle by rememberSaveable { mutableStateOf("") }
     var deletingDetailBookmark by remember { mutableStateOf<BookBookmark?>(null) }
+    val detailSnackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         viewModel.clearActionMessage()
+    }
+    LaunchedEffect(viewModel, detailSnackbarHostState) {
+        viewModel.markFinishedUndoEvents.collect {
+            val result = detailSnackbarHostState.showSnackbar(
+                message = "Marked as finished",
+                actionLabel = "Undo",
+                withDismissAction = true
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                viewModel.undoMarkAsFinished()
+            }
+        }
     }
     LaunchedEffect(addToListBookId) {
         if (!addToListBookId.isNullOrBlank()) {
@@ -5432,20 +5451,31 @@ fun BookDetailScreen(
     val resolvedDetailProgress = max(detailProgressPercent, detailProgressFromTime ?: 0.0)
     val finishedFromDetailProgress = resolvedDetailProgress >= 0.995
     val effectiveDetailFinished = when {
-        isPlayingDetailBookNow && resolvedDetailProgress < 0.995 && (detailCurrentSeconds ?: 0.0) > 0.5 -> false
+        isPlayingDetailBookNow &&
+            playbackUiState.isPlaying &&
+            resolvedDetailProgress < 0.995 &&
+            (detailCurrentSeconds ?: 0.0) > 0.5 -> false
         else -> (detailBook?.isFinished == true) || finishedFromDetailProgress
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 120.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = AppScreenHorizontalPadding,
+                    end = AppScreenHorizontalPadding,
+                    top = 2.dp,
+                    bottom = 14.dp
+                ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CircleActionButton(
@@ -5566,9 +5596,11 @@ fun BookDetailScreen(
                 }
                 val serverPlaybackSeconds = uiState.currentTimeSeconds?.coerceAtLeast(0.0) ?: 0.0
                 val effectiveBookFinished = effectiveDetailFinished
-                val hasProgress = livePlaybackSeconds > 0.5 ||
-                    serverPlaybackSeconds > 0.5 ||
-                    (uiState.progressPercent ?: 0.0) > 0.001
+                val hasProgress = !effectiveBookFinished && (
+                    livePlaybackSeconds > 0.5 ||
+                        serverPlaybackSeconds > 0.5 ||
+                        (uiState.progressPercent ?: 0.0) > 0.001
+                    )
                 val listenLabel = if (effectiveBookFinished) {
                     "Start Listening"
                 } else if (hasProgress) {
@@ -5576,24 +5608,28 @@ fun BookDetailScreen(
                 } else {
                     "Start Listening"
                 }
-                val listenProgressFraction = run {
-                    val duration = when {
-                        book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
-                        playbackUiState.book?.id == book.id && playbackUiState.durationMs > 0L -> {
-                            playbackUiState.durationMs / 1000.0
+                val listenProgressFraction = if (effectiveBookFinished) {
+                    0f
+                } else {
+                    run {
+                        val duration = when {
+                            book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
+                            playbackUiState.book?.id == book.id && playbackUiState.durationMs > 0L -> {
+                                playbackUiState.durationMs / 1000.0
+                            }
+                            else -> null
                         }
-                        else -> null
+                        val resolved = when {
+                            duration != null && duration > 0.0 && livePlaybackSeconds > 0.0 -> {
+                                (livePlaybackSeconds / duration).coerceIn(0.0, 1.0)
+                            }
+                            duration != null && duration > 0.0 && serverPlaybackSeconds > 0.0 -> {
+                                (serverPlaybackSeconds / duration).coerceIn(0.0, 1.0)
+                            }
+                            else -> (uiState.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+                        }
+                        resolved.toFloat().coerceIn(0f, 1f)
                     }
-                    val resolved = when {
-                        duration != null && duration > 0.0 && livePlaybackSeconds > 0.0 -> {
-                            (livePlaybackSeconds / duration).coerceIn(0.0, 1.0)
-                        }
-                        duration != null && duration > 0.0 && serverPlaybackSeconds > 0.0 -> {
-                            (serverPlaybackSeconds / duration).coerceIn(0.0, 1.0)
-                        }
-                        else -> (uiState.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
-                    }
-                    resolved.toFloat().coerceIn(0f, 1f)
                 }
                 val chapterPositionSeconds = if (playbackUiState.book?.id == book.id) {
                     (playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0)
@@ -5610,30 +5646,66 @@ fun BookDetailScreen(
                 )
 
                 item {
+                    val detailCoverModel = rememberCoverImageModel(book.coverUrl)
+                    val detailCoverPainter = rememberAsyncImagePainter(model = detailCoverModel)
+                    val detailCoverSuccessState = detailCoverPainter.state as? AsyncImagePainter.State.Success
+                    val detailCoverIntrinsicWidth = detailCoverSuccessState?.result?.drawable?.intrinsicWidth?.takeIf { it > 0 }
+                    val detailCoverIntrinsicHeight = detailCoverSuccessState?.result?.drawable?.intrinsicHeight?.takeIf { it > 0 }
+                    val detailCoverAspectRatio = if (detailCoverIntrinsicWidth != null && detailCoverIntrinsicHeight != null) {
+                        detailCoverIntrinsicWidth.toFloat() / detailCoverIntrinsicHeight.toFloat()
+                    } else {
+                        0.66f
+                    }
+                    val isSquareLikeDetailCover = detailCoverAspectRatio in 0.97f..1.03f
+                    val detailCoverWidth = 240.dp
+                    val detailFrameWidth = if (isSquareLikeDetailCover) detailCoverWidth else 276.dp
+                    val detailCoverSlotHeight = if (isSquareLikeDetailCover) 240.dp else 296.dp
+                    val detailCoverHeight = if (isSquareLikeDetailCover) 224.dp else 272.dp
+                    val detailCoverContentScale = if (isSquareLikeDetailCover) ContentScale.Crop else ContentScale.Fit
+                    val detailForcedFrameSideInset = if (isSquareLikeDetailCover) null else 36.dp
+                    val detailSeriesBadgeYOffset = if (isSquareLikeDetailCover) 4.dp else (-4).dp
                     Box(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
+                        // Keep this painter in composition so square-cover detection updates once loaded.
+                        Image(
+                            painter = detailCoverPainter,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(1.dp)
+                                .alpha(0f)
+                        )
                         Box(
                             modifier = Modifier
-                                .width(240.dp)
-                                .height(320.dp)
+                                .width(detailCoverWidth)
+                                .height(detailCoverSlotHeight)
                         ) {
-                            BookPoster(
-                                book = book,
-                                width = 240.dp,
-                                height = 320.dp,
-                                fillMaxWidth = true,
-                                shape = RoundedCornerShape(10.dp),
-                                contentScale = ContentScale.Fit,
-                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                downloadProgressPercent = uiState.downloadProgressPercent
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .width(detailFrameWidth)
+                                    .height(detailCoverHeight)
+                            ) {
+                                BookPoster(
+                                    book = book,
+                                    width = detailFrameWidth,
+                                    height = detailCoverHeight,
+                                    fillMaxWidth = true,
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentScale = detailCoverContentScale,
+                                    limitInsetToAvoidVerticalLetterbox = true,
+                                    forcedFrameSideInset = detailForcedFrameSideInset,
+                                    disableBlurredFrame = false,
+                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                    downloadProgressPercent = uiState.downloadProgressPercent
+                                )
+                            }
                             seriesOrderLabel?.let { order ->
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
-                                        .offset(x = (-4).dp, y = (-4).dp)
+                                        .offset(x = (-4).dp, y = detailSeriesBadgeYOffset)
                                         .clip(RoundedCornerShape(6.dp))
                                         .background(MaterialTheme.colorScheme.surface)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -5690,47 +5762,24 @@ fun BookDetailScreen(
                         Text(
                             text = topMetadata,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
                 item {
-                    if (hasProgress) {
-                        BookListenProgressButton(
-                            text = listenLabel,
-                            progress = listenProgressFraction,
-                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
-                            onClick = { onStartListening(book.id) }
-                        )
-                    } else {
-                        val startListenContainerColor = if (appearanceUiState.materialDesignEnabled) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        }
-                        val startListenContentColor = if (appearanceUiState.materialDesignEnabled) {
-                            if (startListenContainerColor.luminance() > 0.55f) Color.Black else Color.White
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        }
-                        Button(
-                            onClick = { onStartListening(book.id) },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = startListenContainerColor,
-                                contentColor = startListenContentColor
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(listenLabel)
-                        }
-                    }
+                    BookListenProgressButton(
+                        text = listenLabel,
+                        progress = if (hasProgress) listenProgressFraction else 0f,
+                        materialDesignEnabled = appearanceUiState.materialDesignEnabled,
+                        onClick = { onStartListening(book.id) },
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
                 }
+                item { Spacer(modifier = Modifier.height(8.dp)) }
                 item {
                     Row(
                         modifier = Modifier
@@ -5988,6 +6037,13 @@ fun BookDetailScreen(
                 }
             }
         }
+        }
+        SnackbarHost(
+            hostState = detailSnackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 84.dp)
+        )
     }
 
     editingDetailBookmark?.let { targetBookmark ->
@@ -6214,6 +6270,7 @@ fun PlayerScreen(
     var timerSheetSessionKey by rememberSaveable { mutableIntStateOf(0) }
     val speedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showSpeedSheet by rememberSaveable { mutableStateOf(false) }
+    val playerSnackbarHostState = remember { SnackbarHostState() }
     val speedLabel = formatPlaybackSpeedShort(playbackUiState.playbackSpeed)
     val speedToolValue = "Speed $speedLabel"
     val timerMode = playbackUiState.sleepTimerMode
@@ -6243,8 +6300,26 @@ fun PlayerScreen(
     } else {
         MaterialTheme.colorScheme.surfaceContainerHigh
     }
+    val isMaterialNonImmersive = appearanceUiState.materialDesignEnabled && !immersiveEnabled
+    val materialProgressAccent = if (MaterialTheme.colorScheme.background.luminance() > 0.5f) {
+        // Light themes: deepen accent so the timeline reads as a strong "marker" stroke.
+        lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.14f)
+    } else {
+        // Dark themes: lift accent so it still pops on dark surfaces.
+        lerp(MaterialTheme.colorScheme.primary, Color.White, 0.2f)
+    }
+    val progressActiveColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.92f)
+    } else if (appearanceUiState.materialDesignEnabled) {
+        materialProgressAccent
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val menuItemTextColor = MaterialTheme.colorScheme.onSurface
     val bottomToolsPrimaryColor = if (immersiveEnabled) {
         Color.White
+    } else if (isMaterialNonImmersive) {
+        menuItemTextColor
     } else if (bottomToolsBaseColor.luminance() > 0.52f) {
         Color(0xFF1C1C1C)
     } else {
@@ -6252,6 +6327,8 @@ fun PlayerScreen(
     }
     val bottomToolsSecondaryColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.72f)
+    } else if (isMaterialNonImmersive) {
+        menuItemTextColor
     } else if (bottomToolsBaseColor.luminance() > 0.52f) {
         Color(0xFF666666)
     } else {
@@ -6311,7 +6388,7 @@ fun PlayerScreen(
         useSlimStripTools -> if (nonMaterialDockMenuMatch) {
             nonMaterialMenuLikeBorder
         } else {
-            immersiveDockBorderColor
+            if (isMaterialNonImmersive) progressActiveColor else immersiveDockBorderColor
         }
         else -> Color.Transparent
     }
@@ -6329,8 +6406,8 @@ fun PlayerScreen(
     val toolsItemBorderColor = when {
         useFloatingChipsTools -> if (immersiveEnabled) {
             immersiveDockBorderColor
-        } else if (appearanceUiState.materialDesignEnabled) {
-            immersiveDockBorderColor
+        } else if (isMaterialNonImmersive) {
+            progressActiveColor
         } else {
             menuLikeBorderColor
         }
@@ -6369,6 +6446,7 @@ fun PlayerScreen(
         immersiveEnabled -> Color.Transparent
         !appearanceUiState.materialDesignEnabled -> nonMaterialMenuLikeBorder
         bottomToolsStyle == PlayerBottomToolsStyle.Flat -> Color.Transparent
+        isMaterialNonImmersive -> progressActiveColor
         else -> immersiveDockBorderColor
     }
     val mainPlayButtonIconTint = if (immersiveEnabled) {
@@ -6377,11 +6455,6 @@ fun PlayerScreen(
         Color.Black
     } else {
         Color.White
-    }
-    val progressActiveColor = if (immersiveEnabled) {
-        Color.White.copy(alpha = 0.92f)
-    } else {
-        MaterialTheme.colorScheme.onSurface
     }
     val progressTrackColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.24f)
@@ -6394,6 +6467,7 @@ fun PlayerScreen(
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val seekControlTint = if (isMaterialNonImmersive) progressActiveColor else primaryTextColor
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val effectiveHeightDp = (configuration.screenHeightDp.toFloat() / density.fontScale).coerceAtLeast(520f)
@@ -6413,6 +6487,18 @@ fun PlayerScreen(
         val latest = actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, latest, Toast.LENGTH_SHORT).show()
         viewModel.clearActionMessage()
+    }
+    LaunchedEffect(viewModel, playerSnackbarHostState) {
+        viewModel.markFinishedUndoEvents.collect {
+            val result = playerSnackbarHostState.showSnackbar(
+                message = "Marked as finished",
+                actionLabel = "Undo",
+                withDismissAction = true
+            )
+            if (result == SnackbarResult.ActionPerformed) {
+                viewModel.undoMarkAsFinished()
+            }
+        }
     }
     LaunchedEffect(addToListBookId) {
         if (!addToListBookId.isNullOrBlank()) {
@@ -6725,7 +6811,7 @@ fun PlayerScreen(
                 Seek15Button(
                     forward = false,
                     seconds = controlPrefs.skipBackwardSeconds,
-                    tint = primaryTextColor,
+                    tint = seekControlTint,
                     isImmersive = immersiveEnabled,
                     onClick = viewModel::onRewindClick
                 )
@@ -6744,22 +6830,27 @@ fun PlayerScreen(
                 ) {
                     val mainPlayButtonIcon = if (playbackUiState.isPlaying) {
                         Icons.Outlined.Pause
-                    } else if (immersiveEnabled) {
+                    } else if (immersiveEnabled || isMaterialNonImmersive) {
                         Icons.Filled.PlayArrow
                     } else {
                         Icons.Outlined.PlayArrow
                     }
+                    val mainPlayIconTint = if (!playbackUiState.isPlaying && isMaterialNonImmersive) {
+                        progressActiveColor
+                    } else {
+                        mainPlayButtonIconTint
+                    }
                     Icon(
                         imageVector = mainPlayButtonIcon,
                         contentDescription = if (playbackUiState.isPlaying) "Pause" else "Play",
-                        tint = mainPlayButtonIconTint,
+                        tint = mainPlayIconTint,
                         modifier = Modifier.size(36.dp)
                     )
                 }
                 Seek15Button(
                     forward = true,
                     seconds = controlPrefs.skipForwardSeconds,
-                    tint = primaryTextColor,
+                    tint = seekControlTint,
                     isImmersive = immersiveEnabled,
                     onClick = viewModel::onForwardClick
                 )
@@ -7039,6 +7130,13 @@ fun PlayerScreen(
             }
         }
         }
+
+        SnackbarHost(
+            hostState = playerSnackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 92.dp)
+        )
 
         if (playbackUiState.sleepTimerExpiredPromptVisible) {
             ModalBottomSheet(
@@ -7685,8 +7783,8 @@ private fun PlayerProgressBar(
     modifier: Modifier = Modifier
 ) {
     val clampedProgress = progress.coerceIn(0f, 1f)
-    val thumbSize = 11.dp
-    val barHeight = 5.dp
+    val touchTargetHeight = 28.dp
+    val barHeight = 8.dp
     var widthPx by remember { mutableStateOf(0f) }
     var dragProgress by remember { mutableStateOf(clampedProgress) }
     var isDragging by remember { mutableStateOf(false) }
@@ -7712,7 +7810,7 @@ private fun PlayerProgressBar(
 
     BoxWithConstraints(
         modifier = modifier
-            .height(thumbSize)
+            .height(touchTargetHeight)
             .onSizeChanged { widthPx = it.width.toFloat() }
             .pointerInput(widthPx, clampedProgress) {
                 detectTapGestures { offset ->
@@ -7751,15 +7849,6 @@ private fun PlayerProgressBar(
                 .height(barHeight)
                 .align(Alignment.CenterStart)
                 .clip(barShape)
-                .background(activeColor)
-        )
-        val maxOffset = (maxWidth - thumbSize).coerceAtLeast(0.dp)
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .offset(x = maxOffset * displayProgress)
-                .size(thumbSize)
-                .clip(CircleShape)
                 .background(activeColor)
         )
     }
@@ -8839,6 +8928,7 @@ private fun BookListenProgressButton(
     modifier: Modifier = Modifier
 ) {
     val buttonShape = ButtonDefaults.shape
+    val labelStyle = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
     val accentColor = MaterialTheme.colorScheme.primary
     val baseColor = if (materialDesignEnabled) {
         // Keep the unshaved area as a darker accent tone.
@@ -8870,7 +8960,7 @@ private fun BookListenProgressButton(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .height(50.dp)
             .clip(buttonShape)
             .background(baseColor)
     ) {
@@ -8890,12 +8980,12 @@ private fun BookListenProgressButton(
             )
         ) {
             Icon(
-                imageVector = Icons.Outlined.PlayArrow,
+                imageVector = Icons.Filled.PlayArrow,
                 contentDescription = null,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(24.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text(text)
+            Text(text = text, style = labelStyle)
         }
     }
 }
@@ -10091,6 +10181,9 @@ private fun BookPoster(
     shape: RoundedCornerShape = RoundedCornerShape(8.dp),
     contentScale: ContentScale = ContentScale.Crop,
     backgroundBlur: Dp = WideCoverBackgroundBlur,
+    limitInsetToAvoidVerticalLetterbox: Boolean = true,
+    forcedFrameSideInset: Dp? = null,
+    disableBlurredFrame: Boolean = false,
     showDownloadIndicator: Boolean = false,
     downloadProgressPercent: Int? = null
 ) {
@@ -10111,7 +10204,10 @@ private fun BookPoster(
             modifier = Modifier.matchParentSize(),
             shape = shape,
             contentScale = contentScale,
-            backgroundBlur = backgroundBlur
+            backgroundBlur = backgroundBlur,
+            limitInsetToAvoidVerticalLetterbox = limitInsetToAvoidVerticalLetterbox,
+            forcedSideInset = forcedFrameSideInset,
+            disableBlurredFrame = disableBlurredFrame
         )
         val progress = downloadProgressPercent?.coerceIn(0, 100)
         val showProgress = progress != null && progress in 0..99

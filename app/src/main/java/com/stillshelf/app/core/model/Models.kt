@@ -22,6 +22,8 @@ data class BookSummary(
     val durationSeconds: Double?,
     val coverUrl: String?,
     val seriesName: String? = null,
+    val seriesNames: List<String> = emptyList(),
+    val seriesIds: List<String> = emptyList(),
     val seriesSequence: Double? = null,
     val genres: List<String> = emptyList(),
     val publishedYear: String? = null,

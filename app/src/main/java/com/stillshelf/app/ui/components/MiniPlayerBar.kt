@@ -55,7 +55,7 @@ fun MiniPlayerBar(
         state.isLoading -> "Loading playback..."
         item != null -> formatMiniPlayerSubtitle(item)
         !state.errorMessage.isNullOrBlank() -> state.errorMessage
-        else -> "Start a book from Continue Listening"
+        else -> "Start a book to listen."
     }
     val shape = RoundedCornerShape(24.dp)
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)

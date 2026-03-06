@@ -6378,7 +6378,7 @@ fun PlayerScreen(
             CenteredEmptyState(
                 icon = Icons.Outlined.PlayArrow,
                 title = "Nothing playing",
-                subtitle = "Start a book from Continue Listening."
+                subtitle = "Start a book to listen."
             )
             return
         }

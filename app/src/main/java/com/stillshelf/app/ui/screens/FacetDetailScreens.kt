@@ -396,11 +396,21 @@ class SeriesDetailViewModel @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
+    companion object {
+        private const val SERIES_BOOKS_PAGE_SIZE = 400
+        private const val SERIES_BOOKS_MAX_PAGES = 100
+    }
+
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = seriesName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
     private val mutableListMode = MutableStateFlow(true)
     val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
+
+    private data class SeriesMatchTarget(
+        val id: String?,
+        val expectedCount: Int?
+    )
 
     init {
         viewModelScope.launch {
@@ -476,21 +486,48 @@ class SeriesDetailViewModel @Inject constructor(
     private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = 400,
-                    page = 0,
-                    forceRefresh = forceRefresh
-                )
-            ) {
+            when (val result = fetchAllBooksForSeriesMatching(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     val normalizedSeries = normalizeSeriesKey(seriesName)
-                    val matchedBooks = result.value.filter {
-                        if (normalizedSeries.isBlank()) return@filter false
-                        val candidate = it.seriesName?.let(::normalizeSeriesKey) ?: return@filter false
-                        candidate == normalizedSeries ||
-                            candidate.contains(normalizedSeries) ||
-                            normalizedSeries.contains(candidate)
+                    val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
+                    val matchedByListMetadata = result.value.filter {
+                        val matchesByName = if (normalizedSeries.isBlank()) {
+                            false
+                        } else {
+                            val candidateSeries = buildList {
+                                it.seriesName?.let(::add)
+                                addAll(it.seriesNames)
+                            }
+                            candidateSeries.any { candidateName ->
+                                val candidate = normalizeSeriesKey(candidateName)
+                                candidate.isNotBlank() &&
+                                    (
+                                        candidate == normalizedSeries ||
+                                            candidate.contains(normalizedSeries) ||
+                                            normalizedSeries.contains(candidate)
+                                        )
+                            }
+                        }
+                        val matchesById = targetSeries.id != null &&
+                            it.seriesIds.any { candidateId ->
+                                seriesIdsLikelyMatch(candidateId, targetSeries.id)
+                            }
+                        matchesByName || matchesById
+                    }
+                    val matchedBooks = if (matchedByListMetadata.isNotEmpty()) {
+                        matchedByListMetadata
+                    } else if (targetSeries.id != null) {
+                        resolveSeriesBooksFromBookDetails(
+                            books = result.value,
+                            targetSeries = targetSeries,
+                            normalizedSeries = normalizedSeries
+                        )
+                    } else {
+                        emptyList()
+                    }
+                    if (matchedBooks.isEmpty() && !forceRefresh) {
+                        refresh(forceRefresh = true)
+                        return@launch
                     }
                     val books = coroutineScope {
                         matchedBooks
@@ -528,6 +565,114 @@ class SeriesDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private suspend fun resolveTargetSeriesTarget(forceRefresh: Boolean): SeriesMatchTarget {
+        return when (val seriesResult = sessionRepository.fetchSeriesForActiveLibrary(forceRefresh = forceRefresh)) {
+            is AppResult.Success -> {
+                val normalized = normalizeSeriesKey(seriesName)
+                val match = seriesResult.value.firstOrNull { series ->
+                    normalizeSeriesKey(series.name) == normalized
+                }
+                SeriesMatchTarget(
+                    id = match?.id?.trim()?.takeIf { it.isNotBlank() },
+                    expectedCount = match?.subtitle?.let(::extractEntityCount)
+                )
+            }
+
+            is AppResult.Error -> SeriesMatchTarget(id = null, expectedCount = null)
+        }
+    }
+
+    private fun seriesIdsLikelyMatch(candidateId: String, targetId: String): Boolean {
+        val normalizedCandidate = candidateId.trim()
+        val normalizedTarget = targetId.trim()
+        if (normalizedCandidate.isBlank() || normalizedTarget.isBlank()) return false
+        return normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+            normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+            normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
+    }
+
+    private fun extractEntityCount(subtitle: String?): Int? {
+        val value = subtitle?.trim().orEmpty().substringBefore(" ").toIntOrNull()
+        return value?.takeIf { it >= 0 }
+    }
+
+    private suspend fun resolveSeriesBooksFromBookDetails(
+        books: List<BookSummary>,
+        targetSeries: SeriesMatchTarget,
+        normalizedSeries: String
+    ): List<BookSummary> {
+        val resolved = mutableListOf<BookSummary>()
+        val targetSeriesId = targetSeries.id
+        val expectedCount = targetSeries.expectedCount
+        books.forEach { book ->
+            val detail = when (val detailResult = sessionRepository.fetchBookDetail(book.id, forceRefresh = false)) {
+                is AppResult.Success -> detailResult.value.book
+                is AppResult.Error -> null
+            } ?: return@forEach
+
+            val matchById = targetSeriesId != null &&
+                detail.seriesIds.any { candidateId -> seriesIdsLikelyMatch(candidateId, targetSeriesId) }
+            val matchByName = if (normalizedSeries.isBlank()) {
+                false
+            } else {
+                buildList {
+                    detail.seriesName?.let(::add)
+                    addAll(detail.seriesNames)
+                }.any { candidateName ->
+                    val normalizedCandidate = normalizeSeriesKey(candidateName)
+                    normalizedCandidate.isNotBlank() &&
+                        (
+                            normalizedCandidate == normalizedSeries ||
+                                normalizedCandidate.contains(normalizedSeries) ||
+                                normalizedSeries.contains(normalizedCandidate)
+                            )
+                }
+            }
+            if (matchById || matchByName) {
+                resolved += book.copy(
+                    seriesName = detail.seriesName ?: book.seriesName,
+                    seriesNames = if (detail.seriesNames.isNotEmpty()) detail.seriesNames else book.seriesNames,
+                    seriesIds = if (detail.seriesIds.isNotEmpty()) detail.seriesIds else book.seriesIds,
+                    seriesSequence = detail.seriesSequence ?: book.seriesSequence
+                )
+                if (expectedCount != null && expectedCount > 0 && resolved.size >= expectedCount) {
+                    return resolved.distinctBy { it.id }
+                }
+            }
+        }
+        return resolved.distinctBy { it.id }
+    }
+
+    private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): AppResult<List<BookSummary>> {
+        val books = mutableListOf<BookSummary>()
+        var page = 0
+        while (page < SERIES_BOOKS_MAX_PAGES) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    page = page,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Success -> {
+                    val batch = result.value
+                    if (batch.isEmpty()) break
+                    books += batch
+                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    page += 1
+                }
+
+                is AppResult.Error -> {
+                    if (books.isEmpty()) {
+                        return result
+                    }
+                    break
+                }
+            }
+        }
+        return AppResult.Success(books.distinctBy { it.id })
     }
 
     private fun observeDownloadedState() {

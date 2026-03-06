@@ -186,6 +186,8 @@ class SessionRepositoryImpl @Inject constructor(
         }
 
         sessionPreferences.setActiveSelection(serverId = server.id, libraryId = null)
+        sessionPreferences.setLastPlayedBookId(null)
+        sessionPreferences.clearCachedHomeFeed()
         sessionPreferences.setRequiresLibrarySelection(true)
         clearContentCaches()
         return AppResult.Success(Unit)
@@ -332,6 +334,8 @@ class SessionRepositoryImpl @Inject constructor(
 
             secureTokenStorage.saveToken(serverId, token)
             sessionPreferences.setActiveSelection(serverId = serverId, libraryId = null)
+            sessionPreferences.setLastPlayedBookId(null)
+            sessionPreferences.clearCachedHomeFeed()
             sessionPreferences.setRequiresLibrarySelection(true)
             clearContentCaches()
 
@@ -2519,6 +2523,8 @@ class SessionRepositoryImpl @Inject constructor(
             .put("durationSeconds", book.durationSeconds)
             .put("coverUrl", book.coverUrl)
             .put("seriesName", book.seriesName)
+            .put("seriesNames", JSONArray(book.seriesNames))
+            .put("seriesIds", JSONArray(book.seriesIds))
             .put("seriesSequence", book.seriesSequence)
             .put("genres", JSONArray(book.genres))
             .put("publishedYear", book.publishedYear)
@@ -2545,6 +2551,8 @@ class SessionRepositoryImpl @Inject constructor(
             durationSeconds = source.optDoubleOrNull("durationSeconds"),
             coverUrl = source.optStringOrNull("coverUrl"),
             seriesName = source.optStringOrNull("seriesName"),
+            seriesNames = source.optStringList("seriesNames"),
+            seriesIds = source.optStringList("seriesIds"),
             seriesSequence = source.optDoubleOrNull("seriesSequence"),
             genres = genres,
             publishedYear = source.optStringOrNull("publishedYear"),
@@ -2570,6 +2578,17 @@ class SessionRepositoryImpl @Inject constructor(
         return optDouble(key)
     }
 
+    private fun JSONObject.optStringList(key: String): List<String> {
+        if (!has(key) || isNull(key)) return emptyList()
+        val array = optJSONArray(key) ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val value = array.optString(index).trim()
+                if (value.isNotBlank()) add(value)
+            }
+        }
+    }
+
     private fun AudiobookshelfLibraryItemDto.toBookSummary(
         baseUrl: String,
         authToken: String
@@ -2583,6 +2602,8 @@ class SessionRepositoryImpl @Inject constructor(
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
             seriesSequence = seriesSequence,
             genres = genres,
             publishedYear = publishedYear,
@@ -2628,7 +2649,7 @@ class SessionRepositoryImpl @Inject constructor(
                 imagePath?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
                     ?: audiobookshelfApi.buildAuthorImageUrl(baseUrl, id, authToken)
             } else {
-                null
+                imagePath?.let { audiobookshelfApi.buildImagePathUrl(baseUrl, it, authToken) }
             }
         )
     }
@@ -2647,6 +2668,8 @@ class SessionRepositoryImpl @Inject constructor(
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
             seriesSequence = seriesSequence,
             genres = genres,
             publishedYear = publishedYear
@@ -2680,6 +2703,8 @@ class SessionRepositoryImpl @Inject constructor(
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
             seriesSequence = seriesSequence,
             genres = genres,
             publishedYear = publishedYear

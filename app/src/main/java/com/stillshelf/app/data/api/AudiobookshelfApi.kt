@@ -39,6 +39,8 @@ data class AudiobookshelfLibraryItemDto(
     val narratorName: String?,
     val durationSeconds: Double?,
     val seriesName: String?,
+    val seriesNames: List<String>,
+    val seriesIds: List<String>,
     val seriesSequence: Double?,
     val genres: List<String>,
     val publishedYear: String?,
@@ -93,6 +95,8 @@ data class AudiobookshelfBookDetailDto(
     val description: String?,
     val publishedYear: String?,
     val seriesName: String?,
+    val seriesNames: List<String>,
+    val seriesIds: List<String>,
     val seriesSequence: Double?,
     val genres: List<String>,
     val sizeBytes: Long?,
@@ -2358,6 +2362,25 @@ class AudiobookshelfApi @Inject constructor(
         return addAuthTokenFragment(rawUrl, authToken)
     }
 
+    fun buildImagePathUrl(
+        baseUrl: String,
+        imagePath: String,
+        authToken: String
+    ): String {
+        val path = imagePath.trim()
+        if (path.startsWith("http://") || path.startsWith("https://")) {
+            return path
+        }
+        val normalized = baseUrl.removeSuffix("/")
+        val baseHttpUrl = normalized.toHttpUrlOrNull()
+            ?: return addAuthTokenFragment("${normalized}/${path.removePrefix("/")}", authToken)
+        val rawUrl = baseHttpUrl.newBuilder()
+            .addPathSegments(path.removePrefix("/"))
+            .build()
+            .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
+    }
+
     private fun authHeaderValue(token: String): String = authorizationHeaderValue(token)
 
     private fun parseLibraries(rawJson: String): List<AudiobookshelfLibraryDto> {
@@ -2458,6 +2481,16 @@ class AudiobookshelfApi @Inject constructor(
             progress != null -> progress >= 0.995
             else -> false
         }
+        val seriesNames = extractSeriesNames(
+            metadata = metadata,
+            rootSeriesArray = item.optJSONArray("series"),
+            mediaSeriesArray = media.optJSONArray("series")
+        )
+        val seriesIds = extractSeriesIds(
+            metadata = metadata,
+            rootSeriesArray = item.optJSONArray("series"),
+            mediaSeriesArray = media.optJSONArray("series")
+        )
 
         return AudiobookshelfLibraryItemDto(
             id = id,
@@ -2466,7 +2499,9 @@ class AudiobookshelfApi @Inject constructor(
             authorName = metadata?.optString("authorName").orEmpty().ifBlank { "Unknown Author" },
             narratorName = metadata?.optString("narratorName").orEmpty().ifBlank { null },
             durationSeconds = media.optDoubleOrNull("duration"),
-            seriesName = metadata?.optString("seriesName")?.ifBlank { null },
+            seriesName = seriesNames.firstOrNull(),
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
             seriesSequence = extractSeriesSequence(metadata),
             genres = metadata.optStringList("genres"),
             publishedYear = metadata?.optString("publishedYear")?.ifBlank { null },
@@ -3180,6 +3215,17 @@ class AudiobookshelfApi @Inject constructor(
             }
         }
 
+        val seriesNames = extractSeriesNames(
+            metadata = metadata,
+            rootSeriesArray = root.optJSONArray("series"),
+            mediaSeriesArray = media.optJSONArray("series")
+        )
+        val seriesIds = extractSeriesIds(
+            metadata = metadata,
+            rootSeriesArray = root.optJSONArray("series"),
+            mediaSeriesArray = media.optJSONArray("series")
+        )
+
         return AudiobookshelfBookDetailDto(
             id = id,
             libraryId = libraryId,
@@ -3189,7 +3235,9 @@ class AudiobookshelfApi @Inject constructor(
             durationSeconds = media.optDoubleOrNull("duration"),
             description = metadata?.optString("description")?.ifBlank { null },
             publishedYear = metadata?.optString("publishedYear")?.ifBlank { null },
-            seriesName = metadata?.optString("seriesName")?.ifBlank { null },
+            seriesName = seriesNames.firstOrNull(),
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
             seriesSequence = extractSeriesSequence(metadata),
             genres = metadata.optStringList("genres"),
             sizeBytes = media.optLongOrNull("size") ?: root.optLongOrNull("size"),
@@ -3212,6 +3260,67 @@ class AudiobookshelfApi @Inject constructor(
             item.optDoubleOrNull("seriesSequence")?.let { return it }
         }
         return null
+    }
+
+    private fun extractSeriesNames(
+        metadata: JSONObject?,
+        rootSeriesArray: JSONArray? = null,
+        mediaSeriesArray: JSONArray? = null
+    ): List<String> {
+        metadata ?: return emptyList()
+        val names = linkedSetOf<String>()
+        val primaryName = metadata.optString("seriesName").trim()
+        if (primaryName.isNotBlank()) {
+            names += primaryName
+        }
+        listOf(metadata.optJSONArray("series"), rootSeriesArray, mediaSeriesArray).forEach { seriesArray ->
+            if (seriesArray == null) return@forEach
+            for (index in 0 until seriesArray.length()) {
+                val entry = seriesArray.opt(index)
+                when (entry) {
+                    is JSONObject -> {
+                        val name = entry.optString("name")
+                            .ifBlank { entry.optString("seriesName") }
+                            .trim()
+                        if (name.isNotBlank()) {
+                            names += name
+                        }
+                    }
+
+                    is String -> {
+                        val value = entry.trim()
+                        if (value.isNotBlank()) {
+                            names += value
+                        }
+                    }
+                }
+            }
+        }
+        return names.toList()
+    }
+
+    private fun extractSeriesIds(
+        metadata: JSONObject?,
+        rootSeriesArray: JSONArray? = null,
+        mediaSeriesArray: JSONArray? = null
+    ): List<String> {
+        metadata ?: return emptyList()
+        val ids = linkedSetOf<String>()
+        listOf(metadata.optJSONArray("series"), rootSeriesArray, mediaSeriesArray).forEach { seriesArray ->
+            if (seriesArray == null) return@forEach
+            for (index in 0 until seriesArray.length()) {
+                val entry = seriesArray.opt(index)
+                if (entry is JSONObject) {
+                    val id = entry.optString("id")
+                        .ifBlank { entry.optString("_id") }
+                        .trim()
+                    if (id.isNotBlank()) {
+                        ids += id
+                    }
+                }
+            }
+        }
+        return ids.toList()
     }
 
     private fun buildUrl(

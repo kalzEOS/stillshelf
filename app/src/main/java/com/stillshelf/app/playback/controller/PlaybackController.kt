@@ -154,6 +154,8 @@ class PlaybackController @Inject constructor(
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var equalizer: Equalizer? = null
     private var previousRestartState: PreviousRestartState? = null
+    private var observedActiveServerId: String? = null
+    private var hasObservedActiveServerId: Boolean = false
 
     private data class NotificationSignature(
         val bookId: String,
@@ -188,6 +190,7 @@ class PlaybackController @Inject constructor(
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         refreshAudioOutputDevices()
         observePlaybackPreferences()
+        observeActiveServerSelection()
     }
 
     fun playBook(bookId: String, startPositionMs: Long? = null) {
@@ -661,7 +664,13 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer() {
-        syncProgress(force = true, isFinished = false)
+        releasePlayer(syncProgressBeforeRelease = true)
+    }
+
+    private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        if (syncProgressBeforeRelease) {
+            syncProgress(force = true, isFinished = false)
+        }
         progressJob?.cancel()
         progressJob = null
         releaseAudioEffects()
@@ -757,6 +766,50 @@ class PlaybackController @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    private fun observeActiveServerSelection() {
+        scope.launch {
+            sessionPreferences.state.collect { pref ->
+                val nextServerId = pref.activeServerId
+                if (!hasObservedActiveServerId) {
+                    observedActiveServerId = nextServerId
+                    hasObservedActiveServerId = true
+                    return@collect
+                }
+                val previousServerId = observedActiveServerId
+                observedActiveServerId = nextServerId
+                if (previousServerId != nextServerId) {
+                    clearPlaybackForServerSwitch()
+                }
+            }
+        }
+    }
+
+    private fun clearPlaybackForServerSwitch() {
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        releasePlayer(syncProgressBeforeRelease = false)
+        currentBookId = null
+        cachedContinueListeningItem = null
+        attemptedAutoAdvanceTargetsMs.clear()
+        previousRestartState = null
+        playbackSyncGate.reset()
+        suppressNextAutoAdvanceOnCompletion = false
+        updateUiState { state ->
+            state.copy(
+                isLoading = false,
+                book = null,
+                isPlaying = false,
+                positionMs = 0L,
+                durationMs = 0L,
+                errorMessage = null,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false
+            )
         }
     }
 

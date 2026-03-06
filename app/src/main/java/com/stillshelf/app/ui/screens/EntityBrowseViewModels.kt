@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
@@ -142,6 +143,11 @@ class SeriesBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
+    companion object {
+        private const val SERIES_BOOKS_PAGE_SIZE = 400
+        private const val SERIES_BOOKS_MAX_PAGES = 100
+    }
+
     private val mutableUiState = MutableStateFlow(SeriesBrowseUiState())
     val uiState: StateFlow<SeriesBrowseUiState> = mutableUiState.asStateFlow()
 
@@ -175,32 +181,43 @@ class SeriesBrowseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val seriesResult = sessionRepository.fetchSeriesForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
-                    val books = when (
-                        val booksResult = sessionRepository.fetchBooksForActiveLibrary(
-                            limit = 400,
-                            page = 0,
-                            forceRefresh = forceRefresh
-                        )
-                    ) {
-                        is AppResult.Success -> booksResult.value
-                        is AppResult.Error -> emptyList()
+                    val books = fetchAllBooksForSeriesMatching(forceRefresh = forceRefresh)
+                    val booksBySeries = mutableMapOf<String, MutableList<BookSummary>>()
+                    val booksBySeriesId = mutableMapOf<String, MutableList<BookSummary>>()
+                    val detailCache = mutableMapOf<String, BookSummary?>()
+                    books.forEach { book ->
+                        seriesMatchKeys(book).forEach { key ->
+                            booksBySeries.getOrPut(key) { mutableListOf() }.add(book)
+                        }
+                        book.seriesIds.forEach { seriesId ->
+                            val normalizedId = seriesId.trim()
+                            if (normalizedId.isNotBlank()) {
+                                booksBySeriesId.getOrPut(normalizedId) { mutableListOf() }.add(book)
+                            }
+                        }
                     }
-                    val booksBySeries = books
-                        .asSequence()
-                        .filter { !it.seriesName.isNullOrBlank() }
-                        .groupBy { normalizeSeriesName(it.seriesName.orEmpty()) }
 
-                    val cards = seriesResult.value.map { series ->
-                        val matchedBooks = booksBySeries[normalizeSeriesName(series.name)].orEmpty()
-                        val preferredCoverUrl = matchedBooks.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
-                            ?: series.imageUrl
-                            ?: matchedBooks.firstOrNull()?.coverUrl
-                        SeriesBrowseCard(
-                            id = series.id,
-                            name = series.name,
-                            subtitle = series.subtitle ?: matchedBooks.takeIf { it.isNotEmpty() }?.size?.let { "$it books" },
-                            coverUrl = preferredCoverUrl
-                        )
+                    val cards = buildList {
+                        seriesResult.value.forEach { series ->
+                            val matchedBooks = booksBySeries[normalizeSeriesName(series.name)].orEmpty()
+                                .ifEmpty { booksBySeriesId[series.id].orEmpty() }
+                            val preferredCoverUrl = matchedBooks.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
+                                ?: series.imageUrl
+                                ?: matchedBooks.firstOrNull()?.coverUrl
+                                ?: resolveSeriesCoverFromDetails(
+                                    series = series,
+                                    books = books,
+                                    detailCache = detailCache
+                                )
+                            add(
+                                SeriesBrowseCard(
+                                    id = series.id,
+                                    name = series.name,
+                                    subtitle = series.subtitle ?: matchedBooks.takeIf { it.isNotEmpty() }?.size?.let { "$it books" },
+                                    coverUrl = preferredCoverUrl
+                                )
+                            )
+                        }
                     }
                     mutableUiState.update {
                         it.copy(
@@ -220,6 +237,70 @@ class SeriesBrowseViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): List<BookSummary> {
+        val books = mutableListOf<BookSummary>()
+        var page = 0
+        while (page < SERIES_BOOKS_MAX_PAGES) {
+            when (
+                val result = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    page = page,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Success -> {
+                    val batch = result.value
+                    if (batch.isEmpty()) break
+                    books += batch
+                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    page += 1
+                }
+
+                is AppResult.Error -> break
+            }
+        }
+        return books.distinctBy { it.id }
+    }
+
+    private suspend fun resolveSeriesCoverFromDetails(
+        series: NamedEntitySummary,
+        books: List<BookSummary>,
+        detailCache: MutableMap<String, BookSummary?>
+    ): String? {
+        val normalizedSeriesName = normalizeSeriesName(series.name)
+        books.forEach { book ->
+            val detailBook = detailCache.getOrPut(book.id) {
+                when (val detailResult = sessionRepository.fetchBookDetail(book.id, forceRefresh = false)) {
+                    is AppResult.Success -> detailResult.value.book
+                    is AppResult.Error -> null
+                }
+            } ?: return@forEach
+
+            val matchesById = detailBook.seriesIds.any { candidateId ->
+                seriesIdsLikelyMatch(candidateId, series.id)
+            }
+            val matchesByName = buildList {
+                detailBook.seriesName?.let(::add)
+                addAll(detailBook.seriesNames)
+            }.any { candidateName ->
+                val normalizedCandidate = normalizeSeriesName(candidateName)
+                normalizedCandidate.isNotBlank() &&
+                    (
+                        normalizedCandidate == normalizedSeriesName ||
+                            normalizedCandidate.contains(normalizedSeriesName) ||
+                            normalizedSeriesName.contains(normalizedCandidate)
+                        )
+            }
+            if (matchesById || matchesByName) {
+                val resolvedCover = detailBook.coverUrl ?: book.coverUrl
+                if (!resolvedCover.isNullOrBlank()) {
+                    return resolvedCover
+                }
+            }
+        }
+        return null
     }
 }
 
@@ -660,6 +741,30 @@ private fun normalizeSeriesName(value: String): String {
         .replace(Regex("\\s*#\\d+.*$"), "")
         .replace(Regex("\\s+"), " ")
         .lowercase()
+}
+
+private fun seriesMatchKeys(book: BookSummary): Set<String> {
+    return buildSet {
+        book.seriesName
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { add(normalizeSeriesName(it)) }
+        book.seriesNames.forEach { seriesName ->
+            val normalized = normalizeSeriesName(seriesName)
+            if (normalized.isNotBlank()) {
+                add(normalized)
+            }
+        }
+    }
+}
+
+private fun seriesIdsLikelyMatch(candidateId: String, targetId: String): Boolean {
+    val normalizedCandidate = candidateId.trim()
+    val normalizedTarget = targetId.trim()
+    if (normalizedCandidate.isBlank() || normalizedTarget.isBlank()) return false
+    return normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+        normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+        normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
 }
 
 private fun isStillShelfProbeCollection(name: String): Boolean {

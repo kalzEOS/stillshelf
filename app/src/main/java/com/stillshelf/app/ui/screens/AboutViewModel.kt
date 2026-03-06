@@ -1,6 +1,7 @@
 package com.stillshelf.app.ui.screens
 
 import android.content.Context
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -69,7 +70,7 @@ class AboutViewModel @Inject constructor(
             appContext.packageManager.getPackageInfo(appContext.packageName, 0)
         }.getOrNull()
         installedVersionName = packageInfo?.versionName.orEmpty()
-        installedVersionCode = packageInfo?.longVersionCode?.toInt() ?: 0
+        installedVersionCode = packageInfo?.let { PackageInfoCompat.getLongVersionCode(it).toInt() } ?: 0
         mutableUiState = MutableStateFlow(
             AboutUiState(
                 versionName = installedVersionName,

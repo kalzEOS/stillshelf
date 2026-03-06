@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookBookmark
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -18,8 +19,11 @@ import com.stillshelf.app.ui.navigation.MainRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -42,6 +46,13 @@ class PlayerViewModel @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
+    private data class FinishedUndoSnapshot(
+        val bookId: String,
+        val currentTimeSeconds: Double,
+        val durationSeconds: Double?,
+        val wasFinished: Boolean
+    )
+
     val uiState: StateFlow<PlaybackUiState> = playbackController.uiState
     private val mutablePreviewItem = MutableStateFlow<ContinueListeningItem?>(null)
     val previewItem: StateFlow<ContinueListeningItem?> = mutablePreviewItem.asStateFlow()
@@ -57,9 +68,12 @@ class PlayerViewModel @Inject constructor(
     val downloadedBookIds: StateFlow<Set<String>> = mutableDownloadedBookIds.asStateFlow()
     private val mutableDownloadProgressPercent = MutableStateFlow<Int?>(null)
     val downloadProgressPercent: StateFlow<Int?> = mutableDownloadProgressPercent.asStateFlow()
+    private val mutableMarkFinishedUndoEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val markFinishedUndoEvents: SharedFlow<Unit> = mutableMarkFinishedUndoEvents.asSharedFlow()
     private var currentDownloadItems: List<DownloadItem> = emptyList()
     private var loadedBookId: String? = null
     private var pendingSleepTimerRequest: PendingSleepTimerRequest? = null
+    private var pendingFinishedUndoSnapshot: FinishedUndoSnapshot? = null
 
     init {
         observeControlPrefs()
@@ -234,6 +248,55 @@ class PlayerViewModel @Inject constructor(
         setBookFinishedState(finished = false)
     }
 
+    fun undoMarkAsFinished() {
+        val snapshot = pendingFinishedUndoSnapshot ?: return
+        pendingFinishedUndoSnapshot = null
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.syncPlaybackProgress(
+                    bookId = snapshot.bookId,
+                    currentTimeSeconds = snapshot.currentTimeSeconds,
+                    durationSeconds = snapshot.durationSeconds,
+                    isFinished = snapshot.wasFinished
+                )
+            ) {
+                is AppResult.Success -> {
+                    if (uiState.value.book?.id == snapshot.bookId) {
+                        playbackController.stopAndRestoreBookProgress(
+                            bookId = snapshot.bookId,
+                            currentTimeSeconds = snapshot.currentTimeSeconds,
+                            durationSeconds = snapshot.durationSeconds,
+                            isFinished = snapshot.wasFinished
+                        )
+                    } else {
+                        val preview = previewItem.value
+                        if (preview?.book?.id == snapshot.bookId) {
+                            val restoredProgressPercent = snapshot.durationSeconds
+                                ?.takeIf { it > 0.0 }
+                                ?.let { duration -> (snapshot.currentTimeSeconds / duration).coerceIn(0.0, 1.0) }
+                            mutablePreviewItem.value = preview.copy(
+                                book = preview.book.copy(
+                                    isFinished = snapshot.wasFinished,
+                                    progressPercent = restoredProgressPercent,
+                                    currentTimeSeconds = snapshot.currentTimeSeconds
+                                ),
+                                progressPercent = restoredProgressPercent,
+                                currentTimeSeconds = snapshot.currentTimeSeconds
+                            )
+                        }
+                    }
+                    mutableActionMessage.value = "Undid mark as finished."
+                    loadBookMetadata(bookId = snapshot.bookId, forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    pendingFinishedUndoSnapshot = snapshot
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
+    }
+
     fun jumpToSeconds(seconds: Double) {
         val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id ?: return
         val positionMs = (seconds.coerceAtLeast(0.0) * 1000.0).toLong()
@@ -380,18 +443,53 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun setBookFinishedState(finished: Boolean) {
-        val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        val activeBook = uiState.value.book ?: previewItem.value?.book
+        val bookId = activeBook?.id
         if (bookId.isNullOrBlank()) {
             mutableActionMessage.value = "Book details not ready yet."
             return
         }
         viewModelScope.launch {
+            val undoSnapshot = if (finished) captureFinishedUndoSnapshot(book = activeBook) else null
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = finished)) {
                 is AppResult.Success -> {
-                    mutableActionMessage.value = if (finished) {
-                        "Marked as finished. Progress is now 100%."
+                    if (finished) {
+                        pendingFinishedUndoSnapshot = undoSnapshot
+                        if (uiState.value.book?.id == bookId) {
+                            playbackController.stopAndResetBookToStart(bookId)
+                        }
+                        mutableMarkFinishedUndoEvents.tryEmit(Unit)
+                        if (uiState.value.book?.id != bookId) {
+                            val duration = activeBook.durationSeconds?.coerceAtLeast(0.0) ?: 0.0
+                            mutablePreviewItem.value = ContinueListeningItem(
+                                book = activeBook.copy(
+                                    isFinished = true,
+                                    progressPercent = 1.0,
+                                    currentTimeSeconds = duration
+                                ),
+                                progressPercent = 1.0,
+                                currentTimeSeconds = duration
+                            )
+                        }
+                    }
+                    if (finished) {
+                        mutableActionMessage.value = null
                     } else {
-                        "Marked as unfinished. Progress reset to 0%."
+                        pendingFinishedUndoSnapshot = null
+                        if (uiState.value.book?.id == bookId) {
+                            playbackController.stopAndResetBookToBeginning(bookId)
+                        } else {
+                            mutablePreviewItem.value = ContinueListeningItem(
+                                book = activeBook.copy(
+                                    isFinished = false,
+                                    progressPercent = 0.0,
+                                    currentTimeSeconds = 0.0
+                                ),
+                                progressPercent = 0.0,
+                                currentTimeSeconds = 0.0
+                            )
+                        }
+                        mutableActionMessage.value = "Marked as unfinished. Progress reset to 0%."
                     }
                     loadBookMetadata(bookId = bookId, forceRefresh = true)
                 }
@@ -401,6 +499,43 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private suspend fun captureFinishedUndoSnapshot(book: BookSummary?): FinishedUndoSnapshot {
+        val fallbackCurrentTime = when {
+            uiState.value.book?.id == book?.id -> uiState.value.positionMs.coerceAtLeast(0L) / 1000.0
+            else -> previewItem.value?.currentTimeSeconds
+                ?: previewItem.value?.book?.currentTimeSeconds
+                ?: 0.0
+        }
+        val progress = when (val result = sessionRepository.fetchPlaybackProgress(book?.id.orEmpty())) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> null
+        }
+        val progressCurrentSeconds = progress?.currentTimeSeconds
+        val progressPercentFromServer = progress?.progressPercent
+        val currentTimeSeconds = progressCurrentSeconds?.coerceAtLeast(0.0)
+            ?: fallbackCurrentTime.coerceAtLeast(0.0)
+        val durationSeconds = progress?.durationSeconds ?: book?.durationSeconds
+        val progressPercent = when {
+            progressPercentFromServer != null -> progressPercentFromServer.coerceIn(0.0, 1.0)
+            durationSeconds != null && durationSeconds > 0.0 -> {
+                (currentTimeSeconds / durationSeconds).coerceIn(0.0, 1.0)
+            }
+            else -> null
+        }
+        val wasFinished = when {
+            book?.isFinished == true -> true
+            progressPercent != null -> progressPercent >= 0.995
+            durationSeconds != null && durationSeconds > 0.0 -> (currentTimeSeconds / durationSeconds) >= 0.995
+            else -> false
+        }
+        return FinishedUndoSnapshot(
+            bookId = book?.id.orEmpty(),
+            currentTimeSeconds = currentTimeSeconds,
+            durationSeconds = durationSeconds,
+            wasFinished = wasFinished
+        )
     }
 
     private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false) {

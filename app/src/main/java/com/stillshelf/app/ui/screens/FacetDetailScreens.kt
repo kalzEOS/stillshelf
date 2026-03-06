@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -62,7 +63,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -78,6 +84,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.util.AppResult
@@ -1839,8 +1847,7 @@ fun SeriesDetailScreen(
 
                     item {
                         SeriesCoverStack(
-                            leadBook = leadBook,
-                            layerCount = books.size,
+                            books = books,
                             isDownloaded = uiState.downloadedBookIds.contains(leadBook.id),
                             downloadProgressPercent = uiState.downloadProgressByBookId[leadBook.id]
                         )
@@ -3060,22 +3067,91 @@ private fun DownloadBadge(
 }
 
 @Composable
+private fun ShadedStackCover(
+    coverUrl: String?,
+    contentDescription: String?,
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    shadeAlpha: Float,
+    contentScale: ContentScale = ContentScale.Fit
+) {
+    Box(modifier = modifier) {
+        val shadedModifier = if (shadeAlpha > 0f) {
+            Modifier
+                .matchParentSize()
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        color = Color.Black.copy(alpha = shadeAlpha),
+                        blendMode = BlendMode.SrcAtop
+                    )
+                }
+        } else {
+            Modifier.matchParentSize()
+        }
+
+        FramedCoverImage(
+            coverUrl = coverUrl,
+            contentDescription = contentDescription,
+            modifier = shadedModifier,
+            shape = shape,
+            contentScale = contentScale,
+            backgroundBlur = FacetSeriesStackBackgroundBlur,
+            frameOverlayAlphaMultiplier = 0f,
+            disableBlurredFrame = true
+        )
+    }
+}
+
+@Composable
 private fun SeriesCoverStack(
-    leadBook: BookSummary,
-    layerCount: Int,
+    books: List<BookSummary>,
     isDownloaded: Boolean,
     downloadProgressPercent: Int?
 ) {
-    val availableBackLayers = (layerCount - 1).coerceAtLeast(0)
-    val backLayerCount = availableBackLayers.coerceAtMost(2)
+    if (books.isEmpty()) return
+    val frontBook = books[0]
+    val frontModel = rememberCoverImageModel(frontBook.coverUrl)
+    val frontPainter = rememberAsyncImagePainter(model = frontModel)
+    val frontSuccessState = frontPainter.state as? AsyncImagePainter.State.Success
+    val frontIntrinsicWidth = frontSuccessState?.result?.drawable?.intrinsicWidth?.takeIf { it > 0 }
+    val frontIntrinsicHeight = frontSuccessState?.result?.drawable?.intrinsicHeight?.takeIf { it > 0 }
+    val frontAspectRatio = if (frontIntrinsicWidth != null && frontIntrinsicHeight != null) {
+        frontIntrinsicWidth.toFloat() / frontIntrinsicHeight.toFloat()
+    } else {
+        0.66f
+    }
+    val isSquareLikeFrontCover = frontAspectRatio in 0.90f..1.10f
+    val useSquareMultiBookStack = isSquareLikeFrontCover && books.size >= 2
+    fun pickBookWithCover(vararg indices: Int): BookSummary? {
+        return indices
+            .asSequence()
+            .mapNotNull { idx -> books.getOrNull(idx) }
+            .firstOrNull { !it.coverUrl.isNullOrBlank() }
+    }
+
+    val middleRightBook = pickBookWithCover(1, 0)
+    val middleLeftBook = pickBookWithCover(2, 1, 0)
+    val backRightBook = pickBookWithCover(3, 1, 0)
+    val backLeftBook = pickBookWithCover(4, 2, 1, 0)
+    val showMiddleRight = useSquareMultiBookStack && middleRightBook != null
+    val showMiddleLeft = useSquareMultiBookStack && middleLeftBook != null
+    val showBackRight = useSquareMultiBookStack && backRightBook != null
+    val showBackLeft = useSquareMultiBookStack && backLeftBook != null
+    val middleLayerShadeAlpha = 0.24f
+    val backLayerShadeAlpha = 0.38f
+    val centeredBackLayerCount = if (useSquareMultiBookStack) 0 else (books.size - 1).coerceAtMost(2)
     val frontWidth = 190.dp
-    val frontHeight = 190.dp
-    val middleWidth = frontWidth + 51.dp
-    val middleHeight = frontHeight - 18.dp
-    val backWidth = middleWidth + 50.dp
-    val backHeight = middleHeight - 15.dp
-    val middleYOffset = 12.dp
-    val backYOffset = 23.dp
+    val frontHeight = 200.dp
+    val middleWidth = 250.dp
+    val middleHeight = 182.dp
+    val backWidth = 300.dp
+    val backHeight = 166.dp
+    val middleXOffset = 35.dp
+    val backXOffset = 68.dp
+    val middleYOffset = 8.dp
+    val backYOffset = 16.dp
     val stackWidth = 358.dp
     val stackHeight = 208.dp
     val layerShape = FacetSeriesStackCornerShape
@@ -3085,6 +3161,14 @@ private fun SeriesCoverStack(
             .height(224.dp),
         contentAlignment = Alignment.TopCenter
     ) {
+        // Keep the painter active in composition so square-cover detection resolves.
+        Image(
+            painter = frontPainter,
+            contentDescription = null,
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0f)
+        )
         val scale = (maxWidth / stackWidth).coerceIn(0f, 1f)
         val scaledStackWidth = stackWidth * scale
         val scaledStackHeight = stackHeight * scale
@@ -3094,6 +3178,8 @@ private fun SeriesCoverStack(
         val scaledMiddleHeight = middleHeight * scale
         val scaledBackWidth = backWidth * scale
         val scaledBackHeight = backHeight * scale
+        val scaledMiddleXOffset = middleXOffset * scale
+        val scaledBackXOffset = backXOffset * scale
         val scaledMiddleYOffset = middleYOffset * scale
         val scaledBackYOffset = backYOffset * scale
         Box(
@@ -3102,10 +3188,62 @@ private fun SeriesCoverStack(
                 .height(scaledStackHeight),
             contentAlignment = Alignment.TopCenter
         ) {
-            if (backLayerCount >= 2) {
+            if (showBackLeft) {
+                ShadedStackCover(
+                    coverUrl = backLeftBook?.coverUrl,
+                    contentDescription = backLeftBook?.title,
+                    modifier = Modifier
+                        .offset(x = -scaledBackXOffset, y = scaledBackYOffset)
+                        .width(scaledBackWidth)
+                        .height(scaledBackHeight),
+                    shape = layerShape,
+                    shadeAlpha = backLayerShadeAlpha,
+                    contentScale = ContentScale.Fit
+                )
+            }
+            if (showBackRight) {
+                ShadedStackCover(
+                    coverUrl = backRightBook?.coverUrl,
+                    contentDescription = backRightBook?.title,
+                    modifier = Modifier
+                        .offset(x = scaledBackXOffset, y = scaledBackYOffset)
+                        .width(scaledBackWidth)
+                        .height(scaledBackHeight),
+                    shape = layerShape,
+                    shadeAlpha = backLayerShadeAlpha,
+                    contentScale = ContentScale.Fit
+                )
+            }
+            if (showMiddleLeft) {
+                ShadedStackCover(
+                    coverUrl = middleLeftBook?.coverUrl,
+                    contentDescription = middleLeftBook?.title,
+                    modifier = Modifier
+                        .offset(x = -scaledMiddleXOffset, y = scaledMiddleYOffset)
+                        .width(scaledMiddleWidth)
+                        .height(scaledMiddleHeight),
+                    shape = layerShape,
+                    shadeAlpha = middleLayerShadeAlpha,
+                    contentScale = ContentScale.Fit
+                )
+            }
+            if (showMiddleRight) {
+                ShadedStackCover(
+                    coverUrl = middleRightBook?.coverUrl,
+                    contentDescription = middleRightBook?.title,
+                    modifier = Modifier
+                        .offset(x = scaledMiddleXOffset, y = scaledMiddleYOffset)
+                        .width(scaledMiddleWidth)
+                        .height(scaledMiddleHeight),
+                    shape = layerShape,
+                    shadeAlpha = middleLayerShadeAlpha,
+                    contentScale = ContentScale.Fit
+                )
+            }
+            if (centeredBackLayerCount >= 2) {
                 FramedCoverImage(
-                    coverUrl = leadBook.coverUrl,
-                    contentDescription = leadBook.title,
+                    coverUrl = frontBook.coverUrl,
+                    contentDescription = frontBook.title,
                     modifier = Modifier
                         .offset(y = scaledBackYOffset)
                         .width(scaledBackWidth)
@@ -3117,10 +3255,10 @@ private fun SeriesCoverStack(
                     frameOverlayAlphaMultiplier = 0.22f
                 )
             }
-            if (backLayerCount >= 1) {
+            if (centeredBackLayerCount >= 1) {
                 FramedCoverImage(
-                    coverUrl = leadBook.coverUrl,
-                    contentDescription = leadBook.title,
+                    coverUrl = frontBook.coverUrl,
+                    contentDescription = frontBook.title,
                     modifier = Modifier
                         .offset(y = scaledMiddleYOffset)
                         .width(scaledMiddleWidth)
@@ -3133,16 +3271,17 @@ private fun SeriesCoverStack(
                 )
             }
             FramedCoverImage(
-                coverUrl = leadBook.coverUrl,
-                contentDescription = leadBook.title,
+                coverUrl = frontBook.coverUrl,
+                contentDescription = frontBook.title,
                 modifier = Modifier
                     .width(scaledFrontWidth)
                     .height(scaledFrontHeight)
                     .shadow(elevation = FacetSeriesStackFrontShadow * scale, shape = layerShape, clip = false),
                 shape = layerShape,
-                contentScale = ContentScale.Fit,
+                contentScale = if (useSquareMultiBookStack) ContentScale.Crop else ContentScale.Fit,
                 backgroundBlur = FacetSeriesStackBackgroundBlur,
-                frameOverlayAlphaMultiplier = 0.86f
+                frameOverlayAlphaMultiplier = 0.86f,
+                disableBlurredFrame = useSquareMultiBookStack
             )
             DownloadBadge(
                 isDownloaded = isDownloaded,

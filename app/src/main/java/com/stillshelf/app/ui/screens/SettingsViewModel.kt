@@ -2,6 +2,8 @@ package com.stillshelf.app.ui.screens
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
@@ -301,16 +303,23 @@ class SettingsViewModel @Inject constructor(
             val safeServerId = serverId.trim().ifBlank { "default" }
                 .replace(Regex("[^a-zA-Z0-9_-]"), "_")
             val avatarDir = File(appContext.filesDir, "server_avatars")
-            if (!avatarDir.exists()) {
-                avatarDir.mkdirs()
+            if (!avatarDir.exists() && !avatarDir.mkdirs()) {
+                throw IllegalStateException("Unable to create server avatar directory.")
             }
-            val target = File(avatarDir, "server_avatar_$safeServerId.img")
-            appContext.contentResolver.openInputStream(source)?.use { input ->
-                target.outputStream().use { output ->
-                    input.copyTo(output)
+            val extension = resolveAvatarExtension(source)
+            val avatarBaseName = "server_avatar_${safeServerId}_${System.currentTimeMillis()}"
+            val finalTarget = File(avatarDir, "$avatarBaseName.$extension")
+            copyAvatarRaw(source, finalTarget)
+            avatarDir.listFiles()?.forEach { existing ->
+                if (existing == finalTarget) return@forEach
+                if (existing.name.startsWith("server_avatar_${safeServerId}_")) {
+                    runCatching { existing.delete() }
                 }
-            } ?: throw IllegalStateException("Unable to open selected image.")
-            target.absolutePath
+            }
+            if (finalTarget.length() <= 0L) {
+                throw IllegalStateException("Selected image is empty.")
+            }
+            finalTarget.absolutePath
         }.fold(
             onSuccess = { AppResult.Success(it) },
             onFailure = {
@@ -320,6 +329,49 @@ class SettingsViewModel @Inject constructor(
                 )
             }
         )
+    }
+
+    private fun resolveAvatarExtension(source: Uri): String {
+        val contentResolver = appContext.contentResolver
+        val mimeType = contentResolver.getType(source).orEmpty()
+        val extensionFromMime = MimeTypeMap.getSingleton()
+            .getExtensionFromMimeType(mimeType)
+            .orEmpty()
+        val extensionFromDisplayName = runCatching {
+            contentResolver.query(
+                source,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val displayNameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (displayNameIndex >= 0 && cursor.moveToFirst()) {
+                    cursor.getString(displayNameIndex).orEmpty()
+                        .substringAfterLast('.', missingDelimiterValue = "")
+                } else {
+                    ""
+                }
+            }.orEmpty()
+        }.getOrDefault("")
+        val extensionFromPath = source.lastPathSegment
+            ?.substringAfterLast('.', missingDelimiterValue = "")
+            .orEmpty()
+        val candidate = listOf(
+            extensionFromMime,
+            extensionFromDisplayName,
+            extensionFromPath
+        ).firstOrNull { it.isNotBlank() }.orEmpty()
+        val normalized = candidate.lowercase().replace(Regex("[^a-z0-9]"), "")
+        return normalized.ifBlank { "img" }
+    }
+
+    private fun copyAvatarRaw(source: Uri, target: File) {
+        appContext.contentResolver.openInputStream(source)?.use { input ->
+            target.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        } ?: throw IllegalStateException("Unable to open selected image.")
     }
 
     private fun parseHost(url: String): String {

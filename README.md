@@ -10,6 +10,32 @@ The goal is a smooth, practical Android experience for browsing, managing, and l
 
 Both m4b and mp3 formats are supported. 
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/home.png" alt="StillShelf screenshot 1" width="240" />
+  <img src="docs/screenshots/Home2.png" alt="StillShelf screenshot 2" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181125.png" alt="StillShelf screenshot 3" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/Screenshot_20260306_181141.png" alt="StillShelf screenshot 4" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181203.png" alt="StillShelf screenshot 5" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181220.png" alt="StillShelf screenshot 6" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/Screenshot_20260306_181237.png" alt="StillShelf screenshot 7" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181245.png" alt="StillShelf screenshot 8" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181311.png" alt="StillShelf screenshot 9" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/Screenshot_20260306_181351.png" alt="StillShelf screenshot 10" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181402.png" alt="StillShelf screenshot 11" width="240" />
+  <img src="docs/screenshots/Screenshot_20260306_181422.png" alt="StillShelf screenshot 12" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/Screenshot_20260306_181435.png" alt="StillShelf screenshot 13" width="240" />
+</p>
+
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).

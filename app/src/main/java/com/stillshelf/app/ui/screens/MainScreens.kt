@@ -5558,15 +5558,26 @@ fun BookDetailScreen(
                         BookListenProgressButton(
                             text = listenLabel,
                             progress = listenProgressFraction,
+                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
                             onClick = { onStartListening(book.id) }
                         )
                     } else {
+                        val startListenContainerColor = if (appearanceUiState.materialDesignEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                        val startListenContentColor = if (appearanceUiState.materialDesignEnabled) {
+                            if (startListenContainerColor.luminance() > 0.55f) Color.Black else Color.White
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
                         Button(
                             onClick = { onStartListening(book.id) },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.onSurface,
-                                contentColor = MaterialTheme.colorScheme.surface
+                                containerColor = startListenContainerColor,
+                                contentColor = startListenContentColor
                             )
                         ) {
                             Icon(
@@ -5581,40 +5592,33 @@ fun BookDetailScreen(
                 }
                 item {
                     Row(
-                        modifier = if (appearanceUiState.materialDesignEnabled) {
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f))
-                                .border(
-                                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-                                    shape = RoundedCornerShape(14.dp)
-                                )
-                                .padding(4.dp)
-                        } else {
-                            Modifier
-                        },
-                        horizontalArrangement = Arrangement.spacedBy(if (appearanceUiState.materialDesignEnabled) 6.dp else 16.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f))
+                            .border(
+                                BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         DetailTabChip(
                             title = "About",
                             selected = uiState.selectedTab == "About",
-                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
-                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
+                            modifier = Modifier.weight(1f),
                             onClick = { viewModel.setSelectedTab("About") }
                         )
                         DetailTabChip(
                             title = "Chapters",
                             selected = uiState.selectedTab == "Chapters",
-                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
-                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
+                            modifier = Modifier.weight(1f),
                             onClick = { viewModel.setSelectedTab("Chapters") }
                         )
                         DetailTabChip(
                             title = "Bookmarks",
                             selected = uiState.selectedTab == "Bookmarks",
-                            materialDesignEnabled = appearanceUiState.materialDesignEnabled,
-                            modifier = if (appearanceUiState.materialDesignEnabled) Modifier.weight(1f) else Modifier,
+                            modifier = Modifier.weight(1f),
                             onClick = { viewModel.setSelectedTab("Bookmarks") }
                         )
                     }
@@ -6139,6 +6143,7 @@ fun PlayerScreen(
     val nonMaterialMenuLikeContainer = MaterialTheme.colorScheme.surface.copy(
         alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
     )
+    val nonImmersiveMaterialPlayerContainer = MaterialTheme.colorScheme.surfaceVariant
     val nonMaterialMenuLikeBorder = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
         Color.White.copy(alpha = 0.14f)
     } else {
@@ -6149,7 +6154,14 @@ fun PlayerScreen(
         useSlimStripTools -> if (nonMaterialDockMenuMatch) {
             nonMaterialMenuLikeContainer
         } else {
-            if (immersiveEnabled) immersiveDockContainerColor else bottomToolsBaseColor.copy(alpha = 0.28f)
+            if (immersiveEnabled) {
+                immersiveDockContainerColor
+            } else if (appearanceUiState.materialDesignEnabled) {
+                // Match dock background to main play/pause button container in Material mode.
+                nonImmersiveMaterialPlayerContainer
+            } else {
+                bottomToolsBaseColor.copy(alpha = 0.28f)
+            }
         }
         else -> Color.Transparent
     }
@@ -6163,12 +6175,24 @@ fun PlayerScreen(
         else -> Color.Transparent
     }
     val toolsItemContainerColor = when {
-        useFloatingChipsTools -> if (immersiveEnabled) immersiveDockContainerColor else menuLikeContainerColor
+        useFloatingChipsTools -> if (immersiveEnabled) {
+            immersiveDockContainerColor
+        } else if (appearanceUiState.materialDesignEnabled) {
+            nonImmersiveMaterialPlayerContainer
+        } else {
+            menuLikeContainerColor
+        }
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
     val toolsItemBorderColor = when {
-        useFloatingChipsTools -> if (immersiveEnabled) immersiveDockBorderColor else menuLikeBorderColor
+        useFloatingChipsTools -> if (immersiveEnabled) {
+            immersiveDockBorderColor
+        } else if (appearanceUiState.materialDesignEnabled) {
+            immersiveDockBorderColor
+        } else {
+            menuLikeBorderColor
+        }
         useSlimStripTools -> Color.Transparent
         else -> Color.Transparent
     }
@@ -6198,12 +6222,13 @@ fun PlayerScreen(
     } else if (!appearanceUiState.materialDesignEnabled) {
         nonMaterialMenuLikeContainer
     } else {
-        MaterialTheme.colorScheme.surfaceVariant
+        nonImmersiveMaterialPlayerContainer
     }
     val mainPlayButtonBorderColor = when {
         immersiveEnabled -> Color.Transparent
         !appearanceUiState.materialDesignEnabled -> nonMaterialMenuLikeBorder
-        else -> Color.Transparent
+        bottomToolsStyle == PlayerBottomToolsStyle.Flat -> Color.Transparent
+        else -> immersiveDockBorderColor
     }
     val mainPlayButtonIconTint = if (immersiveEnabled) {
         Color.Black
@@ -7151,19 +7176,9 @@ private fun PlayerChapterBookmarkSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
-                .background(
-                    if (materialDesignEnabled) {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    }
-                )
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f))
                 .border(
-                    if (materialDesignEnabled) {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
-                    } else {
-                        BorderStroke(0.dp, Color.Transparent)
-                    },
+                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
                     shape = RoundedCornerShape(14.dp)
                 )
                 .padding(3.dp),
@@ -7172,14 +7187,12 @@ private fun PlayerChapterBookmarkSheet(
             PlayerSheetTabButton(
                 title = "Chapters",
                 selected = selectedTab == PlayerSheetTab.Chapters,
-                materialDesignEnabled = materialDesignEnabled,
                 onClick = { onSelectTab(PlayerSheetTab.Chapters) },
                 modifier = Modifier.weight(1f)
             )
             PlayerSheetTabButton(
                 title = "Bookmarks",
                 selected = selectedTab == PlayerSheetTab.Bookmarks,
-                materialDesignEnabled = materialDesignEnabled,
                 onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
                 modifier = Modifier.weight(1f)
             )
@@ -7457,7 +7470,6 @@ private fun PlayerChapterBookmarkSheet(
 private fun PlayerSheetTabButton(
     title: String,
     selected: Boolean,
-    materialDesignEnabled: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -7466,17 +7478,13 @@ private fun PlayerSheetTabButton(
             .clip(RoundedCornerShape(11.dp))
             .background(
                 if (selected) {
-                    if (materialDesignEnabled) {
-                        MaterialTheme.colorScheme.surfaceContainerHighest
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                    }
+                    MaterialTheme.colorScheme.surfaceContainerHigh
                 } else {
                     Color.Transparent
                 }
             )
             .border(
-                if (materialDesignEnabled && selected) {
+                if (selected) {
                     BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
                 } else {
                     BorderStroke(0.dp, Color.Transparent)
@@ -7484,7 +7492,7 @@ private fun PlayerSheetTabButton(
                 shape = RoundedCornerShape(11.dp)
             )
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -7639,6 +7647,13 @@ private fun PlayerBottomToolItem(
     } else {
         primaryColor.copy(alpha = 0.12f)
     }
+    val iconChipBorderColor = if (containerBorderColor.alpha > 0f) {
+        containerBorderColor
+    } else if (isImmersive) {
+        Color.White.copy(alpha = 0.24f)
+    } else {
+        primaryColor.copy(alpha = 0.22f)
+    }
     val primaryValueColor = if (isHighlighted) primaryColor else primaryColor.copy(alpha = 0.96f)
     val itemShape = RoundedCornerShape(14.dp)
     val interactionSource = remember { MutableInteractionSource() }
@@ -7678,6 +7693,7 @@ private fun PlayerBottomToolItem(
                     .size(30.dp)
                     .clip(CircleShape)
                     .background(iconChipColor)
+                    .border(1.dp, iconChipBorderColor, CircleShape)
             } else {
                 Modifier
                     .padding(top = 4.dp)
@@ -8677,13 +8693,36 @@ private fun formatTimerRemainingLabel(mode: SleepTimerMode, remainingMs: Long): 
 private fun BookListenProgressButton(
     text: String,
     progress: Float,
+    materialDesignEnabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val buttonShape = ButtonDefaults.shape
-    val baseColor = Color(0xFF1F2126)
-    val contentColor = Color.White
-    val progressColor = listenButtonRemainingColor(baseColor)
+    val accentColor = MaterialTheme.colorScheme.primary
+    val baseColor = if (materialDesignEnabled) {
+        // Keep the unshaved area as a darker accent tone.
+        lerp(accentColor, Color.Black, 0.24f)
+    } else {
+        Color(0xFF1F2126)
+    }
+    val progressColor = if (materialDesignEnabled) {
+        // The shaved progress region stays lighter than the accent.
+        lerp(accentColor, Color.White, 0.24f)
+    } else {
+        listenButtonRemainingColor(baseColor)
+    }
+    val contentColor = if (
+        materialDesignEnabled &&
+        MaterialTheme.colorScheme.background.luminance() < 0.5f &&
+        progressColor.luminance() > 0.45f
+    ) {
+        // Dark-material palettes can produce bright green fills; force dark label for contrast.
+        Color.Black
+    } else if (baseColor.luminance() > 0.55f) {
+        Color.Black
+    } else {
+        Color.White
+    }
     val clampedProgress = progress.coerceIn(0f, 1f)
     val progressFillFraction = if (clampedProgress >= 0.995f) 0f else clampedProgress
 
@@ -8767,10 +8806,12 @@ private fun Seek15Button(
             val strokeWidth = 2.6.dp.toPx()
             val inset = 3.dp.toPx()
             val arcSize = size.minDimension - inset * 2
+            val arrowHeadAngle = 270f
+            val tailStartAngle = 40f
             drawArc(
                 color = tint,
-                startAngle = 20f,
-                sweepAngle = 250f,
+                startAngle = tailStartAngle,
+                sweepAngle = arrowHeadAngle - tailStartAngle,
                 useCenter = false,
                 topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
                 size = androidx.compose.ui.geometry.Size(arcSize, arcSize),
@@ -8780,7 +8821,7 @@ private fun Seek15Button(
             val radius = arcSize / 2f
             val cx = size.width / 2f
             val cy = size.height / 2f
-            val angle = Math.toRadians(270.0)
+            val angle = Math.toRadians(arrowHeadAngle.toDouble())
             val x = cx + radius * cos(angle).toFloat()
             val y = cy + radius * sin(angle).toFloat()
             val head = 5.dp.toPx()
@@ -9046,60 +9087,42 @@ private fun PlayerToolsCard(
 private fun DetailTabChip(
     title: String,
     selected: Boolean,
-    materialDesignEnabled: Boolean = false,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    if (materialDesignEnabled) {
-        Box(
-            modifier = modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(
-                    if (selected) {
-                        MaterialTheme.colorScheme.surfaceContainerHighest
-                    } else {
-                        Color.Transparent
-                    }
-                )
-                .border(
-                    BorderStroke(
-                        1.dp,
-                        if (selected) {
-                            MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                        } else {
-                            Color.Transparent
-                        }
-                    ),
-                    shape = RoundedCornerShape(10.dp)
-                )
-                .clickable(onClick = onClick)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                } else {
+                    Color.Transparent
+                }
             )
-        }
-    } else {
-        Column(
-            modifier = modifier.clickable(onClick = onClick),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+            .border(
+                if (selected) {
+                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                } else {
+                    BorderStroke(0.dp, Color.Transparent)
+                },
+                shape = RoundedCornerShape(11.dp)
             )
-            if (selected) {
-                HorizontalDivider(
-                    modifier = Modifier.width(32.dp),
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1
+        )
     }
 }
 

@@ -171,7 +171,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookFinishedState(bookId = bookId, finished = false)
                     refreshNetwork(showLoading = false)
@@ -184,7 +184,13 @@ class HomeViewModel @Inject constructor(
     fun removeFromContinueListening(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
                 is AppResult.Success -> {
                     mutableUiState.update {
                         it.copy(

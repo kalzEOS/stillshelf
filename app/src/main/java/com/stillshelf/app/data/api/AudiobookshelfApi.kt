@@ -1,5 +1,6 @@
 package com.stillshelf.app.data.api
 
+import java.math.BigDecimal
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -790,22 +791,53 @@ class AudiobookshelfApi @Inject constructor(
         itemId: String,
         bookmarkId: String,
         timeSeconds: Double?,
-        title: String?
+        title: String?,
+        createdAtMs: Long?
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val normalizedItemId = itemId.trim()
         val normalizedBookmarkId = bookmarkId.trim()
         val normalizedTime = timeSeconds?.coerceAtLeast(0.0)
         val normalizedTitle = title?.trim().takeUnless { it.isNullOrBlank() }
+        val normalizedCreatedAtMs = createdAtMs?.takeIf { it > 0L }
 
         runCatching {
             invalidateMePayloadCache()
+            var lastError: Throwable? = null
+            if (normalizedTime != null) {
+                val officialRequest = Request.Builder()
+                    .url(
+                        buildUrl(
+                            baseUrl,
+                            "api/me/item/$normalizedItemId/bookmark/${normalizedTime.toBookmarkPathSegment()}"
+                        )
+                    )
+                    .header("Authorization", authHeaderValue(authToken))
+                    .delete()
+                    .build()
+                val officialAttempt = runCatching { executeRequestWithRetry(officialRequest) }
+                if (officialAttempt.isSuccess) {
+                    val deleted = verifyBookmarkDeletedByTime(
+                        baseUrl = baseUrl,
+                        authToken = authToken,
+                        itemId = normalizedItemId,
+                        timeSeconds = normalizedTime
+                    )
+                    if (deleted) {
+                        return@runCatching Unit
+                    }
+                    lastError = IOException("Bookmark delete verification failed.")
+                } else {
+                    lastError = officialAttempt.exceptionOrNull()
+                }
+            }
             val resolvedBookmark = resolveBookmarkForMutation(
                 baseUrl = baseUrl,
                 authToken = authToken,
                 itemId = normalizedItemId,
                 bookmarkId = normalizedBookmarkId,
                 timeSeconds = normalizedTime,
-                title = normalizedTitle
+                title = normalizedTitle,
+                createdAtMs = normalizedCreatedAtMs
             )
             val targetIds = buildList {
                 resolvedBookmark?.id
@@ -817,7 +849,6 @@ class AudiobookshelfApi @Inject constructor(
                     ?.let(::add)
             }.distinct()
 
-            var lastError: Throwable? = null
             targetIds.forEach { targetId ->
                 val idScopedPaths = listOf(
                     "api/me/item/$itemId/bookmark/$targetId",
@@ -899,21 +930,16 @@ class AudiobookshelfApi @Inject constructor(
                         return@forEach
                     }
 
-                    invalidateMePayloadCache()
-                    val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull()
-                    if (latestBookmarks == null) {
-                        return@runCatching Unit
-                    }
-                    val stillExists = latestBookmarks.any { bookmark ->
-                        bookmark.id.equals(targetId, ignoreCase = true) ||
-                            bookmarkMatchesCandidate(
-                                bookmark = bookmark,
-                                itemId = normalizedItemId,
-                                timeSeconds = normalizedTime,
-                                title = normalizedTitle
-                            )
-                    }
-                    if (!stillExists) {
+                    val verified = verifyBookmarkDeleted(
+                        baseUrl = baseUrl,
+                        authToken = authToken,
+                        itemId = normalizedItemId,
+                        targetIds = listOf(targetId),
+                        timeSeconds = normalizedTime,
+                        title = normalizedTitle,
+                        createdAtMs = normalizedCreatedAtMs
+                    )
+                    if (verified) {
                         return@runCatching Unit
                     }
                     lastError = IOException("Bookmark delete verification failed.")
@@ -966,20 +992,16 @@ class AudiobookshelfApi @Inject constructor(
                             return@forEach
                         }
 
-                        invalidateMePayloadCache()
-                        val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull()
-                        if (latestBookmarks == null) {
-                            return@runCatching Unit
-                        }
-                        val stillExists = latestBookmarks.any { bookmark ->
-                            bookmarkMatchesCandidate(
-                                bookmark = bookmark,
-                                itemId = normalizedItemId,
-                                timeSeconds = normalizedTime,
-                                title = normalizedTitle
-                            )
-                        }
-                        if (!stillExists) {
+                        val verified = verifyBookmarkDeleted(
+                            baseUrl = baseUrl,
+                            authToken = authToken,
+                            itemId = normalizedItemId,
+                            targetIds = targetIds,
+                            timeSeconds = normalizedTime,
+                            title = normalizedTitle,
+                            createdAtMs = normalizedCreatedAtMs
+                        )
+                        if (verified) {
                             return@runCatching Unit
                         }
                         lastError = IOException("Bookmark delete verification failed.")
@@ -2641,12 +2663,14 @@ class AudiobookshelfApi @Inject constructor(
         itemId: String,
         bookmarkId: String,
         timeSeconds: Double?,
-        title: String?
+        title: String?,
+        createdAtMs: Long? = null
     ): AudiobookshelfBookmarkDto? {
         val normalizedItemId = itemId.trim()
         val normalizedBookmarkId = bookmarkId.trim()
         val normalizedTime = timeSeconds?.coerceAtLeast(0.0)
         val normalizedTitle = title?.trim().takeUnless { it.isNullOrBlank() }
+        val normalizedCreatedAtMs = createdAtMs?.takeIf { it > 0L }
 
         val bookmarks = getBookmarks(baseUrl, authToken).getOrNull()
             .orEmpty()
@@ -2659,11 +2683,12 @@ class AudiobookshelfApi @Inject constructor(
             }?.let { return it }
         }
         bookmarks.firstOrNull { bookmark ->
-            bookmarkMatchesCandidate(
+            bookmarkMatchesMutationCandidate(
                 bookmark = bookmark,
                 itemId = normalizedItemId,
                 timeSeconds = normalizedTime,
-                title = normalizedTitle
+                title = normalizedTitle,
+                createdAtMs = normalizedCreatedAtMs
             )
         }?.let { return it }
         normalizedTime?.let { targetTime ->
@@ -2679,6 +2704,115 @@ class AudiobookshelfApi @Inject constructor(
             }?.let { return it }
         }
         return null
+    }
+
+    private suspend fun verifyBookmarkDeleted(
+        baseUrl: String,
+        authToken: String,
+        itemId: String,
+        targetIds: List<String>,
+        timeSeconds: Double?,
+        title: String?,
+        createdAtMs: Long?
+    ): Boolean {
+        repeat(3) { attemptIndex ->
+            if (attemptIndex > 0) {
+                delay(120L)
+            }
+            invalidateMePayloadCache()
+            val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull() ?: return true
+            val stillExists = latestBookmarks.any { bookmark ->
+                bookmarkMatchesDeleteTarget(
+                    bookmark = bookmark,
+                    itemId = itemId,
+                    targetIds = targetIds,
+                    timeSeconds = timeSeconds,
+                    title = title,
+                    createdAtMs = createdAtMs
+                )
+            }
+            if (!stillExists) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private suspend fun verifyBookmarkDeletedByTime(
+        baseUrl: String,
+        authToken: String,
+        itemId: String,
+        timeSeconds: Double
+    ): Boolean {
+        repeat(3) { attemptIndex ->
+            if (attemptIndex > 0) {
+                delay(120L)
+            }
+            invalidateMePayloadCache()
+            val latestBookmarks = getBookmarks(baseUrl, authToken).getOrNull() ?: return true
+            val stillExists = latestBookmarks.any { bookmark ->
+                bookmark.libraryItemId.matchesLibraryItemId(itemId) &&
+                    bookmark.timeSeconds?.let { bookmarkTime ->
+                        kotlin.math.abs(bookmarkTime - timeSeconds) <= BOOKMARK_VERIFY_TIME_TOLERANCE_SECONDS
+                    } == true
+            }
+            if (!stillExists) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun bookmarkMatchesDeleteTarget(
+        bookmark: AudiobookshelfBookmarkDto,
+        itemId: String,
+        targetIds: List<String>,
+        timeSeconds: Double?,
+        title: String?,
+        createdAtMs: Long?
+    ): Boolean {
+        if (!bookmark.libraryItemId.matchesLibraryItemId(itemId)) return false
+        if (targetIds.isNotEmpty()) {
+            return targetIds.any { targetId -> bookmark.id.equals(targetId, ignoreCase = true) }
+        }
+        return bookmarkMatchesMutationCandidate(
+            bookmark = bookmark,
+            itemId = itemId,
+            timeSeconds = timeSeconds,
+            title = title,
+            createdAtMs = createdAtMs
+        )
+    }
+
+    private fun bookmarkMatchesMutationCandidate(
+        bookmark: AudiobookshelfBookmarkDto,
+        itemId: String,
+        timeSeconds: Double?,
+        title: String?,
+        createdAtMs: Long?
+    ): Boolean {
+        if (!bookmark.libraryItemId.matchesLibraryItemId(itemId)) return false
+        val normalizedTitle = title?.trim().takeUnless { it.isNullOrBlank() }
+        val normalizedCreatedAtMs = createdAtMs?.takeIf { it > 0L }
+        var matchedAnyField = false
+
+        if (normalizedCreatedAtMs != null) {
+            val bookmarkCreatedAtMs = bookmark.createdAtMs ?: return false
+            if (kotlin.math.abs(bookmarkCreatedAtMs - normalizedCreatedAtMs) > 1_000L) return false
+            matchedAnyField = true
+        }
+        if (timeSeconds != null) {
+            val bookmarkTime = bookmark.timeSeconds ?: return false
+            if (kotlin.math.abs(bookmarkTime - timeSeconds) > BOOKMARK_VERIFY_TIME_TOLERANCE_SECONDS) return false
+            matchedAnyField = true
+        }
+        if (!normalizedTitle.isNullOrBlank()) {
+            val bookmarkTitle = bookmark.title?.trim() ?: return false
+            if (!bookmarkTitle.equals(normalizedTitle, ignoreCase = true)) return false
+            matchedAnyField = true
+        }
+
+        return matchedAnyField
     }
 
     private fun bookmarkMatchesCandidate(
@@ -2715,6 +2849,10 @@ class AudiobookshelfApi @Inject constructor(
         if (candidate.isBlank() || normalizedItemId.isBlank()) return false
         val escaped = Regex.escape(normalizedItemId)
         return Regex("^$escaped-\\d+$", RegexOption.IGNORE_CASE).matches(candidate)
+    }
+
+    private fun Double.toBookmarkPathSegment(): String {
+        return BigDecimal.valueOf(this).stripTrailingZeros().toPlainString()
     }
 
     private suspend fun requestMePayload(

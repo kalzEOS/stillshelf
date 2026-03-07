@@ -41,6 +41,7 @@ class SessionPreferences @Inject constructor(
     private val immersivePlayerEnabledKey = booleanPreferencesKey("immersive_player_enabled")
     private val appThemeModeKey = stringPreferencesKey("app_theme_mode")
     private val materialDesignEnabledKey = booleanPreferencesKey("material_design_enabled")
+    private val playerBottomToolsStyleKey = stringPreferencesKey("player_bottom_tools_style")
     private val skipForwardSecondsKey = intPreferencesKey("skip_forward_seconds")
     private val skipBackwardSecondsKey = intPreferencesKey("skip_backward_seconds")
     private val softToneLevelKey = floatPreferencesKey("soft_tone_level")
@@ -57,6 +58,7 @@ class SessionPreferences @Inject constructor(
     private val updateIncludePrereleasesKey = booleanPreferencesKey("update_include_prereleases")
     private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
     private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
+    private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
 
     val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
         SessionPreferenceState(
@@ -82,6 +84,7 @@ class SessionPreferences @Inject constructor(
             immersivePlayerEnabled = prefs[immersivePlayerEnabledKey] ?: false,
             appThemeMode = prefs[appThemeModeKey] ?: "follow_system",
             materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false,
+            playerBottomToolsStyle = prefs[playerBottomToolsStyleKey] ?: "dock",
             skipForwardSeconds = (prefs[skipForwardSecondsKey] ?: 15).coerceIn(5, 600),
             skipBackwardSeconds = (prefs[skipBackwardSecondsKey] ?: 15).coerceIn(5, 600),
             softToneLevel = (prefs[softToneLevelKey] ?: 0f).coerceIn(0f, 1f),
@@ -293,6 +296,12 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setPlayerBottomToolsStyle(style: String) {
+        dataStore.edit { prefs ->
+            prefs[playerBottomToolsStyleKey] = style.ifBlank { "dock" }
+        }
+    }
+
     suspend fun setSkipForwardSeconds(seconds: Int) {
         dataStore.edit { prefs ->
             prefs[skipForwardSecondsKey] = seconds.coerceIn(5, 600)
@@ -362,6 +371,40 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(pendingUpdateVersionNameKey)
             } else {
                 prefs[pendingUpdateVersionNameKey] = versionName.trim()
+            }
+        }
+    }
+
+    suspend fun getPendingFinishedRestoreSnapshot(): PendingFinishedRestoreSnapshot? {
+        val raw = dataStore.data.first()[pendingFinishedRestoreSnapshotKey] ?: return null
+        return runCatching {
+            val node = JSONObject(raw)
+            PendingFinishedRestoreSnapshot(
+                bookId = node.optString("bookId").trim(),
+                currentTimeSeconds = node.optDouble("currentTimeSeconds").coerceAtLeast(0.0),
+                durationSeconds = node.takeIf { it.has("durationSeconds") }
+                    ?.optDouble("durationSeconds")
+                    ?.takeIf { it > 0.0 },
+                wasFinished = node.optBoolean("wasFinished"),
+                progressPercent = node.takeIf { it.has("progressPercent") }
+                    ?.optDouble("progressPercent")
+                    ?.coerceIn(0.0, 1.0)
+            ).takeIf { it.bookId.isNotBlank() }
+        }.getOrNull()
+    }
+
+    suspend fun setPendingFinishedRestoreSnapshot(snapshot: PendingFinishedRestoreSnapshot?) {
+        dataStore.edit { prefs ->
+            if (snapshot == null || snapshot.bookId.isBlank()) {
+                prefs.remove(pendingFinishedRestoreSnapshotKey)
+            } else {
+                val node = JSONObject()
+                    .put("bookId", snapshot.bookId)
+                    .put("currentTimeSeconds", snapshot.currentTimeSeconds.coerceAtLeast(0.0))
+                    .put("wasFinished", snapshot.wasFinished)
+                snapshot.durationSeconds?.takeIf { it > 0.0 }?.let { node.put("durationSeconds", it) }
+                snapshot.progressPercent?.coerceIn(0.0, 1.0)?.let { node.put("progressPercent", it) }
+                prefs[pendingFinishedRestoreSnapshotKey] = node.toString()
             }
         }
     }
@@ -517,6 +560,7 @@ data class SessionPreferenceState(
     val immersivePlayerEnabled: Boolean = false,
     val appThemeMode: String = "follow_system",
     val materialDesignEnabled: Boolean = false,
+    val playerBottomToolsStyle: String = "dock",
     val skipForwardSeconds: Int = 15,
     val skipBackwardSeconds: Int = 15,
     val softToneLevel: Float = 0f,
@@ -536,4 +580,12 @@ data class CachedHomeFeedPayload(
     val libraryId: String,
     val payload: String,
     val savedAtMs: Long
+)
+
+data class PendingFinishedRestoreSnapshot(
+    val bookId: String,
+    val currentTimeSeconds: Double,
+    val durationSeconds: Double?,
+    val wasFinished: Boolean,
+    val progressPercent: Double?
 )

@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 data class EntityBrowseUiState(
     val isLoading: Boolean = false,
@@ -48,7 +50,9 @@ data class CollectionsBrowseUiState(
 data class BookmarksBrowseUiState(
     val isLoading: Boolean = false,
     val bookmarks: List<BookmarkEntry> = emptyList(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val actionMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 )
 
 @HiltViewModel
@@ -660,7 +664,7 @@ class BookmarksBrowseViewModel @Inject constructor(
 
     private fun refresh(forceRefresh: Boolean, silent: Boolean) {
         if (uiState.value.isLoading) return
-        if (!silent || uiState.value.bookmarks.isEmpty()) {
+        if (!silent || !uiState.value.hasLoadedOnce) {
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         }
 
@@ -670,7 +674,9 @@ class BookmarksBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            bookmarks = result.value
+                            bookmarks = result.value,
+                            errorMessage = null,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -679,12 +685,137 @@ class BookmarksBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = if (silent && it.hasLoadedOnce) it.errorMessage else result.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }
             }
         }
+    }
+
+    fun editBookmark(entry: BookmarkEntry, newTitle: String) {
+        val normalizedTitle = newTitle.trim()
+        if (normalizedTitle.isBlank()) {
+            mutableUiState.update { it.copy(actionMessage = "Bookmark title can't be empty.") }
+            return
+        }
+        val previousBookmarks = uiState.value.bookmarks
+        mutableUiState.update { state ->
+            state.copy(
+                bookmarks = state.bookmarks.map { existing ->
+                    if (bookmarkEntriesMatch(existing, entry)) {
+                        existing.copy(bookmark = existing.bookmark.copy(title = normalizedTitle))
+                    } else {
+                        existing
+                    }
+                }
+            )
+        }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.updateBookmark(
+                    bookId = entry.book.id,
+                    bookmark = entry.bookmark,
+                    newTitle = normalizedTitle
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Bookmark updated.") }
+                    refresh(forceRefresh = true, silent = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            bookmarks = previousBookmarks,
+                            actionMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun deleteBookmark(entry: BookmarkEntry) {
+        val previousBookmarks = uiState.value.bookmarks
+        mutableUiState.update { state ->
+            state.copy(
+                bookmarks = state.bookmarks.filterNot { existing ->
+                    bookmarkEntriesMatch(existing, entry)
+                }
+            )
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.deleteBookmark(entry.book.id, entry.bookmark)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Bookmark deleted.") }
+                    refresh(forceRefresh = true, silent = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            bookmarks = previousBookmarks,
+                            actionMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun deleteAllBookmarks() {
+        val previousBookmarks = uiState.value.bookmarks
+        if (previousBookmarks.isEmpty()) return
+        mutableUiState.update { it.copy(bookmarks = emptyList()) }
+        viewModelScope.launch {
+            var deletedCount = 0
+            var failedCount = 0
+            previousBookmarks.forEach { entry ->
+                when (sessionRepository.deleteBookmark(entry.book.id, entry.bookmark)) {
+                    is AppResult.Success -> deletedCount += 1
+                    is AppResult.Error -> failedCount += 1
+                }
+            }
+            refresh(forceRefresh = true, silent = true)
+            mutableUiState.update {
+                it.copy(
+                    actionMessage = when {
+                        failedCount == 0 -> "Deleted all bookmarks."
+                        deletedCount == 0 -> "Unable to delete bookmarks."
+                        else -> "Deleted $deletedCount bookmarks. $failedCount failed."
+                    }
+                )
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun bookmarkEntriesMatch(source: BookmarkEntry, target: BookmarkEntry): Boolean {
+        if (!source.book.id.equals(target.book.id, ignoreCase = true)) return false
+        return bookmarksMatch(source.bookmark, target.bookmark)
+    }
+
+    private fun bookmarksMatch(source: BookBookmark, target: BookBookmark): Boolean {
+        val sourceId = source.id.trim()
+        val targetId = target.id.trim()
+        if (sourceId.isNotBlank() && targetId.isNotBlank() && sourceId.equals(targetId, ignoreCase = true)) {
+            return true
+        }
+        if (!source.libraryItemId.equals(target.libraryItemId, ignoreCase = true)) {
+            return false
+        }
+        val sourceTime = source.timeSeconds
+        val targetTime = target.timeSeconds
+        val timeMatches = sourceTime != null && targetTime != null && abs(sourceTime - targetTime) <= 2.0
+        val titleMatches = !source.title.isNullOrBlank() &&
+            !target.title.isNullOrBlank() &&
+            source.title.trim().equals(target.title.trim(), ignoreCase = true)
+        return timeMatches || titleMatches
     }
 }
 

@@ -1614,7 +1614,8 @@ class SessionRepositoryImpl @Inject constructor(
             itemId = bookId,
             bookmarkId = bookmark.id,
             timeSeconds = bookmark.timeSeconds,
-            title = bookmark.title
+            title = bookmark.title,
+            createdAtMs = bookmark.createdAtMs
         )
         if (deleteResult.isFailure) {
             return AppResult.Error(

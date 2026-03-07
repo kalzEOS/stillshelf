@@ -204,6 +204,7 @@ import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
+import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.util.resolveListenActionLabel
@@ -2391,6 +2392,12 @@ fun BookmarksBrowseScreen(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val bookmarksSnackbarHostState = remember { SnackbarHostState() }
+    var bookmarkMenuKey by remember { mutableStateOf<String?>(null) }
+    var editingBookmarkEntry by remember { mutableStateOf<BookmarkEntry?>(null) }
+    var editingBookmarkTitle by rememberSaveable { mutableStateOf("") }
+    var deletingBookmarkEntry by remember { mutableStateOf<BookmarkEntry?>(null) }
+    var confirmDeleteAllBookmarks by remember { mutableStateOf(false) }
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading && uiState.bookmarks.isEmpty(),
         onRefresh = viewModel::refresh
@@ -2406,6 +2413,12 @@ fun BookmarksBrowseScreen(
         }
     }
 
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        bookmarksSnackbarHostState.showSnackbar(message)
+        viewModel.clearActionMessage()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2416,6 +2429,19 @@ fun BookmarksBrowseScreen(
             onBackClick = onBackClick,
             onHomeClick = onHomeClick
         )
+        if (uiState.bookmarks.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = { confirmDeleteAllBookmarks = true }
+                ) {
+                    Text("Delete all")
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(10.dp))
         Box(
             modifier = Modifier
@@ -2490,11 +2516,42 @@ fun BookmarksBrowseScreen(
                                         maxLines = 1
                                     )
                                 }
-                                Icon(
-                                    imageVector = Icons.Outlined.ChevronRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Box {
+                                    IconButton(
+                                        onClick = {
+                                            bookmarkMenuKey =
+                                                "${item.book.id}:${item.bookmark.id}:${item.bookmark.createdAtMs ?: 0L}:${item.bookmark.timeSeconds ?: 0.0}"
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            contentDescription = "Bookmark actions",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    AppDropdownMenu(
+                                        expanded = bookmarkMenuKey ==
+                                            "${item.book.id}:${item.bookmark.id}:${item.bookmark.createdAtMs ?: 0L}:${item.bookmark.timeSeconds ?: 0.0}",
+                                        onDismissRequest = { bookmarkMenuKey = null }
+                                    ) {
+                                        AppDropdownMenuItem(
+                                            text = { Text("Edit title") },
+                                            onClick = {
+                                                bookmarkMenuKey = null
+                                                editingBookmarkEntry = item
+                                                editingBookmarkTitle = item.bookmark.title.orEmpty()
+                                            }
+                                        )
+                                        AppDropdownMenuItem(
+                                            text = { Text("Delete bookmark") },
+                                            onClick = {
+                                                bookmarkMenuKey = null
+                                                deletingBookmarkEntry = item
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -2551,7 +2608,91 @@ fun BookmarksBrowseScreen(
                 state = refreshState,
                 modifier = Modifier.align(Alignment.TopCenter)
             )
+
+            SnackbarHost(
+                hostState = bookmarksSnackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 16.dp, vertical = 20.dp)
+            )
         }
+    }
+
+    editingBookmarkEntry?.let { targetEntry ->
+        AlertDialog(
+            onDismissRequest = { editingBookmarkEntry = null },
+            title = { Text("Edit bookmark title") },
+            text = {
+                OutlinedTextField(
+                    value = editingBookmarkTitle,
+                    onValueChange = { editingBookmarkTitle = it },
+                    label = { Text("Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.editBookmark(targetEntry, editingBookmarkTitle)
+                        editingBookmarkEntry = null
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingBookmarkEntry = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deletingBookmarkEntry?.let { targetEntry ->
+        AlertDialog(
+            onDismissRequest = { deletingBookmarkEntry = null },
+            title = { Text("Delete bookmark") },
+            text = { Text("Remove this bookmark?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteBookmark(targetEntry)
+                        deletingBookmarkEntry = null
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingBookmarkEntry = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (confirmDeleteAllBookmarks) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteAllBookmarks = false },
+            title = { Text("Delete all bookmarks") },
+            text = { Text("Remove all bookmarks?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteAllBookmarks()
+                        confirmDeleteAllBookmarks = false
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteAllBookmarks = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -2588,10 +2729,10 @@ fun CollectionsBrowseScreen(
     }
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refresh()
+            viewModel.refreshLibrary()
             while (true) {
                 kotlinx.coroutines.delay(1_000L)
-                viewModel.refresh()
+                viewModel.refreshLibrary()
             }
         }
     }
@@ -2918,10 +3059,10 @@ fun PlaylistsBrowseScreen(
     }
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refresh()
+            viewModel.refreshLibrary()
             while (true) {
                 kotlinx.coroutines.delay(1_000L)
-                viewModel.refresh()
+                viewModel.refreshLibrary()
             }
         }
     }
@@ -5383,6 +5524,7 @@ fun BookDetailScreen(
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val playbackUiState by viewModel.playbackUiState.collectAsStateWithLifecycle()
@@ -5426,6 +5568,15 @@ fun BookDetailScreen(
         val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.refreshSilent()
+            while (true) {
+                kotlinx.coroutines.delay(1_000L)
+                viewModel.refreshSilent()
+            }
+        }
     }
     val detailBook = uiState.detail?.book
     var savedIsSquareLikeDetailCover by rememberSaveable(detailBook?.coverUrl) {
@@ -6152,6 +6303,7 @@ fun PlayerScreen(
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val hapticFeedback = LocalHapticFeedback.current
     val playbackUiState by viewModel.uiState.collectAsStateWithLifecycle()
     val previewItem by viewModel.previewItem.collectAsStateWithLifecycle()
@@ -6174,6 +6326,15 @@ fun PlayerScreen(
         "Remove"
     } else {
         "Download"
+    }
+    LaunchedEffect(lifecycleOwner, bookId) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.refreshBookMetadata()
+            while (true) {
+                kotlinx.coroutines.delay(1_000L)
+                viewModel.refreshBookMetadata()
+            }
+        }
     }
     val durationSeconds = when {
         book?.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds

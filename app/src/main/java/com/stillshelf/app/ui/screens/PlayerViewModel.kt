@@ -88,20 +88,20 @@ class PlayerViewModel @Inject constructor(
             ?.coerceAtLeast(0.0)
         val startPositionMs = startSeconds?.let { (it * 1000.0).toLong() }
         if (bookId.isNotBlank()) {
-            loadBookMetadata(bookId)
+            loadBookMetadata(bookId, forceRefresh = true)
             playbackController.playBook(bookId, startPositionMs = startPositionMs)
         } else if (playbackController.uiState.value.book == null) {
             val cachedItem = playbackController.getCachedContinueListeningItem()
             if (cachedItem != null) {
                 mutablePreviewItem.value = cachedItem
-                loadBookMetadata(cachedItem.book.id)
+                loadBookMetadata(cachedItem.book.id, forceRefresh = true)
                 syncCurrentDownloadState()
             } else {
                 viewModelScope.launch {
                     when (val result = sessionRepository.fetchMiniPlayerItem()) {
                         is AppResult.Success -> {
                             mutablePreviewItem.value = result.value
-                            result.value?.book?.id?.let(::loadBookMetadata)
+                            result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
                             syncCurrentDownloadState()
                         }
 
@@ -153,6 +153,12 @@ class PlayerViewModel @Inject constructor(
 
     fun onDismissPlayer() {
         playbackController.saveProgressSnapshot()
+    }
+
+    fun refreshBookMetadata() {
+        val activeBookId = uiState.value.book?.id ?: previewItem.value?.book?.id
+        if (activeBookId.isNullOrBlank()) return
+        loadBookMetadata(bookId = activeBookId, forceRefresh = true, silent = true)
     }
 
     fun seekToPositionMs(positionMs: Long, commit: Boolean) {
@@ -670,7 +676,7 @@ class PlayerViewModel @Inject constructor(
         )
     }
 
-    private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false) {
+    private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false, silent: Boolean = false) {
         if (bookId.isBlank()) return
         if (!forceRefresh && loadedBookId == bookId) return
         loadedBookId = bookId
@@ -682,9 +688,9 @@ class PlayerViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    if (forceRefresh) {
+                    if (forceRefresh && !silent) {
                         mutableActionMessage.value = result.message
-                    } else {
+                    } else if (!forceRefresh) {
                         mutableChapters.value = emptyList()
                         mutableBookmarks.value = emptyList()
                     }

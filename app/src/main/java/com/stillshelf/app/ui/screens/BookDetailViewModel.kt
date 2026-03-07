@@ -64,19 +64,25 @@ class BookDetailViewModel @Inject constructor(
 
     init {
         observePreferences()
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = true)
     }
 
     fun refresh() {
         refresh(forceRefresh = true)
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    fun refreshSilent() {
+        refresh(forceRefresh = true, silent = true)
+    }
+
+    private fun refresh(forceRefresh: Boolean, silent: Boolean = false) {
         if (bookId.isBlank()) {
             mutableUiState.update { it.copy(isLoading = false, errorMessage = "Invalid book id.") }
             return
         }
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        if (!silent || uiState.value.detail == null) {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        }
         viewModelScope.launch {
             when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
@@ -96,7 +102,12 @@ class BookDetailViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    mutableUiState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                    mutableUiState.update { state ->
+                        state.copy(
+                            isLoading = false,
+                            errorMessage = if (silent && state.detail != null) state.errorMessage else result.message
+                        )
+                    }
                 }
             }
         }

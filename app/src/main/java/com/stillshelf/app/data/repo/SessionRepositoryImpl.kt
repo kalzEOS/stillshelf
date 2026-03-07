@@ -23,6 +23,8 @@ import com.stillshelf.app.core.model.Library
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.core.util.UnfinishedProgressState
+import com.stillshelf.app.core.util.resolveUnfinishedProgressState
 import com.stillshelf.app.data.api.AudiobookshelfApi
 import com.stillshelf.app.data.api.AudiobookshelfLibraryDto
 import com.stillshelf.app.data.api.AudiobookshelfLibraryItemDto
@@ -79,7 +81,14 @@ class SessionRepositoryImpl @Inject constructor(
         val library: LibraryEntity?
     )
 
+    private data class FinishedProgressSnapshot(
+        val currentTimeSeconds: Double,
+        val durationSeconds: Double?,
+        val progressPercent: Double
+    )
+
     private val cacheMutex = Mutex()
+    private val finishedProgressSnapshots = mutableMapOf<String, FinishedProgressSnapshot>()
     private val booksCache = mutableMapOf<String, TimedCacheEntry<List<BookSummary>>>()
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val narratorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
@@ -1622,31 +1631,100 @@ class SessionRepositoryImpl @Inject constructor(
         return AppResult.Success(Unit)
     }
 
-    override suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit> {
+    override suspend fun markBookFinished(
+        bookId: String,
+        finished: Boolean,
+        resetProgressWhenUnfinished: Boolean,
+        preservedProgress: PlaybackProgress?
+    ): AppResult<PlaybackProgress> {
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
-        val targetDuration = if (finished) {
-            val detailDuration = audiobookshelfApi.getItemDetail(
+        val existingProgress = if (finished || resetProgressWhenUnfinished) {
+            null
+        } else {
+            audiobookshelfApi.getMediaProgressForItem(
                 baseUrl = connection.server.baseUrl,
                 authToken = connection.token,
                 itemId = bookId
-            ).getOrNull()?.durationSeconds
+            ).getOrNull()
+        }
+        val detailDuration = if (finished || !resetProgressWhenUnfinished) {
+            audiobookshelfApi.getItemDetail(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = bookId
+            ).getOrNull()?.durationSeconds?.coerceAtLeast(0.0)
+        } else {
+            null
+        }
+        if (finished) {
+            val serverProgressBeforeFinish = if (preservedProgress == null) {
+                audiobookshelfApi.getMediaProgressForItem(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    itemId = bookId
+                ).getOrNull()
+            } else {
+                null
+            }
+            val progressBeforeFinishCurrentTime = preservedProgress?.currentTimeSeconds
+                ?: serverProgressBeforeFinish?.currentTimeSeconds
+            val progressBeforeFinishDuration = preservedProgress?.durationSeconds
+                ?: serverProgressBeforeFinish?.durationSeconds
+                ?: detailDuration
+            val progressBeforeFinishPercent = preservedProgress?.progressPercent
+                ?: serverProgressBeforeFinish?.progressPercent
+            val unfinishedState = resolveUnfinishedProgressState(
+                currentTimeSeconds = progressBeforeFinishCurrentTime,
+                durationSeconds = progressBeforeFinishDuration,
+                progressPercent = progressBeforeFinishPercent
+            )
+            finishedProgressSnapshots[bookId] = FinishedProgressSnapshot(
+                currentTimeSeconds = unfinishedState.currentTimeSeconds,
+                durationSeconds = unfinishedState.durationSeconds,
+                progressPercent = unfinishedState.progressPercent
+            )
+        }
+        val storedFinishedSnapshot = if (!finished && !resetProgressWhenUnfinished) {
+            finishedProgressSnapshots[bookId]
+        } else {
+            null
+        }
+        val targetDuration = if (finished) {
             val progressDuration = audiobookshelfApi.getMediaProgressForItem(
                 baseUrl = connection.server.baseUrl,
                 authToken = connection.token,
                 itemId = bookId
             ).getOrNull()?.durationSeconds
             (detailDuration ?: progressDuration)?.coerceAtLeast(0.0)
-        } else {
+        } else if (resetProgressWhenUnfinished) {
             null
+        } else if (storedFinishedSnapshot != null) {
+            storedFinishedSnapshot.durationSeconds
+        } else {
+            (existingProgress?.durationSeconds ?: detailDuration)?.coerceAtLeast(0.0)
+        }
+        val restoredUnfinishedState = when {
+            finished || resetProgressWhenUnfinished -> null
+            storedFinishedSnapshot != null -> UnfinishedProgressState(
+                currentTimeSeconds = storedFinishedSnapshot.currentTimeSeconds,
+                durationSeconds = storedFinishedSnapshot.durationSeconds,
+                progressPercent = storedFinishedSnapshot.progressPercent
+            )
+            else -> resolveUnfinishedProgressState(
+                currentTimeSeconds = existingProgress?.currentTimeSeconds,
+                durationSeconds = targetDuration,
+                progressPercent = existingProgress?.progressPercent
+            )
         }
         val targetCurrentTime = when {
             finished && targetDuration != null -> targetDuration
             finished -> 0.0
-            else -> 0.0
+            resetProgressWhenUnfinished -> 0.0
+            else -> restoredUnfinishedState?.currentTimeSeconds ?: 0.0
         }
         val result = audiobookshelfApi.updateMediaProgressForItem(
             baseUrl = connection.server.baseUrl,
@@ -1663,9 +1741,31 @@ class SessionRepositoryImpl @Inject constructor(
                 cause = result.exceptionOrNull()
             )
         }
+        if (!finished || resetProgressWhenUnfinished) {
+            finishedProgressSnapshots.remove(bookId)
+        }
         runCatching { sessionPreferences.clearCachedHomeFeed() }
         clearContentCaches()
-        return AppResult.Success(Unit)
+        val resolvedProgress = when {
+            finished -> PlaybackProgress(
+                progressPercent = 1.0,
+                currentTimeSeconds = targetCurrentTime,
+                durationSeconds = targetDuration
+            )
+
+            resetProgressWhenUnfinished -> PlaybackProgress(
+                progressPercent = 0.0,
+                currentTimeSeconds = 0.0,
+                durationSeconds = targetDuration
+            )
+
+            else -> PlaybackProgress(
+                progressPercent = restoredUnfinishedState?.progressPercent ?: 0.0,
+                currentTimeSeconds = restoredUnfinishedState?.currentTimeSeconds ?: 0.0,
+                durationSeconds = restoredUnfinishedState?.durationSeconds ?: targetDuration
+            )
+        }
+        return AppResult.Success(resolvedProgress)
     }
 
     override suspend fun addBookToDefaultCollection(bookId: String): AppResult<String> {

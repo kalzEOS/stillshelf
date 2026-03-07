@@ -1128,7 +1128,7 @@ class PlaybackController @Inject constructor(
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
         if (syncProgressBeforeRelease) {
-            syncProgress(force = true, isFinished = false)
+            syncProgress(force = true, isFinished = shouldSyncAsFinished())
         }
         progressJob?.cancel()
         progressJob = null
@@ -1144,7 +1144,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun saveProgressSnapshot() {
-        syncProgress(force = true, isFinished = false)
+        syncProgress(force = true, isFinished = shouldSyncAsFinished())
     }
 
     fun cacheContinueListeningItem(item: ContinueListeningItem?) {
@@ -1185,6 +1185,18 @@ class PlaybackController @Inject constructor(
                 playbackSyncGate.markSyncFailed()
             }
         }
+    }
+
+    private fun shouldSyncAsFinished(): Boolean {
+        val state = uiState.value
+        if (state.book?.isFinished == true) {
+            return true
+        }
+        val durationMs = state.durationMs.takeIf { it > 0L }
+            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
+            ?: return false
+        if (durationMs <= 0L) return false
+        return state.positionMs >= (durationMs * 0.995).toLong()
     }
 
     private fun updateCachedFromUiState() {

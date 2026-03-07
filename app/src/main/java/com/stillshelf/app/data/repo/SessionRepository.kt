@@ -106,7 +106,12 @@ interface SessionRepository {
         bookId: String,
         bookmark: BookBookmark
     ): AppResult<Unit>
-    suspend fun markBookFinished(bookId: String, finished: Boolean): AppResult<Unit>
+    suspend fun markBookFinished(
+        bookId: String,
+        finished: Boolean,
+        resetProgressWhenUnfinished: Boolean = false,
+        preservedProgress: PlaybackProgress? = null
+    ): AppResult<PlaybackProgress>
     suspend fun addBookToDefaultCollection(bookId: String): AppResult<String>
     suspend fun setLastPlayedBookId(bookId: String?): AppResult<Unit>
     suspend fun searchActiveLibrary(query: String, limit: Int = 60): AppResult<SearchResults>

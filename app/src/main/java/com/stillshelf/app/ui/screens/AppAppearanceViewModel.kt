@@ -15,7 +15,8 @@ import kotlinx.coroutines.launch
 data class AppAppearanceUiState(
     val themeMode: AppThemeMode = AppThemeMode.FollowSystem,
     val materialDesignEnabled: Boolean = false,
-    val immersivePlayerEnabled: Boolean = false
+    val immersivePlayerEnabled: Boolean = false,
+    val playerBottomToolsStyle: String = "dock"
 )
 
 @HiltViewModel
@@ -32,7 +33,8 @@ class AppAppearanceViewModel @Inject constructor(
                     it.copy(
                         themeMode = parseThemeMode(state.appThemeMode),
                         materialDesignEnabled = state.materialDesignEnabled,
-                        immersivePlayerEnabled = state.immersivePlayerEnabled
+                        immersivePlayerEnabled = state.immersivePlayerEnabled,
+                        playerBottomToolsStyle = state.playerBottomToolsStyle
                     )
                 }
             }
@@ -54,6 +56,12 @@ class AppAppearanceViewModel @Inject constructor(
     fun setImmersivePlayerEnabled(enabled: Boolean) {
         viewModelScope.launch {
             sessionPreferences.setImmersivePlayerEnabled(enabled)
+        }
+    }
+
+    fun setPlayerBottomToolsStyle(style: String) {
+        viewModelScope.launch {
+            sessionPreferences.setPlayerBottomToolsStyle(style)
         }
     }
 

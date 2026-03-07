@@ -279,7 +279,7 @@ class AuthorDetailViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
                     refresh(forceRefresh = true)
                 }
 
@@ -450,7 +450,7 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.") }
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
                     refresh(forceRefresh = true)
                 }
 

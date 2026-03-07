@@ -105,7 +105,7 @@ class BooksBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
                     mutableUiState.update {
-                        it.copy(actionMessage = "Marked as unfinished. Progress reset to 0%.")
+                        it.copy(actionMessage = "Marked as unfinished.")
                     }
                     loadBooks(isUserRefresh = true)
                 }

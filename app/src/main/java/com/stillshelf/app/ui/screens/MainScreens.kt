@@ -206,6 +206,7 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.core.util.resolveListenActionLabel
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.playback.controller.PlaybackOutputDevice
@@ -5427,6 +5428,9 @@ fun BookDetailScreen(
         collectionPickerViewModel.clearMessages()
     }
     val detailBook = uiState.detail?.book
+    var savedIsSquareLikeDetailCover by rememberSaveable(detailBook?.coverUrl) {
+        mutableStateOf<Boolean?>(null)
+    }
     val isPlayingDetailBookNow = detailBook != null && playbackUiState.book?.id == detailBook.id
     val detailDurationSeconds = when {
         detailBook?.durationSeconds != null && detailBook.durationSeconds > 0.0 -> detailBook.durationSeconds
@@ -5601,13 +5605,10 @@ fun BookDetailScreen(
                         serverPlaybackSeconds > 0.5 ||
                         (uiState.progressPercent ?: 0.0) > 0.001
                     )
-                val listenLabel = if (effectiveBookFinished) {
-                    "Start Listening"
-                } else if (hasProgress) {
-                    "Continue Listening"
-                } else {
-                    "Start Listening"
-                }
+                val listenLabel = resolveListenActionLabel(
+                    isFinished = effectiveBookFinished,
+                    hasProgress = hasProgress
+                )
                 val listenProgressFraction = if (effectiveBookFinished) {
                     0f
                 } else {
@@ -5656,7 +5657,12 @@ fun BookDetailScreen(
                     } else {
                         0.66f
                     }
-                    val isSquareLikeDetailCover = detailCoverAspectRatio in 0.97f..1.03f
+                    LaunchedEffect(detailCoverIntrinsicWidth, detailCoverIntrinsicHeight) {
+                        if (detailCoverIntrinsicWidth != null && detailCoverIntrinsicHeight != null) {
+                            savedIsSquareLikeDetailCover = detailCoverAspectRatio in 0.97f..1.03f
+                        }
+                    }
+                    val isSquareLikeDetailCover = savedIsSquareLikeDetailCover ?: (detailCoverAspectRatio in 0.97f..1.03f)
                     val detailCoverWidth = 240.dp
                     val detailFrameWidth = if (isSquareLikeDetailCover) detailCoverWidth else 276.dp
                     val detailCoverSlotHeight = if (isSquareLikeDetailCover) 240.dp else 296.dp
@@ -6251,7 +6257,9 @@ fun PlayerScreen(
         playerDragOffsetPx = (playerDragOffsetPx + delta).coerceAtLeast(0f)
     }
     var bottomMenuExpanded by remember { mutableStateOf(false) }
-    var bottomToolsStyle by rememberSaveable { mutableStateOf(PlayerBottomToolsStyle.SlimStrip) }
+    val bottomToolsStyle = remember(appearanceUiState.playerBottomToolsStyle) {
+        PlayerBottomToolsStyle.fromPreferenceValue(appearanceUiState.playerBottomToolsStyle)
+    }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     var bookmarkFeedbackActive by remember { mutableStateOf(false) }
     val bookmarkIconScale by animateFloatAsState(
@@ -6420,20 +6428,20 @@ fun PlayerScreen(
         else -> 0.dp
     }
     val toolsRowVerticalPadding = when {
-        useFloatingChipsTools -> 2.dp
-        useSlimStripTools -> 2.dp
+        useFloatingChipsTools -> 1.dp
+        useSlimStripTools -> 1.dp
         else -> 0.dp
     }
     val toolsRowSpacing = when {
-        useFloatingChipsTools -> 3.dp
-        useSlimStripTools -> 3.dp
+        useFloatingChipsTools -> 2.dp
+        useSlimStripTools -> 2.dp
         else -> 4.dp
     }
     val toolsShowIconBubble = useFloatingChipsTools
     val toolsItemHeight = when {
-        useFloatingChipsTools -> 62.dp
-        useSlimStripTools -> 62.dp
-        else -> 70.dp
+        useFloatingChipsTools -> 56.dp
+        useSlimStripTools -> 56.dp
+        else -> 64.dp
     }
     val mainPlayButtonContainer = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.96f)
@@ -6474,14 +6482,19 @@ fun PlayerScreen(
     val playerHorizontalPadding = (effectiveHeightDp * 0.025f).dp.coerceIn(14.dp, 20.dp)
     val playerVerticalPadding = (effectiveHeightDp * 0.015f).dp.coerceIn(8.dp, 16.dp)
     val coverTopGap = (effectiveHeightDp * 0.03f).dp.coerceIn(16.dp, 24.dp)
-    val coverTitleGap = (effectiveHeightDp * 0.035f).dp.coerceIn(16.dp, 30.dp)
-    val titleProgressGap = coverTitleGap
-    val progressMetaGap = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
+    val coverTitleGap = (effectiveHeightDp * 0.012f).dp.coerceIn(6.dp, 10.dp)
+    val titleProgressGap = (effectiveHeightDp * 0.012f).dp.coerceIn(6.dp, 10.dp)
+    val titleRowMinHeight = 44.dp
+    val coverTimerBadgeBottomPadding = (effectiveHeightDp * 0.02f).dp.coerceIn(2.dp, 4.dp)
+    val titleSectionHeight = titleRowMinHeight + coverTitleGap + titleProgressGap
+    val titleRowVisualOffset = 8.dp
+    val progressMetaGap = 3.dp
     val coverTargetWidth = (effectiveHeightDp * 0.42f).dp.coerceIn(286.dp, 332.dp)
     val controlsRowPadding = (effectiveHeightDp * 0.04f).dp.coerceIn(24.dp, 38.dp)
-    val bottomToolsTopPadding = (effectiveHeightDp * 0.012f).dp.coerceIn(8.dp, 14.dp)
-    val bottomToolsBottomPadding = (effectiveHeightDp * 0.006f).dp.coerceIn(2.dp, 6.dp)
+    val bottomToolsTopPadding = (effectiveHeightDp * 0.008f).dp.coerceIn(4.dp, 8.dp)
+    val bottomToolsBottomPadding = (effectiveHeightDp * 0.004f).dp.coerceIn(1.dp, 4.dp)
     val playerTopOffset = (effectiveHeightDp * 0.02f).dp.coerceIn(8.dp, 16.dp)
+    val controlsAreaMinHeight = (effectiveHeightDp * 0.17f).dp.coerceIn(116.dp, 148.dp)
 
     LaunchedEffect(actionMessage) {
         val latest = actionMessage ?: return@LaunchedEffect
@@ -6647,80 +6660,87 @@ fun PlayerScreen(
                         )
                     }
                 }
+                if (timerIsActive) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = coverTimerBadgeBottomPadding)
+                    ) {
+                        PlayerTimerRunningBadge(
+                            remainingMs = timerRemainingMs,
+                            totalMs = timerTotalMs,
+                            useAccentBackground = false,
+                            materialDesignEnabled = appearanceUiState.materialDesignEnabled
+                        )
+                    }
+                }
             }
         }
-        Spacer(modifier = Modifier.height(coverTitleGap))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = playerTitle,
-                style = MaterialTheme.typography.titleMedium,
-                color = primaryTextColor,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Visible,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 8.dp, end = 10.dp)
-                    .clickable {
-                        chapterSheetTab = PlayerSheetTab.Chapters
-                        showChapterSheet = true
-                    }
-                    .basicMarquee(
-                        iterations = Int.MAX_VALUE,
-                        animationMode = androidx.compose.foundation.MarqueeAnimationMode.Immediately,
-                        repeatDelayMillis = 2000,
-                        initialDelayMillis = 1200,
-                        spacing = MarqueeSpacing(48.dp)
-                    )
-            )
-            IconButton(
-                onClick = {
-                    bookmarkFeedbackActive = true
-                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.addBookmark(
-                        positionSeconds = positionSeconds,
-                        title = activeChapterTitle ?: playerTitle
-                    )
-                },
-                modifier = Modifier
-                    .size(44.dp)
-                    .graphicsLayer {
-                        scaleX = bookmarkIconScale
-                        scaleY = bookmarkIconScale
-                    }
+        val playerTitleRow: @Composable () -> Unit = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = if (bookmarkFeedbackActive) {
-                        Icons.Filled.Bookmark
-                    } else {
-                        Icons.Outlined.BookmarkBorder
+                Text(
+                    text = playerTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = primaryTextColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Visible,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp, end = 10.dp)
+                        .clickable {
+                            chapterSheetTab = PlayerSheetTab.Chapters
+                            showChapterSheet = true
+                        }
+                        .basicMarquee(
+                            iterations = Int.MAX_VALUE,
+                            animationMode = androidx.compose.foundation.MarqueeAnimationMode.Immediately,
+                            repeatDelayMillis = 2000,
+                            initialDelayMillis = 1200,
+                            spacing = MarqueeSpacing(48.dp)
+                        )
+                )
+                IconButton(
+                    onClick = {
+                        bookmarkFeedbackActive = true
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.addBookmark(
+                            positionSeconds = positionSeconds,
+                            title = activeChapterTitle ?: playerTitle
+                        )
                     },
-                    contentDescription = "Bookmark",
-                    tint = secondaryTextColor
-                )
+                    modifier = Modifier
+                        .size(44.dp)
+                        .graphicsLayer {
+                            scaleX = bookmarkIconScale
+                            scaleY = bookmarkIconScale
+                        }
+                ) {
+                    Icon(
+                        imageVector = if (bookmarkFeedbackActive) {
+                            Icons.Filled.Bookmark
+                        } else {
+                            Icons.Outlined.BookmarkBorder
+                        },
+                        contentDescription = "Bookmark",
+                        tint = secondaryTextColor
+                    )
+                }
             }
         }
-        if (timerIsActive) {
-            val timerSlotHeight = if (titleProgressGap > 24.dp) titleProgressGap else 24.dp
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(timerSlotHeight),
-                contentAlignment = Alignment.Center
-            ) {
-                PlayerTimerRunningBadge(
-                    remainingMs = timerRemainingMs,
-                    totalMs = timerTotalMs,
-                    useAccentBackground = !immersiveEnabled,
-                    materialDesignEnabled = appearanceUiState.materialDesignEnabled
-                )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(titleSectionHeight),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(modifier = Modifier.offset(y = titleRowVisualOffset)) {
+                playerTitleRow()
             }
-        } else {
-            Spacer(modifier = Modifier.height(titleProgressGap))
         }
         PlayerProgressBar(
             progress = effectiveProgress,
@@ -6764,7 +6784,8 @@ fun PlayerScreen(
         val wholeBookRemainingSeconds = (durationSeconds - positionSeconds)
             .coerceAtLeast(0.0)
             .toLong()
-        val timeTextStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+        val progressMetaTextStyle = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp)
+        val timeTextStyle = progressMetaTextStyle.copy(fontFamily = FontFamily.Monospace)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -6779,7 +6800,7 @@ fun PlayerScreen(
             )
             Text(
                 text = "${formatHoursMinutesPrecise(wholeBookRemainingSeconds.toDouble())} left • $wholeBookProgressPercent complete",
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                style = progressMetaTextStyle,
                 color = secondaryTextColor,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.weight(1.5f),
@@ -6798,7 +6819,8 @@ fun PlayerScreen(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f)
+                .heightIn(min = controlsAreaMinHeight),
             contentAlignment = Alignment.Center
         ) {
             Row(
@@ -6987,7 +7009,9 @@ fun PlayerScreen(
                                 }
                             },
                             onClick = {
-                                bottomToolsStyle = PlayerBottomToolsStyle.Flat
+                                appearanceViewModel.setPlayerBottomToolsStyle(
+                                    PlayerBottomToolsStyle.Flat.toPreferenceValue()
+                                )
                                 bottomMenuExpanded = false
                             }
                         )
@@ -7008,7 +7032,9 @@ fun PlayerScreen(
                                 }
                             },
                             onClick = {
-                                bottomToolsStyle = PlayerBottomToolsStyle.FloatingChips
+                                appearanceViewModel.setPlayerBottomToolsStyle(
+                                    PlayerBottomToolsStyle.FloatingChips.toPreferenceValue()
+                                )
                                 bottomMenuExpanded = false
                             }
                         )
@@ -7029,7 +7055,9 @@ fun PlayerScreen(
                                 }
                             },
                             onClick = {
-                                bottomToolsStyle = PlayerBottomToolsStyle.SlimStrip
+                                appearanceViewModel.setPlayerBottomToolsStyle(
+                                    PlayerBottomToolsStyle.SlimStrip.toPreferenceValue()
+                                )
                                 bottomMenuExpanded = false
                             }
                         )
@@ -7839,7 +7867,7 @@ private fun PlayerProgressBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(barHeight)
-                .align(Alignment.CenterStart)
+                .align(Alignment.BottomStart)
                 .clip(barShape)
                 .background(trackColor)
         )
@@ -7847,7 +7875,7 @@ private fun PlayerProgressBar(
             modifier = Modifier
                 .fillMaxWidth(displayProgress)
                 .height(barHeight)
-                .align(Alignment.CenterStart)
+                .align(Alignment.BottomStart)
                 .clip(barShape)
                 .background(activeColor)
         )
@@ -7997,7 +8025,26 @@ private enum class PlayerTimerSelectionType {
 private enum class PlayerBottomToolsStyle {
     Flat,
     FloatingChips,
-    SlimStrip
+    SlimStrip;
+
+    companion object
+}
+
+private fun PlayerBottomToolsStyle.toPreferenceValue(): String {
+    return when (this) {
+        PlayerBottomToolsStyle.Flat -> "flat"
+        PlayerBottomToolsStyle.FloatingChips -> "buttons"
+        PlayerBottomToolsStyle.SlimStrip -> "dock"
+    }
+}
+
+private fun PlayerBottomToolsStyle.Companion.fromPreferenceValue(raw: String?): PlayerBottomToolsStyle {
+    return when (raw?.lowercase()) {
+        "flat" -> PlayerBottomToolsStyle.Flat
+        "buttons" -> PlayerBottomToolsStyle.FloatingChips
+        "dock" -> PlayerBottomToolsStyle.SlimStrip
+        else -> PlayerBottomToolsStyle.SlimStrip
+    }
 }
 
 @Composable

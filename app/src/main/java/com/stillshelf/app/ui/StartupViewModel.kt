@@ -2,6 +2,7 @@ package com.stillshelf.app.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.BuildConfig
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.update.AppUpdateManager
@@ -23,20 +24,23 @@ class StartupViewModel @Inject constructor(
     val isReady: StateFlow<Boolean> = mutableIsReady.asStateFlow()
     private val mutableStartupUpdatePrompt = MutableStateFlow<AppUpdateRelease?>(null)
     val startupUpdatePrompt: StateFlow<AppUpdateRelease?> = mutableStartupUpdatePrompt.asStateFlow()
+    private var pendingStartupUpdatePrompt: AppUpdateRelease? = null
+    private var hasReachedHomeScreen = false
 
     init {
         viewModelScope.launch {
             val pref = runCatching { sessionPreferences.state.first() }.getOrNull()
             runCatching { appUpdateManager.cleanupInstalledUpdateApkIfNeeded() }
             mutableIsReady.value = true
-            if (pref != null && pref.updateCheckOnStartup) {
+            if (BuildConfig.IN_APP_UPDATES_ENABLED && pref != null && pref.updateCheckOnStartup) {
                 when (
                     val updateResult = appUpdateManager.checkForUpdate(
                         includePrereleases = pref.updateIncludePrereleases
                     )
                 ) {
                     is AppResult.Success -> {
-                        mutableStartupUpdatePrompt.value = updateResult.value
+                        pendingStartupUpdatePrompt = updateResult.value
+                        publishStartupUpdatePromptIfEligible()
                     }
 
                     is AppResult.Error -> Unit
@@ -45,15 +49,31 @@ class StartupViewModel @Inject constructor(
         }
     }
 
+    fun onHomeScreenReached() {
+        if (hasReachedHomeScreen) return
+        hasReachedHomeScreen = true
+        publishStartupUpdatePromptIfEligible()
+    }
+
     fun dismissStartupUpdatePrompt() {
+        pendingStartupUpdatePrompt = null
         mutableStartupUpdatePrompt.value = null
     }
 
     fun installStartupUpdate() {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) {
+            dismissStartupUpdatePrompt()
+            return
+        }
         val release = mutableStartupUpdatePrompt.value ?: return
         mutableStartupUpdatePrompt.value = null
         viewModelScope.launch {
             appUpdateManager.downloadAndInstallUpdate(release)
         }
+    }
+
+    private fun publishStartupUpdatePromptIfEligible() {
+        if (!hasReachedHomeScreen) return
+        mutableStartupUpdatePrompt.value = pendingStartupUpdatePrompt
     }
 }

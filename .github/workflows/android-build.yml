@@ -19,11 +19,11 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build APK
-        run: ./gradlew assembleRelease
+      - name: Build GitHub APK
+        run: ./gradlew assembleGithubRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: stillshelf-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: stillshelf-github-apk
+          path: app/build/outputs/apk/github/release/*.apk

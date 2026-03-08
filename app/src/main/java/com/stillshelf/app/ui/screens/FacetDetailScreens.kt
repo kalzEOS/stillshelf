@@ -3257,18 +3257,23 @@ private fun SeriesCoverStack(
 ) {
     if (books.isEmpty()) return
     val frontBook = books[0]
-    val frontModel = rememberCoverImageModel(frontBook.coverUrl)
+    val frontModel = rememberCoverImageModel(
+        coverUrl = frontBook.coverUrl,
+        preferOriginalSize = true
+    )
     val frontPainter = rememberAsyncImagePainter(model = frontModel)
     val frontSuccessState = frontPainter.state as? AsyncImagePainter.State.Success
     val frontIntrinsicWidth = frontSuccessState?.result?.drawable?.intrinsicWidth?.takeIf { it > 0 }
     val frontIntrinsicHeight = frontSuccessState?.result?.drawable?.intrinsicHeight?.takeIf { it > 0 }
+    val hasResolvedFrontCoverDimensions = frontIntrinsicWidth != null && frontIntrinsicHeight != null
     val frontAspectRatio = if (frontIntrinsicWidth != null && frontIntrinsicHeight != null) {
         frontIntrinsicWidth.toFloat() / frontIntrinsicHeight.toFloat()
     } else {
         0.66f
     }
-    val isSquareLikeFrontCover = frontAspectRatio in 0.90f..1.10f
-    val useSquareMultiBookStack = isSquareLikeFrontCover && books.size >= 2
+    val useSquareMultiBookStack = hasResolvedFrontCoverDimensions &&
+        frontAspectRatio in 0.97f..1.03f &&
+        books.size >= 2
     fun pickBookWithCover(vararg indices: Int): BookSummary? {
         return indices
             .asSequence()

@@ -1,0 +1,5 @@
+- Added a dedicated F-Droid build flavor with the in-app updater disabled there
+- Added Fastlane metadata and screenshots to improve F-Droid store publishing
+- Fixed the startup update prompt so it only appears after you reach Home
+- Fixed the first-open series stack issue seen on some phones
+- Updated build and CI setup to support the new GitHub and F-Droid release variants

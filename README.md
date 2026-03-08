@@ -10,6 +10,22 @@ The goal is a smooth, practical Android experience for browsing, managing, and l
 
 Both m4b and mp3 formats are supported. 
 
+## Building
+
+StillShelf can be built directly from source using Gradle.
+
+Requirements:
+- Java 17
+- Android SDK
+
+Build the release APK with:
+
+./gradlew assembleRelease
+
+The generated APK will be located at:
+
+app/build/outputs/apk/release/
+
 ## Screenshots
 
 <p align="center">

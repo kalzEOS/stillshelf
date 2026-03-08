@@ -15,7 +15,7 @@ Both m4b and mp3 formats are supported.
 StillShelf can be built directly from source using Gradle.
 
 Requirements:
-- Java 17
+- Java 11 or newer
 - Android SDK
 
 Build the release APK with:

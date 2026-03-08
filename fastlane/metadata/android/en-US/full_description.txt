@@ -1,0 +1,12 @@
+StillShelf is an Android audiobook player built for Audiobookshelf.
+
+It is designed for people who want a clean, practical way to browse their library, manage books and bookmarks, and keep listening without fighting the interface.
+
+Features include:
+- Browse books, authors, narrators, series, collections, genres, bookmarks, playlists, and downloads
+- Continue listening, jump back into finished books, and use a full-screen player built for long-form listening
+- Create, edit, and delete bookmarks
+- Download books for offline playback
+- Support for Audiobookshelf libraries with m4b and mp3 audiobooks
+
+StillShelf is made for self-hosted Audiobookshelf users, including setups on local networks or personal servers.

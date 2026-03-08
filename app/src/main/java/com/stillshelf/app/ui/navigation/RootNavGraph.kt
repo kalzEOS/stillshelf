@@ -18,6 +18,7 @@ import androidx.navigation.compose.rememberNavController
 
 @Composable
 fun RootNavGraph(
+    onHomeScreenReached: () -> Unit = {},
     rootViewModel: RootViewModel = hiltViewModel()
 ) {
     val uiState by rootViewModel.uiState.collectAsStateWithLifecycle()
@@ -79,7 +80,9 @@ fun RootNavGraph(
                     }
                 }
             )
-            mainNavGraph()
+            mainNavGraph(
+                onHomeScreenReached = onHomeScreenReached
+            )
         }
     }
 }

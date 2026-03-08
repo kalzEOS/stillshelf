@@ -18,13 +18,22 @@ Requirements:
 - Java 11 or newer
 - Android SDK
 
-Build the release APK with:
+Build the standard GitHub release APK with:
 
-./gradlew assembleRelease
+```bash
+./gradlew assembleGithubRelease
+```
 
-The generated APK will be located at:
+Build the F-Droid flavor with:
 
-app/build/outputs/apk/release/
+```bash
+./gradlew assembleFdroidRelease
+```
+
+The generated APKs will be located at:
+
+- `app/build/outputs/apk/github/release/`
+- `app/build/outputs/apk/fdroid/release/`
 
 ## Screenshots
 

@@ -1,0 +1,5 @@
+- Improved the full-screen player layout and spacing across different phone sizes
+- Fixed bookmark deletion so removed bookmarks stay gone
+- Added bookmark editing and bulk cleanup from the Bookmarks page
+- Improved bookmark syncing across app screens and devices
+- Made finished and unfinished listening state handling more reliable

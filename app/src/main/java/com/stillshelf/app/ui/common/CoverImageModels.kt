@@ -24,6 +24,7 @@ import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
+import coil.size.Size
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 val StandardGridCoverWidth: Dp = 150.dp
@@ -35,11 +36,14 @@ private const val SquareCoverMinAspectRatio = 0.90f
 private const val SquareCoverMaxAspectRatio = 1.10f
 
 @Composable
-fun rememberCoverImageModel(coverUrl: String?): Any? {
+fun rememberCoverImageModel(
+    coverUrl: String?,
+    preferOriginalSize: Boolean = false
+): Any? {
     val context = LocalContext.current
     val normalizedCacheKey = remember(coverUrl) { coverUrl?.let(::normalizeCoverCacheKey) }
     val resolvedUrl = remember(coverUrl) { coverUrl?.let(::splitAuthenticatedUrl) }
-    return remember(coverUrl, normalizedCacheKey, resolvedUrl, context) {
+    return remember(coverUrl, normalizedCacheKey, resolvedUrl, context, preferOriginalSize) {
         if (coverUrl.isNullOrBlank()) {
             null
         } else {
@@ -48,6 +52,9 @@ fun rememberCoverImageModel(coverUrl: String?): Any? {
                 memoryCacheKey(normalizedCacheKey)
                 diskCacheKey(normalizedCacheKey)
                 crossfade(false)
+                if (preferOriginalSize) {
+                    size(Size.ORIGINAL)
+                }
                 resolvedUrl?.authToken?.takeIf { it.isNotBlank() }?.let { token ->
                     addHeader("Authorization", authorizationHeaderValue(token))
                 }

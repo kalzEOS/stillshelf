@@ -16,6 +16,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -61,19 +62,25 @@ import com.stillshelf.app.ui.screens.auth.AddServerRoute
 import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
 
-fun NavGraphBuilder.mainNavGraph() {
+fun NavGraphBuilder.mainNavGraph(
+    onHomeScreenReached: () -> Unit = {}
+) {
     navigation(
         route = GraphRoute.MAIN,
         startDestination = MainRoute.SHELL
     ) {
         composable(MainRoute.SHELL) {
-            MainShell()
+            MainShell(
+                onHomeScreenReached = onHomeScreenReached
+            )
         }
     }
 }
 
 @Composable
-private fun MainShell() {
+private fun MainShell(
+    onHomeScreenReached: () -> Unit
+) {
     val context = LocalContext.current
     val activity = context.findActivity()
     val notificationsPermissionLauncher = rememberLauncherForActivityResult(
@@ -105,6 +112,12 @@ private fun MainShell() {
                 launchSingleTop = true
                 restoreState = true
             }
+        }
+    }
+
+    LaunchedEffect(currentRoute) {
+        if (currentRoute == MainTab.Home.route) {
+            onHomeScreenReached()
         }
     }
 

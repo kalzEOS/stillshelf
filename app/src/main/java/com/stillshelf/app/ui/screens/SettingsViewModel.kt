@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.BuildConfig
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
@@ -38,6 +39,7 @@ data class SettingsUiState(
     val isSyncingLibraries: Boolean = false,
     val lastLibrarySyncAtMs: Long? = null,
     val syncToastMessage: String? = null,
+    val appUpdatesEnabled: Boolean = BuildConfig.IN_APP_UPDATES_ENABLED,
     val updateCheckOnStartupEnabled: Boolean = true,
     val includePrereleaseUpdates: Boolean = false,
     val isCheckingForUpdates: Boolean = false,
@@ -66,6 +68,7 @@ class SettingsViewModel @Inject constructor(
                 if (server == null) {
                     SettingsUiState(
                         activeServerId = session.activeServerId,
+                        appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         serverAvatarUri = pref.serverAvatarUris[session.activeServerId],
                         themeMode = parseThemeMode(pref.appThemeMode),
@@ -82,6 +85,7 @@ class SettingsViewModel @Inject constructor(
                         activeServerId = server.id,
                         serverDisplayName = server.name,
                         serverHost = parseHost(server.baseUrl),
+                        appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
                         serverAvatarUri = pref.serverAvatarUris[server.id],
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         themeMode = parseThemeMode(pref.appThemeMode),
@@ -109,7 +113,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onCheckForUpdatesClick() {
-        if (uiState.value.isCheckingForUpdates) return
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED || uiState.value.isCheckingForUpdates) return
         viewModelScope.launch {
             mutableUiState.update {
                 it.copy(
@@ -152,6 +156,10 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun installAvailableUpdate() {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) {
+            dismissAvailableUpdateDialog()
+            return
+        }
         val release = uiState.value.availableUpdate ?: return
         mutableUiState.update { it.copy(availableUpdate = null) }
         viewModelScope.launch {
@@ -228,12 +236,14 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setUpdateCheckOnStartupEnabled(enabled: Boolean) {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) return
         viewModelScope.launch {
             sessionPreferences.setUpdateCheckOnStartup(enabled)
         }
     }
 
     fun setIncludePrereleaseUpdates(enabled: Boolean) {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) return
         viewModelScope.launch {
             sessionPreferences.setUpdateIncludePrereleases(enabled)
         }

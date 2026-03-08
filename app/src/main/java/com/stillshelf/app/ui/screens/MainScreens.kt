@@ -4474,59 +4474,61 @@ fun SettingsScreen(
             )
         }
 
-        Text(
-            text = "APP UPDATES",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Card(
-            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
-            shape = RoundedCornerShape(18.dp),
-            border = sectionCardBorder
-        ) {
-            SettingsRow(
-                title = "Check for Updates",
-                showChevronWhenUnselected = false,
-                onClick = {
-                    infoMessage = null
-                    if (!uiState.isCheckingForUpdates) {
-                        viewModel.onCheckForUpdatesClick()
-                    }
-                }
+        if (uiState.appUpdatesEnabled) {
+            Text(
+                text = "APP UPDATES",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            HorizontalDivider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Card(
+                colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+                shape = RoundedCornerShape(18.dp),
+                border = sectionCardBorder
             ) {
-                Text(
-                    "Check on Startup",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
+                SettingsRow(
+                    title = "Check for Updates",
+                    showChevronWhenUnselected = false,
+                    onClick = {
+                        infoMessage = null
+                        if (!uiState.isCheckingForUpdates) {
+                            viewModel.onCheckForUpdatesClick()
+                        }
+                    }
                 )
-                Switch(
-                    checked = uiState.updateCheckOnStartupEnabled,
-                    onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
-                )
-            }
-            HorizontalDivider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Include Pre-releases",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = uiState.includePrereleaseUpdates,
-                    onCheckedChange = viewModel::setIncludePrereleaseUpdates
-                )
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Check on Startup",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = uiState.updateCheckOnStartupEnabled,
+                        onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
+                    )
+                }
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Include Pre-releases",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = uiState.includePrereleaseUpdates,
+                        onCheckedChange = viewModel::setIncludePrereleaseUpdates
+                    )
+                }
             }
         }
 
@@ -4666,7 +4668,7 @@ fun SettingsScreen(
             )
         }
 
-        uiState.availableUpdate?.let { release ->
+        if (uiState.appUpdatesEnabled) uiState.availableUpdate?.let { release ->
             AlertDialog(
                 onDismissRequest = viewModel::dismissAvailableUpdateDialog,
                 title = { Text("Update available") },

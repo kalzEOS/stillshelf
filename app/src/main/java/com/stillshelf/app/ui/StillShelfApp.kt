@@ -30,7 +30,9 @@ fun StillShelfApp() {
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            RootNavGraph()
+            RootNavGraph(
+                onHomeScreenReached = startupViewModel::onHomeScreenReached
+            )
             startupUpdatePrompt?.let { release ->
                 AlertDialog(
                     onDismissRequest = startupViewModel::dismissStartupUpdatePrompt,

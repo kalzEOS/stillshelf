@@ -158,7 +158,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -268,6 +267,8 @@ enum class BooksSortKey(
 }
 
 private val BackTitleSpacing = 12.dp
+private val HomeTopBarLibrarySelectorMinWidth = 184.dp
+private val HomeTopBarLibrarySelectorPreferredWidth = 236.dp
 
 private val SeriesStackMinLayerExtent = 42.dp
 private val SeriesStackStep = 5.dp
@@ -392,7 +393,6 @@ fun HomeScreen(
     }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var isLibraryMenuExpanded by remember { mutableStateOf(false) }
-    var libraryMenuAnchorWidthPx by remember { mutableIntStateOf(0) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
@@ -537,17 +537,17 @@ fun HomeScreen(
                         .padding(start = homeStartInset, end = homeEndInset),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
+                    BoxWithConstraints(
                         modifier = Modifier.weight(1f)
                     ) {
                         val hasLibraries = menuUiState.libraries.isNotEmpty()
-                        val libraryMenuWidth = with(LocalDensity.current) { libraryMenuAnchorWidthPx.toDp() }
+                        val libraryMenuWidth = HomeTopBarLibrarySelectorPreferredWidth
+                            .coerceAtMost(maxWidth)
+                            .coerceAtLeast(HomeTopBarLibrarySelectorMinWidth.coerceAtMost(maxWidth))
                         Row(
                             modifier = Modifier
+                                .width(libraryMenuWidth)
                                 .clip(RoundedCornerShape(10.dp))
-                                .onGloballyPositioned { coordinates ->
-                                    libraryMenuAnchorWidthPx = coordinates.size.width
-                                }
                                 .clickable(enabled = hasLibraries && !menuUiState.isSwitchingLibrary) {
                                     isLibraryMenuExpanded = true
                                 }
@@ -577,16 +577,18 @@ fun HomeScreen(
                         AppDropdownMenu(
                             expanded = isLibraryMenuExpanded && hasLibraries,
                             onDismissRequest = { isLibraryMenuExpanded = false },
-                            modifier = if (libraryMenuAnchorWidthPx > 0) {
-                                Modifier.width(libraryMenuWidth)
-                            } else {
-                                Modifier
-                            }
+                            modifier = Modifier.width(libraryMenuWidth)
                         ) {
                             menuUiState.libraries.forEach { library ->
                                 val isActive = menuUiState.activeLibraryId == library.id
                                 AppDropdownMenuItem(
-                                    text = { Text(library.name) },
+                                    text = {
+                                        Text(
+                                            text = library.name,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
                                     trailingIcon = {
                                         if (isActive) {
                                             Icon(

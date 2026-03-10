@@ -15,6 +15,7 @@ import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -64,6 +65,7 @@ class BookDetailViewModel @Inject constructor(
 
     init {
         observePreferences()
+        observeBookProgressMutations()
         refresh(forceRefresh = true)
     }
 
@@ -127,6 +129,23 @@ class BookDetailViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(actionMessage = result.message)
                     }
+                }
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                if (mutation.bookId != bookId) return@collect
+                mutableUiState.update { state ->
+                    state.copy(
+                        detail = state.detail?.copy(
+                            book = state.detail.book.withBookProgressMutation(mutation)
+                        ),
+                        progressPercent = mutation.progressPercent,
+                        currentTimeSeconds = mutation.currentTimeSeconds
+                    )
                 }
             }
         }
@@ -247,33 +266,16 @@ class BookDetailViewModel @Inject constructor(
 
     fun markAsUnfinished() {
         if (bookId.isBlank()) return
-        val playbackState = playbackUiState.value
-        val currentDurationSeconds = when {
-            playbackState.book?.id == bookId && playbackState.durationMs > 0L -> {
-                playbackState.durationMs / 1000.0
-            }
-
-            else -> uiState.value.detail?.book?.durationSeconds
-        }
-        val unfinishedState = resolveUnfinishedProgressState(
-            currentTimeSeconds = pendingFinishedUndoSnapshot?.currentTimeSeconds ?: when {
-                playbackState.book?.id == bookId -> playbackState.positionMs.coerceAtLeast(0L) / 1000.0
-                else -> uiState.value.currentTimeSeconds ?: uiState.value.detail?.book?.currentTimeSeconds
-            },
-            durationSeconds = pendingFinishedUndoSnapshot?.durationSeconds ?: currentDurationSeconds,
-            progressPercent = pendingFinishedUndoSnapshot?.progressPercent
-                ?: uiState.value.progressPercent
-                ?: uiState.value.detail?.book?.progressPercent
-        )
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
                     pendingFinishedUndoSnapshot = null
+                    val restoredProgress = result.value
                     if (playbackUiState.value.book?.id == bookId) {
                         playbackController.stopAndRestoreBookProgress(
                             bookId = bookId,
-                            currentTimeSeconds = unfinishedState.currentTimeSeconds,
-                            durationSeconds = unfinishedState.durationSeconds,
+                            currentTimeSeconds = restoredProgress.currentTimeSeconds ?: 0.0,
+                            durationSeconds = restoredProgress.durationSeconds,
                             isFinished = false
                         )
                     }
@@ -282,17 +284,56 @@ class BookDetailViewModel @Inject constructor(
                             detail = state.detail?.copy(
                                 book = state.detail.book.copy(
                                     isFinished = false,
-                                    progressPercent = unfinishedState.progressPercent,
-                                    currentTimeSeconds = unfinishedState.currentTimeSeconds
+                                    progressPercent = restoredProgress.progressPercent,
+                                    currentTimeSeconds = restoredProgress.currentTimeSeconds
                                 )
                             ),
-                            progressPercent = unfinishedState.progressPercent,
-                            currentTimeSeconds = unfinishedState.currentTimeSeconds,
+                            progressPercent = restoredProgress.progressPercent,
+                            currentTimeSeconds = restoredProgress.currentTimeSeconds,
                             actionMessage = "Marked as unfinished."
                         )
                     }
                     refresh(forceRefresh = true)
                 }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun resetBookProgress() {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    pendingFinishedUndoSnapshot = null
+                    if (playbackUiState.value.book?.id == bookId) {
+                        playbackController.stopAndResetBookToBeginning(bookId)
+                    }
+                    mutableUiState.update { state ->
+                        state.copy(
+                            detail = state.detail?.copy(
+                                book = state.detail.book.copy(
+                                    isFinished = false,
+                                    progressPercent = 0.0,
+                                    currentTimeSeconds = 0.0
+                                )
+                            ),
+                            progressPercent = 0.0,
+                            currentTimeSeconds = 0.0,
+                            actionMessage = "Book progress reset."
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
                 }

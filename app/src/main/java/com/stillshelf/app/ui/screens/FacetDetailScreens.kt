@@ -47,11 +47,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -97,6 +99,7 @@ import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.WideCoverBackgroundBlur
 import com.stillshelf.app.ui.common.rememberCoverImageModel
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -110,6 +113,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.text.Regex
+
+private const val StartedStatusProgressThresholdSeconds = 30.0
 
 data class FacetBooksUiState(
     val isLoading: Boolean = false,
@@ -228,6 +233,7 @@ class AuthorDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch { restoreUiPreferences() }
         observeDownloadedState()
+        observeBookProgressMutations()
         refresh(forceRefresh = false)
     }
 
@@ -290,6 +296,28 @@ class AuthorDetailViewModel @Inject constructor(
         }
     }
 
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun toggleDownload(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -312,6 +340,16 @@ class AuthorDetailViewModel @Inject constructor(
 
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -417,6 +455,7 @@ class SeriesDetailViewModel @Inject constructor(
             mutableListMode.value = sessionPreferences.state.first().seriesDetailListMode
         }
         observeDownloadedState()
+        observeBookProgressMutations()
         refresh(forceRefresh = false)
     }
 
@@ -459,6 +498,28 @@ class SeriesDetailViewModel @Inject constructor(
         }
     }
 
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun toggleDownload(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -481,6 +542,16 @@ class SeriesDetailViewModel @Inject constructor(
 
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -782,8 +853,8 @@ private fun List<BookSummary>.applySeriesStatusFilter(filter: BooksStatusFilter)
 
 private fun BookSummary.hasStartedStatusProgress(): Boolean {
     if (hasFinishedStatusProgress()) return true
-    val normalized = normalizedStatusProgressPercent()
-    return normalized != null && normalized > 0.001
+    val startedSeconds = resolvedStartedStatusProgressSeconds()
+    return startedSeconds != null && startedSeconds >= StartedStatusProgressThresholdSeconds
 }
 
 private fun BookSummary.hasFinishedStatusProgress(): Boolean {
@@ -858,6 +929,7 @@ class NarratorDetailViewModel @Inject constructor(
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
 
     init {
+        observeBookProgressMutations()
         refresh(forceRefresh = false)
     }
 
@@ -894,6 +966,16 @@ class NarratorDetailViewModel @Inject constructor(
                             errorMessage = result.message
                         )
                     }
+                }
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
                 }
             }
         }
@@ -953,6 +1035,7 @@ class GenresBrowseViewModel @Inject constructor(
             }
         }
     }
+
 }
 
 @HiltViewModel
@@ -965,6 +1048,7 @@ class GenreDetailViewModel @Inject constructor(
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
 
     init {
+        observeBookProgressMutations()
         refresh(forceRefresh = false)
     }
 
@@ -1001,6 +1085,16 @@ class GenreDetailViewModel @Inject constructor(
                             errorMessage = result.message
                         )
                     }
+                }
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
                 }
             }
         }
@@ -1126,6 +1220,7 @@ fun AuthorDetailScreen(
                                             viewModel.markAsFinished(entry.book.id)
                                         }
                                     },
+                                    onResetBookProgress = { viewModel.resetBookProgress(entry.book.id) },
                                     onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
@@ -1213,6 +1308,7 @@ fun AuthorDetailScreen(
                                             viewModel.markAsFinished(entry.book.id)
                                         }
                                     },
+                                    onResetBookProgress = { viewModel.resetBookProgress(entry.book.id) },
                                     onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                 )
                             }
@@ -1457,11 +1553,13 @@ private fun AuthorGridBookItem(
     onClick: () -> Unit,
     onAddToCollection: () -> Unit,
     onMarkAsFinished: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.remainingStatusTimeLabel().ifBlank { formatDuration(book.durationSeconds) }
     Column(
         modifier = Modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1483,9 +1581,12 @@ private fun AuthorGridBookItem(
             DownloadBadge(
                 isDownloaded = isDownloaded,
                 downloadProgressPercent = downloadProgressPercent,
+                badgeSize = 24.dp,
+                iconSize = 13.dp,
+                progressRingSize = 20.dp,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-6).dp, y = 6.dp)
+                    .offset(x = (-10).dp, y = 6.dp)
             )
         }
         Row(
@@ -1495,7 +1596,7 @@ private fun AuthorGridBookItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = formatDuration(book.durationSeconds),
+                text = progressMetaLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
@@ -1532,9 +1633,16 @@ private fun AuthorGridBookItem(
                                 }
                             )
                         },
+                        enabled = book.hasStartedStatusProgress(),
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()
+                        }
+                    )
+                    ResetBookProgressMenuItem(
+                        onConfirm = {
+                            menuExpanded = false
+                            onResetBookProgress()
                         }
                     )
                     AppDropdownMenuItem(
@@ -1612,11 +1720,13 @@ private fun AuthorBookRow(
     onClick: () -> Unit,
     onAddToCollection: () -> Unit,
     onMarkAsFinished: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.remainingStatusTimeLabel().ifBlank { formatDuration(book.durationSeconds) }
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
@@ -1669,7 +1779,7 @@ private fun AuthorBookRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = formatDuration(book.durationSeconds),
+                    text = progressMetaLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1706,9 +1816,16 @@ private fun AuthorBookRow(
                                 }
                             )
                         },
+                        enabled = book.hasStartedStatusProgress(),
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()
+                        }
+                    )
+                    ResetBookProgressMenuItem(
+                        onConfirm = {
+                            menuExpanded = false
+                            onResetBookProgress()
                         }
                     )
                     AppDropdownMenuItem(
@@ -2032,6 +2149,7 @@ fun SeriesDetailScreen(
                                         viewModel.markAsFinished(book.id)
                                     }
                                 },
+                                onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                 onToggleDownload = { viewModel.toggleDownload(book.id) }
                             )
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
@@ -2061,6 +2179,7 @@ fun SeriesDetailScreen(
                                                 viewModel.markAsFinished(book.id)
                                             }
                                         },
+                                        onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                         onToggleDownload = { viewModel.toggleDownload(book.id) }
                                     )
                                 }
@@ -2141,6 +2260,7 @@ class CollectionDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().collectionDetailListMode
         }
+        observeBookProgressMutations()
         refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
@@ -2182,8 +2302,42 @@ class CollectionDetailViewModel @Inject constructor(
         }
     }
 
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    refresh(forceRefresh = true, showLoader = false)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
+                    FacetBooksMemoryCache.updateCollectionBooks(collectionId, updatedBooks)
+                    state.copy(books = updatedBooks)
+                }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean, showLoader: Boolean) {
@@ -2318,6 +2472,7 @@ fun CollectionDetailScreen(
                                 CollectionBookRow(
                                     book = book,
                                     onClick = { onBookClick(book.id) },
+                                    onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                     onRemoveFromCollection = { viewModel.removeBook(book.id) }
                                 )
                             }
@@ -2333,6 +2488,7 @@ fun CollectionDetailScreen(
                                 FacetBookGridCard(
                                     book = book,
                                     onClick = { onBookClick(book.id) },
+                                    onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                     removeActionLabel = "Remove from collection",
                                     menuContentDescription = "Collection item actions",
                                     onRemove = { viewModel.removeBook(book.id) }
@@ -2376,6 +2532,7 @@ class PlaylistDetailViewModel @Inject constructor(
         viewModelScope.launch {
             mutableListMode.value = sessionPreferences.state.first().playlistDetailListMode
         }
+        observeBookProgressMutations()
         refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
@@ -2432,8 +2589,42 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    refresh(forceRefresh = true, showLoader = false)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
+                    FacetBooksMemoryCache.updatePlaylistBooks(playlistId, updatedBooks)
+                    state.copy(books = updatedBooks)
+                }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean, showLoader: Boolean) {
@@ -2594,6 +2785,7 @@ fun PlaylistDetailScreen(
                                 PlaylistBookRow(
                                     book = book,
                                     onClick = { onBookClick(book.id) },
+                                    onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                     onRemoveFromPlaylist = { viewModel.removeBook(book.id) }
                                 )
                             }
@@ -2609,6 +2801,7 @@ fun PlaylistDetailScreen(
                                 FacetBookGridCard(
                                     book = book,
                                     onClick = { onBookClick(book.id) },
+                                    onResetBookProgress = { viewModel.resetBookProgress(book.id) },
                                     removeActionLabel = "Remove from playlist",
                                     menuContentDescription = "Playlist item actions",
                                     onRemove = { viewModel.removeBook(book.id) }
@@ -2632,9 +2825,11 @@ fun PlaylistDetailScreen(
 private fun CollectionBookRow(
     book: BookSummary,
     onClick: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onRemoveFromCollection: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val remainingTimeLabel = book.remainingStatusTimeLabel()
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
@@ -2670,6 +2865,13 @@ private fun CollectionBookRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (remainingTimeLabel.isNotBlank()) {
+                    Text(
+                        text = remainingTimeLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -2689,6 +2891,12 @@ private fun CollectionBookRow(
                             onClick()
                         }
                     )
+                    ResetBookProgressMenuItem(
+                        onConfirm = {
+                            menuExpanded = false
+                            onResetBookProgress()
+                        }
+                    )
                     AppDropdownMenuItem(
                         text = { Text("Remove from collection") },
                         onClick = {
@@ -2706,9 +2914,11 @@ private fun CollectionBookRow(
 private fun PlaylistBookRow(
     book: BookSummary,
     onClick: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onRemoveFromPlaylist: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val remainingTimeLabel = book.remainingStatusTimeLabel()
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
@@ -2744,6 +2954,13 @@ private fun PlaylistBookRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (remainingTimeLabel.isNotBlank()) {
+                    Text(
+                        text = remainingTimeLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -2763,6 +2980,12 @@ private fun PlaylistBookRow(
                             onClick()
                         }
                     )
+                    ResetBookProgressMenuItem(
+                        onConfirm = {
+                            menuExpanded = false
+                            onResetBookProgress()
+                        }
+                    )
                     AppDropdownMenuItem(
                         text = { Text("Remove from playlist") },
                         onClick = {
@@ -2780,6 +3003,7 @@ private fun PlaylistBookRow(
 private fun FacetBookGridCard(
     book: BookSummary,
     onClick: () -> Unit,
+    onResetBookProgress: () -> Unit,
     removeActionLabel: String,
     menuContentDescription: String,
     onRemove: () -> Unit
@@ -2843,6 +3067,12 @@ private fun FacetBookGridCard(
                             onClick = {
                                 menuExpanded = false
                                 onClick()
+                            }
+                        )
+                        ResetBookProgressMenuItem(
+                            onConfirm = {
+                                menuExpanded = false
+                                onResetBookProgress()
                             }
                         )
                         AppDropdownMenuItem(
@@ -3159,6 +3389,52 @@ private fun FacetTopBar(
     }
 }
 
+@Composable
+private fun ResetBookProgressMenuItem(
+    onPrepareConfirm: () -> Unit = {},
+    onConfirm: () -> Unit
+) {
+    var showConfirmation by remember { mutableStateOf(false) }
+    AppDropdownMenuItem(
+        text = { Text("Reset Book Progress") },
+        onClick = {
+            onPrepareConfirm()
+            showConfirmation = true
+        }
+    )
+    if (showConfirmation) {
+        ResetBookProgressConfirmationDialog(
+            onDismissRequest = { showConfirmation = false },
+            onConfirm = {
+                showConfirmation = false
+                onConfirm()
+            }
+        )
+    }
+}
+
+@Composable
+private fun ResetBookProgressConfirmationDialog(
+    onDismissRequest: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text("Reset Book Progress?") },
+        text = { Text("This will set the book back to 0% and stop playback.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Reset")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
 private inline fun <reified T : Enum<T>> enumValueOrNull(raw: String): T? {
     return runCatching { enumValueOf<T>(raw) }.getOrNull()
 }
@@ -3453,11 +3729,13 @@ private fun SeriesDetailBookRow(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkAsFinished: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.remainingStatusTimeLabel().ifBlank { formatDuration(book.durationSeconds) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3552,7 +3830,7 @@ private fun SeriesDetailBookRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = formatDuration(book.durationSeconds),
+                text = progressMetaLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3587,9 +3865,16 @@ private fun SeriesDetailBookRow(
                             }
                         )
                     },
+                    enabled = book.hasStartedStatusProgress(),
                     onClick = {
                         menuExpanded = false
                         onMarkAsFinished()
+                    }
+                )
+                ResetBookProgressMenuItem(
+                    onConfirm = {
+                        menuExpanded = false
+                        onResetBookProgress()
                     }
                 )
                 AppDropdownMenuItem(
@@ -3614,11 +3899,13 @@ private fun SeriesDetailGridCard(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkAsFinished: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.remainingStatusTimeLabel().ifBlank { formatDuration(book.durationSeconds) }
     Column(
         modifier = modifier.clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -3696,7 +3983,7 @@ private fun SeriesDetailGridCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = formatDuration(book.durationSeconds),
+                text = progressMetaLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3733,9 +4020,16 @@ private fun SeriesDetailGridCard(
                                 }
                             )
                         },
+                        enabled = book.hasStartedStatusProgress(),
                         onClick = {
                             menuExpanded = false
                             onMarkAsFinished()
+                        }
+                    )
+                    ResetBookProgressMenuItem(
+                        onConfirm = {
+                            menuExpanded = false
+                            onResetBookProgress()
                         }
                     )
                     AppDropdownMenuItem(
@@ -3756,6 +4050,7 @@ private fun FacetBookRow(
     book: BookSummary,
     onClick: () -> Unit
 ) {
+    val progressMetaLabel = book.remainingStatusTimeLabel().ifBlank { formatDuration(book.durationSeconds) }
     Card(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
@@ -3792,7 +4087,7 @@ private fun FacetBookRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = formatDuration(book.durationSeconds),
+                    text = progressMetaLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3812,6 +4107,47 @@ private fun formatDuration(durationSeconds: Double?): String {
     val hours = seconds / 3600
     val minutes = (seconds % 3600) / 60
     return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+private fun formatStatusHoursMinutesPrecise(durationSeconds: Double): String {
+    if (durationSeconds <= 0.0) return "0h 0m"
+    val totalMinutes = (durationSeconds / 60.0).toLong()
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return "${hours}h ${minutes}m"
+}
+
+private fun BookSummary.remainingStatusTimeLabel(): String {
+    if (!hasStartedStatusProgress() || hasFinishedStatusProgress()) return ""
+    val duration = resolvedStatusDurationSeconds() ?: return ""
+    val normalizedProgress = normalizedStatusProgressPercent()
+    val remainingSeconds = when {
+        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
+        currentTimeSeconds != null -> duration - currentTimeSeconds.coerceAtLeast(0.0)
+        else -> duration
+    }.coerceAtLeast(0.0)
+    if (remainingSeconds <= 0.0) return ""
+    return "${formatStatusHoursMinutesPrecise(remainingSeconds)} left"
+}
+
+private fun BookSummary.resolvedStatusDurationSeconds(): Double? {
+    durationSeconds?.takeIf { it > 0.0 }?.let { return it }
+    val normalizedProgress = progressPercent?.coerceIn(0.0, 1.0)
+    val current = currentTimeSeconds?.coerceAtLeast(0.0)
+    if (normalizedProgress != null && current != null && normalizedProgress > 0.0) {
+        val estimatedDuration = current / normalizedProgress
+        if (estimatedDuration.isFinite() && estimatedDuration > 0.0) {
+            return estimatedDuration
+        }
+    }
+    return null
+}
+
+private fun BookSummary.resolvedStartedStatusProgressSeconds(): Double? {
+    currentTimeSeconds?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
+    val duration = resolvedStatusDurationSeconds() ?: return null
+    val normalizedProgress = normalizedStatusProgressPercent() ?: return null
+    return (duration * normalizedProgress).takeIf { it.isFinite() && it >= 0.0 }
 }
 
 private fun formatSeriesOrderLabel(seriesSequence: Double?): String? {

@@ -2,10 +2,14 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Job
@@ -25,12 +29,18 @@ data class SearchUiState(
     val authors: List<NamedEntitySummary> = emptyList(),
     val series: List<NamedEntitySummary> = emptyList(),
     val narrators: List<NamedEntitySummary> = emptyList(),
+    val downloadedBookIds: Set<String> = emptySet(),
+    val downloadProgressByBookId: Map<String, Int> = emptyMap(),
+    val recentSearchTerms: List<String> = emptyList(),
+    val actionMessage: String? = null,
     val errorMessage: String? = null
 )
 
 @HiltViewModel
 class SearchViewModel @Inject constructor(
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = mutableUiState.asStateFlow()
@@ -47,6 +57,44 @@ class SearchViewModel @Inject constructor(
                         search(uiState.value.query, debounceMs = 0L)
                     }
                 }
+        }
+        viewModelScope.launch {
+            sessionPreferences.state
+                .map { pref -> pref.recentSearchTerms }
+                .distinctUntilChanged()
+                .collect { recentSearchTerms ->
+                    mutableUiState.update {
+                        it.copy(
+                            recentSearchTerms = recentSearchTerms
+                        )
+                    }
+                }
+        }
+        viewModelScope.launch {
+            bookDownloadManager.items.collect { items ->
+                val downloadedIds = items
+                    .filter { it.status == DownloadStatus.Completed }
+                    .map { it.bookId }
+                    .toSet()
+                val progressByBookId = items
+                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
+                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = downloadedIds,
+                        downloadProgressByBookId = progressByBookId
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(
+                        books = state.books.map { it.withBookProgressMutation(mutation) }
+                    )
+                }
+            }
         }
     }
 
@@ -80,6 +128,83 @@ class SearchViewModel @Inject constructor(
                 narrators = emptyList(),
                 errorMessage = null
             )
+        }
+    }
+
+    fun useRecentSearchTerm(term: String) {
+        val normalizedTerm = term.trim()
+        if (normalizedTerm.isBlank()) return
+        mutableUiState.update { it.copy(query = normalizedTerm, errorMessage = null) }
+        search(normalizedTerm, debounceMs = 0L)
+    }
+
+    fun commitCurrentQuery() {
+        val query = uiState.value.query.trim()
+        if (query.isBlank()) return
+        viewModelScope.launch {
+            sessionPreferences.addRecentSearchTerm(query)
+        }
+    }
+
+    fun clearRecentSearchTerms() {
+        viewModelScope.launch {
+            sessionPreferences.clearRecentSearchTerms()
+        }
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    fun markAsFinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(actionMessage = "Marked as finished. Progress is now 100%.")
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun markAsUnfinished(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val book = uiState.value.books.firstOrNull { it.id == bookId }
+            if (book == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
         }
     }
 

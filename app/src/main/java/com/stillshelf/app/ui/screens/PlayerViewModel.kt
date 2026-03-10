@@ -18,6 +18,7 @@ import com.stillshelf.app.downloads.manager.DownloadItem
 import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.MainRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -81,6 +82,7 @@ class PlayerViewModel @Inject constructor(
     init {
         observeControlPrefs()
         observeDownloads()
+        observeBookProgressMutations()
         val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
         val startSeconds = savedStateHandle
             .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
@@ -119,6 +121,16 @@ class PlayerViewModel @Inject constructor(
                     applyPendingSleepTimerRequestIfNeeded()
                 }
                 syncCurrentDownloadState()
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                val preview = previewItem.value ?: return@collect
+                if (preview.book.id != mutation.bookId) return@collect
+                mutablePreviewItem.value = preview.withBookProgressMutation(mutation)
             }
         }
     }
@@ -255,6 +267,48 @@ class PlayerViewModel @Inject constructor(
 
     fun markAsUnfinished() {
         setBookFinishedState(finished = false)
+    }
+
+    fun resetBookProgress() {
+        val activeBook = uiState.value.book ?: previewItem.value?.book
+        val bookId = activeBook?.id
+        if (bookId.isNullOrBlank()) {
+            mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    pendingFinishedUndoSnapshot = null
+                    sessionPreferences.setPendingFinishedRestoreSnapshot(null)
+                    if (uiState.value.book?.id == bookId) {
+                        playbackController.stopAndResetBookToBeginning(bookId)
+                    } else {
+                        mutablePreviewItem.value = previewItem.value?.copy(
+                            book = activeBook.copy(
+                                isFinished = false,
+                                progressPercent = 0.0,
+                                currentTimeSeconds = 0.0
+                            ),
+                            progressPercent = 0.0,
+                            currentTimeSeconds = 0.0
+                        )
+                    }
+                    mutableActionMessage.value = "Book progress reset."
+                    loadBookMetadata(bookId = bookId, forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableActionMessage.value = result.message
+                }
+            }
+        }
     }
 
     fun undoMarkAsFinished() {
@@ -488,30 +542,6 @@ class PlayerViewModel @Inject constructor(
             } else {
                 null
             }
-            val unfinishedState = if (finished) {
-                null
-            } else {
-                pendingFinishedUndoSnapshot?.takeIf { it.bookId == bookId }?.let { snapshot ->
-                    resolveUnfinishedProgressState(
-                        currentTimeSeconds = snapshot.currentTimeSeconds,
-                        durationSeconds = snapshot.durationSeconds,
-                        progressPercent = null
-                    )
-                } ?: resolveUnfinishedProgressState(
-                    currentTimeSeconds = when {
-                        uiState.value.book?.id == bookId -> uiState.value.positionMs.coerceAtLeast(0L) / 1000.0
-                        else -> previewItem.value?.currentTimeSeconds ?: activeBook.currentTimeSeconds
-                    },
-                    durationSeconds = when {
-                        uiState.value.book?.id == bookId && uiState.value.durationMs > 0L -> {
-                            uiState.value.durationMs / 1000.0
-                        }
-
-                        else -> activeBook.durationSeconds
-                    },
-                    progressPercent = previewItem.value?.progressPercent ?: activeBook.progressPercent
-                )
-            }
             val persistedSnapshot = if (!finished) {
                 sessionPreferences.getPendingFinishedRestoreSnapshot()?.takeIf { it.bookId == bookId }
             } else {
@@ -604,15 +634,11 @@ class PlayerViewModel @Inject constructor(
                     } else {
                         pendingFinishedUndoSnapshot = null
                         sessionPreferences.setPendingFinishedRestoreSnapshot(null)
-                        val restoredState = unfinishedState ?: resolveUnfinishedProgressState(
-                            currentTimeSeconds = activeBook.currentTimeSeconds,
-                            durationSeconds = activeBook.durationSeconds,
-                            progressPercent = activeBook.progressPercent
-                        )
+                        val restoredState = result.value
                         if (uiState.value.book?.id == bookId) {
                             playbackController.stopAndRestoreBookProgress(
                                 bookId = bookId,
-                                currentTimeSeconds = restoredState.currentTimeSeconds,
+                                currentTimeSeconds = restoredState.currentTimeSeconds ?: 0.0,
                                 durationSeconds = restoredState.durationSeconds,
                                 isFinished = false
                             )

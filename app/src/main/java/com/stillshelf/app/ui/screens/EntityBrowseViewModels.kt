@@ -44,7 +44,8 @@ data class CollectionsBrowseUiState(
     val entities: List<NamedEntitySummary> = emptyList(),
     val coverStackByCollectionId: Map<String, List<String>> = emptyMap(),
     val errorMessage: String? = null,
-    val actionMessage: String? = null
+    val actionMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 )
 
 data class BookmarksBrowseUiState(
@@ -317,17 +318,20 @@ class CollectionsBrowseViewModel @Inject constructor(
     private val inFlightCoverLoads = mutableSetOf<String>()
 
     init {
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, silent = false)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, silent = false)
+    }
+
+    fun refreshSilent() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearCollections()
-        mutableUiState.update { it.copy(coverStackByCollectionId = emptyMap()) }
-        refresh(forceRefresh = true, reloadAllCoverStacks = true)
+        refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
     }
 
     fun createCollection(name: String) {
@@ -335,7 +339,7 @@ class CollectionsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.createCollection(name)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Collection created.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -349,7 +353,7 @@ class CollectionsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.renameCollection(collectionId = collectionId, name = name)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Collection renamed.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -363,7 +367,7 @@ class CollectionsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.deleteCollection(collectionId)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Collection deleted.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -376,9 +380,15 @@ class CollectionsBrowseViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean, reloadAllCoverStacks: Boolean = false) {
+    private fun refresh(
+        forceRefresh: Boolean,
+        silent: Boolean,
+        reloadAllCoverStacks: Boolean = false
+    ) {
         if (uiState.value.isLoading) return
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        if (!silent || !uiState.value.hasLoadedOnce) {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        }
 
         viewModelScope.launch {
             when (val result = sessionRepository.fetchCollectionsForActiveLibrary(forceRefresh = forceRefresh)) {
@@ -403,7 +413,9 @@ class CollectionsBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             entities = filtered,
-                            coverStackByCollectionId = mergedStacks
+                            coverStackByCollectionId = mergedStacks,
+                            errorMessage = null,
+                            hasLoadedOnce = true
                         )
                     }
                     if (collectionsToReload.isNotEmpty()) {
@@ -415,7 +427,8 @@ class CollectionsBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = if (silent && it.hasLoadedOnce) it.errorMessage else result.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -485,17 +498,20 @@ class PlaylistsBrowseViewModel @Inject constructor(
     private val inFlightCoverLoads = mutableSetOf<String>()
 
     init {
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, silent = false)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, silent = false)
+    }
+
+    fun refreshSilent() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearPlaylists()
-        mutableUiState.update { it.copy(coverStackByCollectionId = emptyMap()) }
-        refresh(forceRefresh = true, reloadAllCoverStacks = true)
+        refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
     }
 
     fun createPlaylist(name: String) {
@@ -503,7 +519,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.createPlaylist(name)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Playlist created.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -517,7 +533,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.renamePlaylist(playlistId = playlistId, name = name)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Playlist renamed.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -531,7 +547,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
             when (val result = sessionRepository.deletePlaylist(playlistId)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Playlist deleted.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, silent = true)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -544,9 +560,15 @@ class PlaylistsBrowseViewModel @Inject constructor(
         mutableUiState.update { it.copy(actionMessage = null) }
     }
 
-    private fun refresh(forceRefresh: Boolean, reloadAllCoverStacks: Boolean = false) {
+    private fun refresh(
+        forceRefresh: Boolean,
+        silent: Boolean,
+        reloadAllCoverStacks: Boolean = false
+    ) {
         if (uiState.value.isLoading) return
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        if (!silent || !uiState.value.hasLoadedOnce) {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        }
 
         viewModelScope.launch {
             when (val result = sessionRepository.fetchPlaylistsForActiveLibrary(forceRefresh = forceRefresh)) {
@@ -570,7 +592,9 @@ class PlaylistsBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             entities = result.value,
-                            coverStackByCollectionId = mergedStacks
+                            coverStackByCollectionId = mergedStacks,
+                            errorMessage = null,
+                            hasLoadedOnce = true
                         )
                     }
                     if (playlistsToReload.isNotEmpty()) {
@@ -582,7 +606,8 @@ class PlaylistsBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = if (silent && it.hasLoadedOnce) it.errorMessage else result.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }

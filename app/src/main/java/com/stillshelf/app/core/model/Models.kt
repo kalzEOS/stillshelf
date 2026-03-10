@@ -108,6 +108,14 @@ data class PlaybackProgress(
     val durationSeconds: Double?
 )
 
+data class BookProgressMutation(
+    val bookId: String,
+    val progressPercent: Double?,
+    val currentTimeSeconds: Double?,
+    val durationSeconds: Double?,
+    val isFinished: Boolean
+)
+
 data class SessionState(
     val activeServerId: String?,
     val activeLibraryId: String?,

@@ -8,6 +8,8 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.playback.controller.PlaybackController
+import com.stillshelf.app.ui.common.applyBookProgressMutation
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +43,7 @@ class MiniPlayerViewModel @Inject constructor(
 
     init {
         observePlaybackState()
+        observeBookProgressMutations()
         observeSessionChanges()
         observeSkipSettings()
         refresh()
@@ -155,6 +158,27 @@ class MiniPlayerViewModel @Inject constructor(
                             displayTitle = resolvePlayerTitle(cachedItem)
                         )
                     }
+                }
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                val playbackBookId = playbackController.uiState.value.book?.id
+                if (playbackBookId == mutation.bookId) {
+                    playbackController.applyBookProgressMutation(mutation)
+                    return@collect
+                }
+                val currentItem = uiState.value.item ?: return@collect
+                if (currentItem.book.id != mutation.bookId) return@collect
+                mutableUiState.update { state ->
+                    state.copy(
+                        item = currentItem.withBookProgressMutation(mutation),
+                        displayTitle = resolvePlayerTitle(currentItem.withBookProgressMutation(mutation)),
+                        isPlaying = false
+                    )
                 }
             }
         }

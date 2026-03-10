@@ -3,12 +3,39 @@ package com.stillshelf.app.core.util
 import kotlin.math.min
 
 private const val UnfinishedProgressCap = 0.99
+const val StartedProgressThresholdSeconds = 30.0
 
 data class UnfinishedProgressState(
     val currentTimeSeconds: Double,
     val durationSeconds: Double?,
     val progressPercent: Double
 )
+
+fun resolveStartedProgressSeconds(
+    currentTimeSeconds: Double?,
+    durationSeconds: Double?,
+    progressPercent: Double?
+): Double? {
+    currentTimeSeconds?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
+    val safeDuration = durationSeconds?.takeIf { it.isFinite() && it > 0.0 } ?: return null
+    val safeProgress = progressPercent?.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: return null
+    return (safeDuration * safeProgress).takeIf { it.isFinite() && it >= 0.0 }
+}
+
+fun hasMeaningfulStartedProgress(
+    currentTimeSeconds: Double?,
+    durationSeconds: Double?,
+    progressPercent: Double?,
+    isFinished: Boolean = false
+): Boolean {
+    if (isFinished) return true
+    val startedSeconds = resolveStartedProgressSeconds(
+        currentTimeSeconds = currentTimeSeconds,
+        durationSeconds = durationSeconds,
+        progressPercent = progressPercent
+    )
+    return startedSeconds != null && startedSeconds >= StartedProgressThresholdSeconds
+}
 
 fun resolveUnfinishedProgressState(
     currentTimeSeconds: Double?,

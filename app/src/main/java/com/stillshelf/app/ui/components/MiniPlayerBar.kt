@@ -36,6 +36,7 @@ import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.sin
 import com.stillshelf.app.ui.common.rememberCoverImageModel
@@ -222,21 +223,21 @@ private fun formatMiniPlayerSubtitle(item: com.stillshelf.app.core.model.Continu
     val progress = item.progressPercent
     val currentTime = item.currentTimeSeconds
     if (duration == null || duration <= 0.0) {
-        val fallbackPercent = progress
+        val fallbackPercentLabel = progress
             ?.coerceIn(0.0, 1.0)
-            ?.let { (it * 100.0).toInt() }
-            ?: 0
-        return if (fallbackPercent > 0) {
-            "In progress • $fallbackPercent% complete"
+            ?.let(::formatMiniPlayerProgressPercentLabel)
+            ?: "0%"
+        return if (progress != null && progress > 0.0) {
+            "In progress • $fallbackPercentLabel complete"
         } else {
             "0h 0m left • 0% complete"
         }
     }
 
-    val percent = when {
-        progress != null -> (progress.coerceIn(0.0, 1.0) * 100.0).toInt()
-        currentTime != null -> ((currentTime / duration).coerceIn(0.0, 1.0) * 100.0).toInt()
-        else -> 0
+    val percentLabel = when {
+        progress != null -> formatMiniPlayerProgressPercentLabel(progress.coerceIn(0.0, 1.0))
+        currentTime != null -> formatMiniPlayerProgressPercentLabel((currentTime / duration).coerceIn(0.0, 1.0))
+        else -> "0%"
     }
 
     val remainingSeconds = when {
@@ -245,7 +246,7 @@ private fun formatMiniPlayerSubtitle(item: com.stillshelf.app.core.model.Continu
         else -> duration
     }.coerceAtLeast(0.0)
 
-    return "${formatHoursMinutesPrecise(remainingSeconds)} left • $percent% complete"
+    return "${formatHoursMinutesPrecise(remainingSeconds)} left • $percentLabel complete"
 }
 
 private fun formatHoursMinutesPrecise(durationSeconds: Double): String {
@@ -254,4 +255,13 @@ private fun formatHoursMinutesPrecise(durationSeconds: Double): String {
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
     return "${hours}h ${minutes}m"
+}
+
+private fun formatMiniPlayerProgressPercentLabel(progressFraction: Double): String {
+    val percent = (progressFraction.coerceIn(0.0, 1.0) * 100.0)
+    return if (percent < 1.0 && percent > 0.0) {
+        String.format(Locale.getDefault(), "%.1f%%", percent)
+    } else {
+        "${percent.toInt().coerceIn(0, 100)}%"
+    }
 }

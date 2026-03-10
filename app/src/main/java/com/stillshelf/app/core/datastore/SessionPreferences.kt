@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.json.JSONArray
 import org.json.JSONObject
 
 @Singleton
@@ -59,6 +60,7 @@ class SessionPreferences @Inject constructor(
     private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
     private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
     private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
+    private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
 
     val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
         SessionPreferenceState(
@@ -97,7 +99,8 @@ class SessionPreferences @Inject constructor(
             updateCheckOnStartup = prefs[updateCheckOnStartupKey] ?: true,
             updateIncludePrereleases = prefs[updateIncludePrereleasesKey] ?: false,
             pendingUpdateApkPath = prefs[pendingUpdateApkPathKey],
-            pendingUpdateVersionName = prefs[pendingUpdateVersionNameKey]
+            pendingUpdateVersionName = prefs[pendingUpdateVersionNameKey],
+            recentSearchTerms = parseStringArray(prefs[recentSearchTermsKey])
         )
     }
 
@@ -491,6 +494,27 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun addRecentSearchTerm(term: String, maxItems: Int = 10) {
+        val normalizedTerm = term.trim()
+        if (normalizedTerm.isBlank()) return
+        dataStore.edit { prefs ->
+            val updated = buildList {
+                add(normalizedTerm)
+                parseStringArray(prefs[recentSearchTermsKey])
+                    .filterNot { it.equals(normalizedTerm, ignoreCase = true) }
+                    .take(maxItems.coerceAtLeast(1) - 1)
+                    .forEach(::add)
+            }
+            prefs[recentSearchTermsKey] = encodeStringArray(updated)
+        }
+    }
+
+    suspend fun clearRecentSearchTerms() {
+        dataStore.edit { prefs ->
+            prefs.remove(recentSearchTermsKey)
+        }
+    }
+
     private fun parseCsv(csv: String?): Set<String> {
         if (csv.isNullOrBlank()) return emptySet()
         return csv.split(",")
@@ -524,6 +548,19 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyMap())
     }
 
+    private fun parseStringArray(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val source = JSONArray(raw)
+            buildList {
+                for (index in 0 until source.length()) {
+                    val value = source.optString(index).trim()
+                    if (value.isNotBlank()) add(value)
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun encodeServerAvatarUris(values: Map<String, String>): String {
         val node = JSONObject()
         values.forEach { (key, value) ->
@@ -534,6 +571,17 @@ class SessionPreferences @Inject constructor(
             }
         }
         return node.toString()
+    }
+
+    private fun encodeStringArray(values: List<String>): String {
+        return JSONArray().apply {
+            values.forEach { value ->
+                val normalizedValue = value.trim()
+                if (normalizedValue.isNotBlank()) {
+                    put(normalizedValue)
+                }
+            }
+        }.toString()
     }
 }
 
@@ -573,7 +621,8 @@ data class SessionPreferenceState(
     val updateCheckOnStartup: Boolean = true,
     val updateIncludePrereleases: Boolean = false,
     val pendingUpdateApkPath: String? = null,
-    val pendingUpdateVersionName: String? = null
+    val pendingUpdateVersionName: String? = null,
+    val recentSearchTerms: List<String> = emptyList()
 )
 
 data class CachedHomeFeedPayload(

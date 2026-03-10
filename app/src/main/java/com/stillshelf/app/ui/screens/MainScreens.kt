@@ -270,6 +270,8 @@ enum class BooksSortKey(
 }
 
 private val BackTitleSpacing = 12.dp
+private val HomeTopBarLibrarySelectorMinWidth = 184.dp
+private val HomeTopBarLibrarySelectorPreferredWidth = 236.dp
 
 private val SeriesStackMinLayerExtent = 42.dp
 private val SeriesStackStep = 5.dp

@@ -1420,7 +1420,7 @@ class PlaybackController @Inject constructor(
         incoming: ProgressSyncRequest
     ): ProgressSyncRequest {
         if (existing == null) return incoming
-        return incoming.copy(isFinished = existing.isFinished || incoming.isFinished)
+        return incoming
     }
 
     private fun progressSyncKey(serverId: String?, bookId: String): String {

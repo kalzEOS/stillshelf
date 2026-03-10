@@ -308,6 +308,17 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun clearServerAvatar() {
+        val serverId = uiState.value.activeServerId
+        if (serverId.isNullOrBlank()) return
+        val avatarUri = uiState.value.serverAvatarUri
+        viewModelScope.launch {
+            deleteManagedServerAvatar(avatarUri)
+            sessionPreferences.setServerAvatarUri(serverId, null)
+            mutableUiState.update { it.copy(serverAvatarUri = null, errorMessage = null) }
+        }
+    }
+
     private fun copyServerAvatarToInternalStorage(serverId: String, source: Uri): AppResult<String> {
         return runCatching {
             val safeServerId = serverId.trim().ifBlank { "default" }
@@ -339,6 +350,21 @@ class SettingsViewModel @Inject constructor(
                 )
             }
         )
+    }
+
+    private fun deleteManagedServerAvatar(avatarUri: String?) {
+        if (avatarUri.isNullOrBlank() || avatarUri.contains("://")) return
+        val avatarFile = runCatching { File(avatarUri).canonicalFile }.getOrNull() ?: return
+        val avatarDir = runCatching {
+            File(appContext.filesDir, "server_avatars").canonicalFile
+        }.getOrNull() ?: return
+        if (avatarFile.parentFile != avatarDir) return
+        if (!avatarFile.name.startsWith("server_avatar_")) return
+        runCatching {
+            if (avatarFile.exists()) {
+                avatarFile.delete()
+            }
+        }
     }
 
     private fun resolveAvatarExtension(source: Uri): String {

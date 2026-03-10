@@ -54,6 +54,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -77,6 +78,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CollectionsBookmark
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.FastForward
@@ -206,6 +208,7 @@ import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.core.util.resolveListenActionLabel
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
@@ -853,6 +856,9 @@ fun HomeScreen(
                                                         viewModel.markAsFinished(item.book.id)
                                                     }
                                                 },
+                                                onResetBookProgress = {
+                                                    viewModel.resetBookProgress(item.book.id)
+                                                },
                                                 onRemoveFromContinueListening = {
                                                     viewModel.removeFromContinueListening(item.book.id)
                                                 },
@@ -944,12 +950,20 @@ fun HomeScreen(
                                                                 contentDescription = null
                                                             )
                                                         },
+                                                        enabled = book.hasStartedProgress(),
                                                         onClick = {
                                                             if (book.hasFinishedProgress()) {
                                                                 viewModel.markAsUnfinished(book.id)
                                                             } else {
                                                                 viewModel.markAsFinished(book.id)
                                                             }
+                                                            menuExpanded = false
+                                                        }
+                                                    )
+                                                    ResetBookProgressMenuItem(
+                                                        showIcon = true,
+                                                        onConfirm = {
+                                                            viewModel.resetBookProgress(book.id)
                                                             menuExpanded = false
                                                         }
                                                     )
@@ -1045,7 +1059,7 @@ fun HomeScreen(
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Text(
-                                                        text = formatDurationHoursMinutes(book.durationSeconds),
+                                                        text = book.searchMetadataLabel(),
                                                         style = MaterialTheme.typography.bodySmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                         modifier = Modifier.weight(1f)
@@ -1095,12 +1109,20 @@ fun HomeScreen(
                                                                         contentDescription = null
                                                                     )
                                                                 },
+                                                                enabled = book.hasStartedProgress(),
                                                                 onClick = {
                                                                     if (book.hasFinishedProgress()) {
                                                                         viewModel.markAsUnfinished(book.id)
                                                                     } else {
                                                                         viewModel.markAsFinished(book.id)
                                                                     }
+                                                                    menuExpanded = false
+                                                                }
+                                                            )
+                                                            ResetBookProgressMenuItem(
+                                                                showIcon = true,
+                                                                onConfirm = {
+                                                                    viewModel.resetBookProgress(book.id)
                                                                     menuExpanded = false
                                                                 }
                                                             )
@@ -1209,7 +1231,7 @@ fun HomeScreen(
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Text(
-                                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                                    text = book.searchMetadataLabel(),
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     modifier = Modifier.weight(1f)
@@ -1255,12 +1277,20 @@ fun HomeScreen(
                                                                     contentDescription = null
                                                                 )
                                                             },
+                                                            enabled = book.hasStartedProgress(),
                                                             onClick = {
                                                                 if (book.hasFinishedProgress()) {
                                                                     viewModel.markAsUnfinished(book.id)
                                                                 } else {
                                                                     viewModel.markAsFinished(book.id)
                                                                 }
+                                                                menuExpanded = false
+                                                            }
+                                                        )
+                                                        ResetBookProgressMenuItem(
+                                                            showIcon = true,
+                                                            onConfirm = {
+                                                                viewModel.resetBookProgress(book.id)
                                                                 menuExpanded = false
                                                             }
                                                         )
@@ -1726,6 +1756,7 @@ fun BrowseScreen(
                                                     viewModel.markAsFinished(entry.book.id)
                                                 }
                                             },
+                                            onResetProgress = { viewModel.resetBookProgress(entry.book.id) },
                                             onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
@@ -1744,6 +1775,7 @@ fun BrowseScreen(
                                                     viewModel.markAsFinished(entry.leadBook.id)
                                                 }
                                             },
+                                            onResetProgress = { viewModel.resetBookProgress(entry.leadBook.id) },
                                             onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
@@ -1771,6 +1803,7 @@ fun BrowseScreen(
                                                     viewModel.markAsFinished(entry.book.id)
                                                 }
                                             },
+                                            onResetProgress = { viewModel.resetBookProgress(entry.book.id) },
                                             onToggleDownload = { viewModel.toggleDownload(entry.book.id) }
                                         )
                                     }
@@ -1789,6 +1822,7 @@ fun BrowseScreen(
                                                     viewModel.markAsFinished(entry.leadBook.id)
                                                 }
                                             },
+                                            onResetProgress = { viewModel.resetBookProgress(entry.leadBook.id) },
                                             onToggleDownload = { viewModel.toggleDownload(entry.leadBook.id) }
                                         )
                                     }
@@ -1851,11 +1885,13 @@ private fun BookGridItem(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkFinished: () -> Unit,
+    onResetProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.searchMetadataLabel()
     val posterWidth = StandardGridCoverWidth
     val posterHeight = StandardGridCoverHeight
     Column(
@@ -1882,7 +1918,7 @@ private fun BookGridItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = formatDurationHoursMinutes(book.durationSeconds),
+                text = progressMetaLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
@@ -1919,8 +1955,16 @@ private fun BookGridItem(
                                 contentDescription = null
                             )
                         },
+                        enabled = book.hasStartedProgress(),
                         onClick = {
                             onMarkFinished()
+                            menuExpanded = false
+                        }
+                    )
+                    ResetBookProgressMenuItem(
+                        showIcon = true,
+                        onConfirm = {
+                            onResetProgress()
                             menuExpanded = false
                         }
                     )
@@ -1946,6 +1990,7 @@ private fun SeriesStackGridItem(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkFinished: () -> Unit,
+    onResetProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     val book = entry.leadBook
@@ -2062,8 +2107,16 @@ private fun SeriesStackGridItem(
                                 contentDescription = null
                             )
                         },
+                        enabled = book.hasStartedProgress(),
                         onClick = {
                             onMarkFinished()
+                            menuExpanded = false
+                        }
+                    )
+                    ResetBookProgressMenuItem(
+                        showIcon = true,
+                        onConfirm = {
+                            onResetProgress()
                             menuExpanded = false
                         }
                     )
@@ -2089,11 +2142,13 @@ private fun BookListItem(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkFinished: () -> Unit,
+    onResetProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val progressMetaLabel = book.searchMetadataLabel()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2129,7 +2184,7 @@ private fun BookListItem(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = formatDurationHoursMinutes(book.durationSeconds),
+                text = progressMetaLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2165,8 +2220,16 @@ private fun BookListItem(
                             contentDescription = null
                         )
                     },
+                    enabled = book.hasStartedProgress(),
                     onClick = {
                         onMarkFinished()
+                        menuExpanded = false
+                    }
+                )
+                ResetBookProgressMenuItem(
+                    showIcon = true,
+                    onConfirm = {
+                        onResetProgress()
                         menuExpanded = false
                     }
                 )
@@ -2191,6 +2254,7 @@ private fun SeriesStackListItem(
     downloadProgressPercent: Int?,
     onAddToCollection: () -> Unit,
     onMarkFinished: () -> Unit,
+    onResetProgress: () -> Unit,
     onToggleDownload: () -> Unit
 ) {
     val lead = entry.leadBook
@@ -2310,8 +2374,16 @@ private fun SeriesStackListItem(
                             contentDescription = null
                         )
                     },
+                    enabled = lead.hasStartedProgress(),
                     onClick = {
                         onMarkFinished()
+                        menuExpanded = false
+                    }
+                )
+                ResetBookProgressMenuItem(
+                    showIcon = true,
+                    onConfirm = {
+                        onResetProgress()
                         menuExpanded = false
                     }
                 )
@@ -2731,10 +2803,10 @@ fun CollectionsBrowseScreen(
     }
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshLibrary()
+            viewModel.refreshSilent()
             while (true) {
                 kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshLibrary()
+                viewModel.refreshSilent()
             }
         }
     }
@@ -3061,10 +3133,10 @@ fun PlaylistsBrowseScreen(
     }
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshLibrary()
+            viewModel.refreshSilent()
             while (true) {
                 kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshLibrary()
+                viewModel.refreshSilent()
             }
         }
     }
@@ -3733,15 +3805,21 @@ fun SearchScreen(
     onAuthorClick: (String) -> Unit,
     onSeriesClick: (String) -> Unit,
     onNarratorClick: (String) -> Unit,
-    viewModel: SearchViewModel = hiltViewModel()
+    viewModel: SearchViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var collectionPickerBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val query = uiState.query.trim()
     val normalized = query.lowercase()
     val matchedBooks = uiState.books
     val matchedAuthors = uiState.authors
     val matchedSeries = uiState.series
     val matchedNarrators = uiState.narrators
+    val recentSearchTerms = uiState.recentSearchTerms
     val noMatches = normalized.isNotBlank() &&
         !uiState.isLoading &&
         uiState.errorMessage.isNullOrBlank() &&
@@ -3749,6 +3827,27 @@ fun SearchScreen(
         matchedAuthors.isEmpty() &&
         matchedSeries.isEmpty() &&
         matchedNarrators.isEmpty()
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(collectionPickerBookId) {
+        if (!collectionPickerBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
 
     Column(
         modifier = Modifier
@@ -3762,26 +3861,59 @@ fun SearchScreen(
                 .padding(top = 14.dp)
         ) {
             if (normalized.isBlank()) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(modifier = Modifier.weight(1f))
-                    Icon(
-                        imageVector = Icons.Outlined.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(52.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(text = "Search your library", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Search by Title, Author, Series, and More",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
+                if (recentSearchTerms.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Recently searched",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = viewModel::clearRecentSearchTerms) {
+                                    Text("Clear")
+                                }
+                            }
+                        }
+                        items(recentSearchTerms, key = { it.lowercase() }) { term ->
+                            SearchRecentRow(
+                                text = term,
+                                onClick = {
+                                    viewModel.useRecentSearchTerm(term)
+                                    keyboardController?.hide()
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(52.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(text = "Search your library", style = MaterialTheme.typography.headlineMedium)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Search by Title, Author, Series, and More",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
             } else {
                 LazyColumn(
@@ -3794,20 +3926,46 @@ fun SearchScreen(
                         items(matchedBooks.take(20), key = { it.id }) { book ->
                             SearchBookRow(
                                 book = book,
-                                onClick = { onBookClick(book.id) }
+                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
+                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                onAddToCollection = { collectionPickerBookId = book.id },
+                                onMarkFinished = {
+                                    if (book.hasFinishedProgress()) {
+                                        viewModel.markAsUnfinished(book.id)
+                                    } else {
+                                        viewModel.markAsFinished(book.id)
+                                    }
+                                },
+                                onToggleDownload = { viewModel.toggleDownload(book.id) },
+                                onClick = {
+                                    viewModel.commitCurrentQuery()
+                                    onBookClick(book.id)
+                                }
                             )
                         }
                     }
                     if (matchedAuthors.isNotEmpty()) {
                         item { SectionTitle("Authors") }
                         items(matchedAuthors, key = { it.id }) { author ->
-                            SearchEntityRow(text = author.name, onClick = { onAuthorClick(author.name) })
+                            SearchEntityRow(
+                                text = author.name,
+                                onClick = {
+                                    viewModel.commitCurrentQuery()
+                                    onAuthorClick(author.name)
+                                }
+                            )
                         }
                     }
                     if (matchedSeries.isNotEmpty()) {
                         item { SectionTitle("Series") }
                         items(matchedSeries, key = { it.id }) { series ->
-                            SearchEntityRow(text = series.name, onClick = { onSeriesClick(series.name) })
+                            SearchEntityRow(
+                                text = series.name,
+                                onClick = {
+                                    viewModel.commitCurrentQuery()
+                                    onSeriesClick(series.name)
+                                }
+                            )
                         }
                     }
                     if (matchedNarrators.isNotEmpty()) {
@@ -3815,7 +3973,10 @@ fun SearchScreen(
                         items(matchedNarrators, key = { it.id }) { narrator ->
                             SearchEntityRow(
                                 text = narrator.name,
-                                onClick = { onNarratorClick(narrator.name) }
+                                onClick = {
+                                    viewModel.commitCurrentQuery()
+                                    onNarratorClick(narrator.name)
+                                }
                             )
                         }
                     }
@@ -3867,6 +4028,13 @@ fun SearchScreen(
                 onValueChange = viewModel::onQueryChange,
                 modifier = Modifier.weight(1f),
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        viewModel.commitCurrentQuery()
+                        keyboardController?.hide()
+                    }
+                ),
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Outlined.Search,
@@ -3878,12 +4046,87 @@ fun SearchScreen(
             )
         }
     }
+
+    val targetBookId = collectionPickerBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                collectionPickerBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun SearchRecentRow(
+    text: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 10.dp)
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 }
 @Composable
 private fun SearchBookRow(
     book: BookSummary,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onAddToCollection: () -> Unit,
+    onMarkFinished: () -> Unit,
+    onToggleDownload: () -> Unit,
     onClick: () -> Unit
 ) {
+    val metadataLabel = book.searchMetadataLabel()
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+    val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3896,7 +4139,10 @@ private fun SearchBookRow(
             width = 58.dp,
             height = 72.dp,
             shape = RoundedCornerShape(6.dp),
-            backgroundBlur = 44.dp
+            backgroundBlur = 44.dp,
+            showDownloadIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent,
+            downloadBadgeSize = 22.dp
         )
         Column(
             modifier = Modifier
@@ -3916,12 +4162,67 @@ private fun SearchBookRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            if (metadataLabel.isNotBlank()) {
+                Text(
+                    text = metadataLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
         }
-        Icon(
-            imageVector = Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Book actions",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            AppDropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false }
+            ) {
+                AppDropdownMenuItem(
+                    text = { Text("Add to Collection") },
+                    leadingIcon = { Icon(Icons.Outlined.CollectionsBookmark, contentDescription = null) },
+                    onClick = {
+                        onAddToCollection()
+                        menuExpanded = false
+                    }
+                )
+                AppDropdownMenuItem(
+                    text = {
+                        Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished")
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (book.hasFinishedProgress()) {
+                                Icons.Outlined.Refresh
+                            } else {
+                                Icons.Outlined.CheckCircle
+                            },
+                            contentDescription = null
+                        )
+                    },
+                    enabled = book.hasStartedProgress(),
+                    onClick = {
+                        onMarkFinished()
+                        menuExpanded = false
+                    }
+                )
+                AppDropdownMenuItem(
+                    text = { Text(downloadLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = {
+                        onToggleDownload()
+                        menuExpanded = false
+                    }
+                )
+            }
+        }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 }
@@ -4123,6 +4424,12 @@ fun DownloadsScreen(
                                             onBookClick(book.id)
                                         }
                                     )
+                                    ResetBookProgressMenuItem(
+                                        onConfirm = {
+                                            menuExpanded = false
+                                            viewModel.resetBookProgress(book.id)
+                                        }
+                                    )
                                     AppDropdownMenuItem(
                                         text = { Text("Remove Download") },
                                         onClick = {
@@ -4198,6 +4505,12 @@ fun DownloadsScreen(
                                             onClick = {
                                                 menuExpanded = false
                                                 onBookClick(book.id)
+                                            }
+                                        )
+                                        ResetBookProgressMenuItem(
+                                            onConfirm = {
+                                                menuExpanded = false
+                                                viewModel.resetBookProgress(book.id)
                                             }
                                         )
                                         AppDropdownMenuItem(
@@ -4349,6 +4662,36 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (uiState.serverAvatarUri.isNullOrBlank()) {
+                                "Tap photo to add"
+                            } else {
+                                "Tap photo to change"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!uiState.serverAvatarUri.isNullOrBlank()) {
+                            TextButton(
+                                onClick = {
+                                    viewModel.clearServerAvatar()
+                                    infoMessage = "Profile photo removed."
+                                },
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.RemoveCircleOutline,
+                                    contentDescription = "Remove server profile photo",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text("Remove")
+                            }
+                        }
+                    }
                 }
                 Icon(
                     imageVector = Icons.Filled.Check,
@@ -5616,6 +5959,12 @@ fun BookDetailScreen(
             (detailCurrentSeconds ?: 0.0) > 0.5 -> false
         else -> (detailBook?.isFinished == true) || finishedFromDetailProgress
     }
+    val canToggleDetailFinished = hasMeaningfulStartedProgress(
+        currentTimeSeconds = detailCurrentSeconds,
+        durationSeconds = detailDurationSeconds,
+        progressPercent = resolvedDetailProgress,
+        isFinished = effectiveDetailFinished
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -5697,12 +6046,19 @@ fun BookDetailScreen(
                                     }
                                 )
                             },
+                            enabled = canToggleDetailFinished,
                             onClick = {
                                 if (effectiveDetailFinished) {
                                     viewModel.markAsUnfinished()
                                 } else {
                                     viewModel.markAsFinished()
                                 }
+                                actionsExpanded = false
+                            }
+                        )
+                        ResetBookProgressMenuItem(
+                            onConfirm = {
+                                viewModel.resetBookProgress()
                                 actionsExpanded = false
                             }
                         )
@@ -5755,26 +6111,33 @@ fun BookDetailScreen(
                 }
                 val serverPlaybackSeconds = uiState.currentTimeSeconds?.coerceAtLeast(0.0) ?: 0.0
                 val effectiveBookFinished = effectiveDetailFinished
-                val hasProgress = !effectiveBookFinished && (
-                    livePlaybackSeconds > 0.5 ||
-                        serverPlaybackSeconds > 0.5 ||
-                        (uiState.progressPercent ?: 0.0) > 0.001
-                    )
+                val effectiveDurationSeconds = when {
+                    book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
+                    playbackUiState.book?.id == book.id && playbackUiState.durationMs > 0L -> {
+                        playbackUiState.durationMs / 1000.0
+                    }
+                    else -> null
+                }
+                val hasProgress = hasMeaningfulStartedProgress(
+                    currentTimeSeconds = when {
+                        livePlaybackSeconds > 0.0 -> livePlaybackSeconds
+                        else -> serverPlaybackSeconds.takeIf { it > 0.0 }
+                    },
+                    durationSeconds = effectiveDurationSeconds,
+                    progressPercent = uiState.progressPercent,
+                    isFinished = effectiveBookFinished
+                )
                 val listenLabel = resolveListenActionLabel(
                     isFinished = effectiveBookFinished,
                     hasProgress = hasProgress
                 )
                 val listenProgressFraction = if (effectiveBookFinished) {
                     0f
+                } else if (!hasProgress) {
+                    0f
                 } else {
                     run {
-                        val duration = when {
-                            book.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
-                            playbackUiState.book?.id == book.id && playbackUiState.durationMs > 0L -> {
-                                playbackUiState.durationMs / 1000.0
-                            }
-                            else -> null
-                        }
+                        val duration = effectiveDurationSeconds
                         val resolved = when {
                             duration != null && duration > 0.0 && livePlaybackSeconds > 0.0 -> {
                                 (livePlaybackSeconds / duration).coerceIn(0.0, 1.0)
@@ -6362,6 +6725,16 @@ fun PlayerScreen(
     } else {
         false
     }
+    val canTogglePlayerFinished = hasMeaningfulStartedProgress(
+        currentTimeSeconds = positionSeconds,
+        durationSeconds = durationSeconds.takeIf { it > 0.0 } ?: book?.durationSeconds,
+        progressPercent = if (durationSeconds > 0.0) {
+            (positionSeconds / durationSeconds).coerceIn(0.0, 1.0)
+        } else {
+            book?.progressPercent
+        },
+        isFinished = effectivePlayerFinished
+    )
     val activeChapterIndex = remember(chapters, positionSeconds) {
         findActiveChapterIndex(chapters, positionSeconds)
     }
@@ -6445,7 +6818,7 @@ fun PlayerScreen(
     var showSpeedSheet by rememberSaveable { mutableStateOf(false) }
     val playerSnackbarHostState = remember { SnackbarHostState() }
     val speedLabel = formatPlaybackSpeedShort(playbackUiState.playbackSpeed)
-    val speedToolValue = "Speed $speedLabel"
+    val speedToolValue = speedLabel
     val timerMode = playbackUiState.sleepTimerMode
     val timerRemainingMs = playbackUiState.sleepTimerRemainingMs?.coerceAtLeast(0L) ?: 0L
     val timerTotalMs = (playbackUiState.sleepTimerTotalMs ?: timerRemainingMs)
@@ -7012,27 +7385,48 @@ fun PlayerScreen(
                             color = mainPlayButtonBorderColor,
                             shape = CircleShape
                         )
-                        .clickable(onClick = viewModel::onPlayPauseClick),
+                        .clickable(
+                            enabled = !playbackUiState.isLoading,
+                            onClick = viewModel::onPlayPauseClick
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     val mainPlayButtonIcon = if (playbackUiState.isPlaying) {
                         Icons.Outlined.Pause
-                    } else if (immersiveEnabled || isMaterialNonImmersive) {
-                        Icons.Filled.PlayArrow
                     } else {
-                        Icons.Outlined.PlayArrow
+                        if (immersiveEnabled || isMaterialNonImmersive) {
+                            Icons.Filled.PlayArrow
+                        } else {
+                            Icons.Outlined.PlayArrow
+                        }
                     }
                     val mainPlayIconTint = if (!playbackUiState.isPlaying && isMaterialNonImmersive) {
                         progressActiveColor
                     } else {
                         mainPlayButtonIconTint
                     }
-                    Icon(
-                        imageVector = mainPlayButtonIcon,
-                        contentDescription = if (playbackUiState.isPlaying) "Pause" else "Play",
-                        tint = mainPlayIconTint,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    if (playbackUiState.isLoading) {
+                        MainPlayButtonLoadingIndicator(
+                            modifier = Modifier.size(width = 36.dp, height = 36.dp),
+                            baseTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
+                                Color.Black.copy(alpha = 0.24f)
+                            } else {
+                                Color.White.copy(alpha = 0.28f)
+                            },
+                            sweepTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
+                                Color.Black.copy(alpha = 0.95f)
+                            } else {
+                                Color.White.copy(alpha = 0.95f)
+                            }
+                        )
+                    } else {
+                        Icon(
+                            imageVector = mainPlayButtonIcon,
+                            contentDescription = if (playbackUiState.isPlaying) "Pause" else "Play",
+                            tint = mainPlayIconTint,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
                 }
                 Seek15Button(
                     forward = true,
@@ -7066,7 +7460,7 @@ fun PlayerScreen(
                         itemHeight = toolsItemHeight,
                         label = "Speed",
                         imageVector = Icons.Outlined.Tune,
-                        valueText = speedToolValue,
+                        topText = speedToolValue,
                         primaryColor = bottomToolsPrimaryColor,
                         secondaryColor = bottomToolsSecondaryColor,
                         containerColor = toolsItemContainerColor,
@@ -7280,6 +7674,7 @@ fun PlayerScreen(
                                     contentDescription = null
                                 )
                             },
+                            enabled = canTogglePlayerFinished,
                             onClick = {
                                 bottomMenuExpanded = false
                                 if (effectivePlayerFinished) {
@@ -7287,6 +7682,13 @@ fun PlayerScreen(
                                 } else {
                                     viewModel.markAsFinished()
                                 }
+                            }
+                        )
+                        ResetBookProgressMenuItem(
+                            showIcon = true,
+                            onConfirm = {
+                                bottomMenuExpanded = false
+                                viewModel.resetBookProgress()
                             }
                         )
                         AppDropdownMenuItem(
@@ -8053,6 +8455,7 @@ private fun PlayerBottomToolItem(
     itemHeight: Dp = 76.dp,
     label: String,
     imageVector: ImageVector,
+    topText: String? = null,
     valueText: String? = null,
     primaryColor: Color = MaterialTheme.colorScheme.onSurface,
     secondaryColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -8061,10 +8464,28 @@ private fun PlayerBottomToolItem(
     isImmersive: Boolean = false,
     showIconBubble: Boolean = true,
     showSecondaryLabelWhenValue: Boolean = true,
+    preferLabelPrimaryWhenValue: Boolean = false,
     isHighlighted: Boolean = false,
     onClick: () -> Unit
 ) {
+    val resolvedTopText = topText?.trim().orEmpty()
+    val useTopText = resolvedTopText.isNotBlank()
     val value = valueText?.trim().orEmpty()
+    val showSecondaryText = !useTopText && value.isNotBlank() && showSecondaryLabelWhenValue
+    val primaryText = if (value.isNotBlank() && preferLabelPrimaryWhenValue) {
+        label
+    } else if (value.isNotBlank()) {
+        value
+    } else {
+        label
+    }
+    val secondaryText = if (!showSecondaryText) {
+        null
+    } else if (preferLabelPrimaryWhenValue) {
+        value
+    } else {
+        label
+    }
     val iconChipColor = if (isHighlighted) {
         primaryColor.copy(alpha = 0.2f)
     } else {
@@ -8076,6 +8497,11 @@ private fun PlayerBottomToolItem(
         Color.White.copy(alpha = 0.24f)
     } else {
         primaryColor.copy(alpha = 0.22f)
+    }
+    val topTextFontSize = when {
+        resolvedTopText.length >= 5 -> 10.5.sp
+        resolvedTopText.length == 4 -> 11.sp
+        else -> 11.5.sp
     }
     val primaryValueColor = if (isHighlighted) primaryColor else primaryColor.copy(alpha = 0.96f)
     val itemShape = RoundedCornerShape(14.dp)
@@ -8105,37 +8531,72 @@ private fun PlayerBottomToolItem(
                 indication = null,
                 onClick = onClick
             )
-            .padding(start = 4.dp, end = 4.dp, top = 1.dp, bottom = 4.dp),
+            .padding(
+                start = 4.dp,
+                end = 4.dp,
+                top = if (showSecondaryText) 0.dp else 1.dp,
+                bottom = if (showSecondaryText) 2.dp else 4.dp
+            ),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Box(
-            modifier = if (showIconBubble) {
+            modifier = if (useTopText) {
+                if (showIconBubble) {
+                    Modifier
+                        .padding(top = if (showSecondaryText) 1.dp else 2.dp)
+                        .size(if (showSecondaryText) 28.dp else 30.dp)
+                } else {
+                    Modifier
+                        .padding(top = if (showSecondaryText) 2.dp else 4.dp)
+                        .size(if (showSecondaryText) 22.dp else 24.dp)
+                }
+            } else if (showIconBubble) {
                 Modifier
-                    .padding(top = 2.dp)
-                    .size(30.dp)
+                    .padding(top = if (showSecondaryText) 1.dp else 2.dp)
+                    .size(if (showSecondaryText) 28.dp else 30.dp)
                     .clip(CircleShape)
                     .background(iconChipColor)
                     .border(1.dp, iconChipBorderColor, CircleShape)
             } else {
                 Modifier
-                    .padding(top = 4.dp)
-                    .size(24.dp)
+                    .padding(top = if (showSecondaryText) 2.dp else 4.dp)
+                    .size(if (showSecondaryText) 22.dp else 24.dp)
             },
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = imageVector,
-                contentDescription = label,
-                tint = primaryColor,
-                modifier = Modifier.size(if (showIconBubble) 21.dp else 20.dp)
-            )
+            if (useTopText) {
+                Text(
+                    text = resolvedTopText,
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = topTextFontSize
+                    ),
+                    color = primaryColor,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            } else {
+                Icon(
+                    imageVector = imageVector,
+                    contentDescription = label,
+                    tint = primaryColor,
+                    modifier = Modifier.size(
+                        when {
+                            showSecondaryText && showIconBubble -> 19.dp
+                            showSecondaryText -> 18.dp
+                            showIconBubble -> 21.dp
+                            else -> 20.dp
+                        }
+                    )
+                )
+            }
         }
         Text(
-            text = if (value.isNotBlank()) value else label,
+            text = primaryText,
             style = MaterialTheme.typography.labelLarge.copy(
                 fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Medium,
-                fontSize = 10.5.sp
+                fontSize = if (showSecondaryText) 9.5.sp else 10.5.sp
             ),
             color = primaryValueColor,
             maxLines = 1,
@@ -8143,12 +8604,12 @@ private fun PlayerBottomToolItem(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth()
         )
-        if (value.isNotBlank() && showSecondaryLabelWhenValue) {
+        if (secondaryText != null) {
             Text(
-                text = label,
+                text = secondaryText,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.Medium,
-                    fontSize = 8.5.sp
+                    fontSize = 8.sp
                 ),
                 color = secondaryColor,
                 maxLines = 1,
@@ -9414,6 +9875,58 @@ private fun ChapterPlaybackIndicator(
 }
 
 @Composable
+private fun MainPlayButtonLoadingIndicator(
+    modifier: Modifier = Modifier,
+    baseTint: Color,
+    sweepTint: Color
+) {
+    val transition = rememberInfiniteTransition(label = "main-play-button-loading")
+    val sweepProgress by transition.animateFloat(
+        initialValue = -0.25f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "main-play-button-loading-sweep"
+    )
+    val barHeights = remember { listOf(0.48f, 0.74f, 1f, 0.74f, 0.48f) }
+
+    Canvas(modifier = modifier) {
+        val barCount = barHeights.size
+        if (barCount == 0) return@Canvas
+        val clusterWidth = size.width * 0.68f
+        val spacingRatio = 0.52f
+        val barWidth = (
+            clusterWidth / (barCount + (barCount - 1) * spacingRatio)
+            ).coerceAtLeast(1f)
+        val spacing = barWidth * spacingRatio
+        val clusterStartX = (size.width - clusterWidth) / 2f
+        val cornerRadius = barWidth / 2f
+        val sweepCenterX = size.width * sweepProgress
+        val sweepRadius = barWidth * 1.8f
+        val maxBarHeight = size.height * 0.82f
+
+        barHeights.forEachIndexed { index, heightFraction ->
+            val left = clusterStartX + index * (barWidth + spacing)
+            val barHeight = (maxBarHeight * heightFraction).coerceAtLeast(size.height * 0.3f)
+            val top = (size.height - barHeight) / 2f
+            val barCenterX = left + (barWidth / 2f)
+            val distanceFraction = ((barCenterX - sweepCenterX) / sweepRadius).let { kotlin.math.abs(it) }
+            val sweepStrength = (1f - distanceFraction.coerceIn(0f, 1f)).let { it * it }
+            val tint = lerp(baseTint, sweepTint, sweepStrength)
+
+            drawRoundRect(
+                color = tint,
+                topLeft = androidx.compose.ui.geometry.Offset(left, top),
+                size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius)
+            )
+        }
+    }
+}
+
+@Composable
 private fun rememberDominantCoverColor(
     coverUrl: String?,
     enabled: Boolean
@@ -10159,6 +10672,7 @@ private fun ContinueListeningCard(
     onGoToBook: () -> Unit,
     onAddToCollection: () -> Unit,
     onMarkFinished: () -> Unit,
+    onResetBookProgress: () -> Unit,
     onRemoveFromContinueListening: () -> Unit,
     onToggleDownload: () -> Unit,
     onClick: () -> Unit
@@ -10166,6 +10680,12 @@ private fun ContinueListeningCard(
     var menuExpanded by remember { mutableStateOf(false) }
     val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
     val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
+    val canToggleFinished = hasMeaningfulStartedProgress(
+        currentTimeSeconds = item.currentTimeSeconds ?: item.book.currentTimeSeconds,
+        durationSeconds = item.book.durationSeconds,
+        progressPercent = item.progressPercent ?: item.book.progressPercent,
+        isFinished = item.book.hasFinishedProgress()
+    )
     val fallbackCardColor = Color(0xFF665A2E)
     val dominantCoverColor = rememberDominantCoverColor(
         coverUrl = item.book.coverUrl,
@@ -10306,14 +10826,22 @@ private fun ContinueListeningCard(
                                 contentDescription = null
                             )
                         },
+                        enabled = canToggleFinished,
                         onClick = {
                             onMarkFinished()
                             menuExpanded = false
                         }
                     )
+                    ResetBookProgressMenuItem(
+                        showIcon = true,
+                        onConfirm = {
+                            onResetBookProgress()
+                            menuExpanded = false
+                        }
+                    )
                     AppDropdownMenuItem(
                         text = { Text("Remove from Continue Listening") },
-                        leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
                         onClick = {
                             onRemoveFromContinueListening()
                             menuExpanded = false
@@ -10331,6 +10859,63 @@ private fun ContinueListeningCard(
             }
         }
     }
+}
+
+@Composable
+private fun ResetBookProgressMenuItem(
+    showIcon: Boolean = false,
+    onPrepareConfirm: () -> Unit = {},
+    onConfirm: () -> Unit
+) {
+    var showConfirmation by remember { mutableStateOf(false) }
+    AppDropdownMenuItem(
+        text = { Text("Reset Book Progress") },
+        leadingIcon = if (showIcon) {
+            {
+                Icon(
+                    imageVector = Icons.Outlined.Refresh,
+                    contentDescription = null
+                )
+            }
+        } else {
+            null
+        },
+        onClick = {
+            onPrepareConfirm()
+            showConfirmation = true
+        }
+    )
+    if (showConfirmation) {
+        ResetBookProgressConfirmationDialog(
+            onDismissRequest = { showConfirmation = false },
+            onConfirm = {
+                showConfirmation = false
+                onConfirm()
+            }
+        )
+    }
+}
+
+@Composable
+private fun ResetBookProgressConfirmationDialog(
+    onDismissRequest: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text("Reset Book Progress?") },
+        text = { Text("This will set the book back to 0% and stop playback.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Reset")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 private fun brightenAndSaturateCardColor(color: Color): Color {
@@ -10397,7 +10982,8 @@ private fun BookPoster(
     forcedFrameSideInset: Dp? = null,
     disableBlurredFrame: Boolean = false,
     showDownloadIndicator: Boolean = false,
-    downloadProgressPercent: Int? = null
+    downloadProgressPercent: Int? = null,
+    downloadBadgeSize: Dp = 30.dp
 ) {
     val posterModifier = if (fillMaxWidth) {
         Modifier
@@ -10424,12 +11010,19 @@ private fun BookPoster(
         val progress = downloadProgressPercent?.coerceIn(0, 100)
         val showProgress = progress != null && progress in 0..99
         val showCompleted = showDownloadIndicator && !showProgress
+        val badgeProgressSize = (downloadBadgeSize - 6.dp).coerceAtLeast(16.dp)
+        val badgeIconSize = (downloadBadgeSize * 0.54f).coerceAtLeast(12.dp)
+        val badgeStrokeWidth = when {
+            downloadBadgeSize <= 22.dp -> 2.dp
+            downloadBadgeSize <= 26.dp -> 2.2.dp
+            else -> 2.4.dp
+        }
         if (showProgress || showCompleted) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .offset(x = (-6).dp, y = 6.dp)
-                    .size(30.dp)
+                    .offset(x = -(downloadBadgeSize * 0.2f), y = downloadBadgeSize * 0.2f)
+                    .size(downloadBadgeSize)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
                 contentAlignment = Alignment.Center
@@ -10437,8 +11030,8 @@ private fun BookPoster(
                 if (showProgress) {
                     CircularProgressIndicator(
                         progress = { progress / 100f },
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.4.dp,
+                        modifier = Modifier.size(badgeProgressSize),
+                        strokeWidth = badgeStrokeWidth,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -10454,7 +11047,7 @@ private fun BookPoster(
                     Icon(
                         imageVector = Icons.Outlined.Download,
                         contentDescription = "Downloaded",
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(badgeIconSize),
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
@@ -10620,9 +11213,12 @@ private fun sortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {
 }
 
 private fun BookSummary.hasStartedProgress(): Boolean {
-    if (hasFinishedProgress()) return true
-    val normalized = normalizedProgressPercent()
-    return normalized != null && normalized > 0.001
+    return hasMeaningfulStartedProgress(
+        currentTimeSeconds = currentTimeSeconds,
+        durationSeconds = resolvedProgressDurationSeconds() ?: durationSeconds,
+        progressPercent = normalizedProgressPercent() ?: progressPercent,
+        isFinished = hasFinishedProgress()
+    )
 }
 
 private fun BookSummary.hasFinishedProgress(): Boolean {
@@ -10639,6 +11235,55 @@ private fun BookSummary.normalizedProgressPercent(): Double? {
     if (duration <= 0.0) return null
     val current = currentTimeSeconds ?: return null
     return (current / duration).coerceIn(0.0, 1.0)
+}
+
+private fun BookSummary.remainingTimeLabel(): String {
+    if (!hasStartedProgress() || hasFinishedProgress()) return ""
+    val duration = resolvedProgressDurationSeconds() ?: return ""
+    val normalizedProgress = normalizedProgressPercent()
+    val remainingSeconds = when {
+        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
+        currentTimeSeconds != null -> duration - currentTimeSeconds.coerceAtLeast(0.0)
+        else -> duration
+    }.coerceAtLeast(0.0)
+    if (remainingSeconds <= 0.0) return ""
+    return "${formatHoursMinutesPrecise(remainingSeconds)} left"
+}
+
+private fun BookSummary.searchMetadataLabel(): String {
+    val durationText = formatDurationHoursMinutes(durationSeconds)
+    if (hasFinishedProgress()) return ""
+    if (!hasStartedProgress()) return durationText
+    val duration = resolvedProgressDurationSeconds() ?: return durationText
+    val normalizedProgress = normalizedProgressPercent()
+    val currentSeconds = currentTimeSeconds?.coerceAtLeast(0.0)
+    val remainingSeconds = when {
+        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
+        currentSeconds != null -> duration - currentSeconds
+        else -> duration
+    }.coerceAtLeast(0.0)
+    if (remainingSeconds <= 0.0) return durationText
+    return "${formatHoursMinutesPrecise(remainingSeconds)} left"
+}
+
+private fun BookSummary.resolvedProgressDurationSeconds(): Double? {
+    durationSeconds?.takeIf { it > 0.0 }?.let { return it }
+    val normalizedProgress = progressPercent?.coerceIn(0.0, 1.0)
+    val current = currentTimeSeconds?.coerceAtLeast(0.0)
+    if (normalizedProgress != null && current != null && normalizedProgress > 0.0) {
+        val estimatedDuration = current / normalizedProgress
+        if (estimatedDuration.isFinite() && estimatedDuration > 0.0) {
+            return estimatedDuration
+        }
+    }
+    return null
+}
+
+private fun BookSummary.resolvedStartedProgressSeconds(): Double? {
+    currentTimeSeconds?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
+    val duration = resolvedProgressDurationSeconds() ?: return null
+    val normalizedProgress = normalizedProgressPercent() ?: return null
+    return (duration * normalizedProgress).takeIf { it.isFinite() && it >= 0.0 }
 }
 
 private fun parsePublishedYear(raw: String?): Int {

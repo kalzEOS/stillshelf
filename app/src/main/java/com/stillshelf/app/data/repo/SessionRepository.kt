@@ -8,6 +8,7 @@ import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookmarkEntry
+import com.stillshelf.app.core.model.BookProgressMutation
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
+    fun observeBookProgressMutations(): Flow<BookProgressMutation>
     fun observeServers(): Flow<List<Server>>
     suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
     suspend fun deleteServer(serverId: String): AppResult<Unit>

@@ -8,6 +8,7 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +39,7 @@ class BooksBrowseViewModel @Inject constructor(
             restoreUiPreferences()
             loadBooks(isUserRefresh = false, clearBootstrap = true)
         }
+        observeBookProgressMutations()
         observeDownloadedState()
     }
 
@@ -114,6 +116,26 @@ class BooksBrowseViewModel @Inject constructor(
         }
     }
 
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    loadBooks(isUserRefresh = true)
+                }
+
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
     fun toggleDownload(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
@@ -128,6 +150,18 @@ class BooksBrowseViewModel @Inject constructor(
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(
+                        books = state.books.map { it.withBookProgressMutation(mutation) }
+                    )
                 }
             }
         }

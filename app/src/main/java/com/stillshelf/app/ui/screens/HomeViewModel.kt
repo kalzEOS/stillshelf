@@ -10,9 +10,12 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.ui.common.isResetToStart
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlin.random.Random
@@ -73,6 +76,7 @@ class HomeViewModel @Inject constructor(
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
+        observeBookProgressMutations()
         observeDownloadedState()
         observeSilentRefreshTicker()
     }
@@ -95,6 +99,51 @@ class HomeViewModel @Inject constructor(
                         loadCachedThenMaybeRefresh()
                     }
                 }
+        }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    val updatedRecentlyAdded = state.recentlyAdded.map { it.withBookProgressMutation(mutation) }
+                    val updatedDiscover = state.discoverBooks.map { it.withBookProgressMutation(mutation) }
+                    val updatedRecentSeries = state.recentSeries.map { series ->
+                        if (series.leadBook.id == mutation.bookId) {
+                            series.copy(leadBook = series.leadBook.withBookProgressMutation(mutation))
+                        } else {
+                            series
+                        }
+                    }
+                    val updatedContinue = when {
+                        mutation.isFinished || mutation.isResetToStart() ->
+                            state.continueListening.filterNot { item -> item.book.id == mutation.bookId }
+
+                        else -> state.continueListening.map { it.withBookProgressMutation(mutation) }
+                    }
+                    val updatedListenAgain = if (mutation.isFinished) {
+                        val sourceBook = updatedRecentlyAdded.firstOrNull { it.id == mutation.bookId }
+                            ?: updatedDiscover.firstOrNull { it.id == mutation.bookId }
+                            ?: updatedContinue.firstOrNull { it.book.id == mutation.bookId }?.book
+                            ?: updatedRecentSeries.firstOrNull { it.leadBook.id == mutation.bookId }?.leadBook
+                        if (sourceBook == null) {
+                            state.listenAgain
+                        } else {
+                            (listOf(sourceBook) + state.listenAgain.filterNot { it.id == mutation.bookId })
+                                .distinctBy { it.id }
+                        }
+                    } else {
+                        state.listenAgain.filterNot { it.id == mutation.bookId }
+                    }
+                    state.copy(
+                        continueListening = updatedContinue,
+                        recentlyAdded = updatedRecentlyAdded,
+                        discoverBooks = updatedDiscover,
+                        recentSeries = updatedRecentSeries,
+                        listenAgain = updatedListenAgain
+                    )
+                }
+            }
         }
     }
 
@@ -176,6 +225,28 @@ class HomeViewModel @Inject constructor(
                     applyBookFinishedState(bookId = bookId, finished = false)
                     refreshNetwork(showLoading = false)
                 }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
+    }
+
+    fun resetBookProgress(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (
+                val result = sessionRepository.markBookFinished(
+                    bookId = bookId,
+                    finished = false,
+                    resetProgressWhenUnfinished = true
+                )
+            ) {
+                is AppResult.Success -> {
+                    removedListenAgainBookIds = removedListenAgainBookIds + bookId
+                    applyBookResetState(bookId = bookId)
+                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    refreshNetwork(showLoading = false)
+                }
+
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
             }
         }
@@ -498,6 +569,40 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun applyBookResetState(bookId: String) {
+        mutableUiState.update { state ->
+            fun BookSummary.withResetProgress(): BookSummary {
+                return copy(
+                    isFinished = false,
+                    progressPercent = 0.0,
+                    currentTimeSeconds = 0.0
+                )
+            }
+
+            val updatedRecentlyAdded = state.recentlyAdded.map { book ->
+                if (book.id == bookId) book.withResetProgress() else book
+            }
+            val updatedDiscover = state.discoverBooks.map { book ->
+                if (book.id == bookId) book.withResetProgress() else book
+            }
+            val updatedRecentSeries = state.recentSeries.map { series ->
+                if (series.leadBook.id == bookId) {
+                    series.copy(leadBook = series.leadBook.withResetProgress())
+                } else {
+                    series
+                }
+            }
+
+            state.copy(
+                continueListening = state.continueListening.filterNot { item -> item.book.id == bookId },
+                recentlyAdded = updatedRecentlyAdded,
+                discoverBooks = updatedDiscover,
+                recentSeries = updatedRecentSeries,
+                listenAgain = state.listenAgain.filterNot { it.id == bookId }
+            )
+        }
+    }
+
     private fun normalizeHomeSections(
         continueListening: List<ContinueListeningItem>,
         recentlyAdded: List<BookSummary>,
@@ -505,8 +610,16 @@ class HomeViewModel @Inject constructor(
         recentSeries: List<SeriesStackSummary>,
         discoverBooks: List<BookSummary>
     ): NormalizedHomeSections {
+        val normalizedContinueInput = continueListening.filter { item ->
+            hasMeaningfulStartedProgress(
+                currentTimeSeconds = item.currentTimeSeconds ?: item.book.currentTimeSeconds,
+                durationSeconds = item.book.durationSeconds,
+                progressPercent = item.progressPercent ?: item.book.progressPercent,
+                isFinished = item.book.isFinished
+            )
+        }
         val finishedIds = buildSet {
-            continueListening.forEach { item ->
+            normalizedContinueInput.forEach { item ->
                 if (item.book.isFinished || (item.progressPercent ?: 0.0) >= 0.995) {
                     add(item.book.id)
                 }
@@ -526,7 +639,7 @@ class HomeViewModel @Inject constructor(
             )
         }
 
-        val normalizedContinue = continueListening.map { item ->
+        val normalizedContinue = normalizedContinueInput.map { item ->
             val normalizedBook = normalizeBook(item.book)
             if (!finishedIds.contains(item.book.id)) {
                 item

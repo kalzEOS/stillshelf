@@ -9,6 +9,7 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookBookmark
+import com.stillshelf.app.core.model.BookProgressMutation
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
@@ -42,6 +43,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -68,6 +71,9 @@ class SessionRepositoryImpl @Inject constructor(
         private const val DETAIL_CACHE_MAX_AGE_MS: Long = 30 * 60 * 1000L
         private const val FULL_LIBRARY_PAGE_SIZE: Int = 500
         private const val MAX_FULL_LIBRARY_PAGES: Int = 1_000
+        private const val LOCAL_PROGRESS_OVERRIDE_MAX_AGE_MS: Long = 60 * 1000L
+        private const val PROGRESS_MATCH_EPSILON: Double = 0.005
+        private const val TIME_MATCH_EPSILON_SECONDS: Double = 1.0
     }
 
     private data class TimedCacheEntry<T>(
@@ -87,8 +93,15 @@ class SessionRepositoryImpl @Inject constructor(
         val progressPercent: Double
     )
 
+    private data class LocalBookProgressOverride(
+        val mutation: BookProgressMutation,
+        val savedAtMs: Long = System.currentTimeMillis()
+    )
+
     private val cacheMutex = Mutex()
     private val finishedProgressSnapshots = mutableMapOf<String, FinishedProgressSnapshot>()
+    private val mutableBookProgressMutations = MutableSharedFlow<BookProgressMutation>(extraBufferCapacity = 32)
+    private val localBookProgressOverrides = mutableMapOf<String, LocalBookProgressOverride>()
     private val booksCache = mutableMapOf<String, TimedCacheEntry<List<BookSummary>>>()
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val narratorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
@@ -104,6 +117,8 @@ class SessionRepositoryImpl @Inject constructor(
             requiresLibrarySelection = prefState.requiresLibrarySelection
         )
     }
+
+    override fun observeBookProgressMutations(): Flow<BookProgressMutation> = mutableBookProgressMutations.asSharedFlow()
 
     override fun observeServers(): Flow<List<Server>> = serverDao.observeServers().map { servers ->
         servers.map { it.toModel() }
@@ -439,6 +454,7 @@ class SessionRepositoryImpl @Inject constructor(
                 baseUrl = connection.server.baseUrl,
                 authToken = connection.token
             ).withResolvedProgress(mediaProgressByItemId[item.id])
+                .withLocalProgressOverride(connection.server.id)
         }
         putCache(booksCache, cacheKey, books)
 
@@ -1337,6 +1353,7 @@ class SessionRepositoryImpl @Inject constructor(
                 ).let { parsed ->
                     parsed.copy(
                         book = parsed.book.withResolvedProgress(mediaProgressDeferred.await())
+                            .withLocalProgressOverride(connection.server.id)
                     )
                 }
                 putCache(bookDetailCache, cacheKey, detail)
@@ -1411,7 +1428,7 @@ class SessionRepositoryImpl @Inject constructor(
                         progressPercent = progress.progressPercent,
                         currentTimeSeconds = progress.currentTimeSeconds,
                         durationSeconds = progress.durationSeconds
-                    )
+                    ).withLocalProgressOverride(connection.server.id, bookId)
                 )
             }
         }
@@ -1434,7 +1451,7 @@ class SessionRepositoryImpl @Inject constructor(
                     currentTimeSeconds = it.currentTimeSeconds,
                     durationSeconds = it.durationSeconds
                 )
-            }
+            }.withLocalProgressOverride(connection.server.id, bookId)
         )
     }
 
@@ -1468,6 +1485,18 @@ class SessionRepositoryImpl @Inject constructor(
             runCatching { sessionPreferences.clearCachedHomeFeed() }
             clearContentCaches()
         }
+        putLocalProgressOverride(
+            serverId = connection.server.id,
+            mutation = BookProgressMutation(
+                bookId = bookId,
+                progressPercent = durationSeconds
+                    ?.takeIf { it > 0.0 }
+                    ?.let { duration -> (currentTimeSeconds.coerceAtLeast(0.0) / duration).coerceIn(0.0, 1.0) },
+                currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+                durationSeconds = durationSeconds,
+                isFinished = isFinished
+            )
+        )
         return AppResult.Success(Unit)
     }
 
@@ -1715,10 +1744,10 @@ class SessionRepositoryImpl @Inject constructor(
                 durationSeconds = storedFinishedSnapshot.durationSeconds,
                 progressPercent = storedFinishedSnapshot.progressPercent
             )
-            else -> resolveUnfinishedProgressState(
-                currentTimeSeconds = existingProgress?.currentTimeSeconds,
+            else -> UnfinishedProgressState(
+                currentTimeSeconds = 0.0,
                 durationSeconds = targetDuration,
-                progressPercent = existingProgress?.progressPercent
+                progressPercent = 0.0
             )
         }
         val targetCurrentTime = when {
@@ -1766,6 +1795,15 @@ class SessionRepositoryImpl @Inject constructor(
                 durationSeconds = restoredUnfinishedState?.durationSeconds ?: targetDuration
             )
         }
+        val mutation = BookProgressMutation(
+            bookId = bookId,
+            progressPercent = resolvedProgress.progressPercent,
+            currentTimeSeconds = resolvedProgress.currentTimeSeconds,
+            durationSeconds = resolvedProgress.durationSeconds,
+            isFinished = finished
+        )
+        putLocalProgressOverride(connection.server.id, mutation)
+        mutableBookProgressMutations.tryEmit(mutation)
         return AppResult.Success(resolvedProgress)
     }
 
@@ -1889,6 +1927,12 @@ class SessionRepositoryImpl @Inject constructor(
                         searchQuery = trimmed
                     )
                 }
+                val progressDeferred = async {
+                    audiobookshelfApi.getMediaProgress(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token
+                    )
+                }
                 val entitiesDeferred = async {
                     audiobookshelfApi.searchLibrary(
                         baseUrl = connection.server.baseUrl,
@@ -1899,11 +1943,18 @@ class SessionRepositoryImpl @Inject constructor(
                 }
 
                 val booksResult = booksDeferred.await()
+                val progressResult = progressDeferred.await()
                 val entitiesResult = entitiesDeferred.await()
                 if (booksResult.isFailure) {
                     return@coroutineScope AppResult.Error(
                         message = booksResult.exceptionOrNull()?.message ?: "Unable to search books.",
                         cause = booksResult.exceptionOrNull()
+                    )
+                }
+                if (progressResult.isFailure) {
+                    return@coroutineScope AppResult.Error(
+                        message = progressResult.exceptionOrNull()?.message ?: "Unable to load search progress.",
+                        cause = progressResult.exceptionOrNull()
                     )
                 }
                 if (entitiesResult.isFailure) {
@@ -1913,12 +1964,14 @@ class SessionRepositoryImpl @Inject constructor(
                     )
                 }
 
+                val progressByItemId = progressResult.getOrThrow().associateBy { it.libraryItemId }
                 val books = booksResult.getOrThrow()
                     .map {
                         it.toBookSummary(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token
-                        )
+                        ).withResolvedProgress(progressByItemId[it.id])
+                            .withLocalProgressOverride(connection.server.id)
                     }
                 val entities = entitiesResult.getOrThrow()
 
@@ -2173,6 +2226,7 @@ class SessionRepositoryImpl @Inject constructor(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token
                         ).withResolvedProgress(mediaProgressByItemId[item.id])
+                            .withLocalProgressOverride(connection.server.id)
                     }
                 val allBooks = if (allBooksResult.isSuccess) {
                     allBooksResult.getOrThrow().map { item ->
@@ -2180,6 +2234,7 @@ class SessionRepositoryImpl @Inject constructor(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token
                         ).withResolvedProgress(mediaProgressByItemId[item.id])
+                            .withLocalProgressOverride(connection.server.id)
                     }
                 } else {
                     emptyList()
@@ -2430,6 +2485,10 @@ class SessionRepositoryImpl @Inject constructor(
 
     private fun contentCacheKey(serverId: String, libraryId: String, suffix: String): String {
         return "$serverId|$libraryId|$suffix"
+    }
+
+    private fun bookProgressOverrideKey(serverId: String, bookId: String): String {
+        return "$serverId|$bookId"
     }
 
     private suspend fun <T> getFreshCache(
@@ -2730,10 +2789,102 @@ class SessionRepositoryImpl @Inject constructor(
         val mergedProgressPercent = progressFromApi ?: derivedProgress ?: progressPercent
         val finishedFromProgress = (mergedProgressPercent ?: 0.0) >= 0.995
         return copy(
+            durationSeconds = mergedDurationSeconds,
             progressPercent = mergedProgressPercent,
             currentTimeSeconds = mergedCurrentTimeSeconds,
             isFinished = isFinished || finishedFromProgress
         )
+    }
+
+    private suspend fun BookSummary.withLocalProgressOverride(serverId: String): BookSummary {
+        val override = localBookProgressOverride(
+            serverId = serverId,
+            bookId = id,
+            fetchedProgressPercent = progressPercent,
+            fetchedCurrentTimeSeconds = currentTimeSeconds,
+            fetchedDurationSeconds = durationSeconds,
+            fetchedIsFinished = isFinished
+        ) ?: return this
+        return copy(
+            durationSeconds = override.durationSeconds ?: durationSeconds,
+            progressPercent = override.progressPercent,
+            currentTimeSeconds = override.currentTimeSeconds,
+            isFinished = override.isFinished
+        )
+    }
+
+    private suspend fun PlaybackProgress?.withLocalProgressOverride(
+        serverId: String,
+        bookId: String
+    ): PlaybackProgress? {
+        val override = localBookProgressOverride(
+            serverId = serverId,
+            bookId = bookId,
+            fetchedProgressPercent = this?.progressPercent,
+            fetchedCurrentTimeSeconds = this?.currentTimeSeconds,
+            fetchedDurationSeconds = this?.durationSeconds,
+            fetchedIsFinished = this?.progressPercent?.let { it >= 0.995 } == true
+        ) ?: return this
+        return PlaybackProgress(
+            progressPercent = override.progressPercent,
+            currentTimeSeconds = override.currentTimeSeconds,
+            durationSeconds = override.durationSeconds ?: this?.durationSeconds
+        )
+    }
+
+    private suspend fun putLocalProgressOverride(serverId: String, mutation: BookProgressMutation) {
+        cacheMutex.withLock {
+            localBookProgressOverrides[bookProgressOverrideKey(serverId, mutation.bookId)] =
+                LocalBookProgressOverride(mutation = mutation)
+        }
+    }
+
+    private suspend fun localBookProgressOverride(
+        serverId: String,
+        bookId: String,
+        fetchedProgressPercent: Double?,
+        fetchedCurrentTimeSeconds: Double?,
+        fetchedDurationSeconds: Double?,
+        fetchedIsFinished: Boolean
+    ): BookProgressMutation? = cacheMutex.withLock {
+        val key = bookProgressOverrideKey(serverId, bookId)
+        val entry = localBookProgressOverrides[key] ?: return@withLock null
+        if ((System.currentTimeMillis() - entry.savedAtMs) > LOCAL_PROGRESS_OVERRIDE_MAX_AGE_MS) {
+            localBookProgressOverrides.remove(key)
+            return@withLock null
+        }
+        if (
+            progressMatchesMutation(
+                mutation = entry.mutation,
+                fetchedProgressPercent = fetchedProgressPercent,
+                fetchedCurrentTimeSeconds = fetchedCurrentTimeSeconds,
+                fetchedDurationSeconds = fetchedDurationSeconds,
+                fetchedIsFinished = fetchedIsFinished
+            )
+        ) {
+            localBookProgressOverrides.remove(key)
+            return@withLock null
+        }
+        entry.mutation
+    }
+
+    private fun progressMatchesMutation(
+        mutation: BookProgressMutation,
+        fetchedProgressPercent: Double?,
+        fetchedCurrentTimeSeconds: Double?,
+        fetchedDurationSeconds: Double?,
+        fetchedIsFinished: Boolean
+    ): Boolean {
+        return mutation.isFinished == fetchedIsFinished &&
+            approxEquals(mutation.progressPercent, fetchedProgressPercent, PROGRESS_MATCH_EPSILON) &&
+            approxEquals(mutation.currentTimeSeconds, fetchedCurrentTimeSeconds, TIME_MATCH_EPSILON_SECONDS) &&
+            approxEquals(mutation.durationSeconds, fetchedDurationSeconds, TIME_MATCH_EPSILON_SECONDS)
+    }
+
+    private fun approxEquals(left: Double?, right: Double?, epsilon: Double): Boolean {
+        if (left == null && right == null) return true
+        if (left == null || right == null) return false
+        return kotlin.math.abs(left - right) <= epsilon
     }
 
     private fun AudiobookshelfNamedEntityDto.toModel(

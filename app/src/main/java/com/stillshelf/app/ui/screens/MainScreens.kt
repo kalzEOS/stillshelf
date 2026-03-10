@@ -279,8 +279,6 @@ private val SeriesStackFrontShadow = 1.dp
 private val SeriesStackBackShadow = 2.8.dp
 private val SeriesStackCornerShape = RoundedCornerShape(6.dp)
 private val SeriesStackBackgroundBlur = 44.dp
-private val HomeTopBarLibrarySelectorMinWidth = 184.dp
-private val HomeTopBarLibrarySelectorPreferredWidth = 236.dp
 
 private fun stackedSeriesLayerExtent(baseExtent: Dp, layer: Int, shiftStep: Dp): Dp {
     // Shrink twice the diagonal shift so back-layer corners stay visible

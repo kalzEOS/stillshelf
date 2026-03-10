@@ -105,7 +105,8 @@ data class PlaybackSource(
 data class PlaybackProgress(
     val progressPercent: Double?,
     val currentTimeSeconds: Double?,
-    val durationSeconds: Double?
+    val durationSeconds: Double?,
+    val updatedAtMs: Long? = null
 )
 
 data class BookProgressMutation(

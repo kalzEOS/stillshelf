@@ -60,6 +60,7 @@ class SessionPreferences @Inject constructor(
     private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
     private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
     private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
+    private val playbackCheckpointSnapshotKey = stringPreferencesKey("playback_checkpoint_snapshot")
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
 
     val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
@@ -412,6 +413,81 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun getPlaybackCheckpoint(serverId: String?, bookId: String): PlaybackCheckpointSnapshot? {
+        val normalizedBookId = bookId.trim()
+        if (normalizedBookId.isBlank()) return null
+        val normalizedServerId = serverId?.trim().takeIf { !it.isNullOrBlank() }
+        return getPlaybackCheckpoints().firstOrNull { checkpoint ->
+            checkpoint.bookId == normalizedBookId && checkpoint.serverId == normalizedServerId
+        }
+    }
+
+    suspend fun getPlaybackCheckpoints(): List<PlaybackCheckpointSnapshot> {
+        val raw = dataStore.data.first()[playbackCheckpointSnapshotKey] ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val node = array.optJSONObject(index) ?: continue
+                    val checkpoint = PlaybackCheckpointSnapshot(
+                        serverId = node.optString("serverId").trim().takeIf { it.isNotBlank() },
+                        bookId = node.optString("bookId").trim(),
+                        currentTimeSeconds = node.optDouble("currentTimeSeconds").coerceAtLeast(0.0),
+                        durationSeconds = node.takeIf { it.has("durationSeconds") }
+                            ?.optDouble("durationSeconds")
+                            ?.takeIf { it > 0.0 },
+                        isFinished = node.optBoolean("isFinished"),
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                    )
+                    if (checkpoint.bookId.isNotBlank()) {
+                        add(checkpoint)
+                    }
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun setPlaybackCheckpoint(snapshot: PlaybackCheckpointSnapshot?) {
+        dataStore.edit { prefs ->
+            val current = parsePlaybackCheckpoints(prefs[playbackCheckpointSnapshotKey]).toMutableList()
+            if (snapshot == null || snapshot.bookId.isBlank()) {
+                if (current.isEmpty()) {
+                    prefs.remove(playbackCheckpointSnapshotKey)
+                } else {
+                    prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(current)
+                }
+                return@edit
+            }
+            val normalizedServerId = snapshot.serverId?.trim().takeIf { !it.isNullOrBlank() }
+            val normalizedBookId = snapshot.bookId.trim()
+            val updated = current
+                .filterNot { it.bookId == normalizedBookId && it.serverId == normalizedServerId }
+                .toMutableList()
+            updated.add(
+                snapshot.copy(
+                    serverId = normalizedServerId,
+                    bookId = normalizedBookId
+                )
+            )
+            prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+        }
+    }
+
+    suspend fun clearPlaybackCheckpoint(serverId: String?, bookId: String) {
+        val normalizedBookId = bookId.trim()
+        if (normalizedBookId.isBlank()) return
+        val normalizedServerId = serverId?.trim().takeIf { !it.isNullOrBlank() }
+        dataStore.edit { prefs ->
+            val updated = parsePlaybackCheckpoints(prefs[playbackCheckpointSnapshotKey])
+                .filterNot { it.bookId == normalizedBookId && it.serverId == normalizedServerId }
+            if (updated.isEmpty()) {
+                prefs.remove(playbackCheckpointSnapshotKey)
+            } else {
+                prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+            }
+        }
+    }
+
     suspend fun setDownloadedBookIds(ids: Set<String>) {
         dataStore.edit { prefs ->
             if (ids.isEmpty()) {
@@ -583,6 +659,51 @@ class SessionPreferences @Inject constructor(
             }
         }.toString()
     }
+
+    private fun parsePlaybackCheckpoints(raw: String?): List<PlaybackCheckpointSnapshot> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val node = array.optJSONObject(index) ?: continue
+                    val checkpoint = PlaybackCheckpointSnapshot(
+                        serverId = node.optString("serverId").trim().takeIf { it.isNotBlank() },
+                        bookId = node.optString("bookId").trim(),
+                        currentTimeSeconds = node.optDouble("currentTimeSeconds").coerceAtLeast(0.0),
+                        durationSeconds = node.takeIf { it.has("durationSeconds") }
+                            ?.optDouble("durationSeconds")
+                            ?.takeIf { it > 0.0 },
+                        isFinished = node.optBoolean("isFinished"),
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                    )
+                    if (checkpoint.bookId.isNotBlank()) {
+                        add(checkpoint)
+                    }
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun encodePlaybackCheckpoints(values: List<PlaybackCheckpointSnapshot>): String {
+        return JSONArray().apply {
+            values.forEach { checkpoint ->
+                val normalizedBookId = checkpoint.bookId.trim()
+                if (normalizedBookId.isBlank()) return@forEach
+                put(
+                    JSONObject()
+                        .put("bookId", normalizedBookId)
+                        .put("currentTimeSeconds", checkpoint.currentTimeSeconds.coerceAtLeast(0.0))
+                        .put("isFinished", checkpoint.isFinished)
+                        .put("savedAtMs", checkpoint.savedAtMs.coerceAtLeast(0L))
+                        .apply {
+                            checkpoint.serverId?.trim()?.takeIf { it.isNotBlank() }?.let { put("serverId", it) }
+                            checkpoint.durationSeconds?.takeIf { it > 0.0 }?.let { put("durationSeconds", it) }
+                        }
+                )
+            }
+        }.toString()
+    }
 }
 
 data class SessionPreferenceState(
@@ -637,4 +758,13 @@ data class PendingFinishedRestoreSnapshot(
     val durationSeconds: Double?,
     val wasFinished: Boolean,
     val progressPercent: Double?
+)
+
+data class PlaybackCheckpointSnapshot(
+    val serverId: String?,
+    val bookId: String,
+    val currentTimeSeconds: Double,
+    val durationSeconds: Double?,
+    val isFinished: Boolean,
+    val savedAtMs: Long
 )

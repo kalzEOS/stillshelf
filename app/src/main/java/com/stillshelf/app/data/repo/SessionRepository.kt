@@ -91,6 +91,13 @@ interface SessionRepository {
         durationSeconds: Double?,
         isFinished: Boolean
     ): AppResult<Unit>
+    suspend fun syncPlaybackProgressForServer(
+        serverId: String,
+        bookId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): AppResult<Unit>
     suspend fun createBookmark(
         bookId: String,
         timeSeconds: Double,

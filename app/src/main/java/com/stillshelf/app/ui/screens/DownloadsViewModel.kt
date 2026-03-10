@@ -35,8 +35,14 @@ class DownloadsViewModel @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val sessionRepository: SessionRepository
 ) : ViewModel() {
+    companion object {
+        private const val DownloadedBooksLookupLimit = 400
+    }
+
     private val mutableUiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = mutableUiState.asStateFlow()
+    private var hydratedLibraryBooksById: Map<String, BookSummary> = emptyMap()
+    private var hydrationMissBookIds: Set<String> = emptySet()
 
     init {
         restoreListMode()
@@ -45,6 +51,8 @@ class DownloadsViewModel @Inject constructor(
     }
 
     fun refresh() {
+        hydratedLibraryBooksById = emptyMap()
+        hydrationMissBookIds = emptySet()
         mutableUiState.update { it.copy(isLoading = false, errorMessage = null) }
     }
 
@@ -108,16 +116,48 @@ class DownloadsViewModel @Inject constructor(
                 val visible = items
                     .filter { it.status != DownloadStatus.Failed }
                     .sortedByDescending { it.updatedAtMs }
-                val books = visible.map {
-                    BookSummary(
-                        id = it.bookId,
-                        libraryId = "",
-                        title = it.title,
-                        authorName = it.authorName,
-                        narratorName = null,
-                        durationSeconds = it.durationSeconds,
-                        coverUrl = it.coverUrl
-                    )
+                val visibleBookIds = visible.map { it.bookId }.toSet()
+                val missingHydrationIds = visibleBookIds.filterNot { bookId ->
+                    hydratedLibraryBooksById.containsKey(bookId) || hydrationMissBookIds.contains(bookId)
+                }
+                if (missingHydrationIds.isNotEmpty()) {
+                    when (
+                        val result = sessionRepository.fetchBooksForActiveLibrary(
+                            limit = DownloadedBooksLookupLimit,
+                            page = 0,
+                            forceRefresh = false
+                        )
+                    ) {
+                        is AppResult.Success -> {
+                            val fetchedById = result.value.associateBy { it.id }
+                            hydratedLibraryBooksById = hydratedLibraryBooksById + fetchedById
+                            hydrationMissBookIds = hydrationMissBookIds + visibleBookIds.filterNot {
+                                hydratedLibraryBooksById.containsKey(it)
+                            }
+                        }
+                        is AppResult.Error -> Unit
+                    }
+                }
+                val books = visible.map { item ->
+                    val hydrated = hydratedLibraryBooksById[item.bookId]
+                    if (hydrated != null) {
+                        hydrated.copy(
+                            title = item.title.ifBlank { hydrated.title },
+                            authorName = item.authorName.ifBlank { hydrated.authorName },
+                            durationSeconds = item.durationSeconds ?: hydrated.durationSeconds,
+                            coverUrl = item.coverUrl ?: hydrated.coverUrl
+                        )
+                    } else {
+                        BookSummary(
+                            id = item.bookId,
+                            libraryId = "",
+                            title = item.title,
+                            authorName = item.authorName,
+                            narratorName = null,
+                            durationSeconds = item.durationSeconds,
+                            coverUrl = item.coverUrl
+                        )
+                    }
                 }
                 mutableUiState.update {
                     it.copy(

@@ -29,6 +29,10 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookSummary
@@ -41,6 +45,7 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
 import com.stillshelf.app.playback.service.PlaybackServiceController
+import com.stillshelf.app.playback.sync.PlaybackProgressSyncScheduler
 import com.stillshelf.app.playback.sync.PlaybackSyncGate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -103,6 +108,11 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 10_000L
+        private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
+        private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
+        private const val BACKGROUND_SYNC_MIN_INTERVAL_MS = 2_000L
+        private const val PROGRESS_MATCH_EPSILON_SECONDS = 1.0
         private const val LOCK_SCREEN_MODE_SKIP = "skip"
         private const val LOCK_SCREEN_MODE_NEXT = "next"
         private const val LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS = 1_500L
@@ -119,8 +129,9 @@ class PlaybackController @Inject constructor(
     private val mutableUiState = MutableStateFlow(PlaybackUiState())
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
+    private var syncQueueJob: Job? = null
     private var currentBookId: String? = null
-    private val playbackSyncGate = PlaybackSyncGate()
+    private val playbackSyncGate = PlaybackSyncGate(minimumDeltaMs = ACTIVE_PLAYBACK_SYNC_INTERVAL_MS)
     private var cachedContinueListeningItem: ContinueListeningItem? = null
     private var playRequestJob: Job? = null
     private var playRequestToken: Long = 0L
@@ -186,6 +197,11 @@ class PlaybackController @Inject constructor(
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var equalizer: Equalizer? = null
     private var previousRestartState: PreviousRestartState? = null
+    private val pendingSyncRequests = linkedMapOf<String, ProgressSyncRequest>()
+    private var lastCheckpointPositionMs: Long = -1L
+    private var lastCheckpointSavedAtElapsedMs: Long = 0L
+    private var lastAppBackgroundSyncAtElapsedMs: Long = 0L
+    private var lastAppBackgroundSyncPositionMs: Long = -1L
     private var observedActiveServerId: String? = null
     private var hasObservedActiveServerId: Boolean = false
 
@@ -203,6 +219,36 @@ class PlaybackController @Inject constructor(
         val chapterMode: Boolean,
         val triggeredAtElapsedMs: Long
     )
+
+    private data class ProgressSyncRequest(
+        val serverId: String?,
+        val bookId: String,
+        val positionMs: Long,
+        val currentTimeSeconds: Double,
+        val durationSeconds: Double?,
+        val isFinished: Boolean,
+        val checkpointSavedAtMs: Long
+    )
+
+    private data class ResolvedPlaybackStart(
+        val resumeMs: Long,
+        val progressPercent: Double?,
+        val currentTimeSeconds: Double?,
+        val shouldRestartFromBeginning: Boolean
+    )
+
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            lastAppBackgroundSyncAtElapsedMs = 0L
+            lastAppBackgroundSyncPositionMs = -1L
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            scope.launch(Dispatchers.Main.immediate) {
+                syncProgressOnAppBackgroundIfNeeded()
+            }
+        }
+    }
 
     private enum class OutputRefreshReason {
         General,
@@ -235,6 +281,7 @@ class PlaybackController @Inject constructor(
         mediaSession.isActive = true
         registerNoisyAudioReceiver()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         observePlaybackPreferences()
         observeActiveServerSelection()
@@ -280,14 +327,13 @@ class PlaybackController @Inject constructor(
                 sessionRepository.setLastPlayedBookId(localBook.id)
                 val progressResult = sessionRepository.fetchPlaybackProgress(localBook.id)
                 if (isStalePlayRequest(requestToken)) return@launch
-                val serverResumeMs = when (progressResult) {
-                    is AppResult.Success -> {
-                        ((progressResult.value?.currentTimeSeconds ?: 0.0) * 1000.0).toLong()
-                    }
-                    is AppResult.Error -> 0L
-                }
-                val shouldRestartFromBeginning = startPositionMs == null &&
-                    progressResult.shouldRestartFromBeginning(defaultDurationSeconds = localBook.durationSeconds)
+                val start = resolvePlaybackStart(
+                    bookId = localBook.id,
+                    defaultDurationSeconds = localBook.durationSeconds,
+                    startPositionMs = startPositionMs,
+                    progressResult = progressResult
+                )
+                val shouldRestartFromBeginning = start.shouldRestartFromBeginning
                 val playbackBook = if (shouldRestartFromBeginning) {
                     localBook.copy(
                         progressPercent = 0.0,
@@ -297,27 +343,10 @@ class PlaybackController @Inject constructor(
                 } else {
                     localBook
                 }
-                val resumeMs = when {
-                    startPositionMs != null -> startPositionMs
-                    shouldRestartFromBeginning -> 0L
-                    else -> serverResumeMs
-                }
-                val progressPercent = when {
-                    startPositionMs != null -> null
-                    shouldRestartFromBeginning -> 0.0
-                    progressResult is AppResult.Success -> progressResult.value?.progressPercent
-                    else -> null
-                }
-                val currentTimeSeconds = when {
-                    startPositionMs != null -> (startPositionMs / 1000.0).coerceAtLeast(0.0)
-                    shouldRestartFromBeginning -> 0.0
-                    progressResult is AppResult.Success -> progressResult.value?.currentTimeSeconds
-                    else -> null
-                }
                 cachedContinueListeningItem = ContinueListeningItem(
                     book = playbackBook,
-                    progressPercent = progressPercent,
-                    currentTimeSeconds = currentTimeSeconds
+                    progressPercent = start.progressPercent,
+                    currentTimeSeconds = start.currentTimeSeconds
                 )
                 if (isStalePlayRequest(requestToken)) return@launch
                 val localUri = Uri.fromFile(File(localDownload.localPath)).toString()
@@ -325,7 +354,7 @@ class PlaybackController @Inject constructor(
                     bookId = playbackBook.id,
                     book = playbackBook,
                     streamUrl = localUri,
-                    resumeMs = resumeMs
+                    resumeMs = start.resumeMs
                 )
                 return@launch
             }
@@ -336,17 +365,13 @@ class PlaybackController @Inject constructor(
                     sessionRepository.setLastPlayedBookId(sourceResult.value.book.id)
                     val progressResult = sessionRepository.fetchPlaybackProgress(sourceResult.value.book.id)
                     if (isStalePlayRequest(requestToken)) return@launch
-                    val serverResumeMs = when (progressResult) {
-                        is AppResult.Success -> {
-                            ((progressResult.value?.currentTimeSeconds ?: 0.0) * 1000.0).toLong()
-                        }
-
-                        is AppResult.Error -> 0L
-                    }
-                    val shouldRestartFromBeginning = startPositionMs == null &&
-                        progressResult.shouldRestartFromBeginning(
-                            defaultDurationSeconds = sourceResult.value.book.durationSeconds
-                        )
+                    val start = resolvePlaybackStart(
+                        bookId = sourceResult.value.book.id,
+                        defaultDurationSeconds = sourceResult.value.book.durationSeconds,
+                        startPositionMs = startPositionMs,
+                        progressResult = progressResult
+                    )
+                    val shouldRestartFromBeginning = start.shouldRestartFromBeginning
                     val playbackBook = if (shouldRestartFromBeginning) {
                         sourceResult.value.book.copy(
                             progressPercent = 0.0,
@@ -356,34 +381,17 @@ class PlaybackController @Inject constructor(
                     } else {
                         sourceResult.value.book
                     }
-                    val resumeMs = when {
-                        startPositionMs != null -> startPositionMs
-                        shouldRestartFromBeginning -> 0L
-                        else -> serverResumeMs
-                    }
-                    val progressPercent = when {
-                        startPositionMs != null -> null
-                        shouldRestartFromBeginning -> 0.0
-                        progressResult is AppResult.Success -> progressResult.value?.progressPercent
-                        else -> null
-                    }
-                    val currentTimeSeconds = when {
-                        startPositionMs != null -> (startPositionMs / 1000.0).coerceAtLeast(0.0)
-                        shouldRestartFromBeginning -> 0.0
-                        progressResult is AppResult.Success -> progressResult.value?.currentTimeSeconds
-                        else -> null
-                    }
                     cachedContinueListeningItem = ContinueListeningItem(
                         book = playbackBook,
-                        progressPercent = progressPercent,
-                        currentTimeSeconds = currentTimeSeconds
+                        progressPercent = start.progressPercent,
+                        currentTimeSeconds = start.currentTimeSeconds
                     )
                     if (isStalePlayRequest(requestToken)) return@launch
                     prepareAndPlay(
                         playbackBook.id,
                         playbackBook,
                         sourceResult.value.streamUrl,
-                        resumeMs = resumeMs
+                        resumeMs = start.resumeMs
                     )
                 }
 
@@ -408,6 +416,125 @@ class PlaybackController @Inject constructor(
 
     private fun isStalePlayRequest(requestToken: Long): Boolean {
         return requestToken != playRequestToken
+    }
+
+    private suspend fun resolvePlaybackStart(
+        bookId: String,
+        defaultDurationSeconds: Double?,
+        startPositionMs: Long?,
+        progressResult: AppResult<PlaybackProgress?>
+    ): ResolvedPlaybackStart {
+        if (startPositionMs != null) {
+            val explicitSeconds = (startPositionMs / 1000.0).coerceAtLeast(0.0)
+            return ResolvedPlaybackStart(
+                resumeMs = startPositionMs.coerceAtLeast(0L),
+                progressPercent = null,
+                currentTimeSeconds = explicitSeconds,
+                shouldRestartFromBeginning = false
+            )
+        }
+
+        val serverProgress = (progressResult as? AppResult.Success)?.value
+        val localCheckpoint = sessionPreferences.getPlaybackCheckpoint(
+            serverId = observedActiveServerId,
+            bookId = bookId
+        )
+        val resolvedProgress = preferLocalCheckpoint(
+            serverProgress = serverProgress,
+            localCheckpoint = localCheckpoint
+        )
+        if (localCheckpoint != null && localCheckpointMatchesResolvedProgress(localCheckpoint, resolvedProgress)) {
+            enqueueProgressSyncRequest(
+                request = localCheckpoint.toProgressSyncRequest(),
+                bypassGate = true
+            )
+        }
+        val shouldRestartFromBeginning = resolvedProgress.shouldRestartFromBeginning(
+            defaultDurationSeconds = defaultDurationSeconds
+        )
+        return if (shouldRestartFromBeginning) {
+            ResolvedPlaybackStart(
+                resumeMs = 0L,
+                progressPercent = 0.0,
+                currentTimeSeconds = 0.0,
+                shouldRestartFromBeginning = true
+            )
+        } else {
+            ResolvedPlaybackStart(
+                resumeMs = ((resolvedProgress?.currentTimeSeconds ?: 0.0) * 1000.0).toLong(),
+                progressPercent = resolvedProgress?.progressPercent,
+                currentTimeSeconds = resolvedProgress?.currentTimeSeconds,
+                shouldRestartFromBeginning = false
+            )
+        }
+    }
+
+    private fun preferLocalCheckpoint(
+        serverProgress: PlaybackProgress?,
+        localCheckpoint: PlaybackCheckpointSnapshot?
+    ): PlaybackProgress? {
+        if (localCheckpoint == null) return serverProgress
+        val localProgress = localCheckpoint.toPlaybackProgress()
+        if (serverProgress == null) return localProgress
+
+        val localUpdatedAtMs = localCheckpoint.savedAtMs.takeIf { it > 0L }
+        val serverUpdatedAtMs = serverProgress.updatedAtMs?.takeIf { it > 0L }
+        if (localUpdatedAtMs != null && serverUpdatedAtMs != null && localUpdatedAtMs != serverUpdatedAtMs) {
+            return if (localUpdatedAtMs > serverUpdatedAtMs) localProgress else serverProgress
+        }
+
+        val localSeconds = localProgress.currentTimeSeconds
+        val serverSeconds = serverProgress.currentTimeSeconds
+        if (localSeconds != null && serverSeconds != null) {
+            return when {
+                abs(localSeconds - serverSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS -> {
+                    if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) localProgress else serverProgress
+                }
+
+                localSeconds > serverSeconds -> localProgress
+                else -> serverProgress
+            }
+        }
+
+        return localSeconds?.let { localProgress } ?: serverProgress
+    }
+
+    private fun localCheckpointMatchesResolvedProgress(
+        localCheckpoint: PlaybackCheckpointSnapshot,
+        resolvedProgress: PlaybackProgress?
+    ): Boolean {
+        if (resolvedProgress == null) return false
+        if (localCheckpoint.isFinished) {
+            val resolvedPercent = resolvedProgress.progressPercent ?: 0.0
+            return resolvedPercent >= 0.995
+        }
+        val resolvedSeconds = resolvedProgress.currentTimeSeconds ?: return false
+        return abs(resolvedSeconds - localCheckpoint.currentTimeSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS
+    }
+
+    private fun PlaybackCheckpointSnapshot.toPlaybackProgress(): PlaybackProgress {
+        val progressPercent = durationSeconds
+            ?.takeIf { it > 0.0 }
+            ?.let { duration -> (currentTimeSeconds / duration).coerceIn(0.0, 1.0) }
+        return PlaybackProgress(
+            progressPercent = progressPercent,
+            currentTimeSeconds = currentTimeSeconds,
+            durationSeconds = durationSeconds,
+            updatedAtMs = savedAtMs.takeIf { it > 0L }
+        )
+    }
+
+    private fun PlaybackCheckpointSnapshot.toProgressSyncRequest(): ProgressSyncRequest {
+        val safePositionMs = (currentTimeSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        return ProgressSyncRequest(
+            serverId = serverId,
+            bookId = bookId,
+            positionMs = safePositionMs,
+            currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+            durationSeconds = durationSeconds,
+            isFinished = isFinished,
+            checkpointSavedAtMs = savedAtMs
+        )
     }
 
     fun playBookFromPosition(bookId: String, startPositionMs: Long) {
@@ -490,6 +617,7 @@ class PlaybackController @Inject constructor(
             }
         }
         updateCachedFromUiState()
+        persistPlaybackCheckpointIfNeeded(force = true, isFinished = true)
         return true
     }
 
@@ -525,6 +653,7 @@ class PlaybackController @Inject constructor(
             }
         }
         updateCachedFromUiState()
+        persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
         return true
     }
 
@@ -585,6 +714,7 @@ class PlaybackController @Inject constructor(
             }
         }
         updateCachedFromUiState()
+        persistPlaybackCheckpointIfNeeded(force = true, isFinished = isFinished)
         return true
     }
 
@@ -804,6 +934,10 @@ class PlaybackController @Inject constructor(
         mediaPlayer = player
         currentBookId = bookId
         playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
         configurePlayerAudioAttributes(player)
         applyPreferredOutputDevice(player)
         updateUiState {
@@ -845,6 +979,7 @@ class PlaybackController @Inject constructor(
                 )
             }
             updateCachedFromUiState()
+            persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
             when (focusResult) {
                 AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                     pendingPlayAfterAudioFocusGain = false
@@ -1090,10 +1225,10 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun AppResult<PlaybackProgress?>.shouldRestartFromBeginning(
+    private fun PlaybackProgress?.shouldRestartFromBeginning(
         defaultDurationSeconds: Double?
     ): Boolean {
-        val progress = (this as? AppResult.Success)?.value ?: return false
+        val progress = this ?: return false
         val progressPercent = progress.progressPercent
         if (progressPercent != null && progressPercent >= 0.995) {
             return true
@@ -1111,6 +1246,7 @@ class PlaybackController @Inject constructor(
             )
         }
         updateCachedFromUiState()
+        persistPlaybackCheckpointIfNeeded(force = false, isFinished = shouldSyncAsFinished())
     }
 
     private fun safePosition(player: MediaPlayer): Long {
@@ -1167,22 +1303,145 @@ class PlaybackController @Inject constructor(
         val bookId = currentBookId ?: return
         val state = uiState.value
         val currentMs = state.positionMs.coerceAtLeast(0L)
+        val durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0)
+        val checkpoint = persistPlaybackCheckpointIfNeeded(force = force, isFinished = isFinished)
         if (!playbackSyncGate.shouldSync(currentPositionMs = currentMs, force = force)) return
-        playbackSyncGate.markSyncStarted()
+        enqueueProgressSyncRequest(
+            request = ProgressSyncRequest(
+                serverId = observedActiveServerId,
+                bookId = bookId,
+                positionMs = currentMs,
+                currentTimeSeconds = currentMs / 1000.0,
+                durationSeconds = durationSeconds,
+                isFinished = isFinished,
+                checkpointSavedAtMs = checkpoint?.savedAtMs ?: 0L
+            ),
+            bypassGate = true,
+            urgentBackstop = force
+        )
+    }
+
+    private fun syncProgressOnAppBackgroundIfNeeded() {
+        val state = uiState.value
+        val book = state.book ?: return
+        if (currentBookId.isNullOrBlank()) return
+        val currentPositionMs = state.positionMs.coerceAtLeast(0L)
+        val elapsedNow = SystemClock.elapsedRealtime()
+        val positionAdvancedEnough = abs(currentPositionMs - lastAppBackgroundSyncPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
+        val backgroundSyncRecentlyTriggered =
+            (elapsedNow - lastAppBackgroundSyncAtElapsedMs) < BACKGROUND_SYNC_MIN_INTERVAL_MS
+        if (backgroundSyncRecentlyTriggered && !positionAdvancedEnough) return
+        if (!state.isPlaying && currentPositionMs <= 0L && (book.currentTimeSeconds ?: 0.0) <= 0.0) return
+
+        lastAppBackgroundSyncAtElapsedMs = elapsedNow
+        lastAppBackgroundSyncPositionMs = currentPositionMs
+        syncProgress(force = true, isFinished = shouldSyncAsFinished())
+    }
+
+    private fun persistPlaybackCheckpointIfNeeded(force: Boolean, isFinished: Boolean): PlaybackCheckpointSnapshot? {
+        val bookId = currentBookId ?: return null
+        val state = uiState.value
+        val positionMs = state.positionMs.coerceAtLeast(0L)
+        val elapsedNow = SystemClock.elapsedRealtime()
+        val shouldPersist = force ||
+            lastCheckpointPositionMs < 0L ||
+            abs(positionMs - lastCheckpointPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS ||
+            (elapsedNow - lastCheckpointSavedAtElapsedMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
+        if (!shouldPersist) return null
+        val snapshot = PlaybackCheckpointSnapshot(
+            serverId = observedActiveServerId,
+            bookId = bookId,
+            currentTimeSeconds = positionMs / 1000.0,
+            durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0),
+            isFinished = isFinished,
+            savedAtMs = System.currentTimeMillis()
+        )
+        lastCheckpointPositionMs = positionMs
+        lastCheckpointSavedAtElapsedMs = elapsedNow
         scope.launch(Dispatchers.IO) {
-            val syncResult = runCatching {
-                sessionRepository.syncPlaybackProgress(
-                    bookId = bookId,
-                    currentTimeSeconds = currentMs / 1000.0,
-                    durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0),
-                    isFinished = isFinished
+            sessionPreferences.setPlaybackCheckpoint(snapshot)
+        }
+        return snapshot
+    }
+
+    private fun enqueueProgressSyncRequest(
+        request: ProgressSyncRequest,
+        bypassGate: Boolean,
+        urgentBackstop: Boolean = false
+    ) {
+        if (
+            !bypassGate &&
+            !playbackSyncGate.shouldSync(currentPositionMs = request.positionMs, force = request.isFinished)
+        ) {
+            return
+        }
+        val requestKey = progressSyncKey(serverId = request.serverId, bookId = request.bookId)
+        pendingSyncRequests[requestKey] = mergeProgressSyncRequests(
+            existing = pendingSyncRequests[requestKey],
+            incoming = request
+        )
+        PlaybackProgressSyncScheduler.enqueue(appContext, urgent = urgentBackstop)
+        if (syncQueueJob?.isActive == true) return
+        syncQueueJob = scope.launch {
+            while (true) {
+                val nextEntry = pendingSyncRequests.entries.firstOrNull() ?: break
+                val nextRequest = nextEntry.value
+                pendingSyncRequests.remove(nextEntry.key)
+                val result = runCatching {
+                    sessionRepository.syncPlaybackProgress(
+                        bookId = nextRequest.bookId,
+                        currentTimeSeconds = nextRequest.currentTimeSeconds,
+                        durationSeconds = nextRequest.durationSeconds,
+                        isFinished = nextRequest.isFinished
+                    )
+                }
+                val syncSucceeded = result.getOrNull() is AppResult.Success
+                if (syncSucceeded) {
+                    playbackSyncGate.markSyncFinished(currentPositionMs = nextRequest.positionMs)
+                    clearPlaybackCheckpointIfCovered(nextRequest)
+                    continue
+                }
+                val failedRequestKey = progressSyncKey(
+                    serverId = nextRequest.serverId,
+                    bookId = nextRequest.bookId
                 )
+                pendingSyncRequests[failedRequestKey] = mergeProgressSyncRequests(
+                    existing = pendingSyncRequests[failedRequestKey],
+                    incoming = nextRequest
+                )
+                delay(PROGRESS_SYNC_RETRY_DELAY_MS)
             }
-            val result = syncResult.getOrNull()
-            if (syncResult.isSuccess && result is AppResult.Success) {
-                playbackSyncGate.markSyncFinished(currentPositionMs = currentMs)
-            } else {
-                playbackSyncGate.markSyncFailed()
+            syncQueueJob = null
+        }
+    }
+
+    private fun mergeProgressSyncRequests(
+        existing: ProgressSyncRequest?,
+        incoming: ProgressSyncRequest
+    ): ProgressSyncRequest {
+        if (existing == null) return incoming
+        return incoming.copy(isFinished = existing.isFinished || incoming.isFinished)
+    }
+
+    private fun progressSyncKey(serverId: String?, bookId: String): String {
+        val normalizedServerId = serverId?.trim().orEmpty()
+        return "$normalizedServerId::$bookId"
+    }
+
+    private fun clearPlaybackCheckpointIfCovered(request: ProgressSyncRequest) {
+        if (request.checkpointSavedAtMs <= 0L) return
+        scope.launch(Dispatchers.IO) {
+            val checkpoint = sessionPreferences.getPlaybackCheckpoint(
+                serverId = request.serverId,
+                bookId = request.bookId
+            ) ?: return@launch
+            if (checkpoint.savedAtMs != request.checkpointSavedAtMs) return@launch
+            sessionPreferences.clearPlaybackCheckpoint(
+                serverId = request.serverId,
+                bookId = request.bookId
+            )
+            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+                PlaybackProgressSyncScheduler.cancel(appContext)
             }
         }
     }
@@ -1266,12 +1525,19 @@ class PlaybackController @Inject constructor(
     private fun clearPlaybackForServerSwitch() {
         playRequestJob?.cancel()
         playRequestToken += 1L
+        syncQueueJob?.cancel()
+        syncQueueJob = null
+        pendingSyncRequests.clear()
         releasePlayer(syncProgressBeforeRelease = false)
         currentBookId = null
         cachedContinueListeningItem = null
         attemptedAutoAdvanceTargetsMs.clear()
         previousRestartState = null
         playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
         suppressNextAutoAdvanceOnCompletion = false
         updateUiState { state ->
             state.copy(

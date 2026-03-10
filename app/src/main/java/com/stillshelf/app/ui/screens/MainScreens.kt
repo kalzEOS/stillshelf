@@ -208,8 +208,15 @@ import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.core.util.formatDurationHoursMinutes
+import com.stillshelf.app.core.util.formatHoursMinutesPrecise
+import com.stillshelf.app.core.util.formatTimeLeftLabel
 import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
+import com.stillshelf.app.core.util.hasFinishedProgress
+import com.stillshelf.app.core.util.hasStartedProgress
 import com.stillshelf.app.core.util.resolveListenActionLabel
+import com.stillshelf.app.core.util.searchMetadataLabel
+import com.stillshelf.app.core.util.timeLeftLabel
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.playback.controller.PlaybackOutputDevice
@@ -4389,7 +4396,7 @@ fun DownloadsScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                    text = book.searchMetadataLabel(),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -4475,7 +4482,7 @@ fun DownloadsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = formatDurationHoursMinutes(book.durationSeconds),
+                                    text = book.searchMetadataLabel(),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.weight(1f)
@@ -10747,7 +10754,7 @@ private fun ContinueListeningCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(1.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = item.book.authorName,
                         style = MaterialTheme.typography.labelMedium.copy(
@@ -10758,8 +10765,9 @@ private fun ContinueListeningCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = formatTimeLeft(item),
+                        text = item.timeLeftLabel(),
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontSize = 12.sp,
                             lineHeight = 14.sp
@@ -11212,80 +11220,6 @@ private fun sortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {
     }
 }
 
-private fun BookSummary.hasStartedProgress(): Boolean {
-    return hasMeaningfulStartedProgress(
-        currentTimeSeconds = currentTimeSeconds,
-        durationSeconds = resolvedProgressDurationSeconds() ?: durationSeconds,
-        progressPercent = normalizedProgressPercent() ?: progressPercent,
-        isFinished = hasFinishedProgress()
-    )
-}
-
-private fun BookSummary.hasFinishedProgress(): Boolean {
-    val normalized = normalizedProgressPercent()
-    return when {
-        normalized != null -> normalized >= 0.995
-        else -> isFinished
-    }
-}
-
-private fun BookSummary.normalizedProgressPercent(): Double? {
-    progressPercent?.coerceIn(0.0, 1.0)?.let { return it }
-    val duration = durationSeconds ?: return null
-    if (duration <= 0.0) return null
-    val current = currentTimeSeconds ?: return null
-    return (current / duration).coerceIn(0.0, 1.0)
-}
-
-private fun BookSummary.remainingTimeLabel(): String {
-    if (!hasStartedProgress() || hasFinishedProgress()) return ""
-    val duration = resolvedProgressDurationSeconds() ?: return ""
-    val normalizedProgress = normalizedProgressPercent()
-    val remainingSeconds = when {
-        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
-        currentTimeSeconds != null -> duration - currentTimeSeconds.coerceAtLeast(0.0)
-        else -> duration
-    }.coerceAtLeast(0.0)
-    if (remainingSeconds <= 0.0) return ""
-    return "${formatHoursMinutesPrecise(remainingSeconds)} left"
-}
-
-private fun BookSummary.searchMetadataLabel(): String {
-    val durationText = formatDurationHoursMinutes(durationSeconds)
-    if (hasFinishedProgress()) return ""
-    if (!hasStartedProgress()) return durationText
-    val duration = resolvedProgressDurationSeconds() ?: return durationText
-    val normalizedProgress = normalizedProgressPercent()
-    val currentSeconds = currentTimeSeconds?.coerceAtLeast(0.0)
-    val remainingSeconds = when {
-        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
-        currentSeconds != null -> duration - currentSeconds
-        else -> duration
-    }.coerceAtLeast(0.0)
-    if (remainingSeconds <= 0.0) return durationText
-    return "${formatHoursMinutesPrecise(remainingSeconds)} left"
-}
-
-private fun BookSummary.resolvedProgressDurationSeconds(): Double? {
-    durationSeconds?.takeIf { it > 0.0 }?.let { return it }
-    val normalizedProgress = progressPercent?.coerceIn(0.0, 1.0)
-    val current = currentTimeSeconds?.coerceAtLeast(0.0)
-    if (normalizedProgress != null && current != null && normalizedProgress > 0.0) {
-        val estimatedDuration = current / normalizedProgress
-        if (estimatedDuration.isFinite() && estimatedDuration > 0.0) {
-            return estimatedDuration
-        }
-    }
-    return null
-}
-
-private fun BookSummary.resolvedStartedProgressSeconds(): Double? {
-    currentTimeSeconds?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
-    val duration = resolvedProgressDurationSeconds() ?: return null
-    val normalizedProgress = normalizedProgressPercent() ?: return null
-    return (duration * normalizedProgress).takeIf { it.isFinite() && it >= 0.0 }
-}
-
 private fun parsePublishedYear(raw: String?): Int {
     raw ?: return Int.MIN_VALUE
     val fourDigits = raw.trim().take(4)
@@ -11322,26 +11256,6 @@ private fun splitAuthorNames(raw: String): List<String> {
         .ifEmpty { listOf(raw.trim()) }
 }
 
-private fun formatDurationHoursMinutes(durationSeconds: Double?): String {
-    val totalSeconds = durationSeconds?.toLong() ?: return ""
-    if (totalSeconds <= 0L) return ""
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    return if (hours > 0) {
-        "${hours}h ${minutes}m"
-    } else {
-        "${max(minutes, 1)}m"
-    }
-}
-
-private fun formatHoursMinutesPrecise(durationSeconds: Double?): String {
-    val totalSeconds = durationSeconds?.coerceAtLeast(0.0) ?: 0.0
-    val totalMinutes = (totalSeconds / 60.0).toLong()
-    val hours = totalMinutes / 60
-    val minutes = totalMinutes % 60
-    return "${hours}h ${minutes}m"
-}
-
 private fun formatProgressPercentLabel(progressFraction: Float): String {
     val percent = (progressFraction.coerceIn(0f, 1f) * 100f).toDouble()
     return if (percent < 1.0) {
@@ -11349,12 +11263,6 @@ private fun formatProgressPercentLabel(progressFraction: Float): String {
     } else {
         "${percent.toInt().coerceIn(0, 100)}%"
     }
-}
-
-private fun formatTimeLeftLabel(durationSeconds: Double, positionSeconds: Double): String {
-    val remainingSeconds = (durationSeconds - positionSeconds).coerceAtLeast(0.0)
-    val readable = formatDurationHoursMinutes(remainingSeconds)
-    return if (readable.isBlank()) "0m left" else "$readable left"
 }
 
 private fun formatBookmarkDate(createdAtMs: Long?): String {
@@ -11371,20 +11279,6 @@ private fun formatBookmarkTime24(createdAtMs: Long?): String {
     return runCatching {
         formatter.format(Date(timestamp))
     }.getOrDefault("--:--")
-}
-
-private fun formatTimeLeft(item: ContinueListeningItem): String {
-    val duration = item.book.durationSeconds ?: return "In progress"
-    val progress = item.progressPercent
-    val current = item.currentTimeSeconds
-
-    val remaining = when {
-        progress != null -> duration * (1.0 - progress.coerceIn(0.0, 1.0))
-        current != null -> duration - current
-        else -> duration
-    }.coerceAtLeast(0.0)
-
-    return "${formatDurationHoursMinutes(remaining)} left".trim()
 }
 
 private fun formatFileSize(bytes: Long?): String {

@@ -9,6 +9,7 @@ import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -676,6 +677,7 @@ class BookmarksBrowseViewModel @Inject constructor(
     val uiState: StateFlow<BookmarksBrowseUiState> = mutableUiState.asStateFlow()
 
     init {
+        observeBookProgressMutations()
         refresh(forceRefresh = false, silent = false)
     }
 
@@ -818,6 +820,18 @@ class BookmarksBrowseViewModel @Inject constructor(
 
     fun clearActionMessage() {
         mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    private fun observeBookProgressMutations() {
+        viewModelScope.launch {
+            sessionRepository.observeBookProgressMutations().collect { mutation ->
+                mutableUiState.update { state ->
+                    state.copy(
+                        bookmarks = state.bookmarks.map { it.withBookProgressMutation(mutation) }
+                    )
+                }
+            }
+        }
     }
 
     private fun bookmarkEntriesMatch(source: BookmarkEntry, target: BookmarkEntry): Boolean {

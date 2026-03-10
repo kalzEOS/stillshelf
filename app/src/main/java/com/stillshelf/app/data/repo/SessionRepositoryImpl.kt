@@ -1427,7 +1427,8 @@ class SessionRepositoryImpl @Inject constructor(
                     PlaybackProgress(
                         progressPercent = progress.progressPercent,
                         currentTimeSeconds = progress.currentTimeSeconds,
-                        durationSeconds = progress.durationSeconds
+                        durationSeconds = progress.durationSeconds,
+                        updatedAtMs = progress.updatedAtMs
                     ).withLocalProgressOverride(connection.server.id, bookId)
                 )
             }
@@ -1449,7 +1450,8 @@ class SessionRepositoryImpl @Inject constructor(
                 PlaybackProgress(
                     progressPercent = it.progressPercent,
                     currentTimeSeconds = it.currentTimeSeconds,
-                    durationSeconds = it.durationSeconds
+                    durationSeconds = it.durationSeconds,
+                    updatedAtMs = it.updatedAtMs
                 )
             }.withLocalProgressOverride(connection.server.id, bookId)
         )
@@ -1466,7 +1468,44 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        return syncPlaybackProgressWithConnection(
+            connection = connection,
+            bookId = bookId,
+            currentTimeSeconds = currentTimeSeconds,
+            durationSeconds = durationSeconds,
+            isFinished = isFinished
+        )
+    }
 
+    override suspend fun syncPlaybackProgressForServer(
+        serverId: String,
+        bookId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): AppResult<Unit> {
+        if (serverId.isBlank()) return AppResult.Error("Invalid server id.")
+        if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val connection = when (val result = getConnectionForServer(serverId = serverId, requireLibrary = false)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        return syncPlaybackProgressWithConnection(
+            connection = connection,
+            bookId = bookId,
+            currentTimeSeconds = currentTimeSeconds,
+            durationSeconds = durationSeconds,
+            isFinished = isFinished
+        )
+    }
+
+    private suspend fun syncPlaybackProgressWithConnection(
+        connection: ActiveConnection,
+        bookId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): AppResult<Unit> {
         val syncResult = audiobookshelfApi.updateMediaProgressForItem(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,
@@ -2429,17 +2468,34 @@ class SessionRepositoryImpl @Inject constructor(
         val session = sessionPreferences.state.first()
         val activeServerId = session.activeServerId
             ?: return AppResult.Error("No active server selected.")
-        val server = serverDao.getById(activeServerId)
+        return getConnectionForServer(serverId = activeServerId, requireLibrary = requireLibrary)
+    }
+
+    private suspend fun getConnectionForServer(
+        serverId: String,
+        requireLibrary: Boolean
+    ): AppResult<ActiveConnection> {
+        val normalizedServerId = serverId.trim()
+        if (normalizedServerId.isBlank()) return AppResult.Error("Invalid server id.")
+        val server = serverDao.getById(normalizedServerId)
             ?: run {
-                sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
-                sessionPreferences.setRequiresLibrarySelection(false)
-                return AppResult.Error("Active server not found.")
+                val session = sessionPreferences.state.first()
+                if (session.activeServerId == normalizedServerId) {
+                    sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
+                    sessionPreferences.setRequiresLibrarySelection(false)
+                    return AppResult.Error("Active server not found.")
+                }
+                return AppResult.Error("Server not found.")
             }
         val token = secureTokenStorage.getToken(server.id)
             ?: run {
-                sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
-                sessionPreferences.setRequiresLibrarySelection(false)
-                return AppResult.Error("No saved session for this server. Please log in again.")
+                val session = sessionPreferences.state.first()
+                if (session.activeServerId == server.id) {
+                    sessionPreferences.setActiveSelection(serverId = null, libraryId = null)
+                    sessionPreferences.setRequiresLibrarySelection(false)
+                    return AppResult.Error("No saved session for this server. Please log in again.")
+                }
+                return AppResult.Error("No saved session for this server.")
             }
 
         if (!requireLibrary) {
@@ -2452,13 +2508,17 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
+        val session = sessionPreferences.state.first()
         val activeLibraryId = session.activeLibraryId
             ?: return AppResult.Error("No active library selected.")
         val library = libraryDao.getByServerAndId(server.id, activeLibraryId)
             ?: run {
-                sessionPreferences.setActiveLibraryId(null)
-                sessionPreferences.setRequiresLibrarySelection(true)
-                return AppResult.Error("Active library not found.")
+                if (session.activeServerId == server.id) {
+                    sessionPreferences.setActiveLibraryId(null)
+                    sessionPreferences.setRequiresLibrarySelection(true)
+                    return AppResult.Error("Active library not found.")
+                }
+                return AppResult.Error("Library not found.")
             }
 
         return AppResult.Success(
@@ -2828,7 +2888,8 @@ class SessionRepositoryImpl @Inject constructor(
         return PlaybackProgress(
             progressPercent = override.progressPercent,
             currentTimeSeconds = override.currentTimeSeconds,
-            durationSeconds = override.durationSeconds ?: this?.durationSeconds
+            durationSeconds = override.durationSeconds ?: this?.durationSeconds,
+            updatedAtMs = this?.updatedAtMs
         )
     }
 

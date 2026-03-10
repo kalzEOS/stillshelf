@@ -36,7 +36,8 @@ import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import java.util.Locale
+import com.stillshelf.app.core.util.formatHoursMinutesPrecise
+import com.stillshelf.app.core.util.progressPresentation
 import kotlin.math.cos
 import kotlin.math.sin
 import com.stillshelf.app.ui.common.rememberCoverImageModel
@@ -210,58 +211,17 @@ private fun MiniSeek15Glyph(
 }
 
 private fun formatMiniPlayerSubtitle(item: com.stillshelf.app.core.model.ContinueListeningItem): String {
-    val duration = item.book.durationSeconds?.takeIf { it > 0.0 }
-        ?: run {
-            val progress = item.progressPercent?.coerceIn(0.0, 1.0)
-            val current = item.currentTimeSeconds?.coerceAtLeast(0.0)
-            if (progress != null && current != null && progress > 0.0) {
-                (current / progress).takeIf { it.isFinite() && it > 0.0 }
-            } else {
-                null
-            }
-        }
-    val progress = item.progressPercent
-    val currentTime = item.currentTimeSeconds
-    if (duration == null || duration <= 0.0) {
-        val fallbackPercentLabel = progress
-            ?.coerceIn(0.0, 1.0)
-            ?.let(::formatMiniPlayerProgressPercentLabel)
-            ?: "0%"
-        return if (progress != null && progress > 0.0) {
-            "In progress • $fallbackPercentLabel complete"
+    val presentation = item.progressPresentation()
+    val percentLabel = presentation.progressPercentLabel()
+    return if (presentation.durationSeconds == null) {
+        if ((presentation.normalizedProgressPercent ?: 0.0) > 0.0) {
+            "In progress • $percentLabel complete"
         } else {
             "0h 0m left • 0% complete"
         }
-    }
-
-    val percentLabel = when {
-        progress != null -> formatMiniPlayerProgressPercentLabel(progress.coerceIn(0.0, 1.0))
-        currentTime != null -> formatMiniPlayerProgressPercentLabel((currentTime / duration).coerceIn(0.0, 1.0))
-        else -> "0%"
-    }
-
-    val remainingSeconds = when {
-        progress != null -> duration * (1.0 - progress.coerceIn(0.0, 1.0))
-        currentTime != null -> duration - currentTime
-        else -> duration
-    }.coerceAtLeast(0.0)
-
-    return "${formatHoursMinutesPrecise(remainingSeconds)} left • $percentLabel complete"
-}
-
-private fun formatHoursMinutesPrecise(durationSeconds: Double): String {
-    if (durationSeconds <= 0.0) return "0h 0m"
-    val totalMinutes = (durationSeconds / 60.0).toLong()
-    val hours = totalMinutes / 60
-    val minutes = totalMinutes % 60
-    return "${hours}h ${minutes}m"
-}
-
-private fun formatMiniPlayerProgressPercentLabel(progressFraction: Double): String {
-    val percent = (progressFraction.coerceIn(0.0, 1.0) * 100.0)
-    return if (percent < 1.0 && percent > 0.0) {
-        String.format(Locale.getDefault(), "%.1f%%", percent)
+    } else if (!presentation.hasStarted && !presentation.isFinished) {
+        "${formatHoursMinutesPrecise(presentation.durationSeconds)} left • $percentLabel complete"
     } else {
-        "${percent.toInt().coerceIn(0, 100)}%"
+        "${presentation.remainingTimeLabel(precise = true, emptyFallback = "0h 0m left")} • $percentLabel complete"
     }
 }

@@ -55,7 +55,8 @@ data class AudiobookshelfMediaProgressDto(
     val libraryItemId: String,
     val progressPercent: Double?,
     val currentTimeSeconds: Double?,
-    val durationSeconds: Double?
+    val durationSeconds: Double?,
+    val updatedAtMs: Long?
 )
 
 data class AudiobookshelfNamedEntityDto(
@@ -2558,7 +2559,16 @@ class AudiobookshelfApi @Inject constructor(
                         libraryItemId = libraryItemId,
                         progressPercent = item.optDoubleOrNull("progress"),
                         currentTimeSeconds = item.optDoubleOrNull("currentTime"),
-                        durationSeconds = item.optDoubleOrNull("duration")
+                        durationSeconds = item.optDoubleOrNull("duration"),
+                        updatedAtMs = item.optEpochMillis(
+                            "updatedAt",
+                            "updatedAtMs",
+                            "lastUpdate",
+                            "lastUpdateAt",
+                            "lastUpdateAtMs",
+                            "modifiedAt",
+                            "modifiedAtMs"
+                        )
                     )
                 )
             }
@@ -3045,7 +3055,16 @@ class AudiobookshelfApi @Inject constructor(
             progressPercent = source.optDoubleOrNull("progress"),
             currentTimeSeconds = source.optDoubleOrNull("currentTime")
                 ?: source.optDoubleOrNull("time"),
-            durationSeconds = source.optDoubleOrNull("duration")
+            durationSeconds = source.optDoubleOrNull("duration"),
+            updatedAtMs = source.optEpochMillis(
+                "updatedAt",
+                "updatedAtMs",
+                "lastUpdate",
+                "lastUpdateAt",
+                "lastUpdateAtMs",
+                "modifiedAt",
+                "modifiedAtMs"
+            )
         )
     }
 

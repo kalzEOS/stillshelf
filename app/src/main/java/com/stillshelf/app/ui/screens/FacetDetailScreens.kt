@@ -91,6 +91,10 @@ import coil.compose.rememberAsyncImagePainter
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.core.util.formatDurationHoursMinutes
+import com.stillshelf.app.core.util.hasFinishedProgress
+import com.stillshelf.app.core.util.hasStartedProgress
+import com.stillshelf.app.core.util.remainingTimeLabel
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
@@ -113,8 +117,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.text.Regex
-
-private const val StartedStatusProgressThresholdSeconds = 30.0
 
 data class FacetBooksUiState(
     val isLoading: Boolean = false,
@@ -852,25 +854,11 @@ private fun List<BookSummary>.applySeriesStatusFilter(filter: BooksStatusFilter)
 }
 
 private fun BookSummary.hasStartedStatusProgress(): Boolean {
-    if (hasFinishedStatusProgress()) return true
-    val startedSeconds = resolvedStartedStatusProgressSeconds()
-    return startedSeconds != null && startedSeconds >= StartedStatusProgressThresholdSeconds
+    return hasStartedProgress()
 }
 
 private fun BookSummary.hasFinishedStatusProgress(): Boolean {
-    val normalized = normalizedStatusProgressPercent()
-    return when {
-        normalized != null -> normalized >= 0.995
-        else -> isFinished
-    }
-}
-
-private fun BookSummary.normalizedStatusProgressPercent(): Double? {
-    progressPercent?.coerceIn(0.0, 1.0)?.let { return it }
-    val duration = durationSeconds ?: return null
-    if (duration <= 0.0) return null
-    val current = currentTimeSeconds ?: return null
-    return (current / duration).coerceIn(0.0, 1.0)
+    return hasFinishedProgress()
 }
 
 private fun buildAuthorDisplayEntries(
@@ -4102,52 +4090,11 @@ private fun FacetBookRow(
 }
 
 private fun formatDuration(durationSeconds: Double?): String {
-    val seconds = durationSeconds?.toLong() ?: return ""
-    if (seconds <= 0L) return ""
-    val hours = seconds / 3600
-    val minutes = (seconds % 3600) / 60
-    return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
-}
-
-private fun formatStatusHoursMinutesPrecise(durationSeconds: Double): String {
-    if (durationSeconds <= 0.0) return "0h 0m"
-    val totalMinutes = (durationSeconds / 60.0).toLong()
-    val hours = totalMinutes / 60
-    val minutes = totalMinutes % 60
-    return "${hours}h ${minutes}m"
+    return formatDurationHoursMinutes(durationSeconds)
 }
 
 private fun BookSummary.remainingStatusTimeLabel(): String {
-    if (!hasStartedStatusProgress() || hasFinishedStatusProgress()) return ""
-    val duration = resolvedStatusDurationSeconds() ?: return ""
-    val normalizedProgress = normalizedStatusProgressPercent()
-    val remainingSeconds = when {
-        normalizedProgress != null -> duration * (1.0 - normalizedProgress.coerceIn(0.0, 1.0))
-        currentTimeSeconds != null -> duration - currentTimeSeconds.coerceAtLeast(0.0)
-        else -> duration
-    }.coerceAtLeast(0.0)
-    if (remainingSeconds <= 0.0) return ""
-    return "${formatStatusHoursMinutesPrecise(remainingSeconds)} left"
-}
-
-private fun BookSummary.resolvedStatusDurationSeconds(): Double? {
-    durationSeconds?.takeIf { it > 0.0 }?.let { return it }
-    val normalizedProgress = progressPercent?.coerceIn(0.0, 1.0)
-    val current = currentTimeSeconds?.coerceAtLeast(0.0)
-    if (normalizedProgress != null && current != null && normalizedProgress > 0.0) {
-        val estimatedDuration = current / normalizedProgress
-        if (estimatedDuration.isFinite() && estimatedDuration > 0.0) {
-            return estimatedDuration
-        }
-    }
-    return null
-}
-
-private fun BookSummary.resolvedStartedStatusProgressSeconds(): Double? {
-    currentTimeSeconds?.takeIf { it.isFinite() && it >= 0.0 }?.let { return it }
-    val duration = resolvedStatusDurationSeconds() ?: return null
-    val normalizedProgress = normalizedStatusProgressPercent() ?: return null
-    return (duration * normalizedProgress).takeIf { it.isFinite() && it >= 0.0 }
+    return remainingTimeLabel()
 }
 
 private fun formatSeriesOrderLabel(seriesSequence: Double?): String? {

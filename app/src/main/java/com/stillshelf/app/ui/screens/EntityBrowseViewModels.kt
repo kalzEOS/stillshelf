@@ -7,6 +7,7 @@ import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.NamedEntitySummary
+import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.ui.common.withBookProgressMutation
@@ -35,6 +36,7 @@ data class SeriesBrowseCard(
 
 data class SeriesBrowseUiState(
     val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
     val series: List<SeriesBrowseCard> = emptyList(),
     val gridMode: Boolean = true,
     val errorMessage: String? = null
@@ -165,11 +167,11 @@ class SeriesBrowseViewModel @Inject constructor(
 
     init {
         restoreGridMode()
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, isUserRefresh = false)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, isUserRefresh = true)
     }
 
     fun setGridMode(gridMode: Boolean) {
@@ -186,9 +188,15 @@ class SeriesBrowseViewModel @Inject constructor(
         }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
+    private fun refresh(forceRefresh: Boolean, isUserRefresh: Boolean) {
         if (uiState.value.isLoading) return
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+        mutableUiState.update {
+            it.copy(
+                isLoading = true,
+                isRefreshing = isUserRefresh,
+                errorMessage = null
+            )
+        }
 
         viewModelScope.launch {
             when (val seriesResult = sessionRepository.fetchSeriesForActiveLibrary(forceRefresh = forceRefresh)) {
@@ -213,19 +221,17 @@ class SeriesBrowseViewModel @Inject constructor(
                         seriesResult.value.forEach { series ->
                             val initialMatchedBooks = booksBySeries[normalizeSeriesName(series.name)].orEmpty()
                                 .ifEmpty { booksBySeriesId[series.id].orEmpty() }
-                            val expectedCount = series.subtitle
-                                ?.trim()
-                                ?.substringBefore(" ")
-                                ?.toIntOrNull()
+                            val expectedCount = extractEntityCount(series.subtitle)
                             val matchedBooks = if (
                                 initialMatchedBooks.isEmpty() ||
                                 (expectedCount != null && initialMatchedBooks.size < expectedCount)
                             ) {
-                                resolveSeriesBooksFromDetails(
+                                resolveSeriesBooks(
                                     series = series,
                                     books = books,
                                     initialMatchedBooks = initialMatchedBooks,
                                     expectedCount = expectedCount,
+                                    forceRefresh = forceRefresh,
                                     detailCache = detailCache
                                 )
                             } else {
@@ -256,6 +262,7 @@ class SeriesBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
+                            isRefreshing = false,
                             series = visibleCards
                         )
                     }
@@ -265,6 +272,7 @@ class SeriesBrowseViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
+                            isRefreshing = false,
                             errorMessage = seriesResult.message
                         )
                     }
@@ -311,6 +319,41 @@ class SeriesBrowseViewModel @Inject constructor(
         }
             .distinctBy { it.lowercase() }
             .take(3)
+    }
+
+    private suspend fun resolveSeriesBooks(
+        series: NamedEntitySummary,
+        books: List<BookSummary>,
+        initialMatchedBooks: List<BookSummary>,
+        expectedCount: Int?,
+        forceRefresh: Boolean,
+        detailCache: MutableMap<String, BookSummary?>
+    ): List<BookSummary> {
+        if (series.id.isBlank()) return initialMatchedBooks
+        val resolvedFromContents = when (
+            val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
+                seriesId = series.id,
+                collapseSubseries = false,
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is AppResult.Success -> mergeSeriesBrowseBooks(
+                initialMatchedBooks = initialMatchedBooks,
+                seriesEntries = result.value,
+                expectedCount = expectedCount
+            )
+            is AppResult.Error -> initialMatchedBooks
+        }
+        if (isSeriesBrowseMatchComplete(resolvedFromContents, expectedCount)) {
+            return resolvedFromContents
+        }
+        return resolveSeriesBooksFromDetails(
+            series = series,
+            books = books,
+            initialMatchedBooks = resolvedFromContents,
+            expectedCount = expectedCount,
+            detailCache = detailCache
+        )
     }
 
     private suspend fun resolveSeriesBooksFromDetails(
@@ -983,6 +1026,11 @@ private fun normalizeSeriesName(value: String): String {
         .lowercase()
 }
 
+private fun extractEntityCount(subtitle: String?): Int? {
+    val value = subtitle?.trim().orEmpty().substringBefore(" ").toIntOrNull()
+    return value?.takeIf { it >= 0 }
+}
+
 private fun seriesMatchKeys(book: BookSummary): Set<String> {
     return buildSet {
         book.seriesName
@@ -1035,6 +1083,49 @@ internal fun isNestedSeriesCandidate(
             otherKeys.any { it in candidate.inferredParentKeys } &&
             candidateBookIds.all { bookId -> bookId in other.matchedBookIds }
     }
+}
+
+internal fun mergeSeriesBrowseBooks(
+    initialMatchedBooks: List<BookSummary>,
+    seriesEntries: List<SeriesDetailEntry>,
+    expectedCount: Int?
+): List<BookSummary> {
+    val resolved = LinkedHashMap<String, BookSummary>()
+    initialMatchedBooks.forEach { book -> resolved[book.id] = book }
+    seriesEntries.forEach { entry ->
+        val seriesBook = (entry as? SeriesDetailEntry.BookItem)?.book ?: return@forEach
+        val existing = resolved[seriesBook.id]
+        resolved[seriesBook.id] = if (existing == null) {
+            seriesBook
+        } else {
+            existing.copy(
+                durationSeconds = seriesBook.durationSeconds ?: existing.durationSeconds,
+                coverUrl = seriesBook.coverUrl ?: existing.coverUrl,
+                seriesName = seriesBook.seriesName ?: existing.seriesName,
+                seriesNames = if (seriesBook.seriesNames.isNotEmpty()) seriesBook.seriesNames else existing.seriesNames,
+                seriesIds = if (seriesBook.seriesIds.isNotEmpty()) seriesBook.seriesIds else existing.seriesIds,
+                seriesSequence = seriesBook.seriesSequence ?: existing.seriesSequence,
+                genres = if (seriesBook.genres.isNotEmpty()) seriesBook.genres else existing.genres,
+                publishedYear = seriesBook.publishedYear ?: existing.publishedYear,
+                addedAtMs = seriesBook.addedAtMs ?: existing.addedAtMs,
+                progressPercent = seriesBook.progressPercent ?: existing.progressPercent,
+                currentTimeSeconds = seriesBook.currentTimeSeconds ?: existing.currentTimeSeconds,
+                isFinished = existing.isFinished || seriesBook.isFinished
+            )
+        }
+        if (expectedCount != null && expectedCount > 0 && resolved.size >= expectedCount) {
+            return resolved.values.toList()
+        }
+    }
+    return resolved.values.toList()
+}
+
+internal fun isSeriesBrowseMatchComplete(
+    matchedBooks: List<BookSummary>,
+    expectedCount: Int?
+): Boolean {
+    if (matchedBooks.isEmpty()) return false
+    return expectedCount == null || expectedCount <= 0 || matchedBooks.size >= expectedCount
 }
 
 private fun isStillShelfProbeCollection(name: String): Boolean {

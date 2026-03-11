@@ -3616,6 +3616,7 @@ fun NarratorsBrowseScreen(
     }
 }
 
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun SeriesBrowseScreen(
     onSeriesClick: (String, String?) -> Unit,
@@ -3624,6 +3625,10 @@ fun SeriesBrowseScreen(
     viewModel: SeriesBrowseViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isRefreshing,
+        onRefresh = viewModel::refresh
+    )
 
     Column(
         modifier = Modifier
@@ -3648,160 +3653,191 @@ fun SeriesBrowseScreen(
         }
         Spacer(modifier = Modifier.height(10.dp))
 
-        when {
-            uiState.isLoading -> {
-                Text(
-                    text = "Loading Series...",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            uiState.series.isEmpty() -> {
-                Text(
-                    text = uiState.errorMessage ?: "No Series found.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = if (uiState.errorMessage == null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = viewModel::refresh) {
-                    Text("Retry")
-                }
-            }
-
-            else -> {
-                if (uiState.gridMode) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 120.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.errorMessage != null && !uiState.isRefreshing -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        gridItems(uiState.series, key = { it.id }) { series ->
-                            Column(
-                                modifier = Modifier.clickable { onSeriesClick(series.name, series.id) },
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(StandardGridCoverHeight)
-                                        .clipToBounds(),
-                                    contentAlignment = Alignment.TopCenter
-                                ) {
-                                    val inferredCount = series.subtitle
-                                        .orEmpty()
-                                        .trim()
-                                        .substringBefore(" ")
-                                        .toIntOrNull()
-                                    val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
-                                    SeriesStackCoverLayers(
-                                        coverUrls = series.coverUrls,
-                                        contentDescription = series.name,
-                                        layerCount = layerCount,
-                                        frameWidth = StandardGridCoverWidth,
-                                        frameHeight = StandardGridCoverHeight,
-                                        modifier = Modifier
-                                            .width(StandardGridCoverWidth)
-                                            .height(StandardGridCoverHeight)
-                                    )
-                                }
-                                Text(
-                                    text = series.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier
-                                        .width(StandardGridCoverWidth)
-                                        .align(Alignment.CenterHorizontally),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = series.subtitle.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .width(StandardGridCoverWidth)
-                                        .align(Alignment.CenterHorizontally),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
+                        Text(
+                            text = uiState.errorMessage ?: "No Series found.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
                         }
                     }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(bottom = 120.dp)
-                    ) {
-                        items(uiState.series, key = { it.id }) { series ->
-                            val inferredCount = series.subtitle
-                                .orEmpty()
-                                .trim()
-                                .substringBefore(" ")
-                                .toIntOrNull()
-                            val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
-                            val frameWidth = 92.dp
-                            val frameHeight = 102.dp
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
-                                    .clickable { onSeriesClick(series.name, series.id) }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(frameWidth)
-                                        .height(frameHeight)
-                                        .clipToBounds()
-                                ) {
-                                    SeriesStackCoverLayers(
-                                        coverUrls = series.coverUrls,
-                                        contentDescription = series.name,
-                                        layerCount = layerCount,
-                                        frameWidth = frameWidth,
-                                        frameHeight = frameHeight,
-                                        modifier = Modifier.matchParentSize()
-                                    )
-                                }
+                }
+
+                uiState.series.isNotEmpty() -> {
+                    if (uiState.gridMode) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            gridItems(uiState.series, key = { it.id }) { series ->
                                 Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    modifier = Modifier.clickable { onSeriesClick(series.name, series.id) },
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(StandardGridCoverHeight)
+                                            .clipToBounds(),
+                                        contentAlignment = Alignment.TopCenter
+                                    ) {
+                                        val inferredCount = series.subtitle
+                                            .orEmpty()
+                                            .trim()
+                                            .substringBefore(" ")
+                                            .toIntOrNull()
+                                        val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
+                                        SeriesStackCoverLayers(
+                                            coverUrls = series.coverUrls,
+                                            contentDescription = series.name,
+                                            layerCount = layerCount,
+                                            frameWidth = StandardGridCoverWidth,
+                                            frameHeight = StandardGridCoverHeight,
+                                            modifier = Modifier
+                                                .width(StandardGridCoverWidth)
+                                                .height(StandardGridCoverHeight)
+                                        )
+                                    }
                                     Text(
                                         text = series.name,
-                                        style = MaterialTheme.typography.titleMedium,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier
+                                            .width(StandardGridCoverWidth)
+                                            .align(Alignment.CenterHorizontally),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center
                                     )
                                     Text(
                                         text = series.subtitle.orEmpty(),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .width(StandardGridCoverWidth)
+                                            .align(Alignment.CenterHorizontally),
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center
                                     )
                                 }
-                                Icon(
-                                    imageVector = Icons.Outlined.ChevronRight,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            contentPadding = PaddingValues(bottom = 120.dp)
+                        ) {
+                            items(uiState.series, key = { it.id }) { series ->
+                                val inferredCount = series.subtitle
+                                    .orEmpty()
+                                    .trim()
+                                    .substringBefore(" ")
+                                    .toIntOrNull()
+                                val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
+                                val frameWidth = 92.dp
+                                val frameHeight = 102.dp
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
+                                        .clickable { onSeriesClick(series.name, series.id) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(frameWidth)
+                                            .height(frameHeight)
+                                            .clipToBounds()
+                                    ) {
+                                        SeriesStackCoverLayers(
+                                            coverUrls = series.coverUrls,
+                                            contentDescription = series.name,
+                                            layerCount = layerCount,
+                                            frameWidth = frameWidth,
+                                            frameHeight = frameHeight,
+                                            modifier = Modifier.matchParentSize()
+                                        )
+                                    }
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = series.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = series.subtitle.orEmpty(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Outlined.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                            }
+                        }
+                    }
+                }
+
+                uiState.isLoading -> {
+                    Text(
+                        text = "Loading Series...",
+                        modifier = Modifier.align(Alignment.Center),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                else -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "No Series found.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
                         }
                     }
                 }
             }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isRefreshing,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }

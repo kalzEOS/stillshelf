@@ -135,6 +135,7 @@ data class FacetBooksUiState(
 
 data class SeriesDetailUiState(
     val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
     val title: String = "",
     val entries: List<SeriesDetailEntry> = emptyList(),
     val canCollapseSubseries: Boolean = false,
@@ -508,7 +509,7 @@ class SeriesDetailViewModel @Inject constructor(
         }
         observeDownloadedState()
         observeBookProgressMutations()
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, isUserRefresh = false)
     }
 
     fun setListMode(value: Boolean) {
@@ -523,11 +524,11 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setSeriesDetailCollapseSubseries(value)
         }
-        refresh(forceRefresh = false)
+        refresh(forceRefresh = false, isUserRefresh = false)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(forceRefresh = true, isUserRefresh = true)
     }
 
     fun markAsFinished(bookId: String) {
@@ -536,7 +537,7 @@ class SeriesDetailViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, isUserRefresh = false)
                 }
 
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -550,7 +551,7 @@ class SeriesDetailViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, isUserRefresh = false)
                 }
 
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -570,7 +571,7 @@ class SeriesDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
-                    refresh(forceRefresh = true)
+                    refresh(forceRefresh = true, isUserRefresh = false)
                 }
 
                 is AppResult.Error -> {
@@ -624,8 +625,14 @@ class SeriesDetailViewModel @Inject constructor(
         }
     }
 
-    private fun refresh(forceRefresh: Boolean) {
-        mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+    private fun refresh(forceRefresh: Boolean, isUserRefresh: Boolean) {
+        mutableUiState.update {
+            it.copy(
+                isLoading = true,
+                isRefreshing = isUserRefresh,
+                errorMessage = null
+            )
+        }
         viewModelScope.launch {
             val collapseSubseries = mutableCollapseSubseries.value
             val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
@@ -677,12 +684,13 @@ class SeriesDetailViewModel @Inject constructor(
             when (result) {
                 is AppResult.Success -> {
                     if (result.value.entries.isEmpty() && !forceRefresh) {
-                        refresh(forceRefresh = true)
+                        refresh(forceRefresh = true, isUserRefresh = false)
                         return@launch
                     }
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
+                            isRefreshing = false,
                             entries = result.value.entries,
                             canCollapseSubseries = result.value.hasCollapsibleSubseries
                         )
@@ -693,6 +701,7 @@ class SeriesDetailViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
+                            isRefreshing = false,
                             errorMessage = result.message
                         )
                     }
@@ -2224,7 +2233,7 @@ fun SeriesDetailScreen(
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val statusFilter = enumValueOrNull<BooksStatusFilter>(statusFilterRaw) ?: BooksStatusFilter.All
     val refreshState = rememberPullRefreshState(
-        refreshing = uiState.isLoading,
+        refreshing = uiState.isRefreshing,
         onRefresh = viewModel::refresh
     )
     LaunchedEffect(uiState.actionMessage) {
@@ -2248,43 +2257,27 @@ fun SeriesDetailScreen(
         collectionPickerViewModel.clearMessages()
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
             .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
             .pullRefresh(refreshState)
-    ) {
+        ) {
         when {
-            uiState.isLoading -> {
-                Text(
-                    text = "Loading series...",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            uiState.errorMessage != null -> {
+            uiState.errorMessage != null && !uiState.isRefreshing -> {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = uiState.errorMessage.orEmpty(),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.error
                     )
-                    Button(onClick = viewModel::refresh) {
+                    Button(onClick = { viewModel.refresh() }) {
                         Text("Retry")
                     }
                 }
             }
 
-            uiState.entries.isEmpty() -> {
-                Text(
-                    text = "No series items found.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            else -> {
+            uiState.entries.isNotEmpty() -> {
                 val displayEntries = uiState.entries.applySeriesEntryStatusFilter(statusFilter)
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -2567,10 +2560,26 @@ fun SeriesDetailScreen(
                     }
                 }
             }
+
+            uiState.isLoading -> {
+                Text(
+                    text = "Loading series...",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            else -> {
+                Text(
+                    text = "No series items found.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         PullRefreshIndicator(
-            refreshing = uiState.isLoading,
+            refreshing = uiState.isRefreshing,
             state = refreshState,
             modifier = Modifier.align(Alignment.TopCenter)
         )

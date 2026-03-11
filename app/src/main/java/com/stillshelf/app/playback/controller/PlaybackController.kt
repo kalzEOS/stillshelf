@@ -1551,9 +1551,10 @@ class PlaybackController @Inject constructor(
                     serverId = nextRequest.serverId,
                     bookId = nextRequest.bookId
                 )
+                val queuedReplacementRequest = pendingSyncRequests[failedRequestKey]
                 pendingSyncRequests[failedRequestKey] = mergeProgressSyncRequests(
-                    existing = pendingSyncRequests[failedRequestKey],
-                    incoming = nextRequest
+                    existing = nextRequest,
+                    incoming = queuedReplacementRequest ?: nextRequest
                 )
                 delay(PROGRESS_SYNC_RETRY_DELAY_MS)
             }

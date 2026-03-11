@@ -3,7 +3,9 @@ package com.stillshelf.app.ui.screens.auth
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SecureStorageUnavailableException
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.data.repo.LoginPersistenceMode
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.ui.navigation.AuthRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -59,12 +61,33 @@ class LoginViewModel @Inject constructor(
     }
 
     fun onLoginClick() {
+        submitLogin(LoginPersistenceMode.PersistentSecureOnly)
+    }
+
+    fun onContinueSessionOnlyClick() {
+        submitLogin(LoginPersistenceMode.SessionOnly)
+    }
+
+    fun onSaveLessSecurelyClick() {
+        submitLogin(LoginPersistenceMode.PersistentAllowInsecureFallback)
+    }
+
+    fun dismissTokenStoragePrompt() {
+        mutableUiState.update { it.copy(showTokenStorageFallbackPrompt = false) }
+    }
+
+    private fun submitLogin(persistenceMode: LoginPersistenceMode) {
         val currentState = mutableUiState.value
         if (!currentState.canSubmit || currentState.isLoading) return
-
         viewModelScope.launch {
             try {
-                mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+                mutableUiState.update {
+                    it.copy(
+                        isLoading = true,
+                        errorMessage = null,
+                        showTokenStorageFallbackPrompt = false
+                    )
+                }
 
                 when (
                     val result = runCatching {
@@ -72,7 +95,8 @@ class LoginViewModel @Inject constructor(
                             serverName = currentState.serverName,
                             baseUrl = currentState.baseUrl,
                             username = currentState.username,
-                            password = currentState.password
+                            password = currentState.password,
+                            persistenceMode = persistenceMode
                         )
                     }.getOrElse {
                         AppResult.Error("Unable to complete login.", it)
@@ -84,10 +108,14 @@ class LoginViewModel @Inject constructor(
                     }
 
                     is AppResult.Error -> {
+                        val requiresStorageChoice =
+                            result.cause is SecureStorageUnavailableException &&
+                                persistenceMode == LoginPersistenceMode.PersistentSecureOnly
                         mutableUiState.update {
                             it.copy(
                                 isLoading = false,
-                                errorMessage = mapLoginErrorMessage(result)
+                                errorMessage = if (requiresStorageChoice) null else mapLoginErrorMessage(result),
+                                showTokenStorageFallbackPrompt = requiresStorageChoice
                             )
                         }
                     }
@@ -168,7 +196,8 @@ data class LoginUiState(
     val password: String = "",
     val isLoading: Boolean = false,
     val canSubmit: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val showTokenStorageFallbackPrompt: Boolean = false
 )
 
 sealed interface LoginEvent {

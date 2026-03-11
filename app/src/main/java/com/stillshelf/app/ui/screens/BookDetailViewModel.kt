@@ -369,7 +369,15 @@ class BookDetailViewModel @Inject constructor(
     fun playChapter(startSeconds: Double) {
         if (bookId.isBlank()) return
         val positionMs = (startSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
-        playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+        val playbackState = playbackUiState.value
+        if (playbackState.book?.id == bookId) {
+            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
+            if (!playbackState.isPlaying) {
+                playbackController.togglePlayPause()
+            }
+        } else {
+            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+        }
     }
 
     fun skipIntroOrOutro() {

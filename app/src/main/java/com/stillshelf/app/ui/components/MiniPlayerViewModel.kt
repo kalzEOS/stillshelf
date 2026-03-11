@@ -242,11 +242,8 @@ private fun findActiveChapterTitle(chapters: List<BookChapter>, positionSeconds:
 private fun findActiveChapterIndex(chapters: List<BookChapter>, positionSeconds: Double): Int {
     if (chapters.isEmpty()) return -1
     val target = positionSeconds.coerceAtLeast(0.0)
-    val index = chapters.indexOfFirst { chapter ->
-        val end = chapter.endSeconds ?: Double.POSITIVE_INFINITY
-        target >= chapter.startSeconds && target < end
-    }
-    return if (index >= 0) index else chapters.lastIndex
+    val index = chapters.indexOfLast { chapter -> target >= chapter.startSeconds }
+    return if (index >= 0) index else 0
 }
 
 private fun com.stillshelf.app.playback.controller.PlaybackUiState.toMiniPlayerItem(): ContinueListeningItem? {

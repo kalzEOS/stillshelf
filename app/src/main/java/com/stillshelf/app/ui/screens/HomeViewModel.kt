@@ -183,7 +183,7 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         viewModelScope.launch {
-            val refreshed = refreshNetwork(showLoading = true)
+            val refreshed = refreshNetwork(showLoading = true, forceRefreshDerivedContent = true)
             if (refreshed) {
                 sessionPreferences.setLastLibrarySyncAtMs(System.currentTimeMillis())
             }
@@ -208,7 +208,7 @@ class HomeViewModel @Inject constructor(
                     removedListenAgainBookIds = removedListenAgainBookIds - bookId
                     applyBookFinishedState(bookId = bookId, finished = true)
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
-                    refreshNetwork(showLoading = false)
+                    refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
             }
@@ -223,7 +223,7 @@ class HomeViewModel @Inject constructor(
                     mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookFinishedState(bookId = bookId, finished = false)
-                    refreshNetwork(showLoading = false)
+                    refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
             }
@@ -244,7 +244,7 @@ class HomeViewModel @Inject constructor(
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookResetState(bookId = bookId)
                     mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
-                    refreshNetwork(showLoading = false)
+                    refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
 
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -314,7 +314,10 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refreshNetwork(showLoading: Boolean): Boolean {
+    private suspend fun refreshNetwork(
+        showLoading: Boolean,
+        forceRefreshDerivedContent: Boolean = false
+    ): Boolean {
         if (isHomeFeedRefreshInFlight) return false
         if (uiState.value.isLoading) return false
         isHomeFeedRefreshInFlight = true
@@ -329,7 +332,8 @@ class HomeViewModel @Inject constructor(
             when (
                 val result = sessionRepository.fetchHomeFeed(
                     continueLimit = HOME_FEED_CONTINUE_LIMIT,
-                    recentlyAddedLimit = HOME_FEED_RECENTLY_ADDED_LIMIT
+                    recentlyAddedLimit = HOME_FEED_RECENTLY_ADDED_LIMIT,
+                    forceRefreshDerivedContent = forceRefreshDerivedContent
                 )
             ) {
                 is AppResult.Success -> {

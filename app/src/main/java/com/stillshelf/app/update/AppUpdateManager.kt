@@ -1,5 +1,6 @@
 package com.stillshelf.app.update
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
@@ -157,14 +158,12 @@ class AppUpdateManager @Inject constructor(
             FileProvider.getUriForFile(appContext, authority, apkFile)
         }.getOrNull() ?: return false
 
-        val packageManager = appContext.packageManager
         val installIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(apkUri, APK_MIME_TYPE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        if (installIntent.resolveActivity(packageManager) != null) {
-            appContext.startActivity(installIntent)
+        if (runCatching { appContext.startActivity(installIntent) }.isSuccess) {
             return true
         }
         val fallbackIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
@@ -172,11 +171,16 @@ class AppUpdateManager @Inject constructor(
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        if (fallbackIntent.resolveActivity(packageManager) == null) {
-            return false
+        return try {
+            appContext.startActivity(fallbackIntent)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        } catch (_: IllegalArgumentException) {
+            false
         }
-        appContext.startActivity(fallbackIntent)
-        return true
     }
 
     private fun installedVersionName(): String {

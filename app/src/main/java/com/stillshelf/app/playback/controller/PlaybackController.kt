@@ -1164,12 +1164,7 @@ class PlaybackController @Inject constructor(
 
     private fun configurePlayerAudioAttributes(player: MediaPlayer) {
         runCatching {
-            if (SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                player.setAudioAttributes(playbackAudioAttributes)
-            } else {
-                @Suppress("DEPRECATION")
-                player.setAudioStreamType(AudioManager.STREAM_MUSIC)
-            }
+            player.setAudioAttributes(playbackAudioAttributes)
         }
     }
 

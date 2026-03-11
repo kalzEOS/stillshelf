@@ -85,6 +85,9 @@ fun LoginRoute(
         onUsernameChange = viewModel::onUsernameChange,
         onPasswordChange = viewModel::onPasswordChange,
         onLoginClick = viewModel::onLoginClick,
+        onContinueSessionOnlyClick = viewModel::onContinueSessionOnlyClick,
+        onSaveLessSecurelyClick = viewModel::onSaveLessSecurelyClick,
+        onDismissTokenStoragePrompt = viewModel::dismissTokenStoragePrompt,
         onBack = onBack
     )
 
@@ -110,6 +113,9 @@ private fun LoginScreen(
     onUsernameChange: (String) -> Unit,
     onPasswordChange: (String) -> Unit,
     onLoginClick: () -> Unit,
+    onContinueSessionOnlyClick: () -> Unit,
+    onSaveLessSecurelyClick: () -> Unit,
+    onDismissTokenStoragePrompt: () -> Unit,
     onBack: () -> Unit
 ) {
     Scaffold(
@@ -267,5 +273,33 @@ private fun LoginScreen(
                 }
             }
         }
+    }
+
+    if (uiState.showTokenStorageFallbackPrompt) {
+        AlertDialog(
+            onDismissRequest = onDismissTokenStoragePrompt,
+            title = { Text("Secure storage unavailable") },
+            text = {
+                Text(
+                    "StillShelf could not access secure token storage on this device. " +
+                        "You can continue for this session only, or explicitly allow a less secure saved login."
+                )
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onContinueSessionOnlyClick) {
+                        Text("Session Only")
+                    }
+                    TextButton(onClick = onSaveLessSecurelyClick) {
+                        Text("Save Less Securely")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissTokenStoragePrompt) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

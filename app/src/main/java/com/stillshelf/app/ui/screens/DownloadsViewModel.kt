@@ -35,10 +35,6 @@ class DownloadsViewModel @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val sessionRepository: SessionRepository
 ) : ViewModel() {
-    companion object {
-        private const val DownloadedBooksLookupLimit = 400
-    }
-
     private val mutableUiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = mutableUiState.asStateFlow()
     private var hydratedLibraryBooksById: Map<String, BookSummary> = emptyMap()
@@ -121,13 +117,7 @@ class DownloadsViewModel @Inject constructor(
                     hydratedLibraryBooksById.containsKey(bookId) || hydrationMissBookIds.contains(bookId)
                 }
                 if (missingHydrationIds.isNotEmpty()) {
-                    when (
-                        val result = sessionRepository.fetchBooksForActiveLibrary(
-                            limit = DownloadedBooksLookupLimit,
-                            page = 0,
-                            forceRefresh = false
-                        )
-                    ) {
+                    when (val result = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = false)) {
                         is AppResult.Success -> {
                             val fetchedById = result.value.associateBy { it.id }
                             hydratedLibraryBooksById = hydratedLibraryBooksById + fetchedById

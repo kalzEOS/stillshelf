@@ -18,6 +18,12 @@ import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
 import kotlinx.coroutines.flow.Flow
 
+enum class LoginPersistenceMode {
+    PersistentSecureOnly,
+    PersistentAllowInsecureFallback,
+    SessionOnly
+}
+
 interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
     fun observeBookProgressMutations(): Flow<BookProgressMutation>
@@ -33,12 +39,16 @@ interface SessionRepository {
         serverName: String,
         baseUrl: String,
         username: String,
-        password: String
+        password: String,
+        persistenceMode: LoginPersistenceMode = LoginPersistenceMode.PersistentSecureOnly
     ): AppResult<Unit>
     suspend fun testServerConnection(baseUrl: String): AppResult<String>
     suspend fun fetchBooksForActiveLibrary(
         limit: Int = 60,
         page: Int = 0,
+        forceRefresh: Boolean = false
+    ): AppResult<List<BookSummary>>
+    suspend fun fetchAllBooksForActiveLibrary(
         forceRefresh: Boolean = false
     ): AppResult<List<BookSummary>>
     suspend fun fetchAuthorsForActiveLibrary(
@@ -134,6 +144,7 @@ interface SessionRepository {
     suspend fun fetchCachedHomeFeed(maxAgeMs: Long? = null): AppResult<HomeFeed?>
     suspend fun fetchHomeFeed(
         continueLimit: Int = 10,
-        recentlyAddedLimit: Int = 24
+        recentlyAddedLimit: Int = 24,
+        forceRefreshDerivedContent: Boolean = false
     ): AppResult<HomeFeed>
 }

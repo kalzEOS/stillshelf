@@ -12,56 +12,54 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+class SecureStorageUnavailableException : IllegalStateException(
+    "Secure token storage is unavailable on this device."
+)
+
 @Singleton
 class SecureTokenStorage @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
     @Volatile
-    private var sharedPreferences: SharedPreferences? = null
-    @Volatile
-    private var usingFallbackStorage: Boolean = false
+    private var encryptedSharedPreferences: SharedPreferences? = null
     private val sharedPreferencesLock = Any()
+    private val sessionTokens = mutableMapOf<String, String>()
 
-    private fun getSharedPreferences(): SharedPreferences {
-        sharedPreferences?.let { return it }
+    private fun getEncryptedSharedPreferences(): SharedPreferences? {
+        encryptedSharedPreferences?.let { return it }
         return synchronized(sharedPreferencesLock) {
-            sharedPreferences?.let { return@synchronized it }
+            encryptedSharedPreferences?.let { return@synchronized it }
 
             val initialized = initializeEncryptedPreferences()
-            sharedPreferences = initialized
+            encryptedSharedPreferences = initialized
             initialized
         }
     }
 
-    private fun initializeEncryptedPreferences(): SharedPreferences {
+    private fun initializeEncryptedPreferences(): SharedPreferences? {
         val masterKeyAlias = runCatching {
             MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
         }.getOrElse { throwable ->
-            Log.e(TAG, "Unable to obtain master key alias. Falling back to local token prefs.", throwable)
-            usingFallbackStorage = true
-            return fallbackPreferences()
+            Log.e(TAG, "Unable to obtain master key alias for encrypted token prefs.", throwable)
+            return null
         }
 
         return try {
-            usingFallbackStorage = false
             createEncryptedPreferences(masterKeyAlias)
         } catch (firstError: Throwable) {
             Log.w(TAG, "Encrypted token prefs failed. Clearing token prefs and retrying once.", firstError)
             runCatching { clearEncryptedPreferencesFile() }
             try {
-                usingFallbackStorage = false
                 createEncryptedPreferences(masterKeyAlias)
             } catch (secondError: Throwable) {
                 Log.w(TAG, "Encrypted token prefs still failing. Resetting master key and retrying.", secondError)
                 runCatching { deleteMasterKey(masterKeyAlias) }
                 runCatching { clearEncryptedPreferencesFile() }
                 try {
-                    usingFallbackStorage = false
                     createEncryptedPreferences(masterKeyAlias)
                 } catch (finalError: Throwable) {
-                    Log.e(TAG, "Unable to initialize encrypted token prefs. Using local fallback prefs.", finalError)
-                    usingFallbackStorage = true
-                    fallbackPreferences()
+                    Log.e(TAG, "Unable to initialize encrypted token prefs.", finalError)
+                    null
                 }
             }
         }
@@ -90,41 +88,77 @@ class SecureTokenStorage @Inject constructor(
         }
     }
 
-    suspend fun saveToken(serverId: String, token: String) {
+    suspend fun saveToken(
+        serverId: String,
+        token: String,
+        persistAcrossRestarts: Boolean = true,
+        allowInsecureStorage: Boolean = false
+    ) {
         withContext(Dispatchers.IO) {
-            getSharedPreferences().edit()
-                .putString(tokenKey(serverId), token)
-                .apply()
-            // If fallback is currently active, mirror into encrypted storage when possible.
-            if (usingFallbackStorage) {
-                runCatching {
-                    val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-                    createEncryptedPreferences(masterKeyAlias).edit()
-                        .putString(tokenKey(serverId), token)
+            val key = tokenKey(serverId)
+            if (!persistAcrossRestarts) {
+                clearPersistedToken(key)
+                synchronized(sharedPreferencesLock) {
+                    sessionTokens[serverId] = token
+                }
+                return@withContext
+            }
+
+            val encryptedPrefs = getEncryptedSharedPreferences()
+            when {
+                encryptedPrefs != null -> {
+                    encryptedPrefs.edit()
+                        .putString(key, token)
+                        .apply()
+                    fallbackPreferences().edit()
+                        .remove(key)
                         .apply()
                 }
+
+                allowInsecureStorage -> {
+                    fallbackPreferences().edit()
+                        .putString(key, token)
+                        .apply()
+                }
+
+                else -> throw SecureStorageUnavailableException()
+            }
+
+            synchronized(sharedPreferencesLock) {
+                sessionTokens[serverId] = token
             }
         }
     }
 
     suspend fun getToken(serverId: String): String? = withContext(Dispatchers.IO) {
+        synchronized(sharedPreferencesLock) {
+            sessionTokens[serverId]
+        }?.let { return@withContext it }
+
         val key = tokenKey(serverId)
-        val primary = getSharedPreferences().getString(key, null)
-        if (!primary.isNullOrBlank()) return@withContext primary
+        val encrypted = getEncryptedSharedPreferences()?.getString(key, null)
+        if (!encrypted.isNullOrBlank()) {
+            synchronized(sharedPreferencesLock) {
+                sessionTokens[serverId] = encrypted
+            }
+            return@withContext encrypted
+        }
 
         val fallback = fallbackPreferences().getString(key, null)
         if (!fallback.isNullOrBlank()) {
-            getSharedPreferences().edit().putString(key, fallback).apply()
+            val encryptedPrefs = getEncryptedSharedPreferences()
+            if (encryptedPrefs != null) {
+                encryptedPrefs.edit()
+                    .putString(key, fallback)
+                    .apply()
+                fallbackPreferences().edit()
+                    .remove(key)
+                    .apply()
+            }
+            synchronized(sharedPreferencesLock) {
+                sessionTokens[serverId] = fallback
+            }
             return@withContext fallback
-        }
-
-        val encrypted = runCatching {
-            val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-            createEncryptedPreferences(masterKeyAlias).getString(key, null)
-        }.getOrNull()
-        if (!encrypted.isNullOrBlank()) {
-            getSharedPreferences().edit().putString(key, encrypted).apply()
-            return@withContext encrypted
         }
 
         null
@@ -133,19 +167,20 @@ class SecureTokenStorage @Inject constructor(
     suspend fun clearToken(serverId: String) {
         withContext(Dispatchers.IO) {
             val key = tokenKey(serverId)
-            getSharedPreferences().edit()
-                .remove(key)
-                .apply()
-            fallbackPreferences().edit()
-                .remove(key)
-                .apply()
-            runCatching {
-                val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-                createEncryptedPreferences(masterKeyAlias).edit()
-                    .remove(key)
-                    .apply()
+            clearPersistedToken(key)
+            synchronized(sharedPreferencesLock) {
+                sessionTokens.remove(serverId)
             }
         }
+    }
+
+    private fun clearPersistedToken(key: String) {
+        getEncryptedSharedPreferences()?.edit()
+            ?.remove(key)
+            ?.apply()
+        fallbackPreferences().edit()
+            .remove(key)
+            .apply()
     }
 
     private fun tokenKey(serverId: String): String = "token_$serverId"

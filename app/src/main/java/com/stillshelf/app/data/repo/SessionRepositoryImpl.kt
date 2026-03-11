@@ -270,7 +270,8 @@ class SessionRepositoryImpl @Inject constructor(
         serverName: String,
         baseUrl: String,
         username: String,
-        password: String
+        password: String,
+        persistenceMode: LoginPersistenceMode
     ): AppResult<Unit> {
         if (serverName.isBlank()) {
             return AppResult.Error("Server name is required.")
@@ -359,7 +360,30 @@ class SessionRepositoryImpl @Inject constructor(
                     runCatching { secureTokenStorage.clearToken(duplicate.id) }
                 }
 
-            secureTokenStorage.saveToken(serverId, token)
+            when (persistenceMode) {
+                LoginPersistenceMode.PersistentSecureOnly -> {
+                    secureTokenStorage.saveToken(
+                        serverId = serverId,
+                        token = token
+                    )
+                }
+
+                LoginPersistenceMode.PersistentAllowInsecureFallback -> {
+                    secureTokenStorage.saveToken(
+                        serverId = serverId,
+                        token = token,
+                        allowInsecureStorage = true
+                    )
+                }
+
+                LoginPersistenceMode.SessionOnly -> {
+                    secureTokenStorage.saveToken(
+                        serverId = serverId,
+                        token = token,
+                        persistAcrossRestarts = false
+                    )
+                }
+            }
             sessionPreferences.setActiveSelection(serverId = serverId, libraryId = null)
             sessionPreferences.setLastPlayedBookId(null)
             sessionPreferences.clearCachedHomeFeed()
@@ -726,11 +750,11 @@ class SessionRepositoryImpl @Inject constructor(
                 .filterNot { it.name.startsWith("StillShelf Probe", ignoreCase = true) }
                 .map { collection ->
                     async {
-                        val resolvedCount = audiobookshelfApi.getCollectionBookIds(
+                        val resolvedCount = collection.itemCount ?: audiobookshelfApi.getCollectionBookIds(
                             baseUrl = connection.server.baseUrl,
                             authToken = connection.token,
                             collectionId = collection.id
-                        ).getOrNull()?.size ?: collection.itemCount ?: 0
+                        ).getOrNull()?.size ?: 0
                         NamedEntitySummary(
                             id = collection.id,
                             name = collection.name,
@@ -783,11 +807,11 @@ class SessionRepositoryImpl @Inject constructor(
         val playlists = coroutineScope {
             result.getOrThrow().map { playlist ->
                 async {
-                    val resolvedCount = audiobookshelfApi.getPlaylistBookIds(
+                    val resolvedCount = playlist.itemCount ?: audiobookshelfApi.getPlaylistBookIds(
                         baseUrl = connection.server.baseUrl,
                         authToken = connection.token,
                         playlistId = playlist.id
-                    ).getOrNull()?.size ?: playlist.itemCount
+                    ).getOrNull()?.size
                     NamedEntitySummary(
                         id = playlist.id,
                         name = playlist.name,
@@ -894,35 +918,82 @@ class SessionRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun fetchAllBooksForActiveLibrary(forceRefresh: Boolean): AppResult<List<BookSummary>> {
-        val booksById = LinkedHashMap<String, BookSummary>()
-        var page = 0
-        while (page < MAX_FULL_LIBRARY_PAGES) {
-            when (
-                val booksResult = fetchBooksForActiveLibrary(
-                    limit = FULL_LIBRARY_PAGE_SIZE,
-                    page = page,
-                    forceRefresh = forceRefresh
-                )
-            ) {
-                is AppResult.Error -> return booksResult
-                is AppResult.Success -> {
-                    val pageBooks = booksResult.value
-                    if (pageBooks.isEmpty()) {
-                        break
-                    }
-                    val beforeCount = booksById.size
-                    pageBooks.forEach { book ->
-                        booksById.putIfAbsent(book.id.trim(), book)
-                    }
-                    if (pageBooks.size < FULL_LIBRARY_PAGE_SIZE || booksById.size == beforeCount) {
-                        break
-                    }
-                    page += 1
-                }
+    override suspend fun fetchAllBooksForActiveLibrary(
+        forceRefresh: Boolean
+    ): AppResult<List<BookSummary>> {
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val cacheKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "books:all"
+        )
+        if (!forceRefresh) {
+            getFreshCache(booksCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
+                return AppResult.Success(cached)
             }
         }
-        return AppResult.Success(booksById.values.toList())
+        val staleCache = if (forceRefresh) null else getAnyCache(booksCache, cacheKey)
+
+        val items = mutableListOf<AudiobookshelfLibraryItemDto>()
+        var page = 0
+        while (page < MAX_FULL_LIBRARY_PAGES) {
+            val itemsResult = audiobookshelfApi.getLibraryItems(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                libraryId = library.id,
+                limit = FULL_LIBRARY_PAGE_SIZE,
+                page = page,
+                sortBy = "media.metadata.title",
+                desc = false
+            )
+            if (itemsResult.isFailure) {
+                if (!staleCache.isNullOrEmpty()) {
+                    return AppResult.Success(staleCache)
+                }
+                val throwable = itemsResult.exceptionOrNull()
+                return AppResult.Error(
+                    message = throwable?.message ?: "Unable to load books.",
+                    cause = throwable
+                )
+            }
+
+            val batch = itemsResult.getOrThrow()
+                .filter { it.libraryId == library.id }
+            if (batch.isEmpty()) {
+                break
+            }
+            items += batch
+            if (batch.size < FULL_LIBRARY_PAGE_SIZE) {
+                break
+            }
+            page += 1
+        }
+
+        val mediaProgressByItemId = if (items.isEmpty()) {
+            emptyMap()
+        } else {
+            audiobookshelfApi.getMediaProgress(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token
+            ).getOrNull()
+                ?.associateBy { it.libraryItemId }
+                .orEmpty()
+        }
+        val books = items
+            .distinctBy { it.id.trim() }
+            .map { item ->
+                item.toBookSummary(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token
+                ).withResolvedProgress(mediaProgressByItemId[item.id])
+                    .withLocalProgressOverride(connection.server.id)
+            }
+        putCache(booksCache, cacheKey, books)
+        return AppResult.Success(books)
     }
 
     override suspend fun createCollection(name: String): AppResult<NamedEntitySummary> {
@@ -1672,13 +1743,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
 
-        val books = when (
-            val booksResult = fetchBooksForActiveLibrary(
-                limit = 400,
-                page = 0,
-                forceRefresh = forceRefresh
-            )
-        ) {
+        val books = when (val booksResult = fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
             is AppResult.Success -> booksResult.value
             is AppResult.Error -> {
                 return AppResult.Error(
@@ -2249,7 +2314,8 @@ class SessionRepositoryImpl @Inject constructor(
 
     override suspend fun fetchHomeFeed(
         continueLimit: Int,
-        recentlyAddedLimit: Int
+        recentlyAddedLimit: Int,
+        forceRefreshDerivedContent: Boolean
     ): AppResult<HomeFeed> {
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
             is AppResult.Success -> result.value
@@ -2283,15 +2349,7 @@ class SessionRepositoryImpl @Inject constructor(
                     )
                 }
                 val allBooksDeferred = async {
-                    audiobookshelfApi.getLibraryItems(
-                        baseUrl = connection.server.baseUrl,
-                        authToken = connection.token,
-                        libraryId = library.id,
-                        limit = 400,
-                        page = 0,
-                        sortBy = "media.metadata.title",
-                        desc = false
-                    )
+                    fetchAllBooksForActiveLibrary(forceRefresh = forceRefreshDerivedContent)
                 }
                 val authorsDeferred = async {
                     audiobookshelfApi.getAuthors(
@@ -2358,16 +2416,9 @@ class SessionRepositoryImpl @Inject constructor(
                         ).withResolvedProgress(mediaProgressByItemId[item.id])
                             .withLocalProgressOverride(connection.server.id)
                     }
-                val allBooks = if (allBooksResult.isSuccess) {
-                    allBooksResult.getOrThrow().map { item ->
-                        item.toBookSummary(
-                            baseUrl = connection.server.baseUrl,
-                            authToken = connection.token
-                        ).withResolvedProgress(mediaProgressByItemId[item.id])
-                            .withLocalProgressOverride(connection.server.id)
-                    }
-                } else {
-                    emptyList()
+                val allBooks = when (allBooksResult) {
+                    is AppResult.Success -> allBooksResult.value
+                    is AppResult.Error -> emptyList()
                 }
                 val listenAgain = allBooks
                     .asSequence()
@@ -2675,15 +2726,17 @@ class SessionRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun clearContentCaches() {
-        booksCache.clear()
-        authorsCache.clear()
-        narratorsCache.clear()
-        seriesCache.clear()
-        seriesContentCache.clear()
-        collectionsCache.clear()
-        playlistsCache.clear()
-        bookDetailCache.clear()
+    private suspend fun clearContentCaches() {
+        cacheMutex.withLock {
+            booksCache.clear()
+            authorsCache.clear()
+            narratorsCache.clear()
+            seriesCache.clear()
+            seriesContentCache.clear()
+            collectionsCache.clear()
+            playlistsCache.clear()
+            bookDetailCache.clear()
+        }
     }
 
     private suspend fun clearBookDetailCache(

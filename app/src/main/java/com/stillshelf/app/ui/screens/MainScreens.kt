@@ -6019,6 +6019,7 @@ fun BookDetailScreen(
         else -> null
     }
     val detailProgressPercent = (uiState.progressPercent ?: 0.0).coerceIn(0.0, 1.0)
+    val detailChapters = uiState.detail?.chapters.orEmpty()
     val detailCurrentSeconds = if (isPlayingDetailBookNow) {
         playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0
     } else {
@@ -6048,6 +6049,9 @@ fun BookDetailScreen(
         progressPercent = resolvedDetailProgress,
         isFinished = effectiveDetailFinished
     )
+    val detailActiveChapterIndex = detailCurrentSeconds
+        ?.let { position -> findActiveChapterIndex(detailChapters, position) }
+        ?: -1
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -6233,14 +6237,8 @@ fun BookDetailScreen(
                         resolved.toFloat().coerceIn(0f, 1f)
                     }
                 }
-                val chapterPositionSeconds = if (playbackUiState.book?.id == book.id) {
-                    (playbackUiState.positionMs.coerceAtLeast(0L) / 1000.0)
-                } else {
-                    uiState.currentTimeSeconds?.coerceAtLeast(0.0)
-                }
-                val activeChapterIndex = chapterPositionSeconds
-                    ?.let { position -> findActiveChapterIndex(detail.chapters, position) }
-                    ?: -1
+                val activeChapterIndex = detailActiveChapterIndex
+                val chapterPositionSeconds = detailCurrentSeconds
                 val seriesOrderLabel = resolveSeriesOrderLabel(
                     seriesSequence = book.seriesSequence,
                     book.title,
@@ -7918,9 +7916,7 @@ fun PlayerScreen(
                     isPlaying = playbackUiState.isPlaying,
                     timeLeftLabel = formatTimeLeftLabel(durationSeconds = durationSeconds, positionSeconds = positionSeconds),
                     onSelectTab = { chapterSheetTab = it },
-                    onPlayChapter = { chapterStart ->
-                        viewModel.jumpToSeconds(chapterStart)
-                    },
+                    onPlayChapter = { chapterStart -> viewModel.jumpToSeconds(chapterStart) },
                     onPlayBookmark = { bookmarkSeconds ->
                         viewModel.jumpToSeconds(bookmarkSeconds)
                     },
@@ -10088,25 +10084,8 @@ internal fun findActiveChapterIndex(
 ): Int {
     if (chapters.isEmpty()) return -1
     val position = positionSeconds.coerceAtLeast(0.0)
-    val boundaryToleranceSeconds = 0.75
-    val latestStartedIndex = chapters.indexOfLast { item ->
-        position >= item.startSeconds
-    }
-    if (
-        latestStartedIndex >= 0 &&
-        position - chapters[latestStartedIndex].startSeconds <= boundaryToleranceSeconds
-    ) {
-        return latestStartedIndex
-    }
-    val index = chapters.indexOfFirst { item ->
-        val end = item.endSeconds ?: Double.POSITIVE_INFINITY
-        position >= item.startSeconds && position < end
-    }
-    return when {
-        index >= 0 -> index
-        latestStartedIndex >= 0 -> latestStartedIndex
-        else -> chapters.lastIndex
-    }
+    val latestStartedIndex = chapters.indexOfLast { item -> position >= item.startSeconds }
+    return if (latestStartedIndex >= 0) latestStartedIndex else 0
 }
 
 @Composable

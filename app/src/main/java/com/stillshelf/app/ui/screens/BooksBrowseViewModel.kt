@@ -26,10 +26,12 @@ class BooksBrowseViewModel @Inject constructor(
 ) : ViewModel() {
     companion object {
         private const val BOOKS_CACHE_MAX_AGE_MS: Long = 5 * 60 * 1000L
+        private const val INITIAL_BOOKS_PAGE_SIZE: Int = 400
     }
 
     private val booksCacheByLibrary = mutableMapOf<String, List<BookSummary>>()
     private val booksCacheAtMsByLibrary = mutableMapOf<String, Long>()
+    private var loadRequestId: Long = 0L
 
     private val mutableUiState = MutableStateFlow(BooksBrowseUiState())
     val uiState: StateFlow<BooksBrowseUiState> = mutableUiState.asStateFlow()
@@ -213,7 +215,7 @@ class BooksBrowseViewModel @Inject constructor(
         isUserRefresh: Boolean,
         clearBootstrap: Boolean = false
     ) {
-        if (uiState.value.isLoading) return
+        val requestId = ++loadRequestId
         val activeLibraryId = sessionRepository.observeSessionState().first().activeLibraryId
         if (!isUserRefresh && !activeLibraryId.isNullOrBlank()) {
             val cachedBooks = booksCacheByLibrary[activeLibraryId]
@@ -242,34 +244,71 @@ class BooksBrowseViewModel @Inject constructor(
         }
 
         when (
-            val result = sessionRepository.fetchBooksForActiveLibrary(
-                limit = 400,
+            val initialResult = sessionRepository.fetchBooksForActiveLibrary(
+                limit = INITIAL_BOOKS_PAGE_SIZE,
                 page = 0,
                 forceRefresh = isUserRefresh
             )
         ) {
             is AppResult.Success -> {
-                if (!activeLibraryId.isNullOrBlank()) {
-                    booksCacheByLibrary[activeLibraryId] = result.value
-                    booksCacheAtMsByLibrary[activeLibraryId] = System.currentTimeMillis()
-                }
+                if (requestId != loadRequestId) return
+                val initialBooks = initialResult.value
+                val shouldReconcileFullLibrary = initialBooks.size >= INITIAL_BOOKS_PAGE_SIZE
                 mutableUiState.update {
                     it.copy(
                         isBootstrapping = false,
                         isLoading = false,
-                        isRefreshing = false,
-                        books = result.value
+                        isRefreshing = isUserRefresh && shouldReconcileFullLibrary,
+                        books = initialBooks
                     )
+                }
+
+                if (!shouldReconcileFullLibrary) {
+                    if (!activeLibraryId.isNullOrBlank()) {
+                        booksCacheByLibrary[activeLibraryId] = initialBooks
+                        booksCacheAtMsByLibrary[activeLibraryId] = System.currentTimeMillis()
+                    }
+                    return
+                }
+
+                when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = isUserRefresh)) {
+                    is AppResult.Success -> {
+                        if (requestId != loadRequestId) return
+                        if (!activeLibraryId.isNullOrBlank()) {
+                            booksCacheByLibrary[activeLibraryId] = allBooksResult.value
+                            booksCacheAtMsByLibrary[activeLibraryId] = System.currentTimeMillis()
+                        }
+                        mutableUiState.update {
+                            it.copy(
+                                isBootstrapping = false,
+                                isLoading = false,
+                                isRefreshing = false,
+                                books = allBooksResult.value
+                            )
+                        }
+                    }
+
+                    is AppResult.Error -> {
+                        if (requestId != loadRequestId) return
+                        mutableUiState.update {
+                            it.copy(
+                                isBootstrapping = false,
+                                isLoading = false,
+                                isRefreshing = false
+                            )
+                        }
+                    }
                 }
             }
 
             is AppResult.Error -> {
+                if (requestId != loadRequestId) return
                 mutableUiState.update {
                     it.copy(
                         isBootstrapping = false,
                         isLoading = false,
                         isRefreshing = false,
-                        errorMessage = result.message
+                        errorMessage = initialResult.message
                     )
                 }
             }

@@ -223,6 +223,8 @@ data class GenresUiState(
     val errorMessage: String? = null
 )
 
+private const val FACET_INITIAL_BOOKS_PAGE_SIZE: Int = 400
+
 enum class AuthorLayoutMode {
     Grid,
     List
@@ -259,6 +261,7 @@ class AuthorDetailViewModel @Inject constructor(
     val layoutMode: StateFlow<AuthorLayoutMode> = mutableLayoutMode.asStateFlow()
     private val mutableCollapseSeries = MutableStateFlow(true)
     val collapseSeries: StateFlow<Boolean> = mutableCollapseSeries.asStateFlow()
+    private var refreshRequestId: Long = 0L
 
     init {
         viewModelScope.launch { restoreUiPreferences() }
@@ -383,6 +386,7 @@ class AuthorDetailViewModel @Inject constructor(
     }
 
     private fun refresh(forceRefresh: Boolean) {
+        val requestId = ++refreshRequestId
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
             val matchedAuthor = when (
@@ -402,33 +406,76 @@ class AuthorDetailViewModel @Inject constructor(
             val authorAbout = matchedAuthor?.description?.takeIf { it.isNotBlank() }
 
             when (
-                val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = 400,
+                val initialResult = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = FACET_INITIAL_BOOKS_PAGE_SIZE,
                     page = 0,
                     forceRefresh = forceRefresh
                 )
             ) {
                 is AppResult.Success -> {
-                    val books = result.value.filter {
+                    if (requestId != refreshRequestId) return@launch
+                    val initialBooks = initialResult.value
+                    val initialMatches = initialBooks.filter {
                         doesBookMatchAuthor(it.authorName, authorName)
                     }.sortedBy { it.title.lowercase() }
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            books = books,
-                            authorImageUrl = authorImageUrl,
-                            authorAbout = authorAbout
-                        )
+                    val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
+                    val canRenderInitialMatches = initialMatches.isNotEmpty() || !shouldReconcileFullLibrary
+
+                    if (canRenderInitialMatches) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = false,
+                                books = initialMatches,
+                                authorImageUrl = authorImageUrl,
+                                authorAbout = authorAbout
+                            )
+                        }
+                    }
+
+                    if (!shouldReconcileFullLibrary) {
+                        return@launch
+                    }
+
+                    when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
+                        is AppResult.Success -> {
+                            if (requestId != refreshRequestId) return@launch
+                            val books = allBooksResult.value.filter {
+                                doesBookMatchAuthor(it.authorName, authorName)
+                            }.sortedBy { it.title.lowercase() }
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    books = books,
+                                    authorImageUrl = authorImageUrl,
+                                    authorAbout = authorAbout
+                                )
+                            }
+                        }
+
+                        is AppResult.Error -> {
+                            if (requestId != refreshRequestId) return@launch
+                            if (!canRenderInitialMatches) {
+                                mutableUiState.update {
+                                    it.copy(
+                                        isLoading = false,
+                                        authorImageUrl = authorImageUrl,
+                                        authorAbout = authorAbout,
+                                        errorMessage = allBooksResult.message
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
                 is AppResult.Error -> {
+                    if (requestId != refreshRequestId) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
                             authorImageUrl = authorImageUrl,
                             authorAbout = authorAbout,
-                            errorMessage = result.message
+                            errorMessage = initialResult.message
                         )
                     }
                 }
@@ -1224,6 +1271,7 @@ class NarratorDetailViewModel @Inject constructor(
     private val narratorName = savedStateHandle.get<String>(DetailRoute.NARRATOR_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = narratorName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private var refreshRequestId: Long = 0L
 
     init {
         observeBookProgressMutations()
@@ -1235,32 +1283,72 @@ class NarratorDetailViewModel @Inject constructor(
     }
 
     private fun refresh(forceRefresh: Boolean) {
+        val requestId = ++refreshRequestId
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
             when (
-                val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = 400,
+                val initialResult = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = FACET_INITIAL_BOOKS_PAGE_SIZE,
                     page = 0,
                     forceRefresh = forceRefresh
                 )
             ) {
                 is AppResult.Success -> {
-                    val books = result.value.filter {
+                    if (requestId != refreshRequestId) return@launch
+                    val initialBooks = initialResult.value
+                    val initialMatches = initialBooks.filter {
                         it.narratorName?.equals(narratorName, ignoreCase = true) == true
                     }.sortedBy { it.title.lowercase() }
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            books = books
-                        )
+                    val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
+                    val canRenderInitialMatches = initialMatches.isNotEmpty() || !shouldReconcileFullLibrary
+
+                    if (canRenderInitialMatches) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = false,
+                                books = initialMatches
+                            )
+                        }
+                    }
+
+                    if (!shouldReconcileFullLibrary) {
+                        return@launch
+                    }
+
+                    when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
+                        is AppResult.Success -> {
+                            if (requestId != refreshRequestId) return@launch
+                            val books = allBooksResult.value.filter {
+                                it.narratorName?.equals(narratorName, ignoreCase = true) == true
+                            }.sortedBy { it.title.lowercase() }
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    books = books
+                                )
+                            }
+                        }
+
+                        is AppResult.Error -> {
+                            if (requestId != refreshRequestId) return@launch
+                            if (!canRenderInitialMatches) {
+                                mutableUiState.update {
+                                    it.copy(
+                                        isLoading = false,
+                                        errorMessage = allBooksResult.message
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
                 is AppResult.Error -> {
+                    if (requestId != refreshRequestId) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = initialResult.message
                         )
                     }
                 }
@@ -1285,6 +1373,7 @@ class GenresBrowseViewModel @Inject constructor(
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(GenresUiState(isLoading = true))
     val uiState: StateFlow<GenresUiState> = mutableUiState.asStateFlow()
+    private var refreshRequestId: Long = 0L
 
     init {
         refresh(forceRefresh = false)
@@ -1295,37 +1384,70 @@ class GenresBrowseViewModel @Inject constructor(
     }
 
     private fun refresh(forceRefresh: Boolean) {
+        val requestId = ++refreshRequestId
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
             when (
-                val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = 400,
+                val initialResult = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = FACET_INITIAL_BOOKS_PAGE_SIZE,
                     page = 0,
                     forceRefresh = forceRefresh
                 )
             ) {
                 is AppResult.Success -> {
-                    val map = linkedMapOf<String, Int>()
-                    result.value
+                    if (requestId != refreshRequestId) return@launch
+                    val initialBooks = initialResult.value
+                    val initialGenres = linkedMapOf<String, Int>()
+                    initialBooks
                         .flatMap { it.genres }
                         .forEach { genre ->
-                            map[genre] = (map[genre] ?: 0) + 1
+                            initialGenres[genre] = (initialGenres[genre] ?: 0) + 1
                         }
+                    val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            genres = map.entries
+                            genres = initialGenres.entries
                                 .sortedBy { entry -> entry.key.lowercase() }
                                 .map { GenreSummary(name = it.key, count = it.value) }
                         )
                     }
+
+                    if (!shouldReconcileFullLibrary) {
+                        return@launch
+                    }
+
+                    when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
+                        is AppResult.Success -> {
+                            if (requestId != refreshRequestId) return@launch
+                            val genres = linkedMapOf<String, Int>()
+                            allBooksResult.value
+                                .flatMap { it.genres }
+                                .forEach { genre ->
+                                    genres[genre] = (genres[genre] ?: 0) + 1
+                                }
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    genres = genres.entries
+                                        .sortedBy { entry -> entry.key.lowercase() }
+                                        .map { GenreSummary(name = it.key, count = it.value) }
+                                )
+                            }
+                        }
+
+                        is AppResult.Error -> {
+                            if (requestId != refreshRequestId) return@launch
+                        }
+                    }
                 }
 
                 is AppResult.Error -> {
+                    if (requestId != refreshRequestId) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = initialResult.message
                         )
                     }
                 }
@@ -1343,6 +1465,7 @@ class GenreDetailViewModel @Inject constructor(
     private val genreName = savedStateHandle.get<String>(DetailRoute.GENRE_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = genreName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private var refreshRequestId: Long = 0L
 
     init {
         observeBookProgressMutations()
@@ -1354,32 +1477,72 @@ class GenreDetailViewModel @Inject constructor(
     }
 
     private fun refresh(forceRefresh: Boolean) {
+        val requestId = ++refreshRequestId
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
             when (
-                val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = 400,
+                val initialResult = sessionRepository.fetchBooksForActiveLibrary(
+                    limit = FACET_INITIAL_BOOKS_PAGE_SIZE,
                     page = 0,
                     forceRefresh = forceRefresh
                 )
             ) {
                 is AppResult.Success -> {
-                    val books = result.value.filter { item ->
+                    if (requestId != refreshRequestId) return@launch
+                    val initialBooks = initialResult.value
+                    val initialMatches = initialBooks.filter { item ->
                         item.genres.any { it.equals(genreName, ignoreCase = true) }
                     }.sortedBy { it.title.lowercase() }
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            books = books
-                        )
+                    val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
+                    val canRenderInitialMatches = initialMatches.isNotEmpty() || !shouldReconcileFullLibrary
+
+                    if (canRenderInitialMatches) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = false,
+                                books = initialMatches
+                            )
+                        }
+                    }
+
+                    if (!shouldReconcileFullLibrary) {
+                        return@launch
+                    }
+
+                    when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
+                        is AppResult.Success -> {
+                            if (requestId != refreshRequestId) return@launch
+                            val books = allBooksResult.value.filter { item ->
+                                item.genres.any { it.equals(genreName, ignoreCase = true) }
+                            }.sortedBy { it.title.lowercase() }
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    books = books
+                                )
+                            }
+                        }
+
+                        is AppResult.Error -> {
+                            if (requestId != refreshRequestId) return@launch
+                            if (!canRenderInitialMatches) {
+                                mutableUiState.update {
+                                    it.copy(
+                                        isLoading = false,
+                                        errorMessage = allBooksResult.message
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
                 is AppResult.Error -> {
+                    if (requestId != refreshRequestId) return@launch
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = result.message
+                            errorMessage = initialResult.message
                         )
                     }
                 }

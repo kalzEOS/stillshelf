@@ -243,6 +243,17 @@ class PlaybackController @Inject constructor(
         val shouldRestartFromBeginning: Boolean
     )
 
+    private data class PreferredPlaybackProgress(
+        val progress: PlaybackProgress?,
+        val source: PlaybackProgressSource
+    )
+
+    private enum class PlaybackProgressSource {
+        None,
+        Server,
+        Local
+    }
+
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
             lastAppBackgroundSyncAtElapsedMs = 0L
@@ -459,11 +470,21 @@ class PlaybackController @Inject constructor(
             serverId = observedActiveServerId,
             bookId = bookId
         )
-        val resolvedProgress = preferLocalCheckpoint(
+        val preferredProgress = preferLocalCheckpoint(
             serverProgress = serverProgress,
             localCheckpoint = localCheckpoint
         )
-        if (localCheckpoint != null && localCheckpointMatchesResolvedProgress(localCheckpoint, resolvedProgress)) {
+        val resolvedProgress = preferredProgress.progress
+        if (
+            localCheckpoint != null &&
+            shouldReplayLocalCheckpointAtStartup(
+                selectedSourceIsLocal = preferredProgress.source == PlaybackProgressSource.Local,
+                localCheckpointMatchesResolvedProgress = localCheckpointMatchesResolvedProgress(
+                    localCheckpoint,
+                    resolvedProgress
+                )
+            )
+        ) {
             enqueueProgressSyncRequest(
                 request = localCheckpoint.toProgressSyncRequest(),
                 bypassGate = true
@@ -492,15 +513,29 @@ class PlaybackController @Inject constructor(
     private fun preferLocalCheckpoint(
         serverProgress: PlaybackProgress?,
         localCheckpoint: PlaybackCheckpointSnapshot?
-    ): PlaybackProgress? {
-        if (localCheckpoint == null) return serverProgress
+    ): PreferredPlaybackProgress {
+        if (localCheckpoint == null) {
+            return PreferredPlaybackProgress(
+                progress = serverProgress,
+                source = if (serverProgress != null) PlaybackProgressSource.Server else PlaybackProgressSource.None
+            )
+        }
         val localProgress = localCheckpoint.toPlaybackProgress()
-        if (serverProgress == null) return localProgress
+        if (serverProgress == null) {
+            return PreferredPlaybackProgress(
+                progress = localProgress,
+                source = PlaybackProgressSource.Local
+            )
+        }
 
         val localUpdatedAtMs = localCheckpoint.savedAtMs.takeIf { it > 0L }
         val serverUpdatedAtMs = serverProgress.updatedAtMs?.takeIf { it > 0L }
         if (localUpdatedAtMs != null && serverUpdatedAtMs != null && localUpdatedAtMs != serverUpdatedAtMs) {
-            return if (localUpdatedAtMs > serverUpdatedAtMs) localProgress else serverProgress
+            return if (localUpdatedAtMs > serverUpdatedAtMs) {
+                PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
+            } else {
+                PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
+            }
         }
 
         val localSeconds = localProgress.currentTimeSeconds
@@ -508,15 +543,28 @@ class PlaybackController @Inject constructor(
         if (localSeconds != null && serverSeconds != null) {
             return when {
                 abs(localSeconds - serverSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS -> {
-                    if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) localProgress else serverProgress
+                    if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) {
+                        PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
+                    } else {
+                        PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
+                    }
                 }
 
-                localSeconds > serverSeconds -> localProgress
-                else -> serverProgress
+                localSeconds > serverSeconds -> {
+                    PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
+                }
+
+                else -> {
+                    PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
+                }
             }
         }
 
-        return localSeconds?.let { localProgress } ?: serverProgress
+        return if (localSeconds != null) {
+            PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
+        } else {
+            PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
+        }
     }
 
     private fun localCheckpointMatchesResolvedProgress(
@@ -1518,7 +1566,12 @@ class PlaybackController @Inject constructor(
         incoming: ProgressSyncRequest
     ): ProgressSyncRequest {
         if (existing == null) return incoming
-        return incoming.copy(isFinished = existing.isFinished || incoming.isFinished)
+        return incoming.copy(
+            isFinished = resolveMergedProgressSyncFinishedState(
+                existingIsFinished = existing.isFinished,
+                incomingIsFinished = incoming.isFinished
+            )
+        )
     }
 
     private fun progressSyncKey(serverId: String?, bookId: String): String {
@@ -2651,3 +2704,13 @@ class PlaybackController @Inject constructor(
         syncProgress(force = true, isFinished = true)
     }
 }
+
+internal fun resolveMergedProgressSyncFinishedState(
+    existingIsFinished: Boolean,
+    incomingIsFinished: Boolean
+): Boolean = incomingIsFinished
+
+internal fun shouldReplayLocalCheckpointAtStartup(
+    selectedSourceIsLocal: Boolean,
+    localCheckpointMatchesResolvedProgress: Boolean
+): Boolean = selectedSourceIsLocal && localCheckpointMatchesResolvedProgress

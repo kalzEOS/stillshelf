@@ -12,6 +12,7 @@ import com.stillshelf.app.core.model.BookProgressMutation
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
+import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
@@ -53,6 +54,11 @@ interface SessionRepository {
         page: Int = 0,
         forceRefresh: Boolean = false
     ): AppResult<List<NamedEntitySummary>>
+    suspend fun fetchSeriesContentsForActiveLibrary(
+        seriesId: String,
+        collapseSubseries: Boolean = true,
+        forceRefresh: Boolean = false
+    ): AppResult<List<SeriesDetailEntry>>
     suspend fun fetchCollectionsForActiveLibrary(
         forceRefresh: Boolean = false
     ): AppResult<List<NamedEntitySummary>>

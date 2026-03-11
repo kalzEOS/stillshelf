@@ -17,7 +17,9 @@ import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
+import com.stillshelf.app.core.model.PlaybackTrack
 import com.stillshelf.app.core.model.SearchResults
+import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.Library
@@ -106,6 +108,7 @@ class SessionRepositoryImpl @Inject constructor(
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val narratorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val seriesCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
+    private val seriesContentCache = mutableMapOf<String, TimedCacheEntry<List<SeriesDetailEntry>>>()
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val bookDetailCache = mutableMapOf<String, TimedCacheEntry<BookDetail>>()
@@ -603,6 +606,83 @@ class SessionRepositoryImpl @Inject constructor(
         }
         putCache(seriesCache, cacheKey, series)
         return AppResult.Success(series)
+    }
+
+    override suspend fun fetchSeriesContentsForActiveLibrary(
+        seriesId: String,
+        collapseSubseries: Boolean,
+        forceRefresh: Boolean
+    ): AppResult<List<SeriesDetailEntry>> {
+        if (seriesId.isBlank()) return AppResult.Error("Series not found.")
+
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val normalizedSeriesId = seriesId.trim()
+        val cacheKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "seriesContents:$normalizedSeriesId:$collapseSubseries"
+        )
+        if (!forceRefresh) {
+            getFreshCache(seriesContentCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
+                return AppResult.Success(cached)
+            }
+        }
+        val staleCache = if (forceRefresh) null else getAnyCache(seriesContentCache, cacheKey)
+
+        val items = mutableListOf<AudiobookshelfLibraryItemDto>()
+        var page = 0
+        while (page < MAX_FULL_LIBRARY_PAGES) {
+            val itemsResult = audiobookshelfApi.getLibraryItems(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                libraryId = library.id,
+                limit = FULL_LIBRARY_PAGE_SIZE,
+                page = page,
+                filter = "series.$normalizedSeriesId",
+                collapseSeries = collapseSubseries
+            )
+            if (itemsResult.isFailure) {
+                if (!staleCache.isNullOrEmpty()) {
+                    return AppResult.Success(staleCache)
+                }
+                return AppResult.Error(
+                    message = itemsResult.exceptionOrNull()?.message ?: "Unable to load series.",
+                    cause = itemsResult.exceptionOrNull()
+                )
+            }
+
+            val batch = itemsResult.getOrThrow()
+                .filter { it.libraryId == library.id }
+            if (batch.isEmpty()) break
+            items += batch
+            if (batch.size < FULL_LIBRARY_PAGE_SIZE) break
+            page += 1
+        }
+
+        val mediaProgressByItemId = if (items.isEmpty()) {
+            emptyMap()
+        } else {
+            audiobookshelfApi.getMediaProgress(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token
+            ).getOrNull()
+                ?.associateBy { it.libraryItemId }
+                .orEmpty()
+        }
+        val entries = items.map { item ->
+            item.toSeriesDetailEntry(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                mediaProgress = mediaProgressByItemId[item.id],
+                serverId = connection.server.id
+            )
+        }
+        putCache(seriesContentCache, cacheKey, entries)
+        return AppResult.Success(entries)
     }
 
     override suspend fun fetchCollectionsForActiveLibrary(
@@ -1403,7 +1483,18 @@ class SessionRepositoryImpl @Inject constructor(
                     baseUrl = connection.server.baseUrl,
                     streamPath = streamPath,
                     authToken = connection.token
-                )
+                ),
+                tracks = detail.audioTracks.map { track ->
+                    PlaybackTrack(
+                        startOffsetSeconds = track.startOffsetSeconds.coerceAtLeast(0.0),
+                        durationSeconds = track.durationSeconds?.takeIf { it >= 0.0 },
+                        streamUrl = audiobookshelfApi.buildPlaybackUrl(
+                            baseUrl = connection.server.baseUrl,
+                            streamPath = track.contentUrl,
+                            authToken = connection.token
+                        )
+                    )
+                }
             )
         )
     }
@@ -2589,6 +2680,7 @@ class SessionRepositoryImpl @Inject constructor(
         authorsCache.clear()
         narratorsCache.clear()
         seriesCache.clear()
+        seriesContentCache.clear()
         collectionsCache.clear()
         playlistsCache.clear()
         bookDetailCache.clear()
@@ -2832,6 +2924,36 @@ class SessionRepositoryImpl @Inject constructor(
             currentTimeSeconds = currentTimeSeconds,
             isFinished = isFinished
         )
+    }
+
+    private suspend fun AudiobookshelfLibraryItemDto.toSeriesDetailEntry(
+        baseUrl: String,
+        authToken: String,
+        mediaProgress: AudiobookshelfMediaProgressDto?,
+        serverId: String
+    ): SeriesDetailEntry {
+        val collapsed = collapsedSeries
+        if (collapsed != null) {
+            return SeriesDetailEntry.SubseriesItem(
+                id = collapsed.id,
+                name = collapsed.name,
+                bookCount = collapsed.bookCount.coerceAtLeast(1),
+                coverUrl = collapsed.libraryItemIds.firstOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { libraryItemId ->
+                        audiobookshelfApi.buildCoverUrl(baseUrl, libraryItemId, authToken)
+                    }
+                    ?: audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
+                sequenceLabel = collapsed.sequenceLabel
+            )
+        }
+
+        val resolvedBook = toBookSummary(
+            baseUrl = baseUrl,
+            authToken = authToken
+        ).withResolvedProgress(mediaProgress)
+            .withLocalProgressOverride(serverId)
+        return SeriesDetailEntry.BookItem(resolvedBook)
     }
 
     private fun BookSummary.withResolvedProgress(

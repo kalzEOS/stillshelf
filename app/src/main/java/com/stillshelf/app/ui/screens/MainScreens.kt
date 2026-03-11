@@ -300,14 +300,21 @@ private fun stackedSeriesLayerShadow(layer: Int, layerCount: Int): Dp {
 
 @Composable
 private fun SeriesStackCoverLayers(
-    coverUrl: String?,
+    coverUrls: List<String>,
     contentDescription: String?,
     layerCount: Int,
     frameWidth: Dp,
     frameHeight: Dp,
     modifier: Modifier = Modifier
 ) {
-    val resolvedLayerCount = layerCount.coerceIn(2, 3)
+    val resolvedCoverUrls = remember(coverUrls) { normalizeSeriesStackCoverUrls(coverUrls) }
+    val displayCoverUrls = remember(resolvedCoverUrls, layerCount) {
+        resolveSeriesStackDisplayCovers(
+            coverUrls = resolvedCoverUrls,
+            layerCount = layerCount
+        )
+    }
+    val resolvedLayerCount = displayCoverUrls.size.coerceIn(2, 3)
     val layerShape = SeriesStackCornerShape
     Box(
         modifier = modifier.clipToBounds()
@@ -319,7 +326,7 @@ private fun SeriesStackCoverLayers(
             val yOffset = (frameHeight - layerCardHeight).coerceAtLeast(0.dp)
             val layerShadow = stackedSeriesLayerShadow(layer = layer, layerCount = resolvedLayerCount)
             FramedCoverImage(
-                coverUrl = coverUrl,
+                coverUrl = displayCoverUrls.getOrNull(layer),
                 contentDescription = contentDescription,
                 modifier = Modifier
                     .offset(x = xOffset, y = yOffset)
@@ -349,6 +356,36 @@ private sealed interface BooksGridEntry {
         override val stableKey: String = "series:${normalizeSeriesGroupKey(seriesName)}"
         val leadBook: BookSummary get() = books.first()
         val count: Int get() = books.size
+    }
+}
+
+internal fun normalizeSeriesStackCoverUrls(coverUrls: List<String>): List<String> {
+    return coverUrls
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+        .toList()
+}
+
+internal fun resolveSeriesStackDisplayCovers(
+    coverUrls: List<String>,
+    layerCount: Int
+): List<String?> {
+    val normalized = normalizeSeriesStackCoverUrls(coverUrls)
+    if (normalized.isEmpty()) {
+        return List(layerCount.coerceIn(2, 3)) { null }
+    }
+    if (normalized.size == 1) {
+        return List(layerCount.coerceIn(2, 3)) { normalized.first() }
+    }
+    val frontCover = normalized[0]
+    val backCoverLeft = normalized.getOrNull(1)
+    val backCoverRight = normalized.getOrNull(2)
+    return if (normalized.size >= 3 && layerCount >= 3) {
+        listOf(backCoverRight, backCoverLeft, frontCover)
+    } else {
+        listOf(backCoverLeft, frontCover)
     }
 }
 
@@ -2019,7 +2056,7 @@ private fun SeriesStackGridItem(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrl = book.coverUrl,
+                coverUrls = listOfNotNull(book.coverUrl),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,
@@ -2287,7 +2324,10 @@ private fun SeriesStackListItem(
             val layerCount = entry.books.size.coerceIn(2, 3)
             val frameSize = 88.dp
             SeriesStackCoverLayers(
-                coverUrl = lead.coverUrl,
+                coverUrls = entry.books
+                    .asSequence()
+                    .mapNotNull { it.coverUrl }
+                    .toList(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameSize,
@@ -3578,7 +3618,7 @@ fun NarratorsBrowseScreen(
 
 @Composable
 fun SeriesBrowseScreen(
-    onSeriesClick: (String) -> Unit,
+    onSeriesClick: (String, String?) -> Unit,
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     viewModel: SeriesBrowseViewModel = hiltViewModel()
@@ -3643,7 +3683,7 @@ fun SeriesBrowseScreen(
                     ) {
                         gridItems(uiState.series, key = { it.id }) { series ->
                             Column(
-                                modifier = Modifier.clickable { onSeriesClick(series.name) },
+                                modifier = Modifier.clickable { onSeriesClick(series.name, series.id) },
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Box(
@@ -3660,7 +3700,7 @@ fun SeriesBrowseScreen(
                                         .toIntOrNull()
                                     val layerCount = inferredCount?.coerceIn(2, 3) ?: 3
                                     SeriesStackCoverLayers(
-                                        coverUrl = series.coverUrl,
+                                        coverUrls = series.coverUrls,
                                         contentDescription = series.name,
                                         layerCount = layerCount,
                                         frameWidth = StandardGridCoverWidth,
@@ -3713,7 +3753,7 @@ fun SeriesBrowseScreen(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f))
-                                    .clickable { onSeriesClick(series.name) }
+                                    .clickable { onSeriesClick(series.name, series.id) }
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -3725,7 +3765,7 @@ fun SeriesBrowseScreen(
                                         .clipToBounds()
                                 ) {
                                     SeriesStackCoverLayers(
-                                        coverUrl = series.coverUrl,
+                                        coverUrls = series.coverUrls,
                                         contentDescription = series.name,
                                         layerCount = layerCount,
                                         frameWidth = frameWidth,
@@ -10006,17 +10046,31 @@ private fun findActiveChapterTitle(
     return chapters[chapterIndex].title.trim().takeIf { it.isNotBlank() }
 }
 
-private fun findActiveChapterIndex(
+internal fun findActiveChapterIndex(
     chapters: List<BookChapter>,
     positionSeconds: Double
 ): Int {
     if (chapters.isEmpty()) return -1
     val position = positionSeconds.coerceAtLeast(0.0)
+    val boundaryToleranceSeconds = 0.75
+    val latestStartedIndex = chapters.indexOfLast { item ->
+        position >= item.startSeconds
+    }
+    if (
+        latestStartedIndex >= 0 &&
+        position - chapters[latestStartedIndex].startSeconds <= boundaryToleranceSeconds
+    ) {
+        return latestStartedIndex
+    }
     val index = chapters.indexOfFirst { item ->
         val end = item.endSeconds ?: Double.POSITIVE_INFINITY
         position >= item.startSeconds && position < end
     }
-    return if (index >= 0) index else chapters.lastIndex
+    return when {
+        index >= 0 -> index
+        latestStartedIndex >= 0 -> latestStartedIndex
+        else -> chapters.lastIndex
+    }
 }
 
 @Composable
@@ -10540,7 +10594,7 @@ private fun SeriesStackCard(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrl = book.coverUrl,
+                coverUrls = listOfNotNull(book.coverUrl),
                 contentDescription = series.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,

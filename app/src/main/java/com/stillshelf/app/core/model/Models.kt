@@ -90,6 +90,26 @@ data class SeriesStackSummary(
     val count: Int
 )
 
+sealed interface SeriesDetailEntry {
+    val stableId: String
+
+    data class BookItem(
+        val book: BookSummary
+    ) : SeriesDetailEntry {
+        override val stableId: String = "book:${book.id}"
+    }
+
+    data class SubseriesItem(
+        val id: String,
+        val name: String,
+        val bookCount: Int,
+        val coverUrl: String?,
+        val sequenceLabel: String? = null
+    ) : SeriesDetailEntry {
+        override val stableId: String = "series:$id"
+    }
+}
+
 data class SearchResults(
     val books: List<BookSummary>,
     val authors: List<NamedEntitySummary>,
@@ -97,9 +117,16 @@ data class SearchResults(
     val narrators: List<NamedEntitySummary>
 )
 
+data class PlaybackTrack(
+    val startOffsetSeconds: Double,
+    val durationSeconds: Double?,
+    val streamUrl: String
+)
+
 data class PlaybackSource(
     val book: BookSummary,
-    val streamUrl: String
+    val streamUrl: String,
+    val tracks: List<PlaybackTrack> = emptyList()
 )
 
 data class PlaybackProgress(

@@ -64,6 +64,7 @@ object DetailRoute {
     const val AUTHOR_NAME_ARG = "authorName"
     const val NARRATOR_NAME_ARG = "narratorName"
     const val SERIES_NAME_ARG = "seriesName"
+    const val SERIES_ID_ARG = "seriesId"
     const val GENRE_NAME_ARG = "genreName"
     const val COLLECTION_ID_ARG = "collectionId"
     const val COLLECTION_NAME_ARG = "collectionName"
@@ -72,7 +73,8 @@ object DetailRoute {
     const val BOOK_PATTERN = "main/book/{$BOOK_ID_ARG}"
     const val AUTHOR_PATTERN = "main/author/{$AUTHOR_NAME_ARG}"
     const val NARRATOR_PATTERN = "main/narrator/{$NARRATOR_NAME_ARG}"
-    const val SERIES_PATTERN = "main/series/{$SERIES_NAME_ARG}"
+    const val SERIES_PATTERN = "main/series/{$SERIES_NAME_ARG}?$SERIES_ID_ARG={$SERIES_ID_ARG}"
+    const val SUBSERIES_PATTERN = "main/subseries/{$SERIES_NAME_ARG}?$SERIES_ID_ARG={$SERIES_ID_ARG}"
     const val GENRE_PATTERN = "main/genre/{$GENRE_NAME_ARG}"
     const val COLLECTION_PATTERN =
         "main/collection/{$COLLECTION_ID_ARG}?$COLLECTION_NAME_ARG={$COLLECTION_NAME_ARG}"
@@ -82,7 +84,25 @@ object DetailRoute {
     fun book(bookId: String): String = "main/book/${Uri.encode(bookId)}"
     fun author(name: String): String = "main/author/${Uri.encode(name)}"
     fun narrator(name: String): String = "main/narrator/${Uri.encode(name)}"
-    fun series(name: String): String = "main/series/${Uri.encode(name)}"
+    fun series(name: String, id: String? = null): String {
+        val encodedName = Uri.encode(name)
+        val encodedId = id?.trim()?.takeIf { it.isNotBlank() }?.let(Uri::encode)
+        return if (encodedId == null) {
+            "main/series/$encodedName"
+        } else {
+            "main/series/$encodedName?$SERIES_ID_ARG=$encodedId"
+        }
+    }
+
+    fun subseries(name: String, id: String? = null): String {
+        val encodedName = Uri.encode(name)
+        val encodedId = id?.trim()?.takeIf { it.isNotBlank() }?.let(Uri::encode)
+        return if (encodedId == null) {
+            "main/subseries/$encodedName"
+        } else {
+            "main/subseries/$encodedName?$SERIES_ID_ARG=$encodedId"
+        }
+    }
     fun genre(name: String): String = "main/genre/${Uri.encode(name)}"
     fun collection(id: String, name: String): String {
         return "main/collection/${Uri.encode(id)}?$COLLECTION_NAME_ARG=${Uri.encode(name)}"

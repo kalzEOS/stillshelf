@@ -30,7 +30,7 @@ data class SeriesBrowseCard(
     val id: String,
     val name: String,
     val subtitle: String?,
-    val coverUrl: String?
+    val coverUrls: List<String> = emptyList()
 )
 
 data class SeriesBrowseUiState(
@@ -38,6 +38,12 @@ data class SeriesBrowseUiState(
     val series: List<SeriesBrowseCard> = emptyList(),
     val gridMode: Boolean = true,
     val errorMessage: String? = null
+)
+
+internal data class SeriesBrowseCandidate(
+    val card: SeriesBrowseCard,
+    val matchedBookIds: Set<String>,
+    val inferredParentKeys: Set<String> = emptySet()
 )
 
 data class CollectionsBrowseUiState(
@@ -205,30 +211,52 @@ class SeriesBrowseViewModel @Inject constructor(
 
                     val cards = buildList {
                         seriesResult.value.forEach { series ->
-                            val matchedBooks = booksBySeries[normalizeSeriesName(series.name)].orEmpty()
+                            val initialMatchedBooks = booksBySeries[normalizeSeriesName(series.name)].orEmpty()
                                 .ifEmpty { booksBySeriesId[series.id].orEmpty() }
-                            val preferredCoverUrl = matchedBooks.firstOrNull { !it.coverUrl.isNullOrBlank() }?.coverUrl
-                                ?: series.imageUrl
-                                ?: matchedBooks.firstOrNull()?.coverUrl
-                                ?: resolveSeriesCoverFromDetails(
+                            val expectedCount = series.subtitle
+                                ?.trim()
+                                ?.substringBefore(" ")
+                                ?.toIntOrNull()
+                            val matchedBooks = if (
+                                initialMatchedBooks.isEmpty() ||
+                                (expectedCount != null && initialMatchedBooks.size < expectedCount)
+                            ) {
+                                resolveSeriesBooksFromDetails(
                                     series = series,
                                     books = books,
+                                    initialMatchedBooks = initialMatchedBooks,
+                                    expectedCount = expectedCount,
                                     detailCache = detailCache
                                 )
+                            } else {
+                                initialMatchedBooks
+                            }
+                            val preferredCoverUrls = resolvePreferredSeriesCovers(
+                                series = series,
+                                matchedBooks = matchedBooks
+                            )
                             add(
-                                SeriesBrowseCard(
-                                    id = series.id,
-                                    name = series.name,
-                                    subtitle = series.subtitle ?: matchedBooks.takeIf { it.isNotEmpty() }?.size?.let { "$it books" },
-                                    coverUrl = preferredCoverUrl
+                                SeriesBrowseCandidate(
+                                    card = SeriesBrowseCard(
+                                        id = series.id,
+                                        name = series.name,
+                                        subtitle = series.subtitle ?: matchedBooks.takeIf { it.isNotEmpty() }?.size?.let { "$it books" },
+                                        coverUrls = preferredCoverUrls
+                                    ),
+                                    matchedBookIds = matchedBooks.map { it.id }.toSet(),
+                                    inferredParentKeys = resolveExplicitParentSeriesKeys(
+                                        series = series,
+                                        matchedBooks = matchedBooks
+                                    )
                                 )
                             )
                         }
                     }
+                    val visibleCards = filterNestedSeriesCards(cards)
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            series = cards
+                            series = visibleCards
                         )
                     }
                 }
@@ -270,43 +298,85 @@ class SeriesBrowseViewModel @Inject constructor(
         return books.distinctBy { it.id }
     }
 
-    private suspend fun resolveSeriesCoverFromDetails(
+    private fun resolvePreferredSeriesCovers(
+        series: NamedEntitySummary,
+        matchedBooks: List<BookSummary>
+    ): List<String> {
+        return buildList {
+            matchedBooks.forEach { book ->
+                val coverUrl = book.coverUrl?.trim()?.takeIf { it.isNotBlank() } ?: return@forEach
+                add(coverUrl)
+            }
+            series.imageUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+        }
+            .distinctBy { it.lowercase() }
+            .take(3)
+    }
+
+    private suspend fun resolveSeriesBooksFromDetails(
         series: NamedEntitySummary,
         books: List<BookSummary>,
+        initialMatchedBooks: List<BookSummary>,
+        expectedCount: Int?,
         detailCache: MutableMap<String, BookSummary?>
-    ): String? {
-        val normalizedSeriesName = normalizeSeriesName(series.name)
+    ): List<BookSummary> {
+        val resolved = LinkedHashMap<String, BookSummary>()
+        initialMatchedBooks.forEach { book -> resolved[book.id] = book }
         books.forEach { book ->
+            if (expectedCount != null && expectedCount > 0 && resolved.size >= expectedCount) {
+                return resolved.values.toList()
+            }
             val detailBook = detailCache.getOrPut(book.id) {
                 when (val detailResult = sessionRepository.fetchBookDetail(book.id, forceRefresh = false)) {
                     is AppResult.Success -> detailResult.value.book
                     is AppResult.Error -> null
                 }
             } ?: return@forEach
-
             val matchesById = detailBook.seriesIds.any { candidateId ->
                 seriesIdsLikelyMatch(candidateId, series.id)
             }
-            val matchesByName = buildList {
-                detailBook.seriesName?.let(::add)
-                addAll(detailBook.seriesNames)
-            }.any { candidateName ->
-                val normalizedCandidate = normalizeSeriesName(candidateName)
-                normalizedCandidate.isNotBlank() &&
-                    (
-                        normalizedCandidate == normalizedSeriesName ||
-                            normalizedCandidate.contains(normalizedSeriesName) ||
-                            normalizedSeriesName.contains(normalizedCandidate)
-                        )
-            }
+            val matchesByName = seriesMatchKeys(detailBook).contains(normalizeSeriesName(series.name))
             if (matchesById || matchesByName) {
-                val resolvedCover = detailBook.coverUrl ?: book.coverUrl
-                if (!resolvedCover.isNullOrBlank()) {
-                    return resolvedCover
-                }
+                resolved[book.id] = book.copy(
+                    seriesName = detailBook.seriesName ?: book.seriesName,
+                    seriesNames = if (detailBook.seriesNames.isNotEmpty()) detailBook.seriesNames else book.seriesNames,
+                    seriesIds = if (detailBook.seriesIds.isNotEmpty()) detailBook.seriesIds else book.seriesIds,
+                    seriesSequence = detailBook.seriesSequence ?: book.seriesSequence,
+                    coverUrl = detailBook.coverUrl ?: book.coverUrl
+                )
             }
         }
-        return null
+        return resolved.values.toList()
+    }
+
+    private fun filterNestedSeriesCards(candidates: List<SeriesBrowseCandidate>): List<SeriesBrowseCard> {
+        return candidates
+            .filterNot { candidate -> isNestedSeriesCandidate(candidate, candidates) }
+            .map { it.card }
+    }
+
+    private fun resolveExplicitParentSeriesKeys(
+        series: NamedEntitySummary,
+        matchedBooks: List<BookSummary>
+    ): Set<String> {
+        if (matchedBooks.isEmpty()) return emptySet()
+        val selfKeys = buildSet {
+            addAll(seriesIdentityKeys(series.id, series.name))
+        }
+        return matchedBooks
+            .map { book ->
+                buildSet {
+                    book.seriesIds.forEach { seriesId ->
+                        val normalized = seriesId.trim()
+                        if (normalized.isNotBlank()) {
+                            add(normalized)
+                        }
+                    }
+                    addAll(seriesMatchKeys(book))
+                } - selfKeys
+            }
+            .reduceOrNull { acc, keys -> acc.intersect(keys) }
+            .orEmpty()
     }
 }
 
@@ -935,6 +1005,36 @@ private fun seriesIdsLikelyMatch(candidateId: String, targetId: String): Boolean
     return normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
         normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
         normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
+}
+
+private fun seriesIdentityKeys(seriesId: String?, seriesName: String?): Set<String> {
+    return buildSet {
+        seriesId
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { add(it) }
+        seriesName
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::normalizeSeriesName)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { add(it) }
+    }
+}
+
+internal fun isNestedSeriesCandidate(
+    candidate: SeriesBrowseCandidate,
+    allCandidates: List<SeriesBrowseCandidate>
+): Boolean {
+    val candidateBookIds = candidate.matchedBookIds
+    if (candidateBookIds.isEmpty()) return false
+    return allCandidates.any { other ->
+        val otherKeys = seriesIdentityKeys(other.card.id, other.card.name)
+        other.card.id != candidate.card.id &&
+            other.matchedBookIds.size > candidateBookIds.size &&
+            otherKeys.any { it in candidate.inferredParentKeys } &&
+            candidateBookIds.all { bookId -> bookId in other.matchedBookIds }
+    }
 }
 
 private fun isStillShelfProbeCollection(name: String): Boolean {

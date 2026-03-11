@@ -48,7 +48,16 @@ data class AudiobookshelfLibraryItemDto(
     val addedAtMs: Long?,
     val progressPercent: Double?,
     val currentTimeSeconds: Double?,
-    val isFinished: Boolean
+    val isFinished: Boolean,
+    val collapsedSeries: AudiobookshelfCollapsedSeriesDto? = null
+)
+
+data class AudiobookshelfCollapsedSeriesDto(
+    val id: String,
+    val name: String,
+    val bookCount: Int,
+    val sequenceLabel: String? = null,
+    val libraryItemIds: List<String> = emptyList()
 )
 
 data class AudiobookshelfMediaProgressDto(
@@ -87,6 +96,12 @@ data class AudiobookshelfBookmarkDto(
     val createdAtMs: Long?
 )
 
+data class AudiobookshelfAudioTrackDto(
+    val startOffsetSeconds: Double,
+    val durationSeconds: Double?,
+    val contentUrl: String
+)
+
 data class AudiobookshelfBookDetailDto(
     val id: String,
     val libraryId: String,
@@ -103,7 +118,8 @@ data class AudiobookshelfBookDetailDto(
     val genres: List<String>,
     val sizeBytes: Long?,
     val chapters: List<AudiobookshelfChapterDto>,
-    val streamPath: String?
+    val streamPath: String?,
+    val audioTracks: List<AudiobookshelfAudioTrackDto> = emptyList()
 )
 
 data class AudiobookshelfCollectionDto(
@@ -208,7 +224,9 @@ class AudiobookshelfApi @Inject constructor(
         page: Int,
         sortBy: String? = null,
         desc: Boolean? = null,
-        searchQuery: String? = null
+        searchQuery: String? = null,
+        filter: String? = null,
+        collapseSeries: Boolean? = null
     ): Result<List<AudiobookshelfLibraryItemDto>> = withContext(Dispatchers.IO) {
         val query = buildMap<String, String> {
             put("limit", limit.toString())
@@ -216,6 +234,8 @@ class AudiobookshelfApi @Inject constructor(
             sortBy?.let { put("sort", it) }
             desc?.let { put("desc", if (it) "1" else "0") }
             searchQuery?.takeIf { it.isNotBlank() }?.let { put("q", it) }
+            filter?.takeIf { it.isNotBlank() }?.let { put("filter", it) }
+            collapseSeries?.let { put("collapseseries", if (it) "1" else "0") }
         }
 
         val url = buildUrl(baseUrl, "api/libraries/$libraryId/items", query)
@@ -2476,13 +2496,16 @@ class AudiobookshelfApi @Inject constructor(
         }
     }
 
-    private fun parseLibraryItem(item: JSONObject): AudiobookshelfLibraryItemDto? {
+    internal fun parseLibraryItem(item: JSONObject): AudiobookshelfLibraryItemDto? {
         val id = item.optString("id")
         val libraryId = item.optString("libraryId")
-        val media = item.optJSONObject("media") ?: return null
-        val metadata = media.optJSONObject("metadata")
+        val collapsedSeries = item.optJSONObject("collapsedSeries")?.let(::parseCollapsedSeries)
+        val media = item.optJSONObject("media")
+        val metadata = media?.optJSONObject("metadata")
 
         val title = metadata?.optString("title").orEmpty().ifBlank {
+            collapsedSeries?.name.orEmpty()
+        }.ifBlank {
             item.optString("relPath")
         }
         if (id.isBlank() || libraryId.isBlank() || title.isBlank()) return null
@@ -2507,31 +2530,92 @@ class AudiobookshelfApi @Inject constructor(
         val seriesNames = extractSeriesNames(
             metadata = metadata,
             rootSeriesArray = item.optJSONArray("series"),
-            mediaSeriesArray = media.optJSONArray("series")
+            mediaSeriesArray = media?.optJSONArray("series")
         )
         val seriesIds = extractSeriesIds(
             metadata = metadata,
             rootSeriesArray = item.optJSONArray("series"),
-            mediaSeriesArray = media.optJSONArray("series")
+            mediaSeriesArray = media?.optJSONArray("series")
         )
 
-        return AudiobookshelfLibraryItemDto(
+        return buildLibraryItemDto(
             id = id,
             libraryId = libraryId,
             title = title,
-            authorName = metadata?.optString("authorName").orEmpty().ifBlank { "Unknown Author" },
-            narratorName = metadata?.optString("narratorName").orEmpty().ifBlank { null },
-            durationSeconds = media.optDoubleOrNull("duration"),
-            seriesName = seriesNames.firstOrNull(),
+            relPath = item.optString("relPath"),
+            authorName = metadata?.optString("authorName"),
+            narratorName = metadata?.optString("narratorName"),
+            durationSeconds = media?.optDoubleOrNull("duration"),
             seriesNames = seriesNames,
             seriesIds = seriesIds,
             seriesSequence = extractSeriesSequence(metadata),
-            genres = metadata.optStringList("genres"),
+            genres = metadata?.optStringList("genres").orEmpty(),
             publishedYear = metadata?.optString("publishedYear")?.ifBlank { null },
             addedAtMs = addedAtMs,
-            progressPercent = progress?.coerceIn(0.0, 1.0),
-            currentTimeSeconds = currentTime?.coerceAtLeast(0.0),
-            isFinished = finished
+            progressPercent = progress,
+            currentTimeSeconds = currentTime,
+            isFinished = finished,
+            collapsedSeries = collapsedSeries
+        )
+    }
+
+    internal fun buildLibraryItemDto(
+        id: String,
+        libraryId: String,
+        title: String?,
+        relPath: String?,
+        authorName: String?,
+        narratorName: String?,
+        durationSeconds: Double?,
+        seriesNames: List<String>,
+        seriesIds: List<String>,
+        seriesSequence: Double?,
+        genres: List<String>,
+        publishedYear: String?,
+        addedAtMs: Long?,
+        progressPercent: Double?,
+        currentTimeSeconds: Double?,
+        isFinished: Boolean,
+        collapsedSeries: AudiobookshelfCollapsedSeriesDto? = null
+    ): AudiobookshelfLibraryItemDto? {
+        val resolvedTitle = title.orEmpty().ifBlank {
+            collapsedSeries?.name.orEmpty()
+        }.ifBlank {
+            relPath.orEmpty()
+        }
+        if (id.isBlank() || libraryId.isBlank() || resolvedTitle.isBlank()) return null
+        return AudiobookshelfLibraryItemDto(
+            id = id,
+            libraryId = libraryId,
+            title = resolvedTitle,
+            authorName = authorName.orEmpty().ifBlank { "Unknown Author" },
+            narratorName = narratorName.orEmpty().ifBlank { null },
+            durationSeconds = durationSeconds,
+            seriesName = seriesNames.firstOrNull(),
+            seriesNames = seriesNames,
+            seriesIds = seriesIds,
+            seriesSequence = seriesSequence,
+            genres = genres,
+            publishedYear = publishedYear,
+            addedAtMs = addedAtMs,
+            progressPercent = progressPercent?.coerceIn(0.0, 1.0),
+            currentTimeSeconds = currentTimeSeconds?.coerceAtLeast(0.0),
+            isFinished = isFinished,
+            collapsedSeries = collapsedSeries
+        )
+    }
+
+    private fun parseCollapsedSeries(item: JSONObject): AudiobookshelfCollapsedSeriesDto? {
+        val id = item.optString("id").trim()
+        val name = item.optString("name").trim()
+        if (id.isBlank() || name.isBlank()) return null
+        val bookCount = item.optInt("numBooks").takeIf { it > 0 } ?: 0
+        return AudiobookshelfCollapsedSeriesDto(
+            id = id,
+            name = name,
+            bookCount = bookCount,
+            sequenceLabel = item.optString("seriesSequenceList").ifBlank { null },
+            libraryItemIds = item.optStringList("libraryItemIds")
         )
     }
 
@@ -3382,6 +3466,31 @@ class AudiobookshelfApi @Inject constructor(
             rootSeriesArray = root.optJSONArray("series"),
             mediaSeriesArray = media.optJSONArray("series")
         )
+        val audioTracks = buildList {
+            val source = media.optJSONArray("tracks") ?: JSONArray()
+            var runningOffsetSeconds = 0.0
+            for (index in 0 until source.length()) {
+                val track = source.optJSONObject(index) ?: continue
+                val contentUrl = track.optString("contentUrl").trim()
+                if (contentUrl.isBlank()) continue
+                val durationSeconds = track.optDoubleOrNull("duration")
+                    ?: track.optDoubleOrNull("length")
+                val startOffsetSeconds = track.optDoubleOrNull("startOffset")
+                    ?: track.optDoubleOrNull("startTime")
+                    ?: runningOffsetSeconds
+                add(
+                    AudiobookshelfAudioTrackDto(
+                        startOffsetSeconds = startOffsetSeconds.coerceAtLeast(0.0),
+                        durationSeconds = durationSeconds?.takeIf { it >= 0.0 },
+                        contentUrl = contentUrl
+                    )
+                )
+                runningOffsetSeconds = (
+                    durationSeconds?.let { startOffsetSeconds + it }
+                        ?: runningOffsetSeconds
+                ).coerceAtLeast(runningOffsetSeconds)
+            }
+        }
 
         return AudiobookshelfBookDetailDto(
             id = id,
@@ -3402,7 +3511,8 @@ class AudiobookshelfApi @Inject constructor(
             streamPath = media.optJSONArray("tracks")
                 ?.optJSONObject(0)
                 ?.optString("contentUrl")
-                ?.ifBlank { null }
+                ?.ifBlank { null },
+            audioTracks = audioTracks
         )
     }
 

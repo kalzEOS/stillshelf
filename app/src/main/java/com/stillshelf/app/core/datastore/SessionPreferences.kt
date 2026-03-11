@@ -36,6 +36,7 @@ class SessionPreferences @Inject constructor(
     private val authorCollapseSeriesKey = booleanPreferencesKey("author_collapse_series")
     private val seriesBrowseGridModeKey = booleanPreferencesKey("series_browse_grid_mode")
     private val seriesDetailListModeKey = booleanPreferencesKey("series_detail_list_mode")
+    private val seriesDetailCollapseSubseriesKey = booleanPreferencesKey("series_detail_collapse_subseries")
     private val collectionDetailListModeKey = booleanPreferencesKey("collection_detail_list_mode")
     private val playlistDetailListModeKey = booleanPreferencesKey("playlist_detail_list_mode")
     private val downloadedListModeKey = booleanPreferencesKey("downloaded_list_mode")
@@ -81,6 +82,7 @@ class SessionPreferences @Inject constructor(
             authorCollapseSeries = prefs[authorCollapseSeriesKey] ?: true,
             seriesBrowseGridMode = prefs[seriesBrowseGridModeKey] ?: true,
             seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
+            seriesDetailCollapseSubseries = prefs[seriesDetailCollapseSubseriesKey] ?: true,
             collectionDetailListMode = prefs[collectionDetailListModeKey] ?: true,
             playlistDetailListMode = prefs[playlistDetailListModeKey] ?: true,
             downloadedListMode = prefs[downloadedListModeKey] ?: true,
@@ -257,6 +259,12 @@ class SessionPreferences @Inject constructor(
     suspend fun setSeriesDetailListMode(listMode: Boolean) {
         dataStore.edit { prefs ->
             prefs[seriesDetailListModeKey] = listMode
+        }
+    }
+
+    suspend fun setSeriesDetailCollapseSubseries(collapse: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[seriesDetailCollapseSubseriesKey] = collapse
         }
     }
 
@@ -723,6 +731,7 @@ data class SessionPreferenceState(
     val authorCollapseSeries: Boolean = true,
     val seriesBrowseGridMode: Boolean = true,
     val seriesDetailListMode: Boolean = true,
+    val seriesDetailCollapseSubseries: Boolean = true,
     val collectionDetailListMode: Boolean = true,
     val playlistDetailListMode: Boolean = true,
     val downloadedListMode: Boolean = true,

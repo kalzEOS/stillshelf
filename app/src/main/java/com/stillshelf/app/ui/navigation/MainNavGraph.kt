@@ -489,10 +489,8 @@ private fun MainTabsNavHost(
             SeriesBrowseScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
-                onSeriesClick = { seriesName ->
-                    navController.navigate(DetailRoute.series(seriesName)) {
-                        launchSingleTop = true
-                    }
+                onSeriesClick = { seriesName, seriesId ->
+                    navController.navigate(DetailRoute.series(seriesName, seriesId))
                 }
             )
         }
@@ -603,6 +601,11 @@ private fun MainTabsNavHost(
             arguments = listOf(
                 navArgument(DetailRoute.SERIES_NAME_ARG) {
                     type = NavType.StringType
+                },
+                navArgument(DetailRoute.SERIES_ID_ARG) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
                 }
             )
         ) {
@@ -613,6 +616,35 @@ private fun MainTabsNavHost(
                     navController.navigate(DetailRoute.book(bookId)) {
                         launchSingleTop = true
                     }
+                },
+                onSeriesClick = { seriesName, seriesId ->
+                    navController.navigate(DetailRoute.subseries(seriesName, seriesId))
+                }
+            )
+        }
+        composable(
+            route = DetailRoute.SUBSERIES_PATTERN,
+            arguments = listOf(
+                navArgument(DetailRoute.SERIES_NAME_ARG) {
+                    type = NavType.StringType
+                },
+                navArgument(DetailRoute.SERIES_ID_ARG) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) {
+            SeriesDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onBookClick = { bookId ->
+                    navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                },
+                onSeriesClick = { seriesName, seriesId ->
+                    navController.navigate(DetailRoute.subseries(seriesName, seriesId))
                 }
             )
         }

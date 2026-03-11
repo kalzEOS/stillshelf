@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FilterList
@@ -52,6 +53,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -95,6 +97,7 @@ import com.stillshelf.app.core.util.formatDurationHoursMinutes
 import com.stillshelf.app.core.util.hasFinishedProgress
 import com.stillshelf.app.core.util.hasStartedProgress
 import com.stillshelf.app.core.util.remainingTimeLabel
+import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
@@ -129,6 +132,30 @@ data class FacetBooksUiState(
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),
     val actionMessage: String? = null
 )
+
+data class SeriesDetailUiState(
+    val isLoading: Boolean = false,
+    val title: String = "",
+    val entries: List<SeriesDetailEntry> = emptyList(),
+    val canCollapseSubseries: Boolean = false,
+    val errorMessage: String? = null,
+    val downloadedBookIds: Set<String> = emptySet(),
+    val downloadProgressByBookId: Map<String, Int> = emptyMap(),
+    val actionMessage: String? = null
+) {
+    val books: List<BookSummary>
+        get() = entries.mapNotNull { entry ->
+            (entry as? SeriesDetailEntry.BookItem)?.book
+        }
+
+    val totalBookCount: Int
+        get() = entries.sumOf { entry ->
+            when (entry) {
+                is SeriesDetailEntry.BookItem -> 1
+                is SeriesDetailEntry.SubseriesItem -> entry.bookCount.coerceAtLeast(1)
+            }
+        }
+}
 
 private val FacetBackTitleSpacing = 12.dp
 private val FacetSeriesStackMinLayerExtent = 42.dp
@@ -442,19 +469,42 @@ class SeriesDetailViewModel @Inject constructor(
     }
 
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
-    private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = seriesName))
-    val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val seriesId = savedStateHandle.get<String>(DetailRoute.SERIES_ID_ARG)?.trim()?.takeIf { it.isNotBlank() }
+    private val mutableUiState = MutableStateFlow(SeriesDetailUiState(isLoading = true, title = seriesName))
+    val uiState: StateFlow<SeriesDetailUiState> = mutableUiState.asStateFlow()
     private val mutableListMode = MutableStateFlow(true)
     val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
+    private val mutableCollapseSubseries = MutableStateFlow(true)
+    val collapseSubseries: StateFlow<Boolean> = mutableCollapseSubseries.asStateFlow()
 
     private data class SeriesMatchTarget(
         val id: String?,
         val expectedCount: Int?
     )
 
+    private data class DetailedSeriesBook(
+        val book: BookSummary,
+        val seriesNames: List<String>,
+        val seriesIds: List<String>
+    )
+
+    private data class ChildSeriesCandidate(
+        val key: String,
+        val id: String?,
+        val name: String
+    )
+
+    private data class SeriesEntriesResult(
+        val entries: List<SeriesDetailEntry>,
+        val hasCollapsibleSubseries: Boolean
+    )
+
     init {
         viewModelScope.launch {
-            mutableListMode.value = sessionPreferences.state.first().seriesDetailListMode
+            sessionPreferences.state.first().let { prefs ->
+                mutableListMode.value = prefs.seriesDetailListMode
+                mutableCollapseSubseries.value = prefs.seriesDetailCollapseSubseries
+            }
         }
         observeDownloadedState()
         observeBookProgressMutations()
@@ -466,6 +516,14 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setSeriesDetailListMode(value)
         }
+    }
+
+    fun setCollapseSubseries(value: Boolean) {
+        mutableCollapseSubseries.value = value
+        viewModelScope.launch {
+            sessionPreferences.setSeriesDetailCollapseSubseries(value)
+        }
+        refresh(forceRefresh = false)
     }
 
     fun refresh() {
@@ -550,7 +608,17 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionRepository.observeBookProgressMutations().collect { mutation ->
                 mutableUiState.update { state ->
-                    state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    state.copy(
+                        entries = state.entries.map { entry ->
+                            when (entry) {
+                                is SeriesDetailEntry.BookItem -> {
+                                    SeriesDetailEntry.BookItem(entry.book.withBookProgressMutation(mutation))
+                                }
+
+                                is SeriesDetailEntry.SubseriesItem -> entry
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -559,71 +627,64 @@ class SeriesDetailViewModel @Inject constructor(
     private fun refresh(forceRefresh: Boolean) {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            when (val result = fetchAllBooksForSeriesMatching(forceRefresh = forceRefresh)) {
-                is AppResult.Success -> {
-                    val normalizedSeries = normalizeSeriesKey(seriesName)
-                    val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
-                    val matchedByListMetadata = result.value.filter {
-                        val matchesByName = if (normalizedSeries.isBlank()) {
-                            false
-                        } else {
-                            val candidateSeries = buildList {
-                                it.seriesName?.let(::add)
-                                addAll(it.seriesNames)
-                            }
-                            candidateSeries.any { candidateName ->
-                                val candidate = normalizeSeriesKey(candidateName)
-                                candidate.isNotBlank() &&
-                                    (
-                                        candidate == normalizedSeries ||
-                                            candidate.contains(normalizedSeries) ||
-                                            normalizedSeries.contains(candidate)
-                                        )
-                            }
-                        }
-                        val matchesById = targetSeries.id != null &&
-                            it.seriesIds.any { candidateId ->
-                                seriesIdsLikelyMatch(candidateId, targetSeries.id)
-                            }
-                        matchesByName || matchesById
-                    }
-                    val matchedBooks = if (matchedByListMetadata.isNotEmpty()) {
-                        matchedByListMetadata
-                    } else if (targetSeries.id != null) {
-                        resolveSeriesBooksFromBookDetails(
-                            books = result.value,
-                            targetSeries = targetSeries,
-                            normalizedSeries = normalizedSeries
+            val collapseSubseries = mutableCollapseSubseries.value
+            val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
+            val resolvedSeriesId = seriesId ?: targetSeries.id
+            val serverResult: AppResult<SeriesEntriesResult>? = if (collapseSubseries && resolvedSeriesId != null) {
+                when (val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
+                    seriesId = resolvedSeriesId,
+                    collapseSubseries = true,
+                    forceRefresh = forceRefresh
+                )) {
+                    is AppResult.Success -> AppResult.Success(
+                        SeriesEntriesResult(
+                            entries = result.value,
+                            hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
                         )
-                    } else {
-                        emptyList()
-                    }
-                    if (matchedBooks.isEmpty() && !forceRefresh) {
+                    )
+
+                    is AppResult.Error -> result
+                }
+            } else {
+                null
+            }
+            val shouldLoadFallback = !collapseSubseries ||
+                resolvedSeriesId == null ||
+                serverResult !is AppResult.Success ||
+                serverResult.value.entries.isEmpty() ||
+                serverResult.value.entries.none { entry -> entry is SeriesDetailEntry.SubseriesItem }
+            val fallbackResult = if (shouldLoadFallback) {
+                fetchLegacySeriesEntries(
+                    forceRefresh = forceRefresh,
+                    targetSeries = targetSeries,
+                    collapseSubseries = collapseSubseries
+                )
+            } else {
+                null
+            }
+            val fallbackHasSubseries = fallbackResult is AppResult.Success &&
+                fallbackResult.value.hasCollapsibleSubseries
+            val serverHasSubseries = serverResult is AppResult.Success &&
+                serverResult.value.hasCollapsibleSubseries
+            val result = when {
+                fallbackHasSubseries && !serverHasSubseries -> fallbackResult
+                serverResult is AppResult.Success && serverResult.value.entries.isNotEmpty() -> serverResult
+                fallbackResult is AppResult.Success && fallbackResult.value.entries.isNotEmpty() -> fallbackResult
+                serverResult != null -> serverResult
+                fallbackResult != null -> fallbackResult
+                else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
+            }
+            when (result) {
+                is AppResult.Success -> {
+                    if (result.value.entries.isEmpty() && !forceRefresh) {
                         refresh(forceRefresh = true)
                         return@launch
                     }
-                    val books = coroutineScope {
-                        matchedBooks
-                            .map { book ->
-                                async {
-                                    val inferredSequence = inferSeriesSequence(book)
-                                    if (inferredSequence != null) {
-                                        book.copy(seriesSequence = inferredSequence)
-                                    } else {
-                                        book
-                                    }
-                                }
-                            }
-                            .awaitAll()
-                    }
-                        .sortedWith(
-                            compareBy<BookSummary> { it.seriesSequence ?: Double.MAX_VALUE }
-                                .thenBy { it.title.lowercase() }
-                        )
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            books = books
+                            entries = result.value.entries,
+                            canCollapseSubseries = result.value.hasCollapsibleSubseries
                         )
                     }
                 }
@@ -638,6 +699,192 @@ class SeriesDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private suspend fun fetchLegacySeriesEntries(
+        forceRefresh: Boolean,
+        targetSeries: SeriesMatchTarget,
+        collapseSubseries: Boolean
+    ): AppResult<SeriesEntriesResult> {
+        return when (val result = fetchAllBooksForSeriesMatching(forceRefresh = forceRefresh)) {
+            is AppResult.Success -> {
+                val normalizedSeries = normalizeSeriesKey(seriesName)
+                val matchedByListMetadata = result.value.filter {
+                    val matchesByName = matchesSeriesName(
+                        normalizedSeries = normalizedSeries,
+                        candidateSeriesNames = buildList {
+                            it.seriesName?.let(::add)
+                            addAll(it.seriesNames)
+                        }
+                    )
+                    val matchesById = targetSeries.id != null &&
+                        it.seriesIds.any { candidateId ->
+                            seriesIdsLikelyMatch(candidateId, targetSeries.id)
+                        }
+                    matchesByName || matchesById
+                }
+                val matchedBooks = if (matchedByListMetadata.isNotEmpty()) {
+                    matchedByListMetadata
+                } else if (targetSeries.id != null) {
+                    resolveSeriesBooksFromBookDetails(
+                        books = result.value,
+                        targetSeries = targetSeries,
+                        normalizedSeries = normalizedSeries
+                    )
+                } else {
+                    emptyList()
+                }
+                val detailedBooks = loadDetailedSeriesBooks(matchedBooks)
+                val collapsedEntries = buildFallbackSeriesEntries(
+                    books = detailedBooks,
+                    targetSeries = targetSeries,
+                    targetSeriesName = seriesName,
+                    collapseSubseries = true
+                )
+                val displayedEntries = if (collapseSubseries) {
+                    collapsedEntries
+                } else {
+                    buildFallbackSeriesEntries(
+                        books = detailedBooks,
+                        targetSeries = targetSeries,
+                        targetSeriesName = seriesName,
+                        collapseSubseries = false
+                    )
+                }
+                AppResult.Success(
+                    SeriesEntriesResult(
+                        entries = displayedEntries,
+                        hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                    )
+                )
+            }
+
+            is AppResult.Error -> result
+        }
+    }
+
+    private suspend fun loadDetailedSeriesBooks(books: List<BookSummary>): List<DetailedSeriesBook> = coroutineScope {
+        books.map { book ->
+            async {
+                val detail = when (val detailResult = sessionRepository.fetchBookDetail(book.id, forceRefresh = false)) {
+                    is AppResult.Success -> detailResult.value.book
+                    is AppResult.Error -> null
+                }
+                val mergedBook = if (detail != null) {
+                    val inferredSequence = extractSeriesSequenceFromText(detail.seriesName.orEmpty())
+                        ?: extractSeriesSequenceFromText(detail.title)
+                        ?: detail.seriesSequence
+                        ?: book.seriesSequence
+                    book.copy(
+                        seriesName = detail.seriesName ?: book.seriesName,
+                        seriesNames = if (detail.seriesNames.isNotEmpty()) detail.seriesNames else book.seriesNames,
+                        seriesIds = if (detail.seriesIds.isNotEmpty()) detail.seriesIds else book.seriesIds,
+                        seriesSequence = inferredSequence
+                    )
+                } else {
+                    val inferredSequence = extractSeriesSequenceFromText(book.title)
+                        ?: extractSeriesSequenceFromText(book.seriesName.orEmpty())
+                        ?: book.seriesSequence
+                    book.copy(seriesSequence = inferredSequence)
+                }
+                DetailedSeriesBook(
+                    book = mergedBook,
+                    seriesNames = detail?.seriesNames?.takeIf { it.isNotEmpty() } ?: mergedBook.seriesNames,
+                    seriesIds = detail?.seriesIds?.takeIf { it.isNotEmpty() } ?: mergedBook.seriesIds
+                )
+            }
+        }.awaitAll()
+    }
+
+    private fun buildFallbackSeriesEntries(
+        books: List<DetailedSeriesBook>,
+        targetSeries: SeriesMatchTarget,
+        targetSeriesName: String,
+        collapseSubseries: Boolean
+    ): List<SeriesDetailEntry> {
+        val sortedBooks = sortSeriesBooksForDisplay(
+            books = books.map { it.book },
+            targetSeriesName = targetSeriesName
+        )
+        if (!collapseSubseries) {
+            return sortedBooks.map { book -> SeriesDetailEntry.BookItem(book) }
+        }
+        val detailedById = books.associateBy { it.book.id }
+        val sortedDetailedBooks = sortedBooks.mapNotNull { book -> detailedById[book.id] }
+        val normalizedSeries = normalizeSeriesKey(targetSeriesName)
+        val childSeriesByBookId = sortedDetailedBooks.associate { detailed ->
+            detailed.book.id to resolveChildSeriesCandidate(
+                book = detailed,
+                targetSeries = targetSeries,
+                normalizedSeries = normalizedSeries
+            )
+        }
+        val childGroups = sortedDetailedBooks
+            .mapNotNull { detailed ->
+                val child = childSeriesByBookId[detailed.book.id] ?: return@mapNotNull null
+                child to detailed.book
+            }
+            .groupBy(keySelector = { it.first.key }, valueTransform = { it.second })
+        val collapsibleChildKeys = childGroups
+            .filterValues { groupedBooks ->
+                groupedBooks.isNotEmpty() && groupedBooks.size < sortedDetailedBooks.size
+            }
+            .keys
+
+        val emittedChildKeys = mutableSetOf<String>()
+        return buildList {
+            sortedDetailedBooks.forEach { detailed ->
+                val child = childSeriesByBookId[detailed.book.id]
+                if (child == null || child.key !in collapsibleChildKeys) {
+                    add(SeriesDetailEntry.BookItem(detailed.book))
+                    return@forEach
+                }
+                if (!emittedChildKeys.add(child.key)) {
+                    return@forEach
+                }
+                val groupedBooks = childGroups[child.key].orEmpty()
+                add(
+                    SeriesDetailEntry.SubseriesItem(
+                        id = child.id.orEmpty(),
+                        name = child.name,
+                        bookCount = groupedBooks.size.coerceAtLeast(1),
+                        coverUrl = groupedBooks.firstOrNull()?.coverUrl
+                    )
+                )
+            }
+        }
+    }
+
+    private fun resolveChildSeriesCandidate(
+        book: DetailedSeriesBook,
+        targetSeries: SeriesMatchTarget,
+        normalizedSeries: String
+    ): ChildSeriesCandidate? {
+        val candidateNames = if (book.seriesNames.isNotEmpty()) {
+            book.seriesNames
+        } else {
+            listOfNotNull(book.book.seriesName)
+        }
+        return candidateNames.mapIndexedNotNull { index, name ->
+            val trimmedName = name.trim()
+            if (trimmedName.isBlank()) return@mapIndexedNotNull null
+            val candidateId = book.seriesIds.getOrNull(index)?.trim()?.takeIf { it.isNotBlank() }
+            val matchesTarget = (candidateId != null && targetSeries.id != null &&
+                seriesIdsLikelyMatch(candidateId, targetSeries.id)) ||
+                matchesSeriesName(
+                    normalizedSeries = normalizedSeries,
+                    candidateSeriesNames = listOf(trimmedName)
+                )
+            if (matchesTarget) {
+                null
+            } else {
+                ChildSeriesCandidate(
+                    key = candidateId ?: "series:${normalizeSeriesKey(trimmedName)}",
+                    id = candidateId,
+                    name = trimmedName
+                )
+            }
+        }.firstOrNull()
     }
 
     private suspend fun resolveTargetSeriesTarget(forceRefresh: Boolean): SeriesMatchTarget {
@@ -687,22 +934,13 @@ class SeriesDetailViewModel @Inject constructor(
 
             val matchById = targetSeriesId != null &&
                 detail.seriesIds.any { candidateId -> seriesIdsLikelyMatch(candidateId, targetSeriesId) }
-            val matchByName = if (normalizedSeries.isBlank()) {
-                false
-            } else {
-                buildList {
+            val matchByName = matchesSeriesName(
+                normalizedSeries = normalizedSeries,
+                candidateSeriesNames = buildList {
                     detail.seriesName?.let(::add)
                     addAll(detail.seriesNames)
-                }.any { candidateName ->
-                    val normalizedCandidate = normalizeSeriesKey(candidateName)
-                    normalizedCandidate.isNotBlank() &&
-                        (
-                            normalizedCandidate == normalizedSeries ||
-                                normalizedCandidate.contains(normalizedSeries) ||
-                                normalizedSeries.contains(normalizedCandidate)
-                            )
                 }
-            }
+            )
             if (matchById || matchByName) {
                 resolved += book.copy(
                     seriesName = detail.seriesName ?: book.seriesName,
@@ -806,6 +1044,46 @@ private fun normalizeSeriesKey(value: String): String {
         .lowercase()
 }
 
+internal fun matchesSeriesName(
+    normalizedSeries: String,
+    candidateSeriesNames: List<String>
+): Boolean {
+    if (normalizedSeries.isBlank()) return false
+    return candidateSeriesNames.any { candidateName ->
+        val normalizedCandidate = normalizeSeriesKey(candidateName)
+        normalizedCandidate.isNotBlank() && normalizedCandidate == normalizedSeries
+    }
+}
+
+internal fun sortSeriesBooksForDisplay(
+    books: List<BookSummary>,
+    targetSeriesName: String
+): List<BookSummary> {
+    val normalizedTargetSeries = normalizeSeriesKey(targetSeriesName)
+    return books.sortedWith(
+        compareBy<BookSummary> { book ->
+            val normalizedPrimarySeries = normalizeSeriesKey(book.seriesName.orEmpty())
+            if (
+                normalizedTargetSeries.isNotBlank() &&
+                normalizedPrimarySeries == normalizedTargetSeries
+            ) {
+                0
+            } else {
+                1
+            }
+        }
+            .thenBy { book ->
+                book.seriesName
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(::cleanedSeriesDisplayName)
+                    ?.lowercase()
+                    .orEmpty()
+            }
+            .thenBy { it.seriesSequence ?: Double.MAX_VALUE }
+            .thenBy { it.title.lowercase() }
+    )
+}
+
 private fun normalizeSeriesGroupKey(value: String): String {
     val normalized = normalizeSeriesKey(value)
     if (normalized.isNotBlank()) return normalized
@@ -850,6 +1128,28 @@ private fun List<BookSummary>.applySeriesStatusFilter(filter: BooksStatusFilter)
         BooksStatusFilter.InProgress -> filter { it.hasStartedStatusProgress() && !it.hasFinishedStatusProgress() }
         BooksStatusFilter.NotStarted -> filter { !it.hasStartedStatusProgress() && !it.hasFinishedStatusProgress() }
         BooksStatusFilter.NotFinished -> filter { !it.hasFinishedStatusProgress() }
+    }
+}
+
+private fun List<SeriesDetailEntry>.applySeriesEntryStatusFilter(filter: BooksStatusFilter): List<SeriesDetailEntry> {
+    if (filter == BooksStatusFilter.All) return this
+    return mapNotNull { entry ->
+        when (entry) {
+            is SeriesDetailEntry.BookItem -> {
+                val keep = when (filter) {
+                    BooksStatusFilter.All -> true
+                    BooksStatusFilter.Finished -> entry.book.hasFinishedStatusProgress()
+                    BooksStatusFilter.InProgress -> entry.book.hasStartedStatusProgress() &&
+                        !entry.book.hasFinishedStatusProgress()
+                    BooksStatusFilter.NotStarted -> !entry.book.hasStartedStatusProgress() &&
+                        !entry.book.hasFinishedStatusProgress()
+                    BooksStatusFilter.NotFinished -> !entry.book.hasFinishedStatusProgress()
+                }
+                if (keep) entry else null
+            }
+
+            is SeriesDetailEntry.SubseriesItem -> null
+        }
     }
 }
 
@@ -1908,6 +2208,7 @@ private fun AuthorSeriesListRow(
 fun SeriesDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
+    onSeriesClick: (String, String?) -> Unit,
     onHomeClick: (() -> Unit)? = null,
     viewModel: SeriesDetailViewModel = hiltViewModel(),
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
@@ -1916,7 +2217,9 @@ fun SeriesDetailScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val listMode by viewModel.listMode.collectAsStateWithLifecycle()
+    val collapseSubseries by viewModel.collapseSubseries.collectAsStateWithLifecycle()
     var filterMenuExpanded by remember { mutableStateOf(false) }
+    var subseriesViewMenuExpanded by remember { mutableStateOf(false) }
     var statusFilterRaw by rememberSaveable { mutableStateOf(BooksStatusFilter.All.name) }
     var addToListBookId by rememberSaveable { mutableStateOf<String?>(null) }
     val statusFilter = enumValueOrNull<BooksStatusFilter>(statusFilterRaw) ?: BooksStatusFilter.All
@@ -1973,16 +2276,16 @@ fun SeriesDetailScreen(
                 }
             }
 
-            uiState.books.isEmpty() -> {
+            uiState.entries.isEmpty() -> {
                 Text(
-                    text = "No books found.",
+                    text = "No series items found.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             else -> {
-                val books = uiState.books.applySeriesStatusFilter(statusFilter)
+                val displayEntries = uiState.entries.applySeriesEntryStatusFilter(statusFilter)
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -2083,23 +2386,79 @@ fun SeriesDetailScreen(
                         }
                     }
 
-                    if (books.isEmpty()) {
+                    if (uiState.canCollapseSubseries) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Box {
+                                    OutlinedButton(
+                                        onClick = { subseriesViewMenuExpanded = true }
+                                    ) {
+                                        Text("Sub-series View")
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            imageVector = Icons.Outlined.ArrowDropDown,
+                                            contentDescription = null
+                                        )
+                                    }
+                                    AppDropdownMenu(
+                                        expanded = subseriesViewMenuExpanded,
+                                        onDismissRequest = { subseriesViewMenuExpanded = false }
+                                    ) {
+                                        AppDropdownMenuItem(
+                                            text = { Text("Flat") },
+                                            trailingIcon = {
+                                                if (!collapseSubseries) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Check,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                viewModel.setCollapseSubseries(false)
+                                                subseriesViewMenuExpanded = false
+                                            }
+                                        )
+                                        AppDropdownMenuItem(
+                                            text = { Text("Nested") },
+                                            trailingIcon = {
+                                                if (collapseSubseries) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Check,
+                                                        contentDescription = null
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                viewModel.setCollapseSubseries(true)
+                                                subseriesViewMenuExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (displayEntries.isEmpty()) {
                         item {
                             Text(
-                                text = "No books in this filter.",
+                                text = "No series items in this filter.",
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         return@LazyColumn
                     }
-                    val leadBook = books.first()
 
                     item {
                         SeriesCoverStack(
-                            books = books,
-                            isDownloaded = uiState.downloadedBookIds.contains(leadBook.id),
-                            downloadProgressPercent = uiState.downloadProgressByBookId[leadBook.id]
+                            entries = displayEntries,
+                            downloadedBookIds = uiState.downloadedBookIds,
+                            downloadProgressByBookId = uiState.downloadProgressByBookId
                         )
                     }
                     item {
@@ -2112,7 +2471,11 @@ fun SeriesDetailScreen(
                     }
                     item {
                         Text(
-                            text = "${books.size} books",
+                            text = if (displayEntries.totalSeriesBookCount() == 1) {
+                                "1 book"
+                            } else {
+                                "${displayEntries.totalSeriesBookCount()} books"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -2121,41 +2484,14 @@ fun SeriesDetailScreen(
                     }
 
                     if (listMode) {
-                        itemsIndexed(books, key = { _, item -> item.id }) { index, book ->
-                            val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: (index + 1).toString()
-                            SeriesDetailBookRow(
-                                book = book,
-                                orderLabel = orderLabel,
-                                onClick = { onBookClick(book.id) },
-                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
-                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
-                                onAddToCollection = { addToListBookId = book.id },
-                                onMarkAsFinished = {
-                                    if (book.hasFinishedStatusProgress()) {
-                                        viewModel.markAsUnfinished(book.id)
-                                    } else {
-                                        viewModel.markAsFinished(book.id)
-                                    }
-                                },
-                                onResetBookProgress = { viewModel.resetBookProgress(book.id) },
-                                onToggleDownload = { viewModel.toggleDownload(book.id) }
-                            )
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                        }
-                    } else {
-                        val bookRows = books.chunked(2)
-                        itemsIndexed(bookRows, key = { index, _ -> "series-grid-row-$index" }) { rowIndex, rowBooks ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                rowBooks.forEachIndexed { columnIndex, book ->
-                                    val fallbackIndex = (rowIndex * 2) + columnIndex + 1
-                                    val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: fallbackIndex.toString()
-                                    SeriesDetailGridCard(
+                        itemsIndexed(displayEntries, key = { _, item -> item.stableId }) { index, entry ->
+                            when (entry) {
+                                is SeriesDetailEntry.BookItem -> {
+                                    val book = entry.book
+                                    val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: (index + 1).toString()
+                                    SeriesDetailBookRow(
                                         book = book,
                                         orderLabel = orderLabel,
-                                        modifier = Modifier.weight(1f),
                                         onClick = { onBookClick(book.id) },
                                         isDownloaded = uiState.downloadedBookIds.contains(book.id),
                                         downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
@@ -2171,7 +2507,59 @@ fun SeriesDetailScreen(
                                         onToggleDownload = { viewModel.toggleDownload(book.id) }
                                     )
                                 }
-                                if (rowBooks.size == 1) {
+
+                                is SeriesDetailEntry.SubseriesItem -> {
+                                    SeriesDetailSubseriesRow(
+                                        entry = entry,
+                                        onClick = { onSeriesClick(entry.name, entry.id) }
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
+                    } else {
+                        val entryRows = displayEntries.chunked(2)
+                        itemsIndexed(entryRows, key = { index, _ -> "series-grid-row-$index" }) { rowIndex, rowEntries ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                rowEntries.forEachIndexed { columnIndex, entry ->
+                                    when (entry) {
+                                        is SeriesDetailEntry.BookItem -> {
+                                            val book = entry.book
+                                            val fallbackIndex = (rowIndex * 2) + columnIndex + 1
+                                            val orderLabel = formatSeriesOrderLabel(book.seriesSequence) ?: fallbackIndex.toString()
+                                            SeriesDetailGridCard(
+                                                book = book,
+                                                orderLabel = orderLabel,
+                                                modifier = Modifier.weight(1f),
+                                                onClick = { onBookClick(book.id) },
+                                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                                onAddToCollection = { addToListBookId = book.id },
+                                                onMarkAsFinished = {
+                                                    if (book.hasFinishedStatusProgress()) {
+                                                        viewModel.markAsUnfinished(book.id)
+                                                    } else {
+                                                        viewModel.markAsFinished(book.id)
+                                                    }
+                                                },
+                                                onResetBookProgress = { viewModel.resetBookProgress(book.id) },
+                                                onToggleDownload = { viewModel.toggleDownload(book.id) }
+                                            )
+                                        }
+
+                                        is SeriesDetailEntry.SubseriesItem -> {
+                                            SeriesDetailSubseriesGridCard(
+                                                entry = entry,
+                                                modifier = Modifier.weight(1f),
+                                                onClick = { onSeriesClick(entry.name, entry.id) }
+                                            )
+                                        }
+                                    }
+                                }
+                                if (rowEntries.size == 1) {
                                     Spacer(modifier = Modifier.weight(1f))
                                 }
                             }
@@ -3514,15 +3902,47 @@ private fun ShadedStackCover(
 }
 
 @Composable
+private fun List<SeriesDetailEntry>.totalSeriesBookCount(): Int {
+    return sumOf { entry ->
+        when (entry) {
+            is SeriesDetailEntry.BookItem -> 1
+            is SeriesDetailEntry.SubseriesItem -> entry.bookCount.coerceAtLeast(1)
+        }
+    }
+}
+
+private data class SeriesCoverStackItem(
+    val title: String,
+    val coverUrl: String?,
+    val bookId: String? = null
+)
+
+private fun SeriesDetailEntry.toSeriesCoverStackItem(): SeriesCoverStackItem {
+    return when (this) {
+        is SeriesDetailEntry.BookItem -> SeriesCoverStackItem(
+            title = book.title,
+            coverUrl = book.coverUrl,
+            bookId = book.id
+        )
+
+        is SeriesDetailEntry.SubseriesItem -> SeriesCoverStackItem(
+            title = name,
+            coverUrl = coverUrl
+        )
+    }
+}
+
+@Composable
 private fun SeriesCoverStack(
-    books: List<BookSummary>,
-    isDownloaded: Boolean,
-    downloadProgressPercent: Int?
+    entries: List<SeriesDetailEntry>,
+    downloadedBookIds: Set<String>,
+    downloadProgressByBookId: Map<String, Int>
 ) {
-    if (books.isEmpty()) return
-    val frontBook = books[0]
+    if (entries.isEmpty()) return
+    val covers = entries.map { it.toSeriesCoverStackItem() }
+    val frontItem = covers[0]
     val frontModel = rememberCoverImageModel(
-        coverUrl = frontBook.coverUrl,
+        coverUrl = frontItem.coverUrl,
         preferOriginalSize = true
     )
     val frontPainter = rememberAsyncImagePainter(model = frontModel)
@@ -3537,25 +3957,25 @@ private fun SeriesCoverStack(
     }
     val useSquareMultiBookStack = hasResolvedFrontCoverDimensions &&
         frontAspectRatio in 0.97f..1.03f &&
-        books.size >= 2
-    fun pickBookWithCover(vararg indices: Int): BookSummary? {
+        covers.size >= 2
+    fun pickCoverWithImage(vararg indices: Int): SeriesCoverStackItem? {
         return indices
             .asSequence()
-            .mapNotNull { idx -> books.getOrNull(idx) }
+            .mapNotNull { idx -> covers.getOrNull(idx) }
             .firstOrNull { !it.coverUrl.isNullOrBlank() }
     }
 
-    val middleRightBook = pickBookWithCover(1, 0)
-    val middleLeftBook = pickBookWithCover(2, 1, 0)
-    val backRightBook = pickBookWithCover(3, 1, 0)
-    val backLeftBook = pickBookWithCover(4, 2, 1, 0)
+    val middleRightBook = pickCoverWithImage(1, 0)
+    val middleLeftBook = pickCoverWithImage(2, 1, 0)
+    val backRightBook = pickCoverWithImage(3, 1, 0)
+    val backLeftBook = pickCoverWithImage(4, 2, 1, 0)
     val showMiddleRight = useSquareMultiBookStack && middleRightBook != null
     val showMiddleLeft = useSquareMultiBookStack && middleLeftBook != null
     val showBackRight = useSquareMultiBookStack && backRightBook != null
     val showBackLeft = useSquareMultiBookStack && backLeftBook != null
     val middleLayerShadeAlpha = 0.24f
     val backLayerShadeAlpha = 0.38f
-    val centeredBackLayerCount = if (useSquareMultiBookStack) 0 else (books.size - 1).coerceAtMost(2)
+    val centeredBackLayerCount = if (useSquareMultiBookStack) 0 else (covers.size - 1).coerceAtMost(2)
     val frontWidth = 190.dp
     val frontHeight = 200.dp
     val middleWidth = 250.dp
@@ -3656,8 +4076,8 @@ private fun SeriesCoverStack(
             }
             if (centeredBackLayerCount >= 2) {
                 FramedCoverImage(
-                    coverUrl = frontBook.coverUrl,
-                    contentDescription = frontBook.title,
+                    coverUrl = frontItem.coverUrl,
+                    contentDescription = frontItem.title,
                     modifier = Modifier
                         .offset(y = scaledBackYOffset)
                         .width(scaledBackWidth)
@@ -3671,8 +4091,8 @@ private fun SeriesCoverStack(
             }
             if (centeredBackLayerCount >= 1) {
                 FramedCoverImage(
-                    coverUrl = frontBook.coverUrl,
-                    contentDescription = frontBook.title,
+                    coverUrl = frontItem.coverUrl,
+                    contentDescription = frontItem.title,
                     modifier = Modifier
                         .offset(y = scaledMiddleYOffset)
                         .width(scaledMiddleWidth)
@@ -3685,8 +4105,8 @@ private fun SeriesCoverStack(
                 )
             }
             FramedCoverImage(
-                coverUrl = frontBook.coverUrl,
-                contentDescription = frontBook.title,
+                coverUrl = frontItem.coverUrl,
+                contentDescription = frontItem.title,
                 modifier = Modifier
                     .width(scaledFrontWidth)
                     .height(scaledFrontHeight)
@@ -3697,14 +4117,150 @@ private fun SeriesCoverStack(
                 frameOverlayAlphaMultiplier = 0.86f,
                 disableBlurredFrame = useSquareMultiBookStack
             )
-            DownloadBadge(
-                isDownloaded = isDownloaded,
-                downloadProgressPercent = downloadProgressPercent,
+            val frontBookId = frontItem.bookId
+            if (frontBookId != null) {
+                DownloadBadge(
+                    isDownloaded = downloadedBookIds.contains(frontBookId),
+                    downloadProgressPercent = downloadProgressByBookId[frontBookId],
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = (-8).dp * scale, y = 8.dp * scale)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeriesDetailSubseriesRow(
+    entry: SeriesDetailEntry.SubseriesItem,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.74f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = (-8).dp * scale, y = 8.dp * scale)
+                    .size(88.dp)
+                    .clipToBounds(),
+                contentAlignment = Alignment.Center
+            ) {
+                FacetSeriesStackCoverLayers(
+                    coverUrl = entry.coverUrl,
+                    contentDescription = entry.name,
+                    layerCount = entry.bookCount.coerceIn(2, 3),
+                    frameWidth = 88.dp,
+                    frameHeight = 88.dp,
+                    modifier = Modifier.matchParentSize()
+                )
+                if (!entry.sequenceLabel.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .offset(x = (-4).dp, y = (-4).dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "#${entry.sequenceLabel}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = entry.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (entry.bookCount == 1) "1 book" else "${entry.bookCount} books",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+@Composable
+private fun SeriesDetailSubseriesGridCard(
+    entry: SeriesDetailEntry.SubseriesItem,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier.clickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(StandardGridCoverHeight)
+                .clipToBounds(),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            FacetSeriesStackCoverLayers(
+                coverUrl = entry.coverUrl,
+                contentDescription = entry.name,
+                layerCount = entry.bookCount.coerceIn(2, 3),
+                frameWidth = StandardGridCoverWidth,
+                frameHeight = StandardGridCoverHeight,
+                modifier = Modifier
+                    .width(StandardGridCoverWidth)
+                    .height(StandardGridCoverHeight)
+            )
+            if (!entry.sequenceLabel.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset(x = 2.dp, y = 2.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                ) {
+                    Text(
+                        text = "#${entry.sequenceLabel}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+        Text(
+            text = entry.name,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(StandardGridCoverWidth)
+        )
+        Text(
+            text = if (entry.bookCount == 1) "1 book" else "${entry.bookCount} books",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(StandardGridCoverWidth)
+        )
     }
 }
 

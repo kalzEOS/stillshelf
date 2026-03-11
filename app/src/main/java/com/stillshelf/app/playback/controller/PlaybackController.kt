@@ -38,6 +38,7 @@ import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.PlaybackProgress
+import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.util.AppResult
@@ -131,6 +132,9 @@ class PlaybackController @Inject constructor(
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
     private var currentBookId: String? = null
+    private var currentPlaybackSource: PlaybackSource? = null
+    private var currentTrackStartOffsetMs: Long = 0L
+    private var currentBookDurationMs: Long = 0L
     private val playbackSyncGate = PlaybackSyncGate(minimumDeltaMs = ACTIVE_PLAYBACK_SYNC_INTERVAL_MS)
     private var cachedContinueListeningItem: ContinueListeningItem? = null
     private var playRequestJob: Job? = null
@@ -204,6 +208,8 @@ class PlaybackController @Inject constructor(
     private var lastAppBackgroundSyncPositionMs: Long = -1L
     private var observedActiveServerId: String? = null
     private var hasObservedActiveServerId: Boolean = false
+    private var pendingAutoAdvanceUiBookId: String? = null
+    private var pendingAutoAdvanceUiPositionMs: Long? = null
 
     private data class NotificationSignature(
         val bookId: String,
@@ -291,14 +297,25 @@ class PlaybackController @Inject constructor(
         if (bookId.isBlank()) return
         if (currentBookId != bookId) {
             attemptedAutoAdvanceTargetsMs.clear()
+            clearPendingAutoAdvanceUiTarget()
         }
         val requestToken = beginPlayRequest()
         if (currentBookId == bookId && mediaPlayer != null) {
             if (startPositionMs != null) {
-                seekToPosition(startPositionMs)
+                val targetMs = startPositionMs.coerceAtLeast(0L)
+                val targetTrackStartOffsetMs = resolveTrackStartOffsetForPosition(
+                    tracks = currentPlaybackSource?.tracks.orEmpty(),
+                    positionMs = targetMs
+                )
+                if (targetTrackStartOffsetMs == null || targetTrackStartOffsetMs == currentTrackStartOffsetMs) {
+                    seekToPosition(targetMs)
+                    resume()
+                    return
+                }
+            } else {
+                resume()
+                return
             }
-            resume()
-            return
         }
 
         updateUiState {
@@ -349,11 +366,14 @@ class PlaybackController @Inject constructor(
                     currentTimeSeconds = start.currentTimeSeconds
                 )
                 if (isStalePlayRequest(requestToken)) return@launch
-                val localUri = Uri.fromFile(File(localDownload.localPath)).toString()
+                val playbackSource = PlaybackSource(
+                    book = playbackBook,
+                    streamUrl = Uri.fromFile(File(localDownload.localPath)).toString()
+                )
                 prepareAndPlay(
                     bookId = playbackBook.id,
                     book = playbackBook,
-                    streamUrl = localUri,
+                    playbackSource = playbackSource,
                     resumeMs = start.resumeMs
                 )
                 return@launch
@@ -388,9 +408,9 @@ class PlaybackController @Inject constructor(
                     )
                     if (isStalePlayRequest(requestToken)) return@launch
                     prepareAndPlay(
-                        playbackBook.id,
-                        playbackBook,
-                        sourceResult.value.streamUrl,
+                        bookId = playbackBook.id,
+                        book = playbackBook,
+                        playbackSource = sourceResult.value.copy(book = playbackBook),
                         resumeMs = start.resumeMs
                     )
                 }
@@ -554,7 +574,7 @@ class PlaybackController @Inject constructor(
 
     fun seekBy(deltaMs: Long) {
         val player = mediaPlayer ?: return
-        val duration = safeDuration(player)
+        val duration = resolveDisplayedDurationMs(player)
         val current = safePosition(player)
         val target = if (duration > 0L) {
             (current + deltaMs).coerceIn(0L, duration)
@@ -566,7 +586,7 @@ class PlaybackController @Inject constructor(
 
     fun seekToProgress(progressFraction: Float, commit: Boolean) {
         val player = mediaPlayer ?: return
-        val duration = safeDuration(player)
+        val duration = resolveDisplayedDurationMs(player)
         if (duration <= 0L) return
         val clamped = progressFraction.coerceIn(0f, 1f)
         val targetMs = (duration.toDouble() * clamped.toDouble()).toLong()
@@ -589,7 +609,7 @@ class PlaybackController @Inject constructor(
             updateUiState { it.copy(isPlaying = false) }
         }
         val state = uiState.value
-        val resolvedDurationMs = safeDuration(player)
+        val resolvedDurationMs = resolveDisplayedDurationMs(player)
             .takeIf { it > 0L }
             ?: state.durationMs.takeIf { it > 0L }
             ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
@@ -674,7 +694,7 @@ class PlaybackController @Inject constructor(
             updateUiState { it.copy(isPlaying = false) }
         }
         val state = uiState.value
-        val resolvedDurationMs = safeDuration(player)
+        val resolvedDurationMs = resolveDisplayedDurationMs(player)
             .takeIf { it > 0L }
             ?: state.durationMs.takeIf { it > 0L }
             ?: durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
@@ -878,14 +898,33 @@ class PlaybackController @Inject constructor(
 
     private fun seekToPosition(targetMs: Long, forceSync: Boolean = true) {
         val player = mediaPlayer ?: return
-        val duration = safeDuration(player)
-        val clamped = if (duration > 0L) {
-            targetMs.coerceIn(0L, duration)
-        } else {
-            targetMs.coerceAtLeast(0L)
+        val safeTargetMs = targetMs.coerceAtLeast(0L)
+        val targetTrackStartOffsetMs = resolveTrackStartOffsetForPosition(
+            tracks = currentPlaybackSource?.tracks.orEmpty(),
+            positionMs = safeTargetMs
+        )
+        if (
+            currentBookId != null &&
+            targetTrackStartOffsetMs != null &&
+            targetTrackStartOffsetMs != currentTrackStartOffsetMs
+        ) {
+            playBookFromPosition(bookId = currentBookId.orEmpty(), startPositionMs = safeTargetMs)
+            return
         }
-        runCatching { player.seekTo(clamped.toInt()) }
-        updateUiState { it.copy(positionMs = clamped) }
+        val duration = safeDuration(player)
+        val localTargetMs = (safeTargetMs - currentTrackStartOffsetMs).coerceAtLeast(0L)
+        val clampedLocalMs = if (duration > 0L) {
+            localTargetMs.coerceIn(0L, duration)
+        } else {
+            localTargetMs
+        }
+        runCatching { player.seekTo(clampedLocalMs.toInt()) }
+        updateUiState {
+            it.copy(
+                positionMs = currentTrackStartOffsetMs + clampedLocalMs,
+                durationMs = resolveDisplayedDurationMs(player)
+            )
+        }
         if (forceSync) {
             syncProgress(force = true, isFinished = false)
         }
@@ -923,16 +962,20 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun prepareAndPlay(bookId: String, book: BookSummary, streamUrl: String, resumeMs: Long) {
+    private fun prepareAndPlay(bookId: String, book: BookSummary, playbackSource: PlaybackSource, resumeMs: Long) {
         releasePlayer()
         if (artworkBookId != book.id) {
             artworkBitmap = null
             artworkBookId = book.id
         }
 
+        val trackSelection = resolvePlaybackTrackSelection(playbackSource, resumeMs)
         val player = MediaPlayer()
         mediaPlayer = player
         currentBookId = bookId
+        currentPlaybackSource = playbackSource
+        currentTrackStartOffsetMs = trackSelection.trackStartOffsetMs
+        currentBookDurationMs = trackSelection.bookDurationMs
         playbackSyncGate.reset()
         lastCheckpointPositionMs = -1L
         lastCheckpointSavedAtElapsedMs = 0L
@@ -949,21 +992,23 @@ class PlaybackController @Inject constructor(
                 softToneLevel = currentSoftToneLevel,
                 boostLevel = currentBoostLevel,
                 sleepTimerExpiredPromptVisible = false,
-                positionMs = 0L,
-                durationMs = 0L,
+                positionMs = resumeMs.coerceAtLeast(0L),
+                durationMs = currentBookDurationMs,
                 errorMessage = null
             )
         }
         updateCachedFromUiState()
 
         player.setOnPreparedListener { prepared ->
+            if (prepared !== mediaPlayer) return@setOnPreparedListener
             applyPlaybackSpeed(player = prepared, speed = currentPlaybackSpeed)
             applyAudioEffects(prepared)
             val duration = safeDuration(prepared)
+            currentBookDurationMs = maxOf(currentBookDurationMs, currentTrackStartOffsetMs + duration)
             val clampedResume = if (duration > 0L) {
-                resumeMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
+                trackSelection.localSeekMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
             } else {
-                resumeMs.coerceAtLeast(0L)
+                trackSelection.localSeekMs.coerceAtLeast(0L)
             }
             if (clampedResume > 0L) {
                 runCatching { prepared.seekTo(clampedResume.toInt()) }
@@ -974,8 +1019,8 @@ class PlaybackController @Inject constructor(
                     isLoading = false,
                     isPlaying = false,
                     playbackSpeed = currentPlaybackSpeed,
-                    positionMs = clampedResume,
-                    durationMs = duration
+                    positionMs = currentTrackStartOffsetMs + clampedResume,
+                    durationMs = resolveDisplayedDurationMs(prepared)
                 )
             }
             updateCachedFromUiState()
@@ -1004,7 +1049,8 @@ class PlaybackController @Inject constructor(
             }
         }
         player.setOnCompletionListener { completed ->
-            val duration = safeDuration(completed)
+            if (completed !== mediaPlayer) return@setOnCompletionListener
+            val duration = currentTrackStartOffsetMs + safeDuration(completed)
             handleCompletion(book = book, durationMs = duration)
         }
         player.setOnErrorListener { _, _, _ ->
@@ -1019,13 +1065,13 @@ class PlaybackController @Inject constructor(
         }
 
         runCatching {
-            val parsedUri = Uri.parse(streamUrl)
+            val parsedUri = Uri.parse(trackSelection.streamUrl)
             val isLocalUri = parsedUri.scheme.equals("file", ignoreCase = true) ||
                 parsedUri.scheme.equals("content", ignoreCase = true)
             if (isLocalUri) {
                 player.setDataSource(appContext, parsedUri)
             } else {
-                val resolvedStream = splitAuthenticatedUrl(streamUrl)
+                val resolvedStream = splitAuthenticatedUrl(trackSelection.streamUrl)
                 val headers = resolvedStream.authToken
                     ?.takeIf { it.isNotBlank() }
                     ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
@@ -1239,23 +1285,72 @@ class PlaybackController @Inject constructor(
     }
 
     private fun updateProgress(player: MediaPlayer) {
+        if (player !== mediaPlayer) return
+        val rawPositionMs = safePosition(player)
+        val guardedPositionMs = applyPendingAutoAdvanceUiGuard(rawPositionMs)
         updateUiState {
             it.copy(
-                positionMs = safePosition(player),
-                durationMs = safeDuration(player)
+                positionMs = guardedPositionMs,
+                durationMs = resolveDisplayedDurationMs(player)
             )
         }
         updateCachedFromUiState()
         persistPlaybackCheckpointIfNeeded(force = false, isFinished = shouldSyncAsFinished())
     }
 
+    private fun setPendingAutoAdvanceUiTarget(bookId: String, targetPositionMs: Long) {
+        val safeTargetMs = targetPositionMs.coerceAtLeast(0L)
+        pendingAutoAdvanceUiBookId = bookId
+        pendingAutoAdvanceUiPositionMs = safeTargetMs
+        updateUiState { state ->
+            if (state.book?.id != bookId) {
+                state
+            } else {
+                state.copy(
+                    positionMs = maxOf(state.positionMs, safeTargetMs),
+                    durationMs = maxOf(state.durationMs, safeTargetMs)
+                )
+            }
+        }
+    }
+
+    private fun clearPendingAutoAdvanceUiTarget() {
+        pendingAutoAdvanceUiBookId = null
+        pendingAutoAdvanceUiPositionMs = null
+    }
+
+    private fun applyPendingAutoAdvanceUiGuard(rawPositionMs: Long): Long {
+        val targetBookId = pendingAutoAdvanceUiBookId
+        val targetPositionMs = pendingAutoAdvanceUiPositionMs
+        if (
+            targetBookId.isNullOrBlank() ||
+            targetPositionMs == null ||
+            currentBookId != targetBookId
+        ) {
+            return rawPositionMs
+        }
+        if (rawPositionMs >= targetPositionMs) {
+            clearPendingAutoAdvanceUiTarget()
+            return rawPositionMs
+        }
+        return targetPositionMs
+    }
+
     private fun safePosition(player: MediaPlayer): Long {
-        return runCatching { player.currentPosition.toLong().coerceAtLeast(0L) }.getOrDefault(0L)
+        return currentTrackStartOffsetMs +
+            runCatching { player.currentPosition.toLong().coerceAtLeast(0L) }.getOrDefault(0L)
     }
 
     private fun safeDuration(player: MediaPlayer): Long {
         val duration = runCatching { player.duration.toLong() }.getOrDefault(0L)
         return duration.coerceAtLeast(0L)
+    }
+
+    private fun resolveDisplayedDurationMs(player: MediaPlayer): Long {
+        return maxOf(
+            currentBookDurationMs,
+            currentTrackStartOffsetMs + safeDuration(player)
+        )
     }
 
     private fun releasePlayer() {
@@ -1275,6 +1370,9 @@ class PlaybackController @Inject constructor(
         clearDucking(mediaPlayer)
         mediaPlayer?.runCatching { release() }
         mediaPlayer = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
         abandonAudioFocus()
         updatePlaybackSurface()
     }
@@ -1530,6 +1628,9 @@ class PlaybackController @Inject constructor(
         pendingSyncRequests.clear()
         releasePlayer(syncProgressBeforeRelease = false)
         currentBookId = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
         cachedContinueListeningItem = null
         attemptedAutoAdvanceTargetsMs.clear()
         previousRestartState = null
@@ -2481,15 +2582,27 @@ class PlaybackController @Inject constructor(
             return
         }
         scope.launch {
+            val nextTrackStartMs = resolveNextTrackStartMs(
+                tracks = currentPlaybackSource?.tracks.orEmpty(),
+                currentTrackStartOffsetMs = currentTrackStartOffsetMs
+            )
+            if (
+                nextTrackStartMs != null &&
+                attemptedAutoAdvanceTargetsMs.add(nextTrackStartMs)
+            ) {
+                setPendingAutoAdvanceUiTarget(bookId = book.id, targetPositionMs = nextTrackStartMs)
+                playBookFromPosition(bookId = book.id, startPositionMs = nextTrackStartMs)
+                return@launch
+            }
             val nextStartMs = resolveNextChapterStartMs(
                 bookId = book.id,
                 finishedStreamDurationMs = durationMs
             )
             if (
                 nextStartMs != null &&
-                nextStartMs > durationMs &&
                 attemptedAutoAdvanceTargetsMs.add(nextStartMs)
             ) {
+                setPendingAutoAdvanceUiTarget(bookId = book.id, targetPositionMs = nextStartMs)
                 playBookFromPosition(bookId = book.id, startPositionMs = nextStartMs)
                 return@launch
             }
@@ -2502,20 +2615,20 @@ class PlaybackController @Inject constructor(
         finishedStreamDurationMs: Long
     ): Long? {
         return when (val detail = sessionRepository.fetchBookDetail(bookId = bookId, forceRefresh = false)) {
-            is AppResult.Success -> {
-                detail.value.chapters
-                    .map { (it.startSeconds * 1000.0).toLong() }
-                    .sorted()
-                    .firstOrNull { chapterStartMs ->
-                        chapterStartMs > (finishedStreamDurationMs + 500L)
-                    }
-            }
+            is AppResult.Success -> ChapterAutoAdvanceResolver.resolveNextChapterStartMs(
+                chapters = detail.value.chapters,
+                finishedStreamDurationMs = finishedStreamDurationMs,
+                bookDurationMs = detail.value.book.durationSeconds
+                    ?.times(1000.0)
+                    ?.toLong()
+            )
 
             is AppResult.Error -> null
         }
     }
 
     private fun completePlayback(durationMs: Long) {
+        clearPendingAutoAdvanceUiTarget()
         cancelSleepTimer(updateUi = false)
         suppressNextAutoAdvanceOnCompletion = false
         clearDucking(mediaPlayer)

@@ -306,7 +306,7 @@ class AudiobookshelfApi @Inject constructor(
                         description = item.optString("description")
                             .ifBlank { item.optString("bio") }
                             .ifBlank { item.optString("descriptionPlain") }
-                            .ifBlank { null }
+                            .sanitizeDescriptionText()
                     )
                 }
         }
@@ -3025,30 +3025,7 @@ class AudiobookshelfApi @Inject constructor(
 
         return buildList {
             for (index in 0 until sourceArray.length()) {
-                val asString = sourceArray.optString(index)
-                if (asString.isNotBlank()) {
-                    add(
-                        AudiobookshelfNamedEntityDto(
-                            id = asString,
-                            name = asString
-                        )
-                    )
-                    continue
-                }
-
-                val asObject = sourceArray.optJSONObject(index) ?: continue
-                val id = asObject.optString("id").ifBlank { asObject.optString("name") }
-                val name = asObject.optString("name")
-                if (id.isBlank() || name.isBlank()) continue
-                add(
-                    AudiobookshelfNamedEntityDto(
-                        id = id,
-                        name = name,
-                        subtitle = asObject.optString("numBooks")
-                            .takeIf { it.isNotBlank() }
-                            ?.let { "$it books" }
-                    )
-                )
+                parseNarratorEntity(sourceArray.opt(index))?.let(::add)
             }
         }
     }
@@ -3102,24 +3079,82 @@ class AudiobookshelfApi @Inject constructor(
         if (source == null) return emptyList()
         return buildList {
             for (index in 0 until source.length()) {
-                val asString = source.optString(index)
-                if (asString.isNotBlank()) {
-                    add(AudiobookshelfNamedEntityDto(id = asString, name = asString))
-                    continue
-                }
-                val asObj = source.optJSONObject(index) ?: continue
-                val id = asObj.optString("id").ifBlank { asObj.optString("name") }
-                val name = asObj.optString("name")
-                if (id.isBlank() || name.isBlank()) continue
-                add(
-                    AudiobookshelfNamedEntityDto(
-                        id = id,
-                        name = name,
-                        subtitle = asObj.optString("numBooks").takeIf { it.isNotBlank() }?.let { "$it books" }
-                    )
-                )
+                parseNarratorEntity(source.opt(index))?.let(::add)
             }
         }
+    }
+
+    private fun parseNarratorEntity(rawValue: Any?): AudiobookshelfNamedEntityDto? {
+        return when (rawValue) {
+            is JSONObject -> rawValue.toNarratorEntity()
+            is String -> rawValue
+                .trim()
+                .takeIf { it.isNotBlank() }
+                ?.let { AudiobookshelfNamedEntityDto(id = it, name = it) }
+            else -> null
+        }
+    }
+
+    internal fun narratorEntityFromValues(
+        id: String?,
+        name: String?,
+        numBooks: String? = null
+    ): AudiobookshelfNamedEntityDto? {
+        val resolvedId = id.orEmpty().ifBlank { name.orEmpty() }
+        val resolvedName = name.orEmpty()
+        if (resolvedId.isBlank() || resolvedName.isBlank()) return null
+        return AudiobookshelfNamedEntityDto(
+            id = resolvedId,
+            name = resolvedName,
+            subtitle = numBooks?.takeIf { it.isNotBlank() }?.let { "$it books" }
+        )
+    }
+
+    internal fun narratorEntityFromRawValueForTest(rawValue: Any?): AudiobookshelfNamedEntityDto? {
+        return when (rawValue) {
+            is Map<*, *> -> narratorEntityFromValues(
+                id = rawValue["id"]?.toString(),
+                name = rawValue["name"]?.toString(),
+                numBooks = rawValue["numBooks"]?.toString()
+            )
+            is String -> parseNarratorEntity(rawValue)
+            else -> null
+        }
+    }
+
+    internal fun sanitizeDescriptionTextForTest(value: String?): String? = value.sanitizeDescriptionText()
+
+    private fun JSONObject.toNarratorEntity(): AudiobookshelfNamedEntityDto? {
+        return narratorEntityFromValues(
+            id = optString("id"),
+            name = optString("name"),
+            numBooks = optString("numBooks")
+        )
+    }
+
+    private fun String?.sanitizeDescriptionText(): String? {
+        val raw = this?.trim().orEmpty()
+        if (raw.isBlank()) return null
+        val withBreaks = raw
+            .replace(Regex("(?i)<\\s*br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</\\s*p\\s*>"), "\n\n")
+            .replace(Regex("(?i)</\\s*div\\s*>"), "\n")
+            .replace(Regex("(?i)</\\s*li\\s*>"), "\n")
+        val withoutTags = withBreaks.replace(Regex("<[^>]+>"), " ")
+        val decoded = withoutTags
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+        val normalized = decoded
+            .lines()
+            .map { line -> line.replace(Regex("\\s+"), " ").trim() }
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+        return normalized.ifBlank { null }
     }
 
     private fun parseSingleMediaProgress(rawJson: String, fallbackItemId: String): AudiobookshelfMediaProgressDto? {
@@ -3499,7 +3534,7 @@ class AudiobookshelfApi @Inject constructor(
             authorName = metadata?.optString("authorName").orEmpty().ifBlank { "Unknown Author" },
             narratorName = metadata?.optString("narratorName").orEmpty().ifBlank { null },
             durationSeconds = media.optDoubleOrNull("duration"),
-            description = metadata?.optString("description")?.ifBlank { null },
+            description = metadata?.optString("description").sanitizeDescriptionText(),
             publishedYear = metadata?.optString("publishedYear")?.ifBlank { null },
             seriesName = seriesNames.firstOrNull(),
             seriesNames = seriesNames,

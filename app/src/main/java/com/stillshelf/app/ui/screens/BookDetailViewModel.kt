@@ -13,9 +13,11 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.downloads.manager.BookDownloadManager
-import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.downloadProgressForBook
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -569,18 +571,13 @@ class BookDetailViewModel @Inject constructor(
 
     private fun observePreferences() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressPercent = items.firstOrNull {
-                    it.bookId == bookId &&
-                        (it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading)
-                }?.progressPercent
+            bookDownloadManager.activeItems.collect { items ->
+                val progressPercent = items
+                    .activeDownloadProgressByUiKey()
+                    .downloadProgressForBook(uiState.value.detail?.book)
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
+                        downloadedBookIds = items.completedDownloadUiKeys(),
                         downloadProgressPercent = progressPercent
                     )
                 }

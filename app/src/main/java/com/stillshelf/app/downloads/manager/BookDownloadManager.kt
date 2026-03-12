@@ -21,7 +21,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,6 +37,8 @@ enum class DownloadStatus {
 }
 
 data class DownloadItem(
+    val serverId: String,
+    val libraryId: String,
     val bookId: String,
     val title: String,
     val authorName: String,
@@ -47,9 +52,38 @@ data class DownloadItem(
     val updatedAtMs: Long = System.currentTimeMillis()
 )
 
+internal fun buildDownloadTargetKey(
+    serverId: String,
+    libraryId: String,
+    bookId: String
+): String {
+    return listOf(serverId.trim(), libraryId.trim(), bookId.trim()).joinToString("|")
+}
+
+internal fun DownloadItem.targetKey(): String = buildDownloadTargetKey(
+    serverId = serverId,
+    libraryId = libraryId,
+    bookId = bookId
+)
+
+internal fun DownloadItem.matchesSelection(
+    serverId: String?,
+    libraryId: String?
+): Boolean {
+    val normalizedServerId = serverId?.trim().orEmpty()
+    val normalizedLibraryId = libraryId?.trim().orEmpty()
+    if (normalizedServerId.isBlank() || normalizedLibraryId.isBlank()) return false
+    return this.serverId == normalizedServerId && this.libraryId == normalizedLibraryId
+}
+
 data class DownloadToggleResult(
     val nowDownloaded: Boolean,
     val message: String
+)
+
+private data class ActiveDownloadSelection(
+    val serverId: String = "",
+    val libraryId: String = ""
 )
 
 @Singleton
@@ -64,14 +98,31 @@ class BookDownloadManager @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
     private val mutableItems = MutableStateFlow(downloadStorage.loadItems())
+    private val mutableActiveSelection = MutableStateFlow(ActiveDownloadSelection())
     private val progressPoller = DownloadProgressPoller(
         scope = scope,
         pollIntervalMs = 1000L,
         onTick = ::refreshProgress
     )
     val items: StateFlow<List<DownloadItem>> = mutableItems.asStateFlow()
+    val activeItems: Flow<List<DownloadItem>> = combine(mutableItems, sessionPreferences.state) { items, pref ->
+        items.filter { item ->
+            item.matchesSelection(
+                serverId = pref.activeServerId,
+                libraryId = pref.activeLibraryId
+            )
+        }
+    }
 
     init {
+        scope.launch {
+            sessionPreferences.state.collect { pref ->
+                mutableActiveSelection.value = ActiveDownloadSelection(
+                    serverId = pref.activeServerId?.trim().orEmpty(),
+                    libraryId = pref.activeLibraryId?.trim().orEmpty()
+                )
+            }
+        }
         scope.launch {
             sanitizeCompletedItems()
         }
@@ -82,10 +133,20 @@ class BookDownloadManager @Inject constructor(
     suspend fun toggleDownload(book: BookSummary): AppResult<DownloadToggleResult> {
         val bookId = book.id.trim()
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+        val activeServerId = sessionPreferences.state.first().activeServerId?.trim().orEmpty()
+        val libraryId = book.libraryId.trim()
+        if (activeServerId.isBlank() || libraryId.isBlank()) {
+            return AppResult.Error("No active library selected.")
+        }
+        val targetKey = buildDownloadTargetKey(
+            serverId = activeServerId,
+            libraryId = libraryId,
+            bookId = bookId
+        )
 
-        val existing = items.value.firstOrNull { it.bookId == bookId }
+        val existing = items.value.firstOrNull { it.targetKey() == targetKey }
         if (existing != null && existing.status != DownloadStatus.Failed) {
-            removeDownload(bookId)
+            removeDownload(bookId = bookId, serverId = activeServerId, libraryId = libraryId)
             return AppResult.Success(
                 DownloadToggleResult(
                     nowDownloaded = false,
@@ -94,11 +155,13 @@ class BookDownloadManager @Inject constructor(
             )
         }
         if (existing?.status == DownloadStatus.Failed) {
-            deleteItem(bookId)
+            deleteItem(targetKey)
         }
 
         upsertItem(
             DownloadItem(
+                serverId = activeServerId,
+                libraryId = libraryId,
                 bookId = bookId,
                 title = book.title,
                 authorName = book.authorName,
@@ -113,6 +176,8 @@ class BookDownloadManager @Inject constructor(
         if (sourceResult is AppResult.Error) {
             upsertItem(
                 DownloadItem(
+                    serverId = activeServerId,
+                    libraryId = libraryId,
                     bookId = bookId,
                     title = book.title,
                     authorName = book.authorName,
@@ -128,7 +193,11 @@ class BookDownloadManager @Inject constructor(
 
         val streamUrl = (sourceResult as AppResult.Success).value.streamUrl
         val split = splitAuthenticatedUrl(streamUrl)
-        val destinationName = buildDestinationFilename(book)
+        val destinationName = buildDestinationFilename(
+            serverId = activeServerId,
+            libraryId = libraryId,
+            book = book
+        )
         val request = DownloadManager.Request(Uri.parse(split.cleanUrl))
             .setTitle(book.title)
             .setDescription(book.authorName)
@@ -151,6 +220,8 @@ class BookDownloadManager @Inject constructor(
             val downloadId = downloadManager.enqueue(request)
             upsertItem(
                 DownloadItem(
+                    serverId = activeServerId,
+                    libraryId = libraryId,
                     bookId = bookId,
                     title = book.title,
                     authorName = book.authorName,
@@ -168,12 +239,14 @@ class BookDownloadManager @Inject constructor(
         }.fold(
             onSuccess = { AppResult.Success(it) },
             onFailure = {
-                val message = it.message ?: "Unable to start download."
-                upsertItem(
-                    DownloadItem(
-                        bookId = bookId,
-                        title = book.title,
-                        authorName = book.authorName,
+            val message = it.message ?: "Unable to start download."
+            upsertItem(
+                DownloadItem(
+                    serverId = activeServerId,
+                    libraryId = libraryId,
+                    bookId = bookId,
+                    title = book.title,
+                    authorName = book.authorName,
                         coverUrl = book.coverUrl,
                         durationSeconds = book.durationSeconds,
                         status = DownloadStatus.Failed,
@@ -187,20 +260,44 @@ class BookDownloadManager @Inject constructor(
     }
 
     suspend fun removeDownload(bookId: String) {
-        val item = items.value.firstOrNull { it.bookId == bookId } ?: return
+        val pref = sessionPreferences.state.first()
+        val activeServerId = pref.activeServerId?.trim().orEmpty()
+        val activeLibraryId = pref.activeLibraryId?.trim().orEmpty()
+        removeDownload(
+            bookId = bookId,
+            serverId = activeServerId,
+            libraryId = activeLibraryId
+        )
+    }
+
+    private suspend fun removeDownload(
+        bookId: String,
+        serverId: String,
+        libraryId: String
+    ) {
+        if (serverId.isBlank() || libraryId.isBlank()) return
+        val item = items.value.firstOrNull {
+            it.targetKey() == buildDownloadTargetKey(serverId, libraryId, bookId)
+        } ?: return
         val localRef = item.localPath ?: queryLocalPathByDownloadId(item.downloadId)
         item.downloadId?.let { id ->
             runCatching { downloadManager.remove(id) }
         }
         deleteLocalCopy(localRef)
-        deleteItem(bookId)
+        deleteItem(item.targetKey())
     }
 
     fun getCompletedDownload(bookId: String): DownloadItem? {
         val normalized = bookId.trim()
         if (normalized.isBlank()) return null
+        val selection = mutableActiveSelection.value
+        val activeServerId = selection.serverId
+        val activeLibraryId = selection.libraryId
+        if (activeServerId.isBlank() || activeLibraryId.isBlank()) return null
         return items.value.firstOrNull { item ->
-            item.bookId == normalized &&
+            item.serverId == activeServerId &&
+                item.libraryId == activeLibraryId &&
+                item.bookId == normalized &&
                 item.status == DownloadStatus.Completed &&
                 localResourceExists(item.localPath)
         }
@@ -331,7 +428,7 @@ class BookDownloadManager @Inject constructor(
     private suspend fun upsertItem(item: DownloadItem) {
         mutex.withLock {
             val current = mutableItems.value.toMutableList()
-            val index = current.indexOfFirst { it.bookId == item.bookId }
+            val index = current.indexOfFirst { it.targetKey() == item.targetKey() }
             if (index >= 0) {
                 current[index] = item
             } else {
@@ -344,17 +441,17 @@ class BookDownloadManager @Inject constructor(
     private suspend fun replaceItems(partial: List<DownloadItem>) {
         if (partial.isEmpty()) return
         mutex.withLock {
-            val updates = partial.associateBy { it.bookId }
+            val updates = partial.associateBy { it.targetKey() }
             val merged = mutableItems.value.map { existing ->
-                updates[existing.bookId] ?: existing
+                updates[existing.targetKey()] ?: existing
             }
             persistItemsLocked(merged)
         }
     }
 
-    private suspend fun deleteItem(bookId: String) {
+    private suspend fun deleteItem(targetKey: String) {
         mutex.withLock {
-            val next = mutableItems.value.filterNot { it.bookId == bookId }
+            val next = mutableItems.value.filterNot { it.targetKey() == targetKey }
             persistItemsLocked(next)
         }
     }
@@ -379,13 +476,17 @@ class BookDownloadManager @Inject constructor(
         }
     }
 
-    private fun buildDestinationFilename(book: BookSummary): String {
+    private fun buildDestinationFilename(
+        serverId: String,
+        libraryId: String,
+        book: BookSummary
+    ): String {
         val safeTitle = book.title
             .replace(Regex("[^A-Za-z0-9._ -]"), "_")
             .replace(Regex("\\s+"), " ")
             .trim()
             .take(80)
-        return "${safeTitle.ifBlank { "book" }}-${book.id.take(8)}.m4b"
+        return "${safeTitle.ifBlank { "book" }}-${serverId.take(6)}-${libraryId.take(6)}-${book.id.take(8)}.m4b"
     }
 
     private fun syncDownloadedIds(items: List<DownloadItem>) {
@@ -393,7 +494,7 @@ class BookDownloadManager @Inject constructor(
             val ids = items
                 .filter { it.status == DownloadStatus.Completed }
                 .filter { item -> localResourceExists(item.localPath) }
-                .map { it.bookId }
+                .map { it.targetKey() }
                 .toSet()
             sessionPreferences.setDownloadedBookIds(ids)
         }

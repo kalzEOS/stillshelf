@@ -13,8 +13,12 @@ import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
-import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.ui.common.isResetToStart
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.applyResolvedPlaybackProgress
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -35,7 +39,8 @@ import kotlinx.coroutines.launch
 class HomeViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController
 ) : ViewModel() {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 15 * 60 * 1000L
@@ -77,6 +82,7 @@ class HomeViewModel @Inject constructor(
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
         observeBookProgressMutations()
+        observeLivePlaybackState()
         observeDownloadedState()
         observeSilentRefreshTicker()
     }
@@ -147,6 +153,38 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    val bookExists = state.continueListening.any { it.book.id == mutation.bookId } ||
+                        state.recentlyAdded.any { it.id == mutation.bookId } ||
+                        state.listenAgain.any { it.id == mutation.bookId } ||
+                        state.recentSeries.any { it.leadBook.id == mutation.bookId } ||
+                        state.discoverBooks.any { it.id == mutation.bookId }
+                    if (!bookExists) {
+                        state
+                    } else {
+                        state.copy(
+                            continueListening = state.continueListening.map { it.withBookProgressMutation(mutation) },
+                            recentlyAdded = state.recentlyAdded.map { it.withBookProgressMutation(mutation) },
+                            listenAgain = state.listenAgain.map { it.withBookProgressMutation(mutation) },
+                            recentSeries = state.recentSeries.map { series ->
+                                if (series.leadBook.id == mutation.bookId) {
+                                    series.copy(leadBook = series.leadBook.withBookProgressMutation(mutation))
+                                } else {
+                                    series
+                                }
+                            },
+                            discoverBooks = state.discoverBooks.map { it.withBookProgressMutation(mutation) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun loadCachedThenMaybeRefresh() {
         val cachedResult = sessionRepository.fetchCachedHomeFeed(
             maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS
@@ -205,6 +243,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId, finished = true)) {
                 is AppResult.Success -> {
+                    playbackController.applyResolvedPlaybackProgress(
+                        bookId = bookId,
+                        progress = result.value,
+                        isFinished = true
+                    )
                     removedListenAgainBookIds = removedListenAgainBookIds - bookId
                     applyBookFinishedState(bookId = bookId, finished = true)
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
@@ -220,6 +263,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
                 is AppResult.Success -> {
+                    playbackController.applyResolvedPlaybackProgress(
+                        bookId = bookId,
+                        progress = result.value,
+                        isFinished = false
+                    )
                     mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookFinishedState(bookId = bookId, finished = false)
@@ -241,6 +289,11 @@ class HomeViewModel @Inject constructor(
                 )
             ) {
                 is AppResult.Success -> {
+                    playbackController.applyResolvedPlaybackProgress(
+                        bookId = bookId,
+                        progress = result.value,
+                        isFinished = false
+                    )
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookResetState(bookId = bookId)
                     mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
@@ -263,6 +316,11 @@ class HomeViewModel @Inject constructor(
                 )
             ) {
                 is AppResult.Success -> {
+                    playbackController.applyResolvedPlaybackProgress(
+                        bookId = bookId,
+                        progress = result.value,
+                        isFinished = false
+                    )
                     mutableUiState.update {
                         it.copy(
                             continueListening = it.continueListening.filterNot { item -> item.book.id == bookId },
@@ -431,18 +489,11 @@ class HomeViewModel @Inject constructor(
 
     private fun observeDownloadedState() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressByBookId = items
-                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+            bookDownloadManager.activeItems.collect { items ->
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
-                        downloadProgressByBookId = progressByBookId
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
                     )
                 }
             }

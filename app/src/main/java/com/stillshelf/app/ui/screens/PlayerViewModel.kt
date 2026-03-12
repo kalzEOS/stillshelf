@@ -15,9 +15,11 @@ import com.stillshelf.app.core.util.resolveUnfinishedProgressState
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
-import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.downloadProgressForBook
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.MainRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -68,8 +70,8 @@ class PlayerViewModel @Inject constructor(
     val actionMessage: StateFlow<String?> = mutableActionMessage.asStateFlow()
     private val mutableControlPrefs = MutableStateFlow(PlayerControlPrefs())
     val controlPrefs: StateFlow<PlayerControlPrefs> = mutableControlPrefs.asStateFlow()
-    private val mutableDownloadedBookIds = MutableStateFlow<Set<String>>(emptySet())
-    val downloadedBookIds: StateFlow<Set<String>> = mutableDownloadedBookIds.asStateFlow()
+    private val mutableDownloadedBookKeys = MutableStateFlow<Set<String>>(emptySet())
+    val downloadedBookKeys: StateFlow<Set<String>> = mutableDownloadedBookKeys.asStateFlow()
     private val mutableDownloadProgressPercent = MutableStateFlow<Int?>(null)
     val downloadProgressPercent: StateFlow<Int?> = mutableDownloadProgressPercent.asStateFlow()
     private val mutableMarkFinishedUndoEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -740,7 +742,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun observeDownloads() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
+            bookDownloadManager.activeItems.collect { items ->
                 syncCurrentDownloadState(items)
             }
         }
@@ -748,17 +750,11 @@ class PlayerViewModel @Inject constructor(
 
     private fun syncCurrentDownloadState(items: List<DownloadItem> = currentDownloadItems) {
         currentDownloadItems = items
-        mutableDownloadedBookIds.value = items
-            .filter { it.status == DownloadStatus.Completed }
-            .map { it.bookId }
-            .toSet()
-        val activeBookId = uiState.value.book?.id ?: previewItem.value?.book?.id
-        val progress = activeBookId?.let { id ->
-            items.firstOrNull { item ->
-                item.bookId == id &&
-                    (item.status == DownloadStatus.Queued || item.status == DownloadStatus.Downloading)
-            }?.progressPercent
-        }
+        mutableDownloadedBookKeys.value = items.completedDownloadUiKeys()
+        val activeBook = uiState.value.book ?: previewItem.value?.book
+        val progress = items
+            .activeDownloadProgressByUiKey()
+            .downloadProgressForBook(activeBook)
         mutableDownloadProgressPercent.value = progress
     }
 

@@ -225,6 +225,8 @@ import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.WideCoverBackgroundBlur
+import com.stillshelf.app.ui.common.containsDownloadedBook
+import com.stillshelf.app.ui.common.downloadProgressForBook
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.navigation.AuthRoute
 import com.stillshelf.app.ui.navigation.BrowseRoute
@@ -888,8 +890,8 @@ fun HomeScreen(
                                                 cardHeight = continueListeningCardHeight,
                                                 posterWidth = continueListeningPosterWidth,
                                                 posterHeight = continueListeningPosterHeight,
-                                                isDownloaded = uiState.downloadedBookIds.contains(item.book.id),
-                                                downloadProgressPercent = uiState.downloadProgressByBookId[item.book.id],
+                                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(item.book),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(item.book),
                                                 onClick = { onOpenPlayer(item.book.id) },
                                                 onGoToBook = { onOpenBook(item.book.id) },
                                                 onAddToCollection = { addToListBookId = item.book.id },
@@ -940,8 +942,8 @@ fun HomeScreen(
                                             width = homeShelfPosterWidth,
                                             height = homeShelfPosterHeight,
                                             contentScale = ContentScale.Fit,
-                                            showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                            showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                         )
                                         Row(
                                             modifier = Modifier.width(homeShelfPosterWidth),
@@ -1014,7 +1016,7 @@ fun HomeScreen(
                                                     AppDropdownMenuItem(
                                                         text = {
                                                             Text(
-                                                                if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                     "Remove Download"
                                                                 } else {
                                                                     "Download"
@@ -1095,8 +1097,8 @@ fun HomeScreen(
                                                     width = homeShelfPosterWidth,
                                                     height = homeShelfPosterHeight,
                                                     contentScale = ContentScale.Fit,
-                                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                                    downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                                    showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                                 )
                                                 Row(
                                                     modifier = Modifier.width(homeShelfPosterWidth),
@@ -1173,7 +1175,7 @@ fun HomeScreen(
                                                             AppDropdownMenuItem(
                                                                 text = {
                                                                     Text(
-                                                                        if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                        if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                             "Remove Download"
                                                                         } else {
                                                                             "Download"
@@ -1224,8 +1226,8 @@ fun HomeScreen(
                                     items(seriesItems, key = { it.seriesName }) { series ->
                                         SeriesStackCard(
                                             series = series,
-                                            isDownloaded = uiState.downloadedBookIds.contains(series.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[series.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(series.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(series.leadBook),
                                             onClick = { onOpenSeries(series.seriesName) }
                                         )
                                     }
@@ -1267,8 +1269,8 @@ fun HomeScreen(
                                                 width = homeShelfPosterWidth,
                                                 height = homeShelfPosterHeight,
                                                 contentScale = ContentScale.Fit,
-                                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                                showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                             )
                                             Row(
                                                 modifier = Modifier.width(homeShelfPosterWidth),
@@ -1341,7 +1343,7 @@ fun HomeScreen(
                                                         AppDropdownMenuItem(
                                                             text = {
                                                                 Text(
-                                                                    if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                    if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                         "Remove Download"
                                                                     } else {
                                                                         "Download"
@@ -1790,8 +1792,8 @@ fun BrowseScreen(
                                         BookGridItem(
                                             book = entry.book,
                                             onClick = { onBookClick(entry.book.id) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
                                             onMarkFinished = {
                                                 if (entry.book.hasFinishedProgress()) {
@@ -1809,8 +1811,8 @@ fun BrowseScreen(
                                         SeriesStackGridItem(
                                             entry = entry,
                                             onClick = { onSeriesClick(entry.seriesName) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
                                             onMarkFinished = {
                                                 if (entry.leadBook.hasFinishedProgress()) {
@@ -1837,8 +1839,8 @@ fun BrowseScreen(
                                         BookListItem(
                                             book = entry.book,
                                             onClick = { onBookClick(entry.book.id) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
                                             onMarkFinished = {
                                                 if (entry.book.hasFinishedProgress()) {
@@ -1856,8 +1858,8 @@ fun BrowseScreen(
                                         SeriesStackListItem(
                                             entry = entry,
                                             onClick = { onSeriesClick(entry.seriesName) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
                                             onMarkFinished = {
                                                 if (entry.leadBook.hasFinishedProgress()) {
@@ -1922,7 +1924,7 @@ fun BrowseScreen(
 }
 
 @Composable
-private fun BookGridItem(
+internal fun BookGridItem(
     book: BookSummary,
     onClick: () -> Unit,
     isDownloaded: Boolean,
@@ -2179,7 +2181,7 @@ private fun SeriesStackGridItem(
 }
 
 @Composable
-private fun BookListItem(
+internal fun BookListItem(
     book: BookSummary,
     onClick: () -> Unit,
     isDownloaded: Boolean,
@@ -4011,8 +4013,8 @@ fun SearchScreen(
                         items(matchedBooks.take(20), key = { it.id }) { book ->
                             SearchBookRow(
                                 book = book,
-                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
-                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
                                 onAddToCollection = { collectionPickerBookId = book.id },
                                 onMarkFinished = {
                                     if (book.hasFinishedProgress()) {
@@ -4451,7 +4453,7 @@ fun DownloadsScreen(
                                 shape = RoundedCornerShape(8.dp),
                                 contentScale = ContentScale.Fit,
                                 backgroundBlur = WideCoverBackgroundBlur,
-                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
                                 downloadProgressPercent = downloadItem?.progressPercent
                             )
                             Column(
@@ -6099,7 +6101,7 @@ fun BookDetailScreen(
                                 val hasActiveDownload = (uiState.downloadProgressPercent ?: -1) in 0..99
                                 Text(
                                     if (
-                                        uiState.detail?.book?.id?.let(uiState.downloadedBookIds::contains) == true ||
+                                        uiState.downloadedBookIds.containsDownloadedBook(uiState.detail?.book) ||
                                         hasActiveDownload
                                     ) {
                                         "Remove Download"
@@ -6299,7 +6301,7 @@ fun BookDetailScreen(
                                     limitInsetToAvoidVerticalLetterbox = true,
                                     forcedFrameSideInset = detailForcedFrameSideInset,
                                     disableBlurredFrame = false,
-                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                    showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
                                     downloadProgressPercent = uiState.downloadProgressPercent
                                 )
                             }
@@ -6763,13 +6765,13 @@ fun PlayerScreen(
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
-    val downloadedBookIds by viewModel.downloadedBookIds.collectAsStateWithLifecycle()
+    val downloadedBookKeys by viewModel.downloadedBookKeys.collectAsStateWithLifecycle()
     val playerDownloadProgressPercent by viewModel.downloadProgressPercent.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
     val bookId = book?.id
-    val isBookDownloaded = bookId != null && downloadedBookIds.contains(bookId)
+    val isBookDownloaded = downloadedBookKeys.containsDownloadedBook(book)
     val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
     val downloadToolText = if (hasActivePlayerDownload) {

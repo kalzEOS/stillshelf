@@ -32,6 +32,8 @@ class DownloadStorage @Inject constructor(
                     if (bookId.isBlank()) continue
                     add(
                         DownloadItem(
+                            serverId = node.optString("serverId"),
+                            libraryId = node.optString("libraryId"),
                             bookId = bookId,
                             title = node.optString("title"),
                             authorName = node.optString("authorName"),
@@ -57,6 +59,8 @@ class DownloadStorage @Inject constructor(
             items.forEach { item ->
                 put(
                     JSONObject()
+                        .put("serverId", item.serverId)
+                        .put("libraryId", item.libraryId)
                         .put("bookId", item.bookId)
                         .put("title", item.title)
                         .put("authorName", item.authorName)

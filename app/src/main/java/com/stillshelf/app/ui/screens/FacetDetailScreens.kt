@@ -528,7 +528,7 @@ class SeriesDetailViewModel @Inject constructor(
 
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val seriesId = savedStateHandle.get<String>(DetailRoute.SERIES_ID_ARG)?.trim()?.takeIf { it.isNotBlank() }
-    private val mutableUiState = MutableStateFlow(SeriesDetailUiState(isLoading = true, title = seriesName))
+    private val mutableUiState = MutableStateFlow(SeriesDetailUiState(title = seriesName))
     val uiState: StateFlow<SeriesDetailUiState> = mutableUiState.asStateFlow()
     private val mutableListMode = MutableStateFlow(true)
     val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
@@ -566,13 +566,13 @@ class SeriesDetailViewModel @Inject constructor(
                 mutableCollapseSubseries.value = prefs.seriesDetailCollapseSubseries
             }
             primeLocalSeriesState()
+            refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
         }
         observeDownloadedState()
         observeBookProgressMutations()
         observePersistedSeriesDetail()
         observeResolvedSeriesSummary()
         observeCollapseAvailability()
-        refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
     }
 
     fun setListMode(value: Boolean) {

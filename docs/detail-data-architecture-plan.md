@@ -203,11 +203,11 @@ Do not clear all caches just because one detail action occurred.
 
 ### Phase 1: Foundation
 
-- [ ] Add Room entities and DAOs for persistent detail data.
-- [ ] Add mappers between API DTOs and local entities.
-- [ ] Add refresh policy enum and in-flight refresh deduping.
-- [ ] Add repository methods that write detail data into Room.
-- [ ] Keep existing screen code untouched until local flows are available.
+- [x] Add Room entities and DAOs for persistent detail data.
+- [x] Add mappers between API DTOs and local entities.
+- [x] Add refresh policy enum and in-flight refresh deduping.
+- [x] Add repository methods that write detail data into Room.
+- [x] Keep existing screen code untouched until local flows are available.
 
 Acceptance criteria:
 

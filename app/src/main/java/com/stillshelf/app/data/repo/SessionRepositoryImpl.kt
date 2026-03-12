@@ -3,8 +3,16 @@ package com.stillshelf.app.data.repo
 import com.stillshelf.app.core.database.LibraryDao
 import com.stillshelf.app.core.database.LibraryEntity
 import com.stillshelf.app.core.database.AppDatabase
+import com.stillshelf.app.core.database.BookBookmarkEntity
+import com.stillshelf.app.core.database.BookChapterEntity
+import com.stillshelf.app.core.database.BookDetailEntity
+import com.stillshelf.app.core.database.BookSummaryEntity
+import com.stillshelf.app.core.database.DetailCacheDao
+import com.stillshelf.app.core.database.DetailSyncStateEntity
 import com.stillshelf.app.core.database.ServerDao
 import com.stillshelf.app.core.database.ServerEntity
+import com.stillshelf.app.core.database.SeriesMembershipEntity
+import com.stillshelf.app.core.database.SeriesSummaryEntity
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookChapter
@@ -40,6 +48,7 @@ import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -63,6 +72,7 @@ class SessionRepositoryImpl @Inject constructor(
     private val appDatabase: AppDatabase,
     private val serverDao: ServerDao,
     private val libraryDao: LibraryDao,
+    private val detailCacheDao: DetailCacheDao,
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
     private val audiobookshelfApi: AudiobookshelfApi
@@ -76,6 +86,11 @@ class SessionRepositoryImpl @Inject constructor(
         private const val LOCAL_PROGRESS_OVERRIDE_MAX_AGE_MS: Long = 60 * 1000L
         private const val PROGRESS_MATCH_EPSILON: Double = 0.005
         private const val TIME_MATCH_EPSILON_SECONDS: Double = 1.0
+        private const val DETAIL_RESOURCE_BOOK = "book"
+        private const val DETAIL_RESOURCE_SERIES = "series"
+        private const val DETAIL_RESOURCE_VARIANT_DEFAULT = ""
+        private const val SERIES_ENTRY_TYPE_BOOK = "book"
+        private const val SERIES_ENTRY_TYPE_SUBSERIES = "subseries"
     }
 
     private data class TimedCacheEntry<T>(
@@ -112,6 +127,8 @@ class SessionRepositoryImpl @Inject constructor(
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val bookDetailCache = mutableMapOf<String, TimedCacheEntry<BookDetail>>()
+    private val refreshJobMutex = Mutex()
+    private val inFlightDetailRefreshes = mutableMapOf<String, Deferred<AppResult<Unit>>>()
 
     override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
         SessionState(
@@ -166,6 +183,7 @@ class SessionRepositoryImpl @Inject constructor(
             val nextServer = serverDao.getAll().firstOrNull { it.id != existing.id }
             secureTokenStorage.clearToken(existing.id)
             serverDao.deleteById(existing.id)
+            deletePersistedDetailCacheForServer(existing.id)
             sessionPreferences.setServerAvatarUri(existing.id, null)
             clearContentCaches()
             val session = sessionPreferences.state.first()
@@ -242,6 +260,7 @@ class SessionRepositoryImpl @Inject constructor(
             appDatabase.withTransaction {
                 runCatching { libraryDao.deleteByServerId(activeServerId) }
                 serverDao.deleteById(activeServerId)
+                deletePersistedDetailCacheForServer(activeServerId)
             }
             sessionPreferences.setServerAvatarUri(activeServerId, null)
             sessionPreferences.setLastPlayedBookId(null)
@@ -349,6 +368,7 @@ class SessionRepositoryImpl @Inject constructor(
                     .forEach { duplicate ->
                         libraryDao.deleteByServerId(duplicate.id)
                         serverDao.deleteById(duplicate.id)
+                        deletePersistedDetailCacheForServer(duplicate.id)
                         sessionPreferences.setServerAvatarUri(duplicate.id, null)
                     }
             }
@@ -628,6 +648,11 @@ class SessionRepositoryImpl @Inject constructor(
                 authToken = connection.token
             )
         }
+        persistSeriesSummaries(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            series = series
+        )
         putCache(seriesCache, cacheKey, series)
         return AppResult.Success(series)
     }
@@ -655,58 +680,70 @@ class SessionRepositoryImpl @Inject constructor(
                 return AppResult.Success(cached)
             }
         }
-        val staleCache = if (forceRefresh) null else getAnyCache(seriesContentCache, cacheKey)
-
-        val items = mutableListOf<AudiobookshelfLibraryItemDto>()
-        var page = 0
-        while (page < MAX_FULL_LIBRARY_PAGES) {
-            val itemsResult = audiobookshelfApi.getLibraryItems(
-                baseUrl = connection.server.baseUrl,
-                authToken = connection.token,
+        val persistedLocal = if (forceRefresh) {
+            null
+        } else {
+            readPersistedSeriesContents(
+                serverId = connection.server.id,
                 libraryId = library.id,
-                limit = FULL_LIBRARY_PAGE_SIZE,
-                page = page,
-                filter = "series.$normalizedSeriesId",
-                collapseSeries = collapseSubseries
+                seriesId = normalizedSeriesId,
+                collapseSubseries = collapseSubseries
             )
-            if (itemsResult.isFailure) {
-                if (!staleCache.isNullOrEmpty()) {
-                    return AppResult.Success(staleCache)
-                }
-                return AppResult.Error(
-                    message = itemsResult.exceptionOrNull()?.message ?: "Unable to load series.",
-                    cause = itemsResult.exceptionOrNull()
+        }
+        val syncState = detailCacheDao.getDetailSyncState(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            resourceType = DETAIL_RESOURCE_SERIES,
+            resourceId = normalizedSeriesId,
+            resourceVariant = seriesResourceVariant(collapseSubseries)
+        )
+        val shouldRefresh = shouldRefreshDetail(
+            policy = if (forceRefresh) DetailRefreshPolicy.Force else DetailRefreshPolicy.IfStale,
+            localExists = persistedLocal != null,
+            lastSuccessfulSyncAtMs = syncState?.lastSuccessfulSyncAtMs,
+            maxAgeMs = CONTENT_CACHE_MAX_AGE_MS
+        )
+        if (!shouldRefresh && persistedLocal != null) {
+            putCache(seriesContentCache, cacheKey, persistedLocal)
+            return AppResult.Success(persistedLocal)
+        }
+        val staleCache = if (forceRefresh) null else getAnyCache(seriesContentCache, cacheKey) ?: persistedLocal
+        val refreshKey = "seriesContents:$cacheKey"
+        return when (
+            val refreshResult = runDedupedDetailRefresh(refreshKey) {
+                refreshPersistedSeriesContents(
+                    connection = connection,
+                    libraryId = library.id,
+                    seriesId = normalizedSeriesId,
+                    collapseSubseries = collapseSubseries
                 )
             }
+        ) {
+            is AppResult.Success -> {
+                val cached = readPersistedSeriesContents(
+                    serverId = connection.server.id,
+                    libraryId = library.id,
+                    seriesId = normalizedSeriesId,
+                    collapseSubseries = collapseSubseries
+                )
+                if (cached != null) {
+                    putCache(seriesContentCache, cacheKey, cached)
+                    AppResult.Success(cached)
+                } else if (!staleCache.isNullOrEmpty()) {
+                    AppResult.Success(staleCache)
+                } else {
+                    AppResult.Error("Unable to load series.")
+                }
+            }
 
-            val batch = itemsResult.getOrThrow()
-                .filter { it.libraryId == library.id }
-            if (batch.isEmpty()) break
-            items += batch
-            if (batch.size < FULL_LIBRARY_PAGE_SIZE) break
-            page += 1
+            is AppResult.Error -> {
+                if (!staleCache.isNullOrEmpty()) {
+                    AppResult.Success(staleCache)
+                } else {
+                    refreshResult
+                }
+            }
         }
-
-        val mediaProgressByItemId = if (items.isEmpty()) {
-            emptyMap()
-        } else {
-            audiobookshelfApi.getMediaProgress(
-                baseUrl = connection.server.baseUrl,
-                authToken = connection.token
-            ).getOrNull()
-                ?.associateBy { it.libraryItemId }
-                .orEmpty()
-        }
-        val entries = items.map { item ->
-            item.toSeriesDetailEntry(
-                baseUrl = connection.server.baseUrl,
-                authToken = connection.token,
-                mediaProgress = mediaProgressByItemId[item.id],
-                serverId = connection.server.id
-            )
-        }
-        putCache(seriesContentCache, cacheKey, entries)
-        return AppResult.Success(entries)
     }
 
     override suspend fun fetchCollectionsForActiveLibrary(
@@ -1451,70 +1488,66 @@ class SessionRepositoryImpl @Inject constructor(
                 return AppResult.Success(cached)
             }
         }
-        val staleCache = if (forceRefresh) null else getAnyCache(bookDetailCache, cacheKey)
+        val persistedLocal = if (forceRefresh) {
+            null
+        } else {
+            readPersistedBookDetail(
+                serverId = connection.server.id,
+                libraryId = library.id,
+                bookId = bookId
+            )
+        }
+        val syncState = detailCacheDao.getDetailSyncState(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            resourceType = DETAIL_RESOURCE_BOOK,
+            resourceId = bookId,
+            resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT
+        )
+        val shouldRefresh = shouldRefreshDetail(
+            policy = if (forceRefresh) DetailRefreshPolicy.Force else DetailRefreshPolicy.IfStale,
+            localExists = persistedLocal != null,
+            lastSuccessfulSyncAtMs = syncState?.lastSuccessfulSyncAtMs,
+            maxAgeMs = DETAIL_CACHE_MAX_AGE_MS
+        )
+        if (!shouldRefresh && persistedLocal != null) {
+            putCache(bookDetailCache, cacheKey, persistedLocal)
+            return AppResult.Success(persistedLocal)
+        }
+        val staleCache = if (forceRefresh) null else getAnyCache(bookDetailCache, cacheKey) ?: persistedLocal
 
-        return try {
-            coroutineScope {
-                val detailDeferred = async {
-                    audiobookshelfApi.getItemDetail(
-                        baseUrl = connection.server.baseUrl,
-                        authToken = connection.token,
-                        itemId = bookId
-                    )
-                }
-                val mediaProgressDeferred = async {
-                    audiobookshelfApi.getMediaProgressForItem(
-                        baseUrl = connection.server.baseUrl,
-                        authToken = connection.token,
-                        itemId = bookId
-                    ).getOrNull()
-                }
-                val bookmarksDeferred = async {
-                    audiobookshelfApi.getBookmarks(
-                        baseUrl = connection.server.baseUrl,
-                        authToken = connection.token
-                    )
-                }
-
-                val detailResult = detailDeferred.await()
-                if (detailResult.isFailure) {
-                    if (staleCache != null) {
-                        return@coroutineScope AppResult.Success(staleCache)
-                    }
-                    return@coroutineScope AppResult.Error(
-                        message = detailResult.exceptionOrNull()?.message ?: "Unable to load book detail.",
-                        cause = detailResult.exceptionOrNull()
-                    )
-                }
-
-                val bookmarks = bookmarksDeferred.await()
-                    .getOrDefault(emptyList())
-                    .asSequence()
-                    .filter { bookmark ->
-                        bookmark.libraryItemId.matchesLibraryItemId(bookId)
-                    }
-                    .sortedBy { it.timeSeconds ?: Double.MAX_VALUE }
-                    .map { it.toModel() }
-                    .toList()
-
-                val detail = detailResult.getOrThrow().toModel(
-                    baseUrl = connection.server.baseUrl,
-                    authToken = connection.token,
-                    bookmarks = bookmarks
-                ).let { parsed ->
-                    parsed.copy(
-                        book = parsed.book.withResolvedProgress(mediaProgressDeferred.await())
-                            .withLocalProgressOverride(connection.server.id)
-                    )
-                }
-                putCache(bookDetailCache, cacheKey, detail)
-                AppResult.Success(detail)
+        val refreshKey = "bookDetail:$cacheKey"
+        return when (
+            val refreshResult = runDedupedDetailRefresh(refreshKey) {
+                refreshPersistedBookDetail(
+                    connection = connection,
+                    libraryId = library.id,
+                    bookId = bookId
+                )
             }
-        } catch (t: Throwable) {
-            if (staleCache != null) {
-                AppResult.Success(staleCache)
-            } else {
-                AppResult.Error("Unable to load book detail.", t)
+        ) {
+            is AppResult.Success -> {
+                val cached = readPersistedBookDetail(
+                    serverId = connection.server.id,
+                    libraryId = library.id,
+                    bookId = bookId
+                )
+                if (cached != null) {
+                    putCache(bookDetailCache, cacheKey, cached)
+                    AppResult.Success(cached)
+                } else if (staleCache != null) {
+                    AppResult.Success(staleCache)
+                } else {
+                    AppResult.Error("Unable to load book detail.")
+                }
+            }
+
+            is AppResult.Error -> {
+                if (staleCache != null) {
+                    AppResult.Success(staleCache)
+                } else {
+                    refreshResult
+                }
             }
         }
     }
@@ -2602,6 +2635,7 @@ class SessionRepositoryImpl @Inject constructor(
         runCatching { secureTokenStorage.clearToken(serverId) }
         runCatching { libraryDao.deleteByServerId(serverId) }
         runCatching { serverDao.deleteById(serverId) }
+        runCatching { deletePersistedDetailCacheForServer(serverId) }
         runCatching { sessionPreferences.setServerAvatarUri(serverId, null) }
         clearContentCaches()
     }
@@ -2748,6 +2782,481 @@ class SessionRepositoryImpl @Inject constructor(
         cacheMutex.withLock {
             bookDetailCache.remove(key)
         }
+    }
+
+    private suspend fun deletePersistedDetailCacheForServer(serverId: String) {
+        detailCacheDao.deleteBookBookmarksForServer(serverId)
+        detailCacheDao.deleteBookChaptersForServer(serverId)
+        detailCacheDao.deleteBookDetailsForServer(serverId)
+        detailCacheDao.deleteBookSummariesForServer(serverId)
+        detailCacheDao.deleteSeriesMembershipsForServer(serverId)
+        detailCacheDao.deleteSeriesSummariesForServer(serverId)
+        detailCacheDao.deleteDetailSyncStateForServer(serverId)
+    }
+
+    private suspend fun runDedupedDetailRefresh(
+        key: String,
+        block: suspend () -> AppResult<Unit>
+    ): AppResult<Unit> = coroutineScope {
+        val deferred = refreshJobMutex.withLock {
+            inFlightDetailRefreshes[key] ?: async {
+                try {
+                    block()
+                } finally {
+                    refreshJobMutex.withLock {
+                        if (inFlightDetailRefreshes[key] === this@async) {
+                            inFlightDetailRefreshes.remove(key)
+                        }
+                    }
+                }
+            }.also { created ->
+                inFlightDetailRefreshes[key] = created
+            }
+        }
+        deferred.await()
+    }
+
+    private suspend fun refreshPersistedBookDetail(
+        connection: ActiveConnection,
+        libraryId: String,
+        bookId: String
+    ): AppResult<Unit> {
+        return try {
+            coroutineScope {
+                val detailDeferred = async {
+                    audiobookshelfApi.getItemDetail(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token,
+                        itemId = bookId
+                    )
+                }
+                val mediaProgressDeferred = async {
+                    audiobookshelfApi.getMediaProgressForItem(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token,
+                        itemId = bookId
+                    ).getOrNull()
+                }
+                val bookmarksDeferred = async {
+                    audiobookshelfApi.getBookmarks(
+                        baseUrl = connection.server.baseUrl,
+                        authToken = connection.token
+                    )
+                }
+
+                val detailResult = detailDeferred.await()
+                if (detailResult.isFailure) {
+                    return@coroutineScope AppResult.Error(
+                        message = detailResult.exceptionOrNull()?.message ?: "Unable to load book detail.",
+                        cause = detailResult.exceptionOrNull()
+                    )
+                }
+
+                val bookmarks = bookmarksDeferred.await()
+                    .getOrDefault(emptyList())
+                    .asSequence()
+                    .filter { bookmark ->
+                        bookmark.libraryItemId.matchesLibraryItemId(bookId)
+                    }
+                    .sortedBy { it.timeSeconds ?: Double.MAX_VALUE }
+                    .map { it.toModel() }
+                    .toList()
+
+                val detail = detailResult.getOrThrow().toModel(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    bookmarks = bookmarks
+                ).let { parsed ->
+                    parsed.copy(
+                        book = parsed.book.withResolvedProgress(mediaProgressDeferred.await())
+                            .withLocalProgressOverride(connection.server.id)
+                    )
+                }
+
+                persistBookDetailSnapshot(
+                    serverId = connection.server.id,
+                    libraryId = libraryId,
+                    detail = detail
+                )
+                AppResult.Success(Unit)
+            }
+        } catch (t: Throwable) {
+            AppResult.Error("Unable to load book detail.", t)
+        }
+    }
+
+    private suspend fun refreshPersistedSeriesContents(
+        connection: ActiveConnection,
+        libraryId: String,
+        seriesId: String,
+        collapseSubseries: Boolean
+    ): AppResult<Unit> {
+        return try {
+            val items = mutableListOf<AudiobookshelfLibraryItemDto>()
+            var page = 0
+            while (page < MAX_FULL_LIBRARY_PAGES) {
+                val itemsResult = audiobookshelfApi.getLibraryItems(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    libraryId = libraryId,
+                    limit = FULL_LIBRARY_PAGE_SIZE,
+                    page = page,
+                    filter = "series.$seriesId",
+                    collapseSeries = collapseSubseries
+                )
+                if (itemsResult.isFailure) {
+                    return AppResult.Error(
+                        message = itemsResult.exceptionOrNull()?.message ?: "Unable to load series.",
+                        cause = itemsResult.exceptionOrNull()
+                    )
+                }
+
+                val batch = itemsResult.getOrThrow()
+                    .filter { it.libraryId == libraryId }
+                if (batch.isEmpty()) break
+                items += batch
+                if (batch.size < FULL_LIBRARY_PAGE_SIZE) break
+                page += 1
+            }
+
+            val mediaProgressByItemId = if (items.isEmpty()) {
+                emptyMap()
+            } else {
+                audiobookshelfApi.getMediaProgress(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token
+                ).getOrNull()
+                    ?.associateBy { it.libraryItemId }
+                    .orEmpty()
+            }
+            val entries = items.map { item ->
+                item.toSeriesDetailEntry(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token,
+                    mediaProgress = mediaProgressByItemId[item.id],
+                    serverId = connection.server.id
+                )
+            }
+
+            persistSeriesContentsSnapshot(
+                serverId = connection.server.id,
+                libraryId = libraryId,
+                seriesId = seriesId,
+                collapseSubseries = collapseSubseries,
+                entries = entries
+            )
+            AppResult.Success(Unit)
+        } catch (t: Throwable) {
+            AppResult.Error("Unable to load series.", t)
+        }
+    }
+
+    private suspend fun persistSeriesSummaries(
+        serverId: String,
+        libraryId: String,
+        series: List<NamedEntitySummary>
+    ) {
+        val updatedAtMs = System.currentTimeMillis()
+        detailCacheDao.upsertSeriesSummaries(
+            series.map { item ->
+                SeriesSummaryEntity(
+                    serverId = serverId,
+                    libraryId = libraryId,
+                    id = item.id,
+                    name = item.name,
+                    subtitle = item.subtitle,
+                    imageUrl = item.imageUrl,
+                    description = item.description,
+                    updatedAtMs = updatedAtMs
+                )
+            }
+        )
+    }
+
+    private suspend fun persistBookDetailSnapshot(
+        serverId: String,
+        libraryId: String,
+        detail: BookDetail
+    ) {
+        val syncedAtMs = System.currentTimeMillis()
+        appDatabase.withTransaction {
+            detailCacheDao.upsertBookSummary(
+                detail.book.toEntity(
+                    serverId = serverId,
+                    updatedAtMs = syncedAtMs
+                )
+            )
+            detailCacheDao.upsertBookDetail(
+                BookDetailEntity(
+                    serverId = serverId,
+                    libraryId = libraryId,
+                    bookId = detail.book.id,
+                    description = detail.description,
+                    publishedYear = detail.publishedYear,
+                    sizeBytes = detail.sizeBytes,
+                    updatedAtMs = syncedAtMs
+                )
+            )
+            detailCacheDao.deleteBookChapters(serverId, libraryId, detail.book.id)
+            if (detail.chapters.isNotEmpty()) {
+                detailCacheDao.insertBookChapters(
+                    detail.chapters.mapIndexed { index, chapter ->
+                        BookChapterEntity(
+                            serverId = serverId,
+                            libraryId = libraryId,
+                            bookId = detail.book.id,
+                            chapterIndex = index,
+                            title = chapter.title,
+                            startSeconds = chapter.startSeconds,
+                            endSeconds = chapter.endSeconds
+                        )
+                    }
+                )
+            }
+            detailCacheDao.deleteBookBookmarks(serverId, libraryId, detail.book.id)
+            if (detail.bookmarks.isNotEmpty()) {
+                detailCacheDao.insertBookBookmarks(
+                    detail.bookmarks.map { bookmark ->
+                        BookBookmarkEntity(
+                            serverId = serverId,
+                            libraryId = libraryId,
+                            bookId = detail.book.id,
+                            id = bookmark.id,
+                            title = bookmark.title,
+                            timeSeconds = bookmark.timeSeconds,
+                            createdAtMs = bookmark.createdAtMs
+                        )
+                    }
+                )
+            }
+            detailCacheDao.upsertDetailSyncState(
+                DetailSyncStateEntity(
+                    serverId = serverId,
+                    libraryId = libraryId,
+                    resourceType = DETAIL_RESOURCE_BOOK,
+                    resourceId = detail.book.id,
+                    resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT,
+                    lastSuccessfulSyncAtMs = syncedAtMs,
+                    lastAttemptedSyncAtMs = syncedAtMs
+                )
+            )
+        }
+    }
+
+    private suspend fun persistSeriesContentsSnapshot(
+        serverId: String,
+        libraryId: String,
+        seriesId: String,
+        collapseSubseries: Boolean,
+        entries: List<SeriesDetailEntry>
+    ) {
+        val syncedAtMs = System.currentTimeMillis()
+        appDatabase.withTransaction {
+            val bookEntries = entries.mapNotNull { entry ->
+                (entry as? SeriesDetailEntry.BookItem)?.book
+            }
+            if (bookEntries.isNotEmpty()) {
+                detailCacheDao.upsertBookSummaries(
+                    bookEntries.map { book ->
+                        book.toEntity(
+                            serverId = serverId,
+                            updatedAtMs = syncedAtMs
+                        )
+                    }
+                )
+            }
+            detailCacheDao.deleteSeriesMemberships(serverId, libraryId, seriesId, collapseSubseries)
+            if (entries.isNotEmpty()) {
+                detailCacheDao.upsertSeriesMemberships(
+                    entries.mapIndexed { index, entry ->
+                        when (entry) {
+                            is SeriesDetailEntry.BookItem -> {
+                                SeriesMembershipEntity(
+                                    serverId = serverId,
+                                    libraryId = libraryId,
+                                    seriesId = seriesId,
+                                    collapseSubseries = collapseSubseries,
+                                    stableId = entry.stableId,
+                                    position = index,
+                                    entryType = SERIES_ENTRY_TYPE_BOOK,
+                                    bookId = entry.book.id,
+                                    subseriesId = null,
+                                    displayName = null,
+                                    bookCount = null,
+                                    coverUrl = null,
+                                    sequenceLabel = null,
+                                    updatedAtMs = syncedAtMs
+                                )
+                            }
+
+                            is SeriesDetailEntry.SubseriesItem -> {
+                                SeriesMembershipEntity(
+                                    serverId = serverId,
+                                    libraryId = libraryId,
+                                    seriesId = seriesId,
+                                    collapseSubseries = collapseSubseries,
+                                    stableId = entry.stableId,
+                                    position = index,
+                                    entryType = SERIES_ENTRY_TYPE_SUBSERIES,
+                                    bookId = null,
+                                    subseriesId = entry.id,
+                                    displayName = entry.name,
+                                    bookCount = entry.bookCount,
+                                    coverUrl = entry.coverUrl,
+                                    sequenceLabel = entry.sequenceLabel,
+                                    updatedAtMs = syncedAtMs
+                                )
+                            }
+                        }
+                    }
+                )
+            }
+            detailCacheDao.upsertDetailSyncState(
+                DetailSyncStateEntity(
+                    serverId = serverId,
+                    libraryId = libraryId,
+                    resourceType = DETAIL_RESOURCE_SERIES,
+                    resourceId = seriesId,
+                    resourceVariant = seriesResourceVariant(collapseSubseries),
+                    lastSuccessfulSyncAtMs = syncedAtMs,
+                    lastAttemptedSyncAtMs = syncedAtMs
+                )
+            )
+        }
+    }
+
+    private suspend fun readPersistedBookDetail(
+        serverId: String,
+        libraryId: String,
+        bookId: String
+    ): BookDetail? {
+        val summary = detailCacheDao.getBookSummary(serverId, libraryId, bookId) ?: return null
+        val detail = detailCacheDao.getBookDetail(serverId, libraryId, bookId)
+        val chapters = detailCacheDao.getBookChapters(serverId, libraryId, bookId)
+        val bookmarks = detailCacheDao.getBookBookmarks(serverId, libraryId, bookId)
+        return BookDetail(
+            book = summary.toModel(),
+            description = detail?.description,
+            publishedYear = detail?.publishedYear ?: summary.publishedYear,
+            sizeBytes = detail?.sizeBytes,
+            chapters = chapters.map { chapter ->
+                BookChapter(
+                    title = chapter.title,
+                    startSeconds = chapter.startSeconds,
+                    endSeconds = chapter.endSeconds
+                )
+            },
+            bookmarks = bookmarks.map { bookmark ->
+                BookBookmark(
+                    id = bookmark.id,
+                    libraryItemId = bookId,
+                    title = bookmark.title,
+                    timeSeconds = bookmark.timeSeconds,
+                    createdAtMs = bookmark.createdAtMs
+                )
+            }
+        )
+    }
+
+    private suspend fun readPersistedSeriesContents(
+        serverId: String,
+        libraryId: String,
+        seriesId: String,
+        collapseSubseries: Boolean
+    ): List<SeriesDetailEntry>? {
+        val memberships = detailCacheDao.getSeriesMemberships(
+            serverId = serverId,
+            libraryId = libraryId,
+            seriesId = seriesId,
+            collapseSubseries = collapseSubseries
+        )
+        if (memberships.isEmpty()) return null
+        return memberships.mapNotNull { membership ->
+            when (membership.entryType) {
+                SERIES_ENTRY_TYPE_BOOK -> membership.bookId
+                    ?.let { bookId -> detailCacheDao.getBookSummary(serverId, libraryId, bookId) }
+                    ?.let { summary -> SeriesDetailEntry.BookItem(summary.toModel()) }
+
+                SERIES_ENTRY_TYPE_SUBSERIES -> {
+                    SeriesDetailEntry.SubseriesItem(
+                        id = membership.subseriesId.orEmpty(),
+                        name = membership.displayName.orEmpty(),
+                        bookCount = membership.bookCount ?: 0,
+                        coverUrl = membership.coverUrl,
+                        sequenceLabel = membership.sequenceLabel
+                    )
+                }
+
+                else -> null
+            }
+        }
+    }
+
+    private fun BookSummary.toEntity(
+        serverId: String,
+        updatedAtMs: Long
+    ): BookSummaryEntity {
+        return BookSummaryEntity(
+            serverId = serverId,
+            libraryId = libraryId,
+            id = id,
+            title = title,
+            authorName = authorName,
+            narratorName = narratorName,
+            durationSeconds = durationSeconds,
+            coverUrl = coverUrl,
+            seriesName = seriesName,
+            seriesNamesJson = seriesNames.toJsonString(),
+            seriesIdsJson = seriesIds.toJsonString(),
+            seriesSequence = seriesSequence,
+            genresJson = genres.toJsonString(),
+            publishedYear = publishedYear,
+            addedAtMs = addedAtMs,
+            progressPercent = progressPercent,
+            currentTimeSeconds = currentTimeSeconds,
+            isFinished = isFinished,
+            updatedAtMs = updatedAtMs
+        )
+    }
+
+    private fun BookSummaryEntity.toModel(): BookSummary {
+        return BookSummary(
+            id = id,
+            libraryId = libraryId,
+            title = title,
+            authorName = authorName,
+            narratorName = narratorName,
+            durationSeconds = durationSeconds,
+            coverUrl = coverUrl,
+            seriesName = seriesName,
+            seriesNames = seriesNamesJson.toJsonStringList(),
+            seriesIds = seriesIdsJson.toJsonStringList(),
+            seriesSequence = seriesSequence,
+            genres = genresJson.toJsonStringList(),
+            publishedYear = publishedYear,
+            addedAtMs = addedAtMs,
+            progressPercent = progressPercent,
+            currentTimeSeconds = currentTimeSeconds,
+            isFinished = isFinished
+        )
+    }
+
+    private fun List<String>.toJsonString(): String = JSONArray(this).toString()
+
+    private fun String?.toJsonStringList(): List<String> {
+        val payload = this?.trim().orEmpty()
+        if (payload.isBlank()) return emptyList()
+        val array = runCatching { JSONArray(payload) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val value = array.optString(index).trim()
+                if (value.isNotBlank()) add(value)
+            }
+        }
+    }
+
+    private fun seriesResourceVariant(collapseSubseries: Boolean): String {
+        return "collapseSubseries=$collapseSubseries"
     }
 
     private fun normalizeAuthorKey(name: String): String = name.trim().lowercase()

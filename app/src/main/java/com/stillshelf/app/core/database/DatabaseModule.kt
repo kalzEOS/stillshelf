@@ -33,4 +33,8 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideLibraryDao(database: AppDatabase): LibraryDao = database.libraryDao()
+
+    @Provides
+    @Singleton
+    fun provideDetailCacheDao(database: AppDatabase): DetailCacheDao = database.detailCacheDao()
 }

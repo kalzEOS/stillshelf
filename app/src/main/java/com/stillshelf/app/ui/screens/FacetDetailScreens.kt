@@ -150,7 +150,8 @@ data class SeriesDetailUiState(
     val errorMessage: String? = null,
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),
-    val actionMessage: String? = null
+    val actionMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 ) {
     val books: List<BookSummary>
         get() = entries.mapNotNull { entry ->
@@ -714,7 +715,8 @@ class SeriesDetailViewModel @Inject constructor(
                             state.copy(
                                 isLoading = false,
                                 entries = entries,
-                                errorMessage = null
+                                errorMessage = null,
+                                hasLoadedOnce = true
                             )
                         }
                     }
@@ -818,7 +820,8 @@ class SeriesDetailViewModel @Inject constructor(
                             isRefreshing = false,
                             entries = if (state.entries.isEmpty()) result.value.entries else state.entries,
                             canCollapseSubseries = result.value.hasCollapsibleSubseries,
-                            errorMessage = null
+                            errorMessage = null,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -828,7 +831,8 @@ class SeriesDetailViewModel @Inject constructor(
                         state.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = if (state.entries.isNotEmpty()) state.errorMessage else result.message
+                            errorMessage = if (state.entries.isNotEmpty()) state.errorMessage else result.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -856,7 +860,8 @@ class SeriesDetailViewModel @Inject constructor(
                 entries = cachedEntries ?: state.entries,
                 canCollapseSubseries = cachedCollapsedEntries.orEmpty().any { entry ->
                     entry is SeriesDetailEntry.SubseriesItem
-                }
+                },
+                hasLoadedOnce = true
             )
         }
     }
@@ -2906,11 +2911,13 @@ fun SeriesDetailScreen(
             }
 
             else -> {
-                Text(
-                    text = "No series items found.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (uiState.hasLoadedOnce) {
+                    Text(
+                        text = "No series items found.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 

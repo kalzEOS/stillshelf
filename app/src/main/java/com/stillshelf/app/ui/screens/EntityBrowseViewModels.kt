@@ -39,7 +39,8 @@ data class SeriesBrowseUiState(
     val isRefreshing: Boolean = false,
     val series: List<SeriesBrowseCard> = emptyList(),
     val gridMode: Boolean = true,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 )
 
 internal data class SeriesBrowseCandidate(
@@ -263,7 +264,8 @@ class SeriesBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            series = visibleCards
+                            series = visibleCards,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -273,7 +275,8 @@ class SeriesBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = seriesResult.message
+                            errorMessage = seriesResult.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }

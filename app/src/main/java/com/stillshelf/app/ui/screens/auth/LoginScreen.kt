@@ -243,7 +243,7 @@ private fun LoginScreen(
                             keyboardOptions = KeyboardOptions(
                                 autoCorrectEnabled = false,
                                 capitalization = KeyboardCapitalization.None,
-                                keyboardType = KeyboardType.Ascii
+                                keyboardType = KeyboardType.Password
                             )
                         )
 

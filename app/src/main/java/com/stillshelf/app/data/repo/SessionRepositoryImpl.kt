@@ -825,6 +825,21 @@ class SessionRepositoryImpl @Inject constructor(
             }
     }
 
+    override suspend fun resolveCachedSeriesIdForActiveLibrary(seriesName: String): String? {
+        val normalizedSeriesName = seriesName.trim()
+        if (normalizedSeriesName.isBlank()) return null
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return null
+        }
+        val library = connection.library ?: return null
+        return resolveCachedSeriesId(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            seriesName = normalizedSeriesName
+        )
+    }
+
     override suspend fun resolveSeriesIdForActiveLibrary(seriesName: String): String? {
         val normalizedSeriesName = seriesName.trim()
         if (normalizedSeriesName.isBlank()) return null
@@ -833,11 +848,11 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return null
         }
         val library = connection.library ?: return null
-        detailCacheDao.getSeriesSummaryByName(
+        resolveCachedSeriesId(
             serverId = connection.server.id,
             libraryId = library.id,
             seriesName = normalizedSeriesName
-        )?.id?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        )?.let { return it }
 
         val normalizedSeriesKey = normalizeSeriesKey(normalizedSeriesName)
         val fetchedSeries = when (
@@ -853,6 +868,25 @@ class SessionRepositoryImpl @Inject constructor(
         return fetchedSeries.firstOrNull { series ->
             normalizeSeriesKey(series.name) == normalizedSeriesKey
         }?.id?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    override suspend fun peekSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean
+    ): List<SeriesDetailEntry>? {
+        val normalizedSeriesId = seriesId.trim()
+        if (normalizedSeriesId.isBlank()) return null
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return null
+        }
+        val library = connection.library ?: return null
+        return readPersistedSeriesContents(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            seriesId = normalizedSeriesId,
+            collapseSubseries = collapseSubseries
+        )
     }
 
     override suspend fun refreshSeriesDetail(
@@ -3481,6 +3515,27 @@ class SessionRepositoryImpl @Inject constructor(
                 else -> null
             }
         }
+    }
+
+    private suspend fun resolveCachedSeriesId(
+        serverId: String,
+        libraryId: String,
+        seriesName: String
+    ): String? {
+        detailCacheDao.getSeriesSummaryByName(
+            serverId = serverId,
+            libraryId = libraryId,
+            seriesName = seriesName
+        )?.id?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        return detailCacheDao.getFirstBookSummaryBySeriesName(
+            serverId = serverId,
+            libraryId = libraryId,
+            seriesName = seriesName
+        )?.toModel()
+            ?.seriesIds
+            ?.firstOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun BookSummary.toEntity(

@@ -76,9 +76,16 @@ interface SessionRepository {
     fun observeSeriesSummary(
         seriesId: String
     ): Flow<NamedEntitySummary?>
+    suspend fun resolveCachedSeriesIdForActiveLibrary(
+        seriesName: String
+    ): String?
     suspend fun resolveSeriesIdForActiveLibrary(
         seriesName: String
     ): String?
+    suspend fun peekSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true
+    ): List<SeriesDetailEntry>?
     suspend fun refreshSeriesDetail(
         seriesId: String,
         collapseSubseries: Boolean = true,

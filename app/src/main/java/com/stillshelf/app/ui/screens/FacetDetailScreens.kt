@@ -564,13 +564,14 @@ class SeriesDetailViewModel @Inject constructor(
                 mutableListMode.value = prefs.seriesDetailListMode
                 mutableCollapseSubseries.value = prefs.seriesDetailCollapseSubseries
             }
+            primeLocalSeriesState()
         }
         observeDownloadedState()
         observeBookProgressMutations()
         observePersistedSeriesDetail()
         observeResolvedSeriesSummary()
         observeCollapseAvailability()
-        refresh(policy = DetailRefreshPolicy.IfStale)
+        refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
     }
 
     fun setListMode(value: Boolean) {
@@ -585,7 +586,7 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setSeriesDetailCollapseSubseries(value)
         }
-        refresh(policy = DetailRefreshPolicy.IfStale)
+        refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
     }
 
     fun refresh() {
@@ -768,15 +769,18 @@ class SeriesDetailViewModel @Inject constructor(
 
     private fun refresh(
         policy: DetailRefreshPolicy,
-        isUserRefresh: Boolean = false
+        isUserRefresh: Boolean = false,
+        silent: Boolean = false
     ) {
         val hasLocalEntries = uiState.value.entries.isNotEmpty()
-        mutableUiState.update {
-            it.copy(
-                isLoading = !hasLocalEntries,
-                isRefreshing = hasLocalEntries || isUserRefresh,
-                errorMessage = null
-            )
+        if (!silent || !hasLocalEntries) {
+            mutableUiState.update {
+                it.copy(
+                    isLoading = !hasLocalEntries,
+                    isRefreshing = (hasLocalEntries && !silent) || isUserRefresh,
+                    errorMessage = null
+                )
+            }
         }
         viewModelScope.launch {
             val forceRefresh = policy == DetailRefreshPolicy.Force
@@ -829,6 +833,31 @@ class SeriesDetailViewModel @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    private suspend fun primeLocalSeriesState() {
+        val resolvedSeriesId = seriesId ?: sessionRepository.resolveCachedSeriesIdForActiveLibrary(seriesName)
+        if (resolvedSeriesId == null) return
+        mutableResolvedSeriesId.value = resolvedSeriesId
+        val collapseSubseries = mutableCollapseSubseries.value
+        val cachedEntries = sessionRepository.peekSeriesDetail(
+            seriesId = resolvedSeriesId,
+            collapseSubseries = collapseSubseries
+        )
+        val cachedCollapsedEntries = sessionRepository.peekSeriesDetail(
+            seriesId = resolvedSeriesId,
+            collapseSubseries = true
+        )
+        if (cachedEntries.isNullOrEmpty() && cachedCollapsedEntries.isNullOrEmpty()) return
+        mutableUiState.update { state ->
+            state.copy(
+                isLoading = false,
+                entries = cachedEntries ?: state.entries,
+                canCollapseSubseries = cachedCollapsedEntries.orEmpty().any { entry ->
+                    entry is SeriesDetailEntry.SubseriesItem
+                }
+            )
         }
     }
 

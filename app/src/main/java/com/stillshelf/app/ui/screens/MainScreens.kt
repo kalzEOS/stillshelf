@@ -6034,7 +6034,6 @@ fun BookDetailScreen(
     val finishedFromDetailProgress = resolvedDetailProgress >= 0.995
     val effectiveDetailFinished = when {
         isPlayingDetailBookNow &&
-            playbackUiState.isPlaying &&
             resolvedDetailProgress < 0.995 &&
             (detailCurrentSeconds ?: 0.0) > 0.5 -> false
         else -> (detailBook?.isFinished == true) || finishedFromDetailProgress
@@ -6804,8 +6803,12 @@ fun PlayerScreen(
     }
     val effectivePlayerFinished = if (book != null) {
         val finishedFromPlayback = progress >= 0.995f
-        val finishedFromBook = book.hasFinishedProgress()
-        finishedFromPlayback || finishedFromBook
+        when {
+            playbackUiState.book?.id == book.id &&
+                progress < 0.995f &&
+                positionSeconds > 0.5 -> false
+            else -> finishedFromPlayback || book.hasFinishedProgress()
+        }
     } else {
         false
     }

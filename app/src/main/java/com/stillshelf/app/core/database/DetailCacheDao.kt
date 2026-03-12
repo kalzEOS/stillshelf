@@ -97,6 +97,21 @@ interface DetailCacheDao {
 
     @Query(
         """
+        SELECT * FROM book_summaries
+        WHERE serverId = :serverId
+          AND libraryId = :libraryId
+          AND seriesName = :seriesName COLLATE NOCASE
+        LIMIT 1
+        """
+    )
+    suspend fun getFirstBookSummaryBySeriesName(
+        serverId: String,
+        libraryId: String,
+        seriesName: String
+    ): BookSummaryEntity?
+
+    @Query(
+        """
         DELETE FROM book_chapters
         WHERE serverId = :serverId AND libraryId = :libraryId AND bookId = :bookId
         """

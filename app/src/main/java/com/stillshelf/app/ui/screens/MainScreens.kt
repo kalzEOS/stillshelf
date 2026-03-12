@@ -6001,11 +6001,7 @@ fun BookDetailScreen(
     }
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+            viewModel.onScreenStarted()
         }
     }
     val detailBook = uiState.detail?.book
@@ -6642,6 +6638,13 @@ fun BookDetailScreen(
                 }
             }
         }
+        }
+        if (uiState.isRefreshing && uiState.detail != null) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+            )
         }
         SnackbarHost(
             hostState = detailSnackbarHostState,

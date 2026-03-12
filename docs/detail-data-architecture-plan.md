@@ -217,11 +217,11 @@ Acceptance criteria:
 
 ### Phase 2: Book Detail Migration
 
-- [ ] Replace fetch-only book detail screen loading with Room observation.
-- [ ] Remove per-second full-detail polling from the book page.
-- [ ] Split progress and bookmarks handling from static catalog detail.
-- [ ] Keep cached detail visible during background refresh.
-- [ ] Restrict full-screen loading to cache-miss only.
+- [x] Replace fetch-only book detail screen loading with Room observation.
+- [x] Remove per-second full-detail polling from the book page.
+- [x] Split progress and bookmarks handling from static catalog detail.
+- [x] Keep cached detail visible during background refresh.
+- [x] Restrict full-screen loading to cache-miss only.
 
 Acceptance criteria:
 

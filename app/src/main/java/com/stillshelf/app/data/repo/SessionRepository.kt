@@ -99,6 +99,11 @@ interface SessionRepository {
         bookId: String,
         forceRefresh: Boolean = false
     ): AppResult<BookDetail>
+    fun observeBookDetail(bookId: String): Flow<BookDetail?>
+    suspend fun refreshBookDetail(
+        bookId: String,
+        policy: DetailRefreshPolicy = DetailRefreshPolicy.IfStale
+    ): AppResult<Unit>
     suspend fun fetchPlaybackSource(bookId: String): AppResult<PlaybackSource>
     suspend fun fetchPlaybackProgress(bookId: String): AppResult<PlaybackProgress?>
     suspend fun syncPlaybackProgress(

@@ -56,6 +56,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -1549,6 +1550,109 @@ class SessionRepositoryImpl @Inject constructor(
                     refreshResult
                 }
             }
+        }
+    }
+
+    override fun observeBookDetail(bookId: String): Flow<BookDetail?> {
+        val normalizedBookId = bookId.trim()
+        if (normalizedBookId.isBlank()) return flowOf(null)
+        return sessionPreferences.state
+            .map { state ->
+                val serverId = state.activeServerId?.trim().orEmpty()
+                val libraryId = state.activeLibraryId?.trim().orEmpty()
+                if (serverId.isBlank() || libraryId.isBlank()) {
+                    null
+                } else {
+                    serverId to libraryId
+                }
+            }
+            .distinctUntilChanged()
+            .flatMapLatest { ids ->
+                if (ids == null) {
+                    flowOf(null)
+                } else {
+                    val (serverId, libraryId) = ids
+                    combine(
+                        detailCacheDao.observeBookSummary(serverId, libraryId, normalizedBookId),
+                        detailCacheDao.observeBookDetail(serverId, libraryId, normalizedBookId),
+                        detailCacheDao.observeBookChapters(serverId, libraryId, normalizedBookId),
+                        detailCacheDao.observeBookBookmarks(serverId, libraryId, normalizedBookId)
+                    ) { summary, detail, chapters, bookmarks ->
+                        if (summary == null) {
+                            null
+                        } else {
+                            BookDetail(
+                                book = summary.toModel(),
+                                description = detail?.description,
+                                publishedYear = detail?.publishedYear ?: summary.publishedYear,
+                                sizeBytes = detail?.sizeBytes,
+                                chapters = chapters.map { chapter ->
+                                    BookChapter(
+                                        title = chapter.title,
+                                        startSeconds = chapter.startSeconds,
+                                        endSeconds = chapter.endSeconds
+                                    )
+                                },
+                                bookmarks = bookmarks.map { bookmark ->
+                                    BookBookmark(
+                                        id = bookmark.id,
+                                        libraryItemId = normalizedBookId,
+                                        title = bookmark.title,
+                                        timeSeconds = bookmark.timeSeconds,
+                                        createdAtMs = bookmark.createdAtMs
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+    }
+
+    override suspend fun refreshBookDetail(
+        bookId: String,
+        policy: DetailRefreshPolicy
+    ): AppResult<Unit> {
+        if (bookId.isBlank()) {
+            return AppResult.Error("Invalid book id.")
+        }
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val persistedLocal = readPersistedBookDetail(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            bookId = bookId
+        )
+        val syncState = detailCacheDao.getDetailSyncState(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            resourceType = DETAIL_RESOURCE_BOOK,
+            resourceId = bookId,
+            resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT
+        )
+        val shouldRefresh = shouldRefreshDetail(
+            policy = policy,
+            localExists = persistedLocal != null,
+            lastSuccessfulSyncAtMs = syncState?.lastSuccessfulSyncAtMs,
+            maxAgeMs = DETAIL_CACHE_MAX_AGE_MS
+        )
+        if (!shouldRefresh) return AppResult.Success(Unit)
+        val refreshKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "bookDetail:$bookId"
+        )
+        return runDedupedDetailRefresh(
+            key = "bookDetail:$refreshKey"
+        ) {
+            refreshPersistedBookDetail(
+                connection = connection,
+                libraryId = library.id,
+                bookId = bookId
+            )
         }
     }
 

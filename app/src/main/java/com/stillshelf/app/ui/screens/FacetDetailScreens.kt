@@ -167,6 +167,39 @@ data class SeriesDetailUiState(
         }
 }
 
+internal fun SeriesDetailUiState.applyPersistedEntries(
+    entries: List<SeriesDetailEntry>
+): SeriesDetailUiState {
+    return when {
+        entries.isNotEmpty() -> copy(
+            isLoading = false,
+            entries = entries,
+            errorMessage = null,
+            hasLoadedOnce = true
+        )
+        hasLoadedOnce -> copy(
+            isLoading = false,
+            entries = emptyList(),
+            errorMessage = null
+        )
+        else -> this
+    }
+}
+
+internal fun SeriesDetailUiState.applyRefreshSuccess(
+    entries: List<SeriesDetailEntry>,
+    hasCollapsibleSubseries: Boolean
+): SeriesDetailUiState {
+    return copy(
+        isLoading = false,
+        isRefreshing = false,
+        entries = entries,
+        canCollapseSubseries = hasCollapsibleSubseries,
+        errorMessage = null,
+        hasLoadedOnce = true
+    )
+}
+
 private val FacetBackTitleSpacing = 12.dp
 private val FacetSeriesStackMinLayerExtent = 42.dp
 private val FacetSeriesStackStep = 5.dp
@@ -709,16 +742,7 @@ class SeriesDetailViewModel @Inject constructor(
                 }
                 .collect { entries ->
                     mutableUiState.update { state ->
-                        if (entries.isEmpty()) {
-                            state
-                        } else {
-                            state.copy(
-                                isLoading = false,
-                                entries = entries,
-                                errorMessage = null,
-                                hasLoadedOnce = true
-                            )
-                        }
+                        state.applyPersistedEntries(entries)
                     }
                 }
         }
@@ -815,13 +839,9 @@ class SeriesDetailViewModel @Inject constructor(
                         return@launch
                     }
                     mutableUiState.update { state ->
-                        state.copy(
-                            isLoading = false,
-                            isRefreshing = false,
-                            entries = if (state.entries.isEmpty()) result.value.entries else state.entries,
-                            canCollapseSubseries = result.value.hasCollapsibleSubseries,
-                            errorMessage = null,
-                            hasLoadedOnce = true
+                        state.applyRefreshSuccess(
+                            entries = result.value.entries,
+                            hasCollapsibleSubseries = result.value.hasCollapsibleSubseries
                         )
                     }
                 }

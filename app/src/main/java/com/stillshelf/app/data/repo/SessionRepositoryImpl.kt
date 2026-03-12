@@ -2956,7 +2956,9 @@ class SessionRepositoryImpl @Inject constructor(
                     libraries = libraries,
                     serverFallback = server
                 )
+                detailCacheDao.deleteDetailSyncStateForServer(server.id)
             }
+            clearContentCachesForServer(server.id)
             AppResult.Success(Unit)
         } catch (t: Throwable) {
             AppResult.Error("Unable to refresh server libraries.", t)
@@ -3159,6 +3161,20 @@ class SessionRepositoryImpl @Inject constructor(
             collectionsCache.clear()
             playlistsCache.clear()
             bookDetailCache.clear()
+        }
+    }
+
+    private suspend fun clearContentCachesForServer(serverId: String) {
+        val normalizedPrefix = "$serverId|"
+        cacheMutex.withLock {
+            booksCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            authorsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            narratorsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            seriesCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            seriesContentCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            collectionsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            playlistsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
+            bookDetailCache.keys.removeAll { it.startsWith(normalizedPrefix) }
         }
     }
 

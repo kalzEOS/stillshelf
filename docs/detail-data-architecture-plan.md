@@ -233,7 +233,7 @@ Acceptance criteria:
 
 - [x] Persist raw series membership data.
 - [x] Replace fetch-only series detail screen loading with Room observation.
-- [ ] Move collapse/expand behavior out of cache storage and into presentation logic.
+- [x] Move collapse/expand behavior out of cache storage and into presentation logic.
 - [x] Keep cached series contents visible during background refresh.
 
 Acceptance criteria:

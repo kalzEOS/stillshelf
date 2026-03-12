@@ -555,7 +555,7 @@ class SeriesDetailViewModel @Inject constructor(
     private data class SeriesEntriesResult(
         val entries: List<SeriesDetailEntry>,
         val hasCollapsibleSubseries: Boolean,
-        val collapsedEntries: List<SeriesDetailEntry>? = null
+        val rawEntries: List<SeriesDetailEntry.BookItem> = emptyList()
     )
 
     private val mutableResolvedSeriesId = MutableStateFlow(seriesId)
@@ -883,8 +883,7 @@ class SeriesDetailViewModel @Inject constructor(
                 is AppResult.Success -> AppResult.Success(
                     SeriesEntriesResult(
                         entries = result.value,
-                        hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem },
-                        collapsedEntries = result.value
+                        hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
                     )
                 )
 
@@ -919,17 +918,11 @@ class SeriesDetailViewModel @Inject constructor(
             else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
         }
         if (result is AppResult.Success) {
-            sessionRepository.cacheSeriesDetail(
-                seriesId = resolvedSeriesId,
-                collapseSubseries = collapseSubseries,
-                entries = result.value.entries
-            )
-            val collapsedEntries = result.value.collapsedEntries
-            if (!collapsedEntries.isNullOrEmpty() && !collapseSubseries) {
+            if (result.value.rawEntries.isNotEmpty()) {
                 sessionRepository.cacheSeriesDetail(
                     seriesId = resolvedSeriesId,
-                    collapseSubseries = true,
-                    entries = collapsedEntries
+                    collapseSubseries = false,
+                    entries = result.value.rawEntries
                 )
             }
         }
@@ -990,7 +983,10 @@ class SeriesDetailViewModel @Inject constructor(
                     SeriesEntriesResult(
                         entries = displayedEntries,
                         hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem },
-                        collapsedEntries = collapsedEntries
+                        rawEntries = sortSeriesBooksForDisplay(
+                            books = detailedBooks.map { it.book },
+                            targetSeriesName = seriesName
+                        ).map { book -> SeriesDetailEntry.BookItem(book) }
                     )
                 )
             }

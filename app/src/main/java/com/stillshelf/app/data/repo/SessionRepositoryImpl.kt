@@ -675,21 +675,28 @@ class SessionRepositoryImpl @Inject constructor(
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
-            suffix = "seriesContents:$normalizedSeriesId:$collapseSubseries"
+            suffix = "seriesContents:$normalizedSeriesId"
         )
         if (!forceRefresh) {
             getFreshCache(seriesContentCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
-                return AppResult.Success(cached)
+                return AppResult.Success(
+                    presentPersistedSeriesContents(
+                        serverId = connection.server.id,
+                        libraryId = library.id,
+                        seriesId = normalizedSeriesId,
+                        collapseSubseries = collapseSubseries,
+                        rawEntries = cached
+                    )
+                )
             }
         }
         val persistedLocal = if (forceRefresh) {
             null
         } else {
-            readPersistedSeriesContents(
+            readPersistedRawSeriesContents(
                 serverId = connection.server.id,
                 libraryId = library.id,
-                seriesId = normalizedSeriesId,
-                collapseSubseries = collapseSubseries
+                seriesId = normalizedSeriesId
             )
         }
         val syncState = detailCacheDao.getDetailSyncState(
@@ -697,7 +704,7 @@ class SessionRepositoryImpl @Inject constructor(
             libraryId = library.id,
             resourceType = DETAIL_RESOURCE_SERIES,
             resourceId = normalizedSeriesId,
-            resourceVariant = seriesResourceVariant(collapseSubseries)
+            resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT
         )
         val shouldRefresh = shouldRefreshDetail(
             policy = if (forceRefresh) DetailRefreshPolicy.Force else DetailRefreshPolicy.IfStale,
@@ -707,7 +714,15 @@ class SessionRepositoryImpl @Inject constructor(
         )
         if (!shouldRefresh && persistedLocal != null) {
             putCache(seriesContentCache, cacheKey, persistedLocal)
-            return AppResult.Success(persistedLocal)
+            return AppResult.Success(
+                presentPersistedSeriesContents(
+                    serverId = connection.server.id,
+                    libraryId = library.id,
+                    seriesId = normalizedSeriesId,
+                    collapseSubseries = collapseSubseries,
+                    rawEntries = persistedLocal
+                )
+            )
         }
         val staleCache = if (forceRefresh) null else getAnyCache(seriesContentCache, cacheKey) ?: persistedLocal
         val refreshKey = "seriesContents:$cacheKey"
@@ -716,23 +731,37 @@ class SessionRepositoryImpl @Inject constructor(
                 refreshPersistedSeriesContents(
                     connection = connection,
                     libraryId = library.id,
-                    seriesId = normalizedSeriesId,
-                    collapseSubseries = collapseSubseries
+                    seriesId = normalizedSeriesId
                 )
             }
         ) {
             is AppResult.Success -> {
-                val cached = readPersistedSeriesContents(
+                val cached = readPersistedRawSeriesContents(
                     serverId = connection.server.id,
                     libraryId = library.id,
-                    seriesId = normalizedSeriesId,
-                    collapseSubseries = collapseSubseries
+                    seriesId = normalizedSeriesId
                 )
                 if (cached != null) {
                     putCache(seriesContentCache, cacheKey, cached)
-                    AppResult.Success(cached)
+                    AppResult.Success(
+                        presentPersistedSeriesContents(
+                            serverId = connection.server.id,
+                            libraryId = library.id,
+                            seriesId = normalizedSeriesId,
+                            collapseSubseries = collapseSubseries,
+                            rawEntries = cached
+                        )
+                    )
                 } else if (!staleCache.isNullOrEmpty()) {
-                    AppResult.Success(staleCache)
+                    AppResult.Success(
+                        presentPersistedSeriesContents(
+                            serverId = connection.server.id,
+                            libraryId = library.id,
+                            seriesId = normalizedSeriesId,
+                            collapseSubseries = collapseSubseries,
+                            rawEntries = staleCache
+                        )
+                    )
                 } else {
                     AppResult.Error("Unable to load series.")
                 }
@@ -740,7 +769,15 @@ class SessionRepositoryImpl @Inject constructor(
 
             is AppResult.Error -> {
                 if (!staleCache.isNullOrEmpty()) {
-                    AppResult.Success(staleCache)
+                    AppResult.Success(
+                        presentPersistedSeriesContents(
+                            serverId = connection.server.id,
+                            libraryId = library.id,
+                            seriesId = normalizedSeriesId,
+                            collapseSubseries = collapseSubseries,
+                            rawEntries = staleCache
+                        )
+                    )
                 } else {
                     refreshResult
                 }
@@ -770,30 +807,41 @@ class SessionRepositoryImpl @Inject constructor(
                     flowOf(emptyList())
                 } else {
                     val (serverId, libraryId) = ids
-                    detailCacheDao.observeSeriesMemberships(
-                        serverId = serverId,
-                        libraryId = libraryId,
-                        seriesId = normalizedSeriesId,
-                        collapseSubseries = collapseSubseries
-                    ).map { memberships ->
-                        memberships.mapNotNull { membership ->
-                            when (membership.entryType) {
-                                SERIES_ENTRY_TYPE_BOOK -> membership.bookId
-                                    ?.let { bookId -> detailCacheDao.getBookSummary(serverId, libraryId, bookId) }
-                                    ?.let { summary -> SeriesDetailEntry.BookItem(summary.toModel()) }
-
-                                SERIES_ENTRY_TYPE_SUBSERIES -> {
-                                    SeriesDetailEntry.SubseriesItem(
-                                        id = membership.subseriesId.orEmpty(),
-                                        name = membership.displayName.orEmpty(),
-                                        bookCount = membership.bookCount ?: 0,
-                                        coverUrl = membership.coverUrl,
-                                        sequenceLabel = membership.sequenceLabel
-                                    )
-                                }
-
-                                else -> null
-                            }
+                    combine(
+                        detailCacheDao.observeSeriesMemberships(
+                            serverId = serverId,
+                            libraryId = libraryId,
+                            seriesId = normalizedSeriesId,
+                            collapseSubseries = false
+                        ),
+                        detailCacheDao.observeSeriesSummary(serverId, libraryId, normalizedSeriesId),
+                        detailCacheDao.observeSeriesMemberships(
+                            serverId = serverId,
+                            libraryId = libraryId,
+                            seriesId = normalizedSeriesId,
+                            collapseSubseries = true
+                        )
+                    ) { rawMemberships, summaryEntity, legacyCollapsedMemberships ->
+                        val rawEntries = rawMemberships.toSeriesDetailEntries(
+                            serverId = serverId,
+                            libraryId = libraryId
+                        )
+                        if (rawEntries.isNotEmpty()) {
+                            presentPersistedSeriesContents(
+                                serverId = serverId,
+                                libraryId = libraryId,
+                                seriesId = normalizedSeriesId,
+                                collapseSubseries = collapseSubseries,
+                                rawEntries = rawEntries,
+                                seriesNameOverride = summaryEntity?.name
+                            )
+                        } else if (collapseSubseries) {
+                            legacyCollapsedMemberships.toSeriesDetailEntries(
+                                serverId = serverId,
+                                libraryId = libraryId
+                            )
+                        } else {
+                            emptyList()
                         }
                     }
                 }
@@ -881,12 +929,29 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return null
         }
         val library = connection.library ?: return null
-        return readPersistedSeriesContents(
+        val rawEntries = readPersistedRawSeriesContents(
             serverId = connection.server.id,
             libraryId = library.id,
-            seriesId = normalizedSeriesId,
-            collapseSubseries = collapseSubseries
+            seriesId = normalizedSeriesId
         )
+        if (rawEntries != null) {
+            return presentPersistedSeriesContents(
+                serverId = connection.server.id,
+                libraryId = library.id,
+                seriesId = normalizedSeriesId,
+                collapseSubseries = collapseSubseries,
+                rawEntries = rawEntries
+            )
+        }
+        return if (collapseSubseries) {
+            readPersistedLegacyCollapsedSeriesContents(
+                serverId = connection.server.id,
+                libraryId = library.id,
+                seriesId = normalizedSeriesId
+            )
+        } else {
+            null
+        }
     }
 
     override suspend fun refreshSeriesDetail(
@@ -903,18 +968,17 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
-        val persistedLocal = readPersistedSeriesContents(
+        val persistedLocal = readPersistedRawSeriesContents(
             serverId = connection.server.id,
             libraryId = library.id,
-            seriesId = normalizedSeriesId,
-            collapseSubseries = collapseSubseries
+            seriesId = normalizedSeriesId
         )
         val syncState = detailCacheDao.getDetailSyncState(
             serverId = connection.server.id,
             libraryId = library.id,
             resourceType = DETAIL_RESOURCE_SERIES,
             resourceId = normalizedSeriesId,
-            resourceVariant = seriesResourceVariant(collapseSubseries)
+            resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT
         )
         val shouldRefresh = shouldRefreshDetail(
             policy = policy,
@@ -926,7 +990,7 @@ class SessionRepositoryImpl @Inject constructor(
         val refreshKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
-            suffix = "seriesContents:$normalizedSeriesId:$collapseSubseries"
+            suffix = "seriesContents:$normalizedSeriesId"
         )
         return runDedupedDetailRefresh(
             key = "seriesContents:$refreshKey"
@@ -934,8 +998,7 @@ class SessionRepositoryImpl @Inject constructor(
             refreshPersistedSeriesContents(
                 connection = connection,
                 libraryId = library.id,
-                seriesId = normalizedSeriesId,
-                collapseSubseries = collapseSubseries
+                seriesId = normalizedSeriesId
             )
         }
     }
@@ -954,13 +1017,14 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val rawEntries = entries.filterIsInstance<SeriesDetailEntry.BookItem>()
+        if (rawEntries.isEmpty()) return AppResult.Success(Unit)
         return try {
             persistSeriesContentsSnapshot(
                 serverId = connection.server.id,
                 libraryId = library.id,
                 seriesId = normalizedSeriesId,
-                collapseSubseries = collapseSubseries,
-                entries = entries
+                entries = rawEntries
             )
             AppResult.Success(Unit)
         } catch (t: Throwable) {
@@ -3213,8 +3277,7 @@ class SessionRepositoryImpl @Inject constructor(
     private suspend fun refreshPersistedSeriesContents(
         connection: ActiveConnection,
         libraryId: String,
-        seriesId: String,
-        collapseSubseries: Boolean
+        seriesId: String
     ): AppResult<Unit> {
         return try {
             val items = mutableListOf<AudiobookshelfLibraryItemDto>()
@@ -3227,7 +3290,7 @@ class SessionRepositoryImpl @Inject constructor(
                     limit = FULL_LIBRARY_PAGE_SIZE,
                     page = page,
                     filter = "series.$seriesId",
-                    collapseSeries = collapseSubseries
+                    collapseSeries = false
                 )
                 if (itemsResult.isFailure) {
                     return AppResult.Error(
@@ -3267,7 +3330,6 @@ class SessionRepositoryImpl @Inject constructor(
                 serverId = connection.server.id,
                 libraryId = libraryId,
                 seriesId = seriesId,
-                collapseSubseries = collapseSubseries,
                 entries = entries
             )
             AppResult.Success(Unit)
@@ -3372,7 +3434,6 @@ class SessionRepositoryImpl @Inject constructor(
         serverId: String,
         libraryId: String,
         seriesId: String,
-        collapseSubseries: Boolean,
         entries: List<SeriesDetailEntry>
     ) {
         val syncedAtMs = System.currentTimeMillis()
@@ -3390,7 +3451,7 @@ class SessionRepositoryImpl @Inject constructor(
                     }
                 )
             }
-            detailCacheDao.deleteSeriesMemberships(serverId, libraryId, seriesId, collapseSubseries)
+            detailCacheDao.deleteSeriesMemberships(serverId, libraryId, seriesId, collapseSubseries = false)
             if (entries.isNotEmpty()) {
                 detailCacheDao.upsertSeriesMemberships(
                     entries.mapIndexed { index, entry ->
@@ -3400,7 +3461,7 @@ class SessionRepositoryImpl @Inject constructor(
                                     serverId = serverId,
                                     libraryId = libraryId,
                                     seriesId = seriesId,
-                                    collapseSubseries = collapseSubseries,
+                                    collapseSubseries = false,
                                     stableId = entry.stableId,
                                     position = index,
                                     entryType = SERIES_ENTRY_TYPE_BOOK,
@@ -3419,7 +3480,7 @@ class SessionRepositoryImpl @Inject constructor(
                                     serverId = serverId,
                                     libraryId = libraryId,
                                     seriesId = seriesId,
-                                    collapseSubseries = collapseSubseries,
+                                    collapseSubseries = false,
                                     stableId = entry.stableId,
                                     position = index,
                                     entryType = SERIES_ENTRY_TYPE_SUBSERIES,
@@ -3442,7 +3503,7 @@ class SessionRepositoryImpl @Inject constructor(
                     libraryId = libraryId,
                     resourceType = DETAIL_RESOURCE_SERIES,
                     resourceId = seriesId,
-                    resourceVariant = seriesResourceVariant(collapseSubseries),
+                    resourceVariant = DETAIL_RESOURCE_VARIANT_DEFAULT,
                     lastSuccessfulSyncAtMs = syncedAtMs,
                     lastAttemptedSyncAtMs = syncedAtMs
                 )
@@ -3483,20 +3544,41 @@ class SessionRepositoryImpl @Inject constructor(
         )
     }
 
-    private suspend fun readPersistedSeriesContents(
+    private suspend fun readPersistedRawSeriesContents(
         serverId: String,
         libraryId: String,
-        seriesId: String,
-        collapseSubseries: Boolean
+        seriesId: String
     ): List<SeriesDetailEntry>? {
         val memberships = detailCacheDao.getSeriesMemberships(
             serverId = serverId,
             libraryId = libraryId,
             seriesId = seriesId,
-            collapseSubseries = collapseSubseries
+            collapseSubseries = false
         )
         if (memberships.isEmpty()) return null
-        return memberships.mapNotNull { membership ->
+        return memberships.toSeriesDetailEntries(serverId = serverId, libraryId = libraryId)
+    }
+
+    private suspend fun readPersistedLegacyCollapsedSeriesContents(
+        serverId: String,
+        libraryId: String,
+        seriesId: String
+    ): List<SeriesDetailEntry>? {
+        val memberships = detailCacheDao.getSeriesMemberships(
+            serverId = serverId,
+            libraryId = libraryId,
+            seriesId = seriesId,
+            collapseSubseries = true
+        )
+        if (memberships.isEmpty()) return null
+        return memberships.toSeriesDetailEntries(serverId = serverId, libraryId = libraryId)
+    }
+
+    private suspend fun List<SeriesMembershipEntity>.toSeriesDetailEntries(
+        serverId: String,
+        libraryId: String
+    ): List<SeriesDetailEntry> {
+        return mapNotNull { membership ->
             when (membership.entryType) {
                 SERIES_ENTRY_TYPE_BOOK -> membership.bookId
                     ?.let { bookId -> detailCacheDao.getBookSummary(serverId, libraryId, bookId) }
@@ -3515,6 +3597,177 @@ class SessionRepositoryImpl @Inject constructor(
                 else -> null
             }
         }
+    }
+
+    private suspend fun presentPersistedSeriesContents(
+        serverId: String,
+        libraryId: String,
+        seriesId: String,
+        collapseSubseries: Boolean,
+        rawEntries: List<SeriesDetailEntry>,
+        seriesNameOverride: String? = null
+    ): List<SeriesDetailEntry> {
+        if (!collapseSubseries) return rawEntries
+        val books = rawEntries.mapNotNull { (it as? SeriesDetailEntry.BookItem)?.book }
+        if (books.isEmpty()) return emptyList()
+        val seriesName = seriesNameOverride
+            ?: detailCacheDao.getSeriesSummary(serverId, libraryId, seriesId)?.name
+            ?: ""
+        return buildCollapsedSeriesEntriesFromRaw(
+            seriesId = seriesId,
+            targetSeriesName = seriesName,
+            books = books
+        )
+    }
+
+    private fun buildCollapsedSeriesEntriesFromRaw(
+        seriesId: String,
+        targetSeriesName: String,
+        books: List<BookSummary>
+    ): List<SeriesDetailEntry> {
+        val sortedBooks = sortSeriesBooksForRepository(
+            books = books,
+            targetSeriesName = targetSeriesName
+        )
+        if (sortedBooks.isEmpty()) return emptyList()
+        val normalizedSeries = normalizeSeriesKeyForRepository(targetSeriesName)
+        val childSeriesByBookId = sortedBooks.associate { book ->
+            book.id to resolveChildSeriesCandidateForRepository(
+                book = book,
+                targetSeriesId = seriesId,
+                normalizedSeries = normalizedSeries
+            )
+        }
+        val childGroups = sortedBooks
+            .mapNotNull { book ->
+                val child = childSeriesByBookId[book.id] ?: return@mapNotNull null
+                child to book
+            }
+            .groupBy(keySelector = { it.first.key }, valueTransform = { it.second })
+        val collapsibleChildKeys = childGroups
+            .filterValues { groupedBooks ->
+                groupedBooks.isNotEmpty() && groupedBooks.size < sortedBooks.size
+            }
+            .keys
+
+        val emittedChildKeys = mutableSetOf<String>()
+        return buildList {
+            sortedBooks.forEach { book ->
+                val child = childSeriesByBookId[book.id]
+                if (child == null || child.key !in collapsibleChildKeys) {
+                    add(SeriesDetailEntry.BookItem(book))
+                    return@forEach
+                }
+                if (!emittedChildKeys.add(child.key)) {
+                    return@forEach
+                }
+                val groupedBooks = childGroups[child.key].orEmpty()
+                add(
+                    SeriesDetailEntry.SubseriesItem(
+                        id = child.id.orEmpty(),
+                        name = child.name,
+                        bookCount = groupedBooks.size.coerceAtLeast(1),
+                        coverUrl = groupedBooks.firstOrNull()?.coverUrl
+                    )
+                )
+            }
+        }
+    }
+
+    private data class RepositoryChildSeriesCandidate(
+        val key: String,
+        val id: String?,
+        val name: String
+    )
+
+    private fun resolveChildSeriesCandidateForRepository(
+        book: BookSummary,
+        targetSeriesId: String,
+        normalizedSeries: String
+    ): RepositoryChildSeriesCandidate? {
+        val candidateNames = if (book.seriesNames.isNotEmpty()) {
+            book.seriesNames
+        } else {
+            listOfNotNull(book.seriesName)
+        }
+        return candidateNames.mapIndexedNotNull { index, name ->
+            val trimmedName = name.trim()
+            if (trimmedName.isBlank()) return@mapIndexedNotNull null
+            val candidateId = book.seriesIds.getOrNull(index)?.trim()?.takeIf { it.isNotBlank() }
+            val matchesTarget = (candidateId != null &&
+                seriesIdsLikelyMatchForRepository(candidateId, targetSeriesId)) ||
+                matchesSeriesNameForRepository(
+                    normalizedSeries = normalizedSeries,
+                    candidateSeriesNames = listOf(trimmedName)
+                )
+            if (matchesTarget) {
+                null
+            } else {
+                RepositoryChildSeriesCandidate(
+                    key = candidateId ?: "series:${normalizeSeriesKeyForRepository(trimmedName)}",
+                    id = candidateId,
+                    name = trimmedName
+                )
+            }
+        }.firstOrNull()
+    }
+
+    private fun normalizeSeriesKeyForRepository(value: String): String {
+        return value
+            .trim()
+            .replace(Regex("\\s*#\\d+.*$"), "")
+            .replace(Regex("\\s+"), " ")
+            .lowercase()
+    }
+
+    private fun matchesSeriesNameForRepository(
+        normalizedSeries: String,
+        candidateSeriesNames: List<String>
+    ): Boolean {
+        if (normalizedSeries.isBlank()) return false
+        return candidateSeriesNames.any { candidateName ->
+            val normalizedCandidate = normalizeSeriesKeyForRepository(candidateName)
+            normalizedCandidate.isNotBlank() && normalizedCandidate == normalizedSeries
+        }
+    }
+
+    private fun sortSeriesBooksForRepository(
+        books: List<BookSummary>,
+        targetSeriesName: String
+    ): List<BookSummary> {
+        val normalizedTargetSeries = normalizeSeriesKeyForRepository(targetSeriesName)
+        return books.sortedWith(
+            compareBy<BookSummary> { book ->
+                val normalizedPrimarySeries = normalizeSeriesKeyForRepository(book.seriesName.orEmpty())
+                if (
+                    normalizedTargetSeries.isNotBlank() &&
+                    normalizedPrimarySeries == normalizedTargetSeries
+                ) {
+                    0
+                } else {
+                    1
+                }
+            }
+                .thenBy {
+                    it.seriesName
+                        ?.trim()
+                        ?.replace(Regex("\\s*#\\d+.*$"), "")
+                        ?.replace(Regex("\\s+"), " ")
+                        ?.lowercase()
+                        .orEmpty()
+                }
+                .thenBy { it.seriesSequence ?: Double.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+        )
+    }
+
+    private fun seriesIdsLikelyMatchForRepository(candidateId: String, targetId: String): Boolean {
+        val normalizedCandidate = candidateId.trim()
+        val normalizedTarget = targetId.trim()
+        if (normalizedCandidate.isBlank() || normalizedTarget.isBlank()) return false
+        return normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+            normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+            normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
     }
 
     private suspend fun resolveCachedSeriesId(

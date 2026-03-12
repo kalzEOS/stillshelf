@@ -231,10 +231,10 @@ Acceptance criteria:
 
 ### Phase 3: Series Detail Migration
 
-- [ ] Persist raw series membership data.
-- [ ] Replace fetch-only series detail screen loading with Room observation.
+- [x] Persist raw series membership data.
+- [x] Replace fetch-only series detail screen loading with Room observation.
 - [ ] Move collapse/expand behavior out of cache storage and into presentation logic.
-- [ ] Keep cached series contents visible during background refresh.
+- [x] Keep cached series contents visible during background refresh.
 
 Acceptance criteria:
 

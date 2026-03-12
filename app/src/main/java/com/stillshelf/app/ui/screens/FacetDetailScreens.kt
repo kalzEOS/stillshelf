@@ -52,6 +52,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -98,6 +99,7 @@ import com.stillshelf.app.core.util.hasFinishedProgress
 import com.stillshelf.app.core.util.hasStartedProgress
 import com.stillshelf.app.core.util.remainingTimeLabel
 import com.stillshelf.app.core.model.SeriesDetailEntry
+import com.stillshelf.app.data.repo.DetailRefreshPolicy
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
@@ -110,10 +112,16 @@ import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -505,6 +513,7 @@ class AuthorDetailViewModel @Inject constructor(
 }
 
 @HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
 class SeriesDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
@@ -544,9 +553,11 @@ class SeriesDetailViewModel @Inject constructor(
 
     private data class SeriesEntriesResult(
         val entries: List<SeriesDetailEntry>,
-        val hasCollapsibleSubseries: Boolean
+        val hasCollapsibleSubseries: Boolean,
+        val collapsedEntries: List<SeriesDetailEntry>? = null
     )
 
+    private val mutableResolvedSeriesId = MutableStateFlow(seriesId)
     init {
         viewModelScope.launch {
             sessionPreferences.state.first().let { prefs ->
@@ -556,7 +567,10 @@ class SeriesDetailViewModel @Inject constructor(
         }
         observeDownloadedState()
         observeBookProgressMutations()
-        refresh(forceRefresh = false, isUserRefresh = false)
+        observePersistedSeriesDetail()
+        observeResolvedSeriesSummary()
+        observeCollapseAvailability()
+        refresh(policy = DetailRefreshPolicy.IfStale)
     }
 
     fun setListMode(value: Boolean) {
@@ -571,11 +585,11 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setSeriesDetailCollapseSubseries(value)
         }
-        refresh(forceRefresh = false, isUserRefresh = false)
+        refresh(policy = DetailRefreshPolicy.IfStale)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true, isUserRefresh = true)
+        refresh(policy = DetailRefreshPolicy.Force, isUserRefresh = true)
     }
 
     fun markAsFinished(bookId: String) {
@@ -584,7 +598,7 @@ class SeriesDetailViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -598,7 +612,7 @@ class SeriesDetailViewModel @Inject constructor(
             when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -618,7 +632,7 @@ class SeriesDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> {
@@ -672,89 +686,218 @@ class SeriesDetailViewModel @Inject constructor(
         }
     }
 
-    private fun refresh(forceRefresh: Boolean, isUserRefresh: Boolean) {
+    private fun observePersistedSeriesDetail() {
+        viewModelScope.launch {
+            combine(
+                mutableResolvedSeriesId,
+                mutableCollapseSubseries
+            ) { resolvedSeriesId, collapseSubseries ->
+                resolvedSeriesId?.trim()?.takeIf { it.isNotBlank() } to collapseSubseries
+            }
+                .distinctUntilChanged()
+                .flatMapLatest { (resolvedSeriesId, collapseSubseries) ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(emptyList())
+                    } else {
+                        sessionRepository.observeSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = collapseSubseries
+                        )
+                    }
+                }
+                .collect { entries ->
+                    mutableUiState.update { state ->
+                        if (entries.isEmpty()) {
+                            state
+                        } else {
+                            state.copy(
+                                isLoading = false,
+                                entries = entries,
+                                errorMessage = null
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    private fun observeResolvedSeriesSummary() {
+        viewModelScope.launch {
+            mutableResolvedSeriesId
+                .map { it?.trim()?.takeIf(String::isNotBlank) }
+                .distinctUntilChanged()
+                .flatMapLatest { resolvedSeriesId ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(null)
+                    } else {
+                        sessionRepository.observeSeriesSummary(resolvedSeriesId)
+                    }
+                }
+                .collect { summary ->
+                    mutableUiState.update { state ->
+                        state.copy(title = summary?.name ?: seriesName)
+                    }
+                }
+        }
+    }
+
+    private fun observeCollapseAvailability() {
+        viewModelScope.launch {
+            mutableResolvedSeriesId
+                .map { it?.trim()?.takeIf(String::isNotBlank) }
+                .distinctUntilChanged()
+                .flatMapLatest { resolvedSeriesId ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(false)
+                    } else {
+                        sessionRepository.observeSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = true
+                        ).map { entries ->
+                            entries.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                        }
+                    }
+                }
+                .collect { canCollapseSubseries ->
+                    mutableUiState.update { state ->
+                        state.copy(canCollapseSubseries = canCollapseSubseries)
+                    }
+                }
+        }
+    }
+
+    private fun refresh(
+        policy: DetailRefreshPolicy,
+        isUserRefresh: Boolean = false
+    ) {
+        val hasLocalEntries = uiState.value.entries.isNotEmpty()
         mutableUiState.update {
             it.copy(
-                isLoading = true,
-                isRefreshing = isUserRefresh,
+                isLoading = !hasLocalEntries,
+                isRefreshing = hasLocalEntries || isUserRefresh,
                 errorMessage = null
             )
         }
         viewModelScope.launch {
+            val forceRefresh = policy == DetailRefreshPolicy.Force
             val collapseSubseries = mutableCollapseSubseries.value
             val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
-            val resolvedSeriesId = seriesId ?: targetSeries.id
-            val serverResult: AppResult<SeriesEntriesResult>? = if (collapseSubseries && resolvedSeriesId != null) {
-                when (val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
-                    seriesId = resolvedSeriesId,
-                    collapseSubseries = true,
-                    forceRefresh = forceRefresh
-                )) {
-                    is AppResult.Success -> AppResult.Success(
-                        SeriesEntriesResult(
-                            entries = result.value,
-                            hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
-                        )
-                    )
+            val resolvedSeriesId = seriesId
+                ?: targetSeries.id
+                ?: sessionRepository.resolveSeriesIdForActiveLibrary(seriesName)
+            mutableResolvedSeriesId.value = resolvedSeriesId
 
-                    is AppResult.Error -> result
-                }
+            val result = if (resolvedSeriesId != null) {
+                refreshResolvedSeriesEntries(
+                    resolvedSeriesId = resolvedSeriesId,
+                    targetSeries = targetSeries,
+                    collapseSubseries = collapseSubseries,
+                    forceRefresh = forceRefresh
+                )
             } else {
-                null
-            }
-            val shouldLoadFallback = !collapseSubseries ||
-                resolvedSeriesId == null ||
-                serverResult !is AppResult.Success ||
-                serverResult.value.entries.isEmpty() ||
-                serverResult.value.entries.none { entry -> entry is SeriesDetailEntry.SubseriesItem }
-            val fallbackResult = if (shouldLoadFallback) {
                 fetchLegacySeriesEntries(
                     forceRefresh = forceRefresh,
                     targetSeries = targetSeries,
                     collapseSubseries = collapseSubseries
                 )
-            } else {
-                null
             }
-            val fallbackHasSubseries = fallbackResult is AppResult.Success &&
-                fallbackResult.value.hasCollapsibleSubseries
-            val serverHasSubseries = serverResult is AppResult.Success &&
-                serverResult.value.hasCollapsibleSubseries
-            val result = when {
-                fallbackHasSubseries && !serverHasSubseries -> fallbackResult
-                serverResult is AppResult.Success && serverResult.value.entries.isNotEmpty() -> serverResult
-                fallbackResult is AppResult.Success && fallbackResult.value.entries.isNotEmpty() -> fallbackResult
-                serverResult != null -> serverResult
-                fallbackResult != null -> fallbackResult
-                else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
-            }
+
             when (result) {
                 is AppResult.Success -> {
                     if (result.value.entries.isEmpty() && !forceRefresh) {
-                        refresh(forceRefresh = true, isUserRefresh = false)
+                        refresh(policy = DetailRefreshPolicy.Force)
                         return@launch
                     }
-                    mutableUiState.update {
-                        it.copy(
+                    mutableUiState.update { state ->
+                        state.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            entries = result.value.entries,
-                            canCollapseSubseries = result.value.hasCollapsibleSubseries
+                            entries = if (state.entries.isEmpty()) result.value.entries else state.entries,
+                            canCollapseSubseries = result.value.hasCollapsibleSubseries,
+                            errorMessage = null
                         )
                     }
                 }
 
                 is AppResult.Error -> {
-                    mutableUiState.update {
-                        it.copy(
+                    mutableUiState.update { state ->
+                        state.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = result.message
+                            errorMessage = if (state.entries.isNotEmpty()) state.errorMessage else result.message
                         )
                     }
                 }
             }
         }
+    }
+
+    private suspend fun refreshResolvedSeriesEntries(
+        resolvedSeriesId: String,
+        targetSeries: SeriesMatchTarget,
+        collapseSubseries: Boolean,
+        forceRefresh: Boolean
+    ): AppResult<SeriesEntriesResult> {
+        val serverResult: AppResult<SeriesEntriesResult>? = if (collapseSubseries) {
+            when (val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
+                seriesId = resolvedSeriesId,
+                collapseSubseries = true,
+                forceRefresh = forceRefresh
+            )) {
+                is AppResult.Success -> AppResult.Success(
+                    SeriesEntriesResult(
+                        entries = result.value,
+                        hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem },
+                        collapsedEntries = result.value
+                    )
+                )
+
+                is AppResult.Error -> result
+            }
+        } else {
+            null
+        }
+        val shouldLoadFallback = !collapseSubseries ||
+            serverResult !is AppResult.Success ||
+            serverResult.value.entries.isEmpty() ||
+            serverResult.value.entries.none { entry -> entry is SeriesDetailEntry.SubseriesItem }
+        val fallbackResult = if (shouldLoadFallback) {
+            fetchLegacySeriesEntries(
+                forceRefresh = forceRefresh,
+                targetSeries = targetSeries,
+                collapseSubseries = collapseSubseries
+            )
+        } else {
+            null
+        }
+        val fallbackHasSubseries = fallbackResult is AppResult.Success &&
+            fallbackResult.value.hasCollapsibleSubseries
+        val serverHasSubseries = serverResult is AppResult.Success &&
+            serverResult.value.hasCollapsibleSubseries
+        val result = when {
+            fallbackHasSubseries && !serverHasSubseries -> fallbackResult
+            serverResult is AppResult.Success && serverResult.value.entries.isNotEmpty() -> serverResult
+            fallbackResult is AppResult.Success && fallbackResult.value.entries.isNotEmpty() -> fallbackResult
+            serverResult != null -> serverResult
+            fallbackResult != null -> fallbackResult
+            else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
+        }
+        if (result is AppResult.Success) {
+            sessionRepository.cacheSeriesDetail(
+                seriesId = resolvedSeriesId,
+                collapseSubseries = collapseSubseries,
+                entries = result.value.entries
+            )
+            val collapsedEntries = result.value.collapsedEntries
+            if (!collapsedEntries.isNullOrEmpty() && !collapseSubseries) {
+                sessionRepository.cacheSeriesDetail(
+                    seriesId = resolvedSeriesId,
+                    collapseSubseries = true,
+                    entries = collapsedEntries
+                )
+            }
+        }
+        return result
     }
 
     private suspend fun fetchLegacySeriesEntries(
@@ -810,7 +953,8 @@ class SeriesDetailViewModel @Inject constructor(
                 AppResult.Success(
                     SeriesEntriesResult(
                         entries = displayedEntries,
-                        hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                        hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem },
+                        collapsedEntries = collapsedEntries
                     )
                 )
             }
@@ -2746,6 +2890,14 @@ fun SeriesDetailScreen(
             state = refreshState,
             modifier = Modifier.align(Alignment.TopCenter)
         )
+
+        if (uiState.isRefreshing && uiState.entries.isNotEmpty()) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+            )
+        }
     }
 
     val targetBookId = addToListBookId

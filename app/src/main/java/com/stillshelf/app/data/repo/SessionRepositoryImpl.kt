@@ -69,6 +69,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Singleton
+@OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryImpl @Inject constructor(
     private val appDatabase: AppDatabase,
     private val serverDao: ServerDao,
@@ -744,6 +745,192 @@ class SessionRepositoryImpl @Inject constructor(
                     refreshResult
                 }
             }
+        }
+    }
+
+    override fun observeSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean
+    ): Flow<List<SeriesDetailEntry>> {
+        val normalizedSeriesId = seriesId.trim()
+        if (normalizedSeriesId.isBlank()) return flowOf(emptyList())
+        return sessionPreferences.state
+            .map { state ->
+                val serverId = state.activeServerId?.trim().orEmpty()
+                val libraryId = state.activeLibraryId?.trim().orEmpty()
+                if (serverId.isBlank() || libraryId.isBlank()) {
+                    null
+                } else {
+                    serverId to libraryId
+                }
+            }
+            .distinctUntilChanged()
+            .flatMapLatest { ids ->
+                if (ids == null) {
+                    flowOf(emptyList())
+                } else {
+                    val (serverId, libraryId) = ids
+                    detailCacheDao.observeSeriesMemberships(
+                        serverId = serverId,
+                        libraryId = libraryId,
+                        seriesId = normalizedSeriesId,
+                        collapseSubseries = collapseSubseries
+                    ).map { memberships ->
+                        memberships.mapNotNull { membership ->
+                            when (membership.entryType) {
+                                SERIES_ENTRY_TYPE_BOOK -> membership.bookId
+                                    ?.let { bookId -> detailCacheDao.getBookSummary(serverId, libraryId, bookId) }
+                                    ?.let { summary -> SeriesDetailEntry.BookItem(summary.toModel()) }
+
+                                SERIES_ENTRY_TYPE_SUBSERIES -> {
+                                    SeriesDetailEntry.SubseriesItem(
+                                        id = membership.subseriesId.orEmpty(),
+                                        name = membership.displayName.orEmpty(),
+                                        bookCount = membership.bookCount ?: 0,
+                                        coverUrl = membership.coverUrl,
+                                        sequenceLabel = membership.sequenceLabel
+                                    )
+                                }
+
+                                else -> null
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    override fun observeSeriesSummary(seriesId: String): Flow<NamedEntitySummary?> {
+        val normalizedSeriesId = seriesId.trim()
+        if (normalizedSeriesId.isBlank()) return flowOf(null)
+        return sessionPreferences.state
+            .map { state ->
+                val serverId = state.activeServerId?.trim().orEmpty()
+                val libraryId = state.activeLibraryId?.trim().orEmpty()
+                if (serverId.isBlank() || libraryId.isBlank()) {
+                    null
+                } else {
+                    serverId to libraryId
+                }
+            }
+            .distinctUntilChanged()
+            .flatMapLatest { ids ->
+                if (ids == null) {
+                    flowOf(null)
+                } else {
+                    val (serverId, libraryId) = ids
+                    detailCacheDao.observeSeriesSummary(serverId, libraryId, normalizedSeriesId)
+                        .map { entity -> entity?.toModel() }
+                }
+            }
+    }
+
+    override suspend fun resolveSeriesIdForActiveLibrary(seriesName: String): String? {
+        val normalizedSeriesName = seriesName.trim()
+        if (normalizedSeriesName.isBlank()) return null
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return null
+        }
+        val library = connection.library ?: return null
+        detailCacheDao.getSeriesSummaryByName(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            seriesName = normalizedSeriesName
+        )?.id?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+
+        val normalizedSeriesKey = normalizeSeriesKey(normalizedSeriesName)
+        val fetchedSeries = when (
+            val result = fetchSeriesForActiveLibrary(
+                limit = FULL_LIBRARY_PAGE_SIZE,
+                page = 0,
+                forceRefresh = false
+            )
+        ) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return null
+        }
+        return fetchedSeries.firstOrNull { series ->
+            normalizeSeriesKey(series.name) == normalizedSeriesKey
+        }?.id?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    override suspend fun refreshSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean,
+        policy: DetailRefreshPolicy
+    ): AppResult<Unit> {
+        val normalizedSeriesId = seriesId.trim()
+        if (normalizedSeriesId.isBlank()) {
+            return AppResult.Error("Series not found.")
+        }
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        val persistedLocal = readPersistedSeriesContents(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            seriesId = normalizedSeriesId,
+            collapseSubseries = collapseSubseries
+        )
+        val syncState = detailCacheDao.getDetailSyncState(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            resourceType = DETAIL_RESOURCE_SERIES,
+            resourceId = normalizedSeriesId,
+            resourceVariant = seriesResourceVariant(collapseSubseries)
+        )
+        val shouldRefresh = shouldRefreshDetail(
+            policy = policy,
+            localExists = persistedLocal != null,
+            lastSuccessfulSyncAtMs = syncState?.lastSuccessfulSyncAtMs,
+            maxAgeMs = CONTENT_CACHE_MAX_AGE_MS
+        )
+        if (!shouldRefresh) return AppResult.Success(Unit)
+        val refreshKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "seriesContents:$normalizedSeriesId:$collapseSubseries"
+        )
+        return runDedupedDetailRefresh(
+            key = "seriesContents:$refreshKey"
+        ) {
+            refreshPersistedSeriesContents(
+                connection = connection,
+                libraryId = library.id,
+                seriesId = normalizedSeriesId,
+                collapseSubseries = collapseSubseries
+            )
+        }
+    }
+
+    override suspend fun cacheSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean,
+        entries: List<SeriesDetailEntry>
+    ): AppResult<Unit> {
+        val normalizedSeriesId = seriesId.trim()
+        if (normalizedSeriesId.isBlank()) {
+            return AppResult.Error("Series not found.")
+        }
+        val connection = when (val result = getActiveConnection(requireLibrary = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return result
+        }
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        return try {
+            persistSeriesContentsSnapshot(
+                serverId = connection.server.id,
+                libraryId = library.id,
+                seriesId = normalizedSeriesId,
+                collapseSubseries = collapseSubseries,
+                entries = entries
+            )
+            AppResult.Success(Unit)
+        } catch (t: Throwable) {
+            AppResult.Error("Unable to cache series.", t)
         }
     }
 
@@ -3342,6 +3529,16 @@ class SessionRepositoryImpl @Inject constructor(
             progressPercent = progressPercent,
             currentTimeSeconds = currentTimeSeconds,
             isFinished = isFinished
+        )
+    }
+
+    private fun SeriesSummaryEntity.toModel(): NamedEntitySummary {
+        return NamedEntitySummary(
+            id = id,
+            name = name,
+            subtitle = subtitle,
+            imageUrl = imageUrl,
+            description = description
         )
     }
 

@@ -128,6 +128,30 @@ interface DetailCacheDao {
 
     @Query(
         """
+        SELECT * FROM series_summaries
+        WHERE serverId = :serverId AND libraryId = :libraryId AND id = :seriesId
+        LIMIT 1
+        """
+    )
+    fun observeSeriesSummary(serverId: String, libraryId: String, seriesId: String): Flow<SeriesSummaryEntity?>
+
+    @Query(
+        """
+        SELECT * FROM series_summaries
+        WHERE serverId = :serverId
+          AND libraryId = :libraryId
+          AND name = :seriesName COLLATE NOCASE
+        LIMIT 1
+        """
+    )
+    suspend fun getSeriesSummaryByName(
+        serverId: String,
+        libraryId: String,
+        seriesName: String
+    ): SeriesSummaryEntity?
+
+    @Query(
+        """
         SELECT * FROM series_memberships
         WHERE serverId = :serverId
           AND libraryId = :libraryId

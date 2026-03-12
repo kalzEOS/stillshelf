@@ -69,6 +69,26 @@ interface SessionRepository {
         collapseSubseries: Boolean = true,
         forceRefresh: Boolean = false
     ): AppResult<List<SeriesDetailEntry>>
+    fun observeSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true
+    ): Flow<List<SeriesDetailEntry>>
+    fun observeSeriesSummary(
+        seriesId: String
+    ): Flow<NamedEntitySummary?>
+    suspend fun resolveSeriesIdForActiveLibrary(
+        seriesName: String
+    ): String?
+    suspend fun refreshSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true,
+        policy: DetailRefreshPolicy = DetailRefreshPolicy.IfStale
+    ): AppResult<Unit>
+    suspend fun cacheSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean,
+        entries: List<SeriesDetailEntry>
+    ): AppResult<Unit>
     suspend fun fetchCollectionsForActiveLibrary(
         forceRefresh: Boolean = false
     ): AppResult<List<NamedEntitySummary>>

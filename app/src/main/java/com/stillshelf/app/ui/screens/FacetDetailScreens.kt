@@ -853,15 +853,17 @@ class SeriesDetailViewModel @Inject constructor(
             seriesId = resolvedSeriesId,
             collapseSubseries = true
         )
-        if (cachedEntries.isNullOrEmpty() && cachedCollapsedEntries.isNullOrEmpty()) return
+        val hasVisibleCachedEntries = !cachedEntries.isNullOrEmpty()
+        val hasCollapsedCachedEntries = !cachedCollapsedEntries.isNullOrEmpty()
+        if (!hasVisibleCachedEntries && !hasCollapsedCachedEntries) return
         mutableUiState.update { state ->
             state.copy(
-                isLoading = false,
+                isLoading = !hasVisibleCachedEntries,
                 entries = cachedEntries ?: state.entries,
                 canCollapseSubseries = cachedCollapsedEntries.orEmpty().any { entry ->
                     entry is SeriesDetailEntry.SubseriesItem
                 },
-                hasLoadedOnce = true
+                hasLoadedOnce = hasVisibleCachedEntries || state.hasLoadedOnce
             )
         }
     }

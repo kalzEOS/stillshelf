@@ -244,9 +244,9 @@ Acceptance criteria:
 
 ### Phase 4: Cleanup
 
-- [ ] Remove old in-memory detail caches that are no longer needed.
-- [ ] Remove screen-specific loading workarounds built around fetch-only detail calls.
-- [ ] Keep only memory caches that still have a clear role, such as tiny short-lived image or browse helpers.
+- [x] Remove old in-memory detail caches that are no longer needed.
+- [x] Remove screen-specific loading workarounds built around fetch-only detail calls.
+- [x] Keep only memory caches that still have a clear role, such as tiny short-lived image or browse helpers.
 
 Acceptance criteria:
 

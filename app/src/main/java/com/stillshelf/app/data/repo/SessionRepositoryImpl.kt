@@ -125,10 +125,8 @@ class SessionRepositoryImpl @Inject constructor(
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val narratorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val seriesCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
-    private val seriesContentCache = mutableMapOf<String, TimedCacheEntry<List<SeriesDetailEntry>>>()
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
-    private val bookDetailCache = mutableMapOf<String, TimedCacheEntry<BookDetail>>()
     private val refreshJobMutex = Mutex()
     private val inFlightDetailRefreshes = mutableMapOf<String, Deferred<AppResult<Unit>>>()
 
@@ -672,24 +670,6 @@ class SessionRepositoryImpl @Inject constructor(
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
         val normalizedSeriesId = seriesId.trim()
-        val cacheKey = contentCacheKey(
-            serverId = connection.server.id,
-            libraryId = library.id,
-            suffix = "seriesContents:$normalizedSeriesId"
-        )
-        if (!forceRefresh) {
-            getFreshCache(seriesContentCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
-                return AppResult.Success(
-                    presentPersistedSeriesContents(
-                        serverId = connection.server.id,
-                        libraryId = library.id,
-                        seriesId = normalizedSeriesId,
-                        collapseSubseries = collapseSubseries,
-                        rawEntries = cached
-                    )
-                )
-            }
-        }
         val persistedLocal = if (forceRefresh) {
             null
         } else {
@@ -713,7 +693,6 @@ class SessionRepositoryImpl @Inject constructor(
             maxAgeMs = CONTENT_CACHE_MAX_AGE_MS
         )
         if (!shouldRefresh && persistedLocal != null) {
-            putCache(seriesContentCache, cacheKey, persistedLocal)
             return AppResult.Success(
                 presentPersistedSeriesContents(
                     serverId = connection.server.id,
@@ -724,10 +703,14 @@ class SessionRepositoryImpl @Inject constructor(
                 )
             )
         }
-        val staleCache = if (forceRefresh) null else getAnyCache(seriesContentCache, cacheKey) ?: persistedLocal
-        val refreshKey = "seriesContents:$cacheKey"
+        val staleCache = if (forceRefresh) null else persistedLocal
+        val refreshKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "seriesContents:$normalizedSeriesId"
+        )
         return when (
-            val refreshResult = runDedupedDetailRefresh(refreshKey) {
+            val refreshResult = runDedupedDetailRefresh("seriesContents:$refreshKey") {
                 refreshPersistedSeriesContents(
                     connection = connection,
                     libraryId = library.id,
@@ -742,7 +725,6 @@ class SessionRepositoryImpl @Inject constructor(
                     seriesId = normalizedSeriesId
                 )
                 if (cached != null) {
-                    putCache(seriesContentCache, cacheKey, cached)
                     AppResult.Success(
                         presentPersistedSeriesContents(
                             serverId = connection.server.id,
@@ -1764,16 +1746,6 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
-        val cacheKey = contentCacheKey(
-            serverId = connection.server.id,
-            libraryId = library.id,
-            suffix = "bookDetail:$bookId"
-        )
-        if (!forceRefresh) {
-            getFreshCache(bookDetailCache, cacheKey, DETAIL_CACHE_MAX_AGE_MS)?.let { cached ->
-                return AppResult.Success(cached)
-            }
-        }
         val persistedLocal = if (forceRefresh) {
             null
         } else {
@@ -1797,14 +1769,17 @@ class SessionRepositoryImpl @Inject constructor(
             maxAgeMs = DETAIL_CACHE_MAX_AGE_MS
         )
         if (!shouldRefresh && persistedLocal != null) {
-            putCache(bookDetailCache, cacheKey, persistedLocal)
             return AppResult.Success(persistedLocal)
         }
-        val staleCache = if (forceRefresh) null else getAnyCache(bookDetailCache, cacheKey) ?: persistedLocal
+        val staleCache = if (forceRefresh) null else persistedLocal
 
-        val refreshKey = "bookDetail:$cacheKey"
+        val refreshKey = contentCacheKey(
+            serverId = connection.server.id,
+            libraryId = library.id,
+            suffix = "bookDetail:$bookId"
+        )
         return when (
-            val refreshResult = runDedupedDetailRefresh(refreshKey) {
+            val refreshResult = runDedupedDetailRefresh("bookDetail:$refreshKey") {
                 refreshPersistedBookDetail(
                     connection = connection,
                     libraryId = library.id,
@@ -1819,7 +1794,6 @@ class SessionRepositoryImpl @Inject constructor(
                     bookId = bookId
                 )
                 if (cached != null) {
-                    putCache(bookDetailCache, cacheKey, cached)
                     AppResult.Success(cached)
                 } else if (staleCache != null) {
                     AppResult.Success(staleCache)
@@ -2149,11 +2123,6 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
-        clearBookDetailCache(
-            serverId = connection.server.id,
-            libraryId = library.id,
-            bookId = bookId
-        )
         return AppResult.Success(Unit)
     }
 
@@ -2235,11 +2204,6 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
-        clearBookDetailCache(
-            serverId = connection.server.id,
-            libraryId = library.id,
-            bookId = bookId
-        )
         return AppResult.Success(Unit)
     }
 
@@ -2270,11 +2234,6 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
 
-        clearBookDetailCache(
-            serverId = connection.server.id,
-            libraryId = library.id,
-            bookId = bookId
-        )
         return AppResult.Success(Unit)
     }
 
@@ -3157,10 +3116,8 @@ class SessionRepositoryImpl @Inject constructor(
             authorsCache.clear()
             narratorsCache.clear()
             seriesCache.clear()
-            seriesContentCache.clear()
             collectionsCache.clear()
             playlistsCache.clear()
-            bookDetailCache.clear()
         }
     }
 
@@ -3171,21 +3128,8 @@ class SessionRepositoryImpl @Inject constructor(
             authorsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
             narratorsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
             seriesCache.keys.removeAll { it.startsWith(normalizedPrefix) }
-            seriesContentCache.keys.removeAll { it.startsWith(normalizedPrefix) }
             collectionsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
             playlistsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
-            bookDetailCache.keys.removeAll { it.startsWith(normalizedPrefix) }
-        }
-    }
-
-    private suspend fun clearBookDetailCache(
-        serverId: String,
-        libraryId: String,
-        bookId: String
-    ) {
-        val key = contentCacheKey(serverId, libraryId, suffix = "bookDetail:$bookId")
-        cacheMutex.withLock {
-            bookDetailCache.remove(key)
         }
     }
 

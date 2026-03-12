@@ -43,6 +43,40 @@ data class BookDetailUiState(
     val downloadProgressPercent: Int? = null
 )
 
+internal fun BookDetailUiState.beginRefresh(
+    hasLocalDetail: Boolean,
+    silent: Boolean
+): BookDetailUiState {
+    return if (!silent || !hasLocalDetail) {
+        copy(
+            isLoading = !hasLocalDetail,
+            isRefreshing = hasLocalDetail,
+            errorMessage = null
+        )
+    } else {
+        this
+    }
+}
+
+internal fun BookDetailUiState.applyPersistedDetail(
+    detail: BookDetail?
+): BookDetailUiState {
+    return if (detail == null) {
+        copy(
+            detail = null,
+            isLoading = isLoading && this.detail == null
+        )
+    } else {
+        copy(
+            isLoading = false,
+            detail = detail,
+            errorMessage = null,
+            progressPercent = detail.book.progressPercent,
+            currentTimeSeconds = detail.book.currentTimeSeconds
+        )
+    }
+}
+
 @HiltViewModel
 class BookDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -92,15 +126,7 @@ class BookDetailViewModel @Inject constructor(
             return
         }
         val hasLocalDetail = uiState.value.detail != null
-        if (!silent || !hasLocalDetail) {
-            mutableUiState.update {
-                it.copy(
-                    isLoading = !hasLocalDetail,
-                    isRefreshing = hasLocalDetail,
-                    errorMessage = null
-                )
-            }
-        }
+        mutableUiState.update { state -> state.beginRefresh(hasLocalDetail = hasLocalDetail, silent = silent) }
         viewModelScope.launch {
             when (val result = sessionRepository.refreshBookDetail(bookId, policy = policy)) {
                 is AppResult.Success -> {
@@ -131,22 +157,7 @@ class BookDetailViewModel @Inject constructor(
         if (bookId.isBlank()) return
         viewModelScope.launch {
             sessionRepository.observeBookDetail(bookId).collect { detail ->
-                mutableUiState.update { state ->
-                    if (detail == null) {
-                        state.copy(
-                            detail = null,
-                            isLoading = state.isLoading && state.detail == null
-                        )
-                    } else {
-                        state.copy(
-                            isLoading = false,
-                            detail = detail,
-                            errorMessage = null,
-                            progressPercent = detail.book.progressPercent,
-                            currentTimeSeconds = detail.book.currentTimeSeconds
-                        )
-                    }
-                }
+                mutableUiState.update { state -> state.applyPersistedDetail(detail) }
             }
         }
     }

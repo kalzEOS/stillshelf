@@ -257,18 +257,18 @@ Acceptance criteria:
 
 ### Repository Tests
 
-- [ ] `IfMissing` skips network when local data exists.
-- [ ] `IfStale` refreshes only after freshness threshold.
-- [ ] `Force` refreshes regardless of freshness.
-- [ ] In-flight refresh dedupe prevents duplicate requests.
-- [ ] Server response does not overwrite newer local progress with older state.
+- [x] `IfMissing` skips network when local data exists.
+- [x] `IfStale` refreshes only after freshness threshold.
+- [x] `Force` refreshes regardless of freshness.
+- [x] In-flight refresh dedupe prevents duplicate requests.
+- [x] Server response does not overwrite newer local progress with older state.
 
 ### UI/ViewModel Tests
 
-- [ ] Book detail shows cached content immediately when available.
-- [ ] Book detail shows full-screen loading only on true cache miss.
-- [ ] Series detail shows cached content immediately when available.
-- [ ] Pull-to-refresh keeps visible content on screen while refreshing.
+- [x] Book detail shows cached content immediately when available.
+- [x] Book detail shows full-screen loading only on true cache miss.
+- [x] Series detail shows cached content immediately when available.
+- [x] Pull-to-refresh keeps visible content on screen while refreshing.
 
 ### Manual Verification
 

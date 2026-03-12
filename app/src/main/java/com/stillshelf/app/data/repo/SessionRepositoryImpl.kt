@@ -68,6 +68,81 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal class DetailRefreshDeduper {
+    private val refreshJobMutex = Mutex()
+    private val inFlightDetailRefreshes = mutableMapOf<String, Deferred<AppResult<Unit>>>()
+
+    suspend fun runDeduped(
+        key: String,
+        block: suspend () -> AppResult<Unit>
+    ): AppResult<Unit> = coroutineScope {
+        val deferred = refreshJobMutex.withLock {
+            inFlightDetailRefreshes[key] ?: async {
+                try {
+                    block()
+                } finally {
+                    refreshJobMutex.withLock {
+                        if (inFlightDetailRefreshes[key] === this@async) {
+                            inFlightDetailRefreshes.remove(key)
+                        }
+                    }
+                }
+            }.also { created ->
+                inFlightDetailRefreshes[key] = created
+            }
+        }
+        deferred.await()
+    }
+}
+
+internal fun selectLocalProgressOverride(
+    mutation: BookProgressMutation?,
+    fetchedProgressPercent: Double?,
+    fetchedCurrentTimeSeconds: Double?,
+    fetchedDurationSeconds: Double?,
+    fetchedIsFinished: Boolean,
+    progressEpsilon: Double,
+    timeEpsilonSeconds: Double
+): BookProgressMutation? {
+    mutation ?: return null
+    return if (
+        progressMatchesMutationInternal(
+            mutation = mutation,
+            fetchedProgressPercent = fetchedProgressPercent,
+            fetchedCurrentTimeSeconds = fetchedCurrentTimeSeconds,
+            fetchedDurationSeconds = fetchedDurationSeconds,
+            fetchedIsFinished = fetchedIsFinished,
+            progressEpsilon = progressEpsilon,
+            timeEpsilonSeconds = timeEpsilonSeconds
+        )
+    ) {
+        null
+    } else {
+        mutation
+    }
+}
+
+private fun progressMatchesMutationInternal(
+    mutation: BookProgressMutation,
+    fetchedProgressPercent: Double?,
+    fetchedCurrentTimeSeconds: Double?,
+    fetchedDurationSeconds: Double?,
+    fetchedIsFinished: Boolean,
+    progressEpsilon: Double,
+    timeEpsilonSeconds: Double
+): Boolean {
+    return mutation.isFinished == fetchedIsFinished &&
+        approxEqualsInternal(mutation.progressPercent, fetchedProgressPercent, progressEpsilon) &&
+        approxEqualsInternal(mutation.currentTimeSeconds, fetchedCurrentTimeSeconds, timeEpsilonSeconds) &&
+        approxEqualsInternal(mutation.durationSeconds, fetchedDurationSeconds, timeEpsilonSeconds)
+}
+
+private fun approxEqualsInternal(left: Double?, right: Double?, epsilon: Double): Boolean {
+    if (left == null && right == null) return true
+    if (left == null || right == null) return false
+    return kotlin.math.abs(left - right) <= epsilon
+}
+
 @Singleton
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryImpl @Inject constructor(
@@ -127,8 +202,7 @@ class SessionRepositoryImpl @Inject constructor(
     private val seriesCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
-    private val refreshJobMutex = Mutex()
-    private val inFlightDetailRefreshes = mutableMapOf<String, Deferred<AppResult<Unit>>>()
+    private val refreshDeduper = DetailRefreshDeduper()
 
     override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
         SessionState(
@@ -3146,24 +3220,7 @@ class SessionRepositoryImpl @Inject constructor(
     private suspend fun runDedupedDetailRefresh(
         key: String,
         block: suspend () -> AppResult<Unit>
-    ): AppResult<Unit> = coroutineScope {
-        val deferred = refreshJobMutex.withLock {
-            inFlightDetailRefreshes[key] ?: async {
-                try {
-                    block()
-                } finally {
-                    refreshJobMutex.withLock {
-                        if (inFlightDetailRefreshes[key] === this@async) {
-                            inFlightDetailRefreshes.remove(key)
-                        }
-                    }
-                }
-            }.also { created ->
-                inFlightDetailRefreshes[key] = created
-            }
-        }
-        deferred.await()
-    }
+    ): AppResult<Unit> = refreshDeduper.runDeduped(key, block)
 
     private suspend fun refreshPersistedBookDetail(
         connection: ActiveConnection,
@@ -4167,38 +4224,44 @@ class SessionRepositoryImpl @Inject constructor(
             localBookProgressOverrides.remove(key)
             return@withLock null
         }
-        if (
-            progressMatchesMutation(
-                mutation = entry.mutation,
-                fetchedProgressPercent = fetchedProgressPercent,
-                fetchedCurrentTimeSeconds = fetchedCurrentTimeSeconds,
-                fetchedDurationSeconds = fetchedDurationSeconds,
-                fetchedIsFinished = fetchedIsFinished
-            )
-        ) {
+        val override = selectLocalProgressOverride(
+            mutation = entry.mutation,
+            fetchedProgressPercent = fetchedProgressPercent,
+            fetchedCurrentTimeSeconds = fetchedCurrentTimeSeconds,
+            fetchedDurationSeconds = fetchedDurationSeconds,
+            fetchedIsFinished = fetchedIsFinished,
+            progressEpsilon = PROGRESS_MATCH_EPSILON,
+            timeEpsilonSeconds = TIME_MATCH_EPSILON_SECONDS
+        )
+        if (override == null) {
             localBookProgressOverrides.remove(key)
             return@withLock null
         }
-        entry.mutation
+        override
     }
 
-    private fun progressMatchesMutation(
+    internal fun progressMatchesMutation(
         mutation: BookProgressMutation,
         fetchedProgressPercent: Double?,
         fetchedCurrentTimeSeconds: Double?,
         fetchedDurationSeconds: Double?,
-        fetchedIsFinished: Boolean
+        fetchedIsFinished: Boolean,
+        progressEpsilon: Double = PROGRESS_MATCH_EPSILON,
+        timeEpsilonSeconds: Double = TIME_MATCH_EPSILON_SECONDS
     ): Boolean {
-        return mutation.isFinished == fetchedIsFinished &&
-            approxEquals(mutation.progressPercent, fetchedProgressPercent, PROGRESS_MATCH_EPSILON) &&
-            approxEquals(mutation.currentTimeSeconds, fetchedCurrentTimeSeconds, TIME_MATCH_EPSILON_SECONDS) &&
-            approxEquals(mutation.durationSeconds, fetchedDurationSeconds, TIME_MATCH_EPSILON_SECONDS)
+        return progressMatchesMutationInternal(
+            mutation = mutation,
+            fetchedProgressPercent = fetchedProgressPercent,
+            fetchedCurrentTimeSeconds = fetchedCurrentTimeSeconds,
+            fetchedDurationSeconds = fetchedDurationSeconds,
+            fetchedIsFinished = fetchedIsFinished,
+            progressEpsilon = progressEpsilon,
+            timeEpsilonSeconds = timeEpsilonSeconds
+        )
     }
 
     private fun approxEquals(left: Double?, right: Double?, epsilon: Double): Boolean {
-        if (left == null && right == null) return true
-        if (left == null || right == null) return false
-        return kotlin.math.abs(left - right) <= epsilon
+        return approxEqualsInternal(left, right, epsilon)
     }
 
     private fun AudiobookshelfNamedEntityDto.toModel(

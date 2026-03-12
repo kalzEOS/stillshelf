@@ -33,6 +33,17 @@ class SeriesDetailUiStateTest {
     }
 
     @Test
+    fun applyPersistedEntries_showsCachedContentImmediately() {
+        val entries = listOf(sampleEntry("book-1"))
+
+        val updated = SeriesDetailUiState(isLoading = true).applyPersistedEntries(entries)
+
+        assertFalse(updated.isLoading)
+        assertEquals(entries, updated.entries)
+        assertTrue(updated.hasLoadedOnce)
+    }
+
+    @Test
     fun applyRefreshSuccess_replacesStaleEntriesWithEmptyResult() {
         val initial = SeriesDetailUiState(
             isRefreshing = true,
@@ -49,6 +60,21 @@ class SeriesDetailUiStateTest {
         assertFalse(updated.isRefreshing)
         assertFalse(updated.isLoading)
         assertTrue(updated.hasLoadedOnce)
+    }
+
+    @Test
+    fun beginRefresh_keepsVisibleContentDuringUserRefresh() {
+        val initial = SeriesDetailUiState(entries = listOf(sampleEntry("book-1")), isLoading = false)
+
+        val updated = initial.beginRefresh(
+            hasLocalEntries = true,
+            silent = false,
+            isUserRefresh = true
+        )
+
+        assertFalse(updated.isLoading)
+        assertTrue(updated.isRefreshing)
+        assertEquals(initial.entries, updated.entries)
     }
 
     private fun sampleEntry(bookId: String): SeriesDetailEntry.BookItem {

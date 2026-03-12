@@ -200,6 +200,22 @@ internal fun SeriesDetailUiState.applyRefreshSuccess(
     )
 }
 
+internal fun SeriesDetailUiState.beginRefresh(
+    hasLocalEntries: Boolean,
+    silent: Boolean,
+    isUserRefresh: Boolean
+): SeriesDetailUiState {
+    return if (!silent || !hasLocalEntries) {
+        copy(
+            isLoading = !hasLocalEntries,
+            isRefreshing = (hasLocalEntries && !silent) || isUserRefresh,
+            errorMessage = null
+        )
+    } else {
+        this
+    }
+}
+
 private val FacetBackTitleSpacing = 12.dp
 private val FacetSeriesStackMinLayerExtent = 42.dp
 private val FacetSeriesStackStep = 5.dp
@@ -799,14 +815,12 @@ class SeriesDetailViewModel @Inject constructor(
         silent: Boolean = false
     ) {
         val hasLocalEntries = uiState.value.entries.isNotEmpty()
-        if (!silent || !hasLocalEntries) {
-            mutableUiState.update {
-                it.copy(
-                    isLoading = !hasLocalEntries,
-                    isRefreshing = (hasLocalEntries && !silent) || isUserRefresh,
-                    errorMessage = null
-                )
-            }
+        mutableUiState.update { state ->
+            state.beginRefresh(
+                hasLocalEntries = hasLocalEntries,
+                silent = silent,
+                isUserRefresh = isUserRefresh
+            )
         }
         viewModelScope.launch {
             val forceRefresh = policy == DetailRefreshPolicy.Force

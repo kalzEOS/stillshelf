@@ -12,11 +12,12 @@ import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.BookProgressAction
+import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.ui.common.isResetToStart
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
-import com.stillshelf.app.ui.common.applyResolvedPlaybackProgress
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
@@ -40,7 +41,8 @@ class HomeViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
     private val bookDownloadManager: BookDownloadManager,
-    private val playbackController: PlaybackController
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 15 * 60 * 1000L
@@ -241,16 +243,11 @@ class HomeViewModel @Inject constructor(
     fun markAsFinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId, finished = true)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkFinished)) {
                 is AppResult.Success -> {
-                    playbackController.applyResolvedPlaybackProgress(
-                        bookId = bookId,
-                        progress = result.value,
-                        isFinished = true
-                    )
                     removedListenAgainBookIds = removedListenAgainBookIds - bookId
                     applyBookFinishedState(bookId = bookId, finished = true)
-                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -261,14 +258,9 @@ class HomeViewModel @Inject constructor(
     fun markAsUnfinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkUnfinished)) {
                 is AppResult.Success -> {
-                    playbackController.applyResolvedPlaybackProgress(
-                        bookId = bookId,
-                        progress = result.value,
-                        isFinished = false
-                    )
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookFinishedState(bookId = bookId, finished = false)
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
@@ -281,22 +273,11 @@ class HomeViewModel @Inject constructor(
     fun resetBookProgress(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
-                    playbackController.applyResolvedPlaybackProgress(
-                        bookId = bookId,
-                        progress = result.value,
-                        isFinished = false
-                    )
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookResetState(bookId = bookId)
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
 
@@ -308,19 +289,8 @@ class HomeViewModel @Inject constructor(
     fun removeFromContinueListening(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
-                    playbackController.applyResolvedPlaybackProgress(
-                        bookId = bookId,
-                        progress = result.value,
-                        isFinished = false
-                    )
                     mutableUiState.update {
                         it.copy(
                             continueListening = it.continueListening.filterNot { item -> item.book.id == bookId },

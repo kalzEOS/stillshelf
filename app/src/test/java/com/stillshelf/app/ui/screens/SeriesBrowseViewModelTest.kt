@@ -11,6 +11,7 @@ import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.data.repo.SERVER_LIBRARY_PAGE_SIZE
 import com.stillshelf.app.data.repo.SessionRepository
 import java.io.File
 import java.lang.reflect.Proxy
@@ -91,6 +92,50 @@ class SeriesBrowseViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("Aesop's Fables"), viewModel.uiState.value.series.map { it.name })
+    }
+
+    @Test
+    fun init_scansPastLegacySeriesBookPageCap() = runTest(dispatcher) {
+        val parent = NamedEntitySummary(id = "parent", name = "Long Tail Series", subtitle = "1 books")
+        val lateMatch = testBook(
+            id = "book-101",
+            title = "Volume 101",
+            seriesName = "Long Tail Series",
+            seriesNames = listOf("Long Tail Series"),
+            seriesIds = listOf("parent")
+        )
+        val booksByPage = buildMap {
+            repeat(100) { page ->
+                put(
+                    page,
+                    List(SERVER_LIBRARY_PAGE_SIZE) { index ->
+                        testBook(
+                            id = "filler-$page-$index",
+                            title = "Filler $page-$index"
+                        )
+                    }
+                )
+            }
+            put(100, listOf(lateMatch))
+            put(101, emptyList())
+        }
+        val repository = testSessionRepository(
+            series = listOf(parent),
+            booksByPage = booksByPage,
+            seriesContentsById = emptyMap(),
+            bookDetailsById = emptyMap()
+        )
+        val sessionPreferences = testSessionPreferences(
+            backgroundDirectory = createTempDirectory(prefix = "series-browse-prefs").toFile()
+        )
+
+        val viewModel = SeriesBrowseViewModel(
+            sessionRepository = repository,
+            sessionPreferences = sessionPreferences
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("cover:book-101"), viewModel.uiState.value.series.single().coverUrls)
     }
 
     private fun testSessionPreferences(backgroundDirectory: File): SessionPreferences {

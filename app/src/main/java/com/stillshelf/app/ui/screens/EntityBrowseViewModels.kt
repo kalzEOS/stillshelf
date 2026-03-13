@@ -10,6 +10,7 @@ import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.data.repo.SERVER_LIBRARY_PAGE_SIZE
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -158,11 +159,6 @@ class SeriesBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
-    companion object {
-        private const val SERIES_BOOKS_PAGE_SIZE = 400
-        private const val SERIES_BOOKS_MAX_PAGES = 100
-    }
-
     private val mutableUiState = MutableStateFlow(SeriesBrowseUiState())
     val uiState: StateFlow<SeriesBrowseUiState> = mutableUiState.asStateFlow()
 
@@ -287,10 +283,10 @@ class SeriesBrowseViewModel @Inject constructor(
     private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): List<BookSummary> {
         val books = mutableListOf<BookSummary>()
         var page = 0
-        while (page < SERIES_BOOKS_MAX_PAGES) {
+        while (true) {
             when (
                 val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     forceRefresh = forceRefresh
                 )
@@ -299,7 +295,7 @@ class SeriesBrowseViewModel @Inject constructor(
                     val batch = result.value
                     if (batch.isEmpty()) break
                     books += batch
-                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
                     page += 1
                 }
 

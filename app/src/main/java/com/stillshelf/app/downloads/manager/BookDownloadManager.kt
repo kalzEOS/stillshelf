@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Environment
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
+import com.stillshelf.app.core.model.PlaybackSource
+import com.stillshelf.app.core.model.PlaybackTrack
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.core.util.AppResult
@@ -36,6 +38,14 @@ enum class DownloadStatus {
     Failed
 }
 
+data class DownloadTrackItem(
+    val index: Int,
+    val startOffsetSeconds: Double,
+    val durationSeconds: Double?,
+    val downloadId: Long? = null,
+    val localPath: String? = null
+)
+
 data class DownloadItem(
     val serverId: String,
     val libraryId: String,
@@ -48,6 +58,7 @@ data class DownloadItem(
     val progressPercent: Int,
     val downloadId: Long? = null,
     val localPath: String? = null,
+    val tracks: List<DownloadTrackItem> = emptyList(),
     val errorMessage: String? = null,
     val updatedAtMs: Long = System.currentTimeMillis()
 )
@@ -74,6 +85,138 @@ internal fun DownloadItem.matchesSelection(
     val normalizedLibraryId = libraryId?.trim().orEmpty()
     if (normalizedServerId.isBlank() || normalizedLibraryId.isBlank()) return false
     return this.serverId == normalizedServerId && this.libraryId == normalizedLibraryId
+}
+
+internal data class DownloadTrackRequest(
+    val index: Int,
+    val startOffsetSeconds: Double,
+    val durationSeconds: Double?,
+    val streamUrl: String
+)
+
+private enum class DownloadTrackRuntimeStatus {
+    Downloading,
+    Completed,
+    Failed
+}
+
+private data class DownloadTrackProgressSnapshot(
+    val track: DownloadTrackItem,
+    val status: DownloadTrackRuntimeStatus,
+    val progressPercent: Int,
+    val downloadedBytes: Long,
+    val totalBytes: Long,
+    val localPath: String?,
+    val errorMessage: String? = null
+)
+
+internal fun DownloadItem.resolvedTracks(): List<DownloadTrackItem> {
+    val normalizedTracks = tracks
+        .sortedBy { it.index }
+        .distinctBy { it.index }
+    if (normalizedTracks.isNotEmpty()) return normalizedTracks
+    return if (downloadId != null || !localPath.isNullOrBlank()) {
+        listOf(
+            DownloadTrackItem(
+                index = 0,
+                startOffsetSeconds = 0.0,
+                durationSeconds = durationSeconds,
+                downloadId = downloadId,
+                localPath = localPath
+            )
+        )
+    } else {
+        emptyList()
+    }
+}
+
+internal fun DownloadItem.toLocalPlaybackSource(book: BookSummary): PlaybackSource? {
+    val localTracks = resolvedTracks()
+        .mapNotNull { track ->
+            val localUri = track.localPath.toPlayableLocalUri() ?: return@mapNotNull null
+            PlaybackTrack(
+                startOffsetSeconds = track.startOffsetSeconds.coerceAtLeast(0.0),
+                durationSeconds = track.durationSeconds?.takeIf { it >= 0.0 },
+                streamUrl = localUri
+            )
+        }
+        .sortedBy { it.startOffsetSeconds }
+    if (localTracks.isEmpty()) return null
+    return PlaybackSource(
+        book = book,
+        streamUrl = localTracks.first().streamUrl,
+        tracks = localTracks
+    )
+}
+
+internal fun PlaybackSource.toDownloadTrackRequests(): List<DownloadTrackRequest> {
+    val normalizedTracks = tracks
+        .sortedBy { it.startOffsetSeconds }
+        .mapIndexedNotNull { index, track ->
+            val streamUrl = track.streamUrl.trim()
+            if (streamUrl.isBlank()) {
+                null
+            } else {
+                DownloadTrackRequest(
+                    index = index,
+                    startOffsetSeconds = track.startOffsetSeconds.coerceAtLeast(0.0),
+                    durationSeconds = track.durationSeconds?.takeIf { it >= 0.0 },
+                    streamUrl = streamUrl
+                )
+            }
+        }
+        .sortedBy { it.startOffsetSeconds }
+    if (normalizedTracks.isNotEmpty()) return normalizedTracks
+    val primaryStreamUrl = streamUrl.trim()
+    if (primaryStreamUrl.isBlank()) return emptyList()
+    return listOf(
+        DownloadTrackRequest(
+            index = 0,
+            startOffsetSeconds = 0.0,
+            durationSeconds = book.durationSeconds?.takeIf { it >= 0.0 },
+            streamUrl = primaryStreamUrl
+        )
+    )
+}
+
+private fun String?.toPlayableLocalUri(): String? {
+    val normalized = this?.trim().orEmpty()
+    if (normalized.isBlank()) return null
+    return when {
+        normalized.startsWith("content://") || normalized.startsWith("file://") -> normalized
+        else -> Uri.fromFile(File(normalized)).toString()
+    }
+}
+
+private fun DownloadItem.withResolvedTracks(
+    tracks: List<DownloadTrackItem>,
+    status: DownloadStatus = this.status,
+    progressPercent: Int = this.progressPercent,
+    errorMessage: String? = this.errorMessage,
+    updatedAtMs: Long = System.currentTimeMillis()
+): DownloadItem {
+    val normalizedTracks = tracks
+        .sortedBy { it.index }
+        .distinctBy { it.index }
+    val primaryTrack = normalizedTracks.firstOrNull()
+    return copy(
+        status = status,
+        progressPercent = progressPercent.coerceIn(0, 100),
+        downloadId = primaryTrack?.downloadId,
+        localPath = primaryTrack?.localPath,
+        tracks = normalizedTracks,
+        errorMessage = errorMessage,
+        updatedAtMs = updatedAtMs
+    )
+}
+
+private fun DownloadItem.hasAllLocalTracks(
+    localResourceExists: (String?) -> Boolean
+): Boolean {
+    val normalizedTracks = resolvedTracks()
+    return normalizedTracks.isNotEmpty() && normalizedTracks.all { track ->
+        localResourceExists(track.localPath)
+    }
 }
 
 data class DownloadToggleResult(
@@ -191,33 +334,50 @@ class BookDownloadManager @Inject constructor(
             return AppResult.Error(sourceResult.message)
         }
 
-        val streamUrl = (sourceResult as AppResult.Success).value.streamUrl
-        val split = splitAuthenticatedUrl(streamUrl)
-        val destinationName = buildDestinationFilename(
-            serverId = activeServerId,
-            libraryId = libraryId,
-            book = book
-        )
-        val request = DownloadManager.Request(Uri.parse(split.cleanUrl))
-            .setTitle(book.title)
-            .setDescription(book.authorName)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
-            .setVisibleInDownloadsUi(false)
-            .setDestinationInExternalFilesDir(
-                appContext,
-                Environment.DIRECTORY_PODCASTS,
-                destinationName
-            )
-        split.authToken
-            ?.takeIf { it.isNotBlank() }
-            ?.let { token ->
-                request.addRequestHeader("Authorization", authorizationHeaderValue(token))
-            }
+        val downloadTracks = (sourceResult as AppResult.Success).value.toDownloadTrackRequests()
+        if (downloadTracks.isEmpty()) {
+            return AppResult.Error("This book does not expose a downloadable audio stream.")
+        }
+        val startedDownloadIds = mutableListOf<Long>()
 
         return runCatching {
-            val downloadId = downloadManager.enqueue(request)
+            val enqueuedTracks = mutableListOf<DownloadTrackItem>()
+            downloadTracks.forEach { track ->
+                val split = splitAuthenticatedUrl(track.streamUrl)
+                val destinationName = buildDestinationFilename(
+                    serverId = activeServerId,
+                    libraryId = libraryId,
+                    book = book,
+                    trackIndex = track.index,
+                    trackCount = downloadTracks.size,
+                    sourceUrl = split.cleanUrl
+                )
+                val request = DownloadManager.Request(Uri.parse(split.cleanUrl))
+                    .setTitle(book.title)
+                    .setDescription(book.authorName)
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(true)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN)
+                    .setVisibleInDownloadsUi(false)
+                    .setDestinationInExternalFilesDir(
+                        appContext,
+                        Environment.DIRECTORY_PODCASTS,
+                        destinationName
+                    )
+                split.authToken
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { token ->
+                        request.addRequestHeader("Authorization", authorizationHeaderValue(token))
+                    }
+                val downloadId = downloadManager.enqueue(request)
+                startedDownloadIds += downloadId
+                enqueuedTracks += DownloadTrackItem(
+                    index = track.index,
+                    startOffsetSeconds = track.startOffsetSeconds,
+                    durationSeconds = track.durationSeconds,
+                    downloadId = downloadId
+                )
+            }
             upsertItem(
                 DownloadItem(
                     serverId = activeServerId,
@@ -228,9 +388,8 @@ class BookDownloadManager @Inject constructor(
                     coverUrl = book.coverUrl,
                     durationSeconds = book.durationSeconds,
                     status = DownloadStatus.Downloading,
-                    progressPercent = 0,
-                    downloadId = downloadId
-                )
+                    progressPercent = 0
+                ).withResolvedTracks(enqueuedTracks, status = DownloadStatus.Downloading)
             )
             DownloadToggleResult(
                 nowDownloaded = true,
@@ -239,14 +398,17 @@ class BookDownloadManager @Inject constructor(
         }.fold(
             onSuccess = { AppResult.Success(it) },
             onFailure = {
-            val message = it.message ?: "Unable to start download."
-            upsertItem(
-                DownloadItem(
-                    serverId = activeServerId,
-                    libraryId = libraryId,
-                    bookId = bookId,
-                    title = book.title,
-                    authorName = book.authorName,
+                startedDownloadIds.forEach { downloadId ->
+                    runCatching { downloadManager.remove(downloadId) }
+                }
+                val message = it.message ?: "Unable to start download."
+                upsertItem(
+                    DownloadItem(
+                        serverId = activeServerId,
+                        libraryId = libraryId,
+                        bookId = bookId,
+                        title = book.title,
+                        authorName = book.authorName,
                         coverUrl = book.coverUrl,
                         durationSeconds = book.durationSeconds,
                         status = DownloadStatus.Failed,
@@ -279,11 +441,13 @@ class BookDownloadManager @Inject constructor(
         val item = items.value.firstOrNull {
             it.targetKey() == buildDownloadTargetKey(serverId, libraryId, bookId)
         } ?: return
-        val localRef = item.localPath ?: queryLocalPathByDownloadId(item.downloadId)
-        item.downloadId?.let { id ->
+        val localRefs = item.resolvedTracks().map { track ->
+            track.localPath ?: queryLocalPathByDownloadId(track.downloadId)
+        }
+        item.resolvedTracks().mapNotNull { it.downloadId }.distinct().forEach { id ->
             runCatching { downloadManager.remove(id) }
         }
-        deleteLocalCopy(localRef)
+        localRefs.distinct().forEach(::deleteLocalCopy)
         deleteItem(item.targetKey())
     }
 
@@ -299,7 +463,7 @@ class BookDownloadManager @Inject constructor(
                 item.libraryId == activeLibraryId &&
                 item.bookId == normalized &&
                 item.status == DownloadStatus.Completed &&
-                localResourceExists(item.localPath)
+                item.hasAllLocalTracks(::localResourceExists)
         }
     }
 
@@ -312,53 +476,33 @@ class BookDownloadManager @Inject constructor(
 
         val updates = mutableListOf<DownloadItem>()
         active.forEach { item ->
-            val id = item.downloadId ?: return@forEach
-            val query = DownloadManager.Query().setFilterById(id)
-            val cursor = runCatching { downloadManager.query(query) }.getOrNull() ?: return@forEach
-            cursor.use { c ->
-                if (!c.moveToFirst()) {
-                    updates += item.copy(
-                        status = DownloadStatus.Failed,
-                        errorMessage = "Download was removed.",
-                        updatedAtMs = System.currentTimeMillis()
-                    )
-                    return@use
-                }
-                val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                val downloaded = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                val localUri = c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
-                val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-                val progress = if (total > 0L) {
-                    ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
-                } else {
-                    item.progressPercent
-                }
-                val next = when (status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> item.copy(
-                        status = DownloadStatus.Completed,
-                        progressPercent = 100,
-                        localPath = resolveLocalPath(localUri),
-                        errorMessage = null,
-                        updatedAtMs = System.currentTimeMillis()
-                    )
-                    DownloadManager.STATUS_FAILED -> item.copy(
-                        status = DownloadStatus.Failed,
-                        errorMessage = "Download failed ($reason)",
-                        updatedAtMs = System.currentTimeMillis()
-                    )
-                    DownloadManager.STATUS_PAUSED,
-                    DownloadManager.STATUS_PENDING,
-                    DownloadManager.STATUS_RUNNING -> item.copy(
-                        status = DownloadStatus.Downloading,
-                        progressPercent = progress,
-                        updatedAtMs = System.currentTimeMillis()
-                    )
-                    else -> item
-                }
-                if (next != item) {
-                    updates += next
-                }
+            val trackSnapshots = item.resolvedTracks().map { track ->
+                queryTrackProgress(track, fallbackProgressPercent = item.progressPercent)
+            }
+            if (trackSnapshots.isEmpty()) return@forEach
+            val downloadedBytes = trackSnapshots.sumOf { it.downloadedBytes.coerceAtLeast(0L) }
+            val totalBytes = trackSnapshots.sumOf { it.totalBytes.coerceAtLeast(0L) }
+            val aggregateProgress = if (totalBytes > 0L) {
+                ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
+            } else {
+                (trackSnapshots.sumOf { it.progressPercent } / trackSnapshots.size).coerceIn(0, 100)
+            }
+            val nextStatus = when {
+                trackSnapshots.any { it.status == DownloadTrackRuntimeStatus.Failed } -> DownloadStatus.Failed
+                trackSnapshots.all { it.status == DownloadTrackRuntimeStatus.Completed } -> DownloadStatus.Completed
+                else -> DownloadStatus.Downloading
+            }
+            val nextError = trackSnapshots.firstOrNull { it.errorMessage != null }?.errorMessage
+            val next = item.withResolvedTracks(
+                tracks = trackSnapshots.map { snapshot ->
+                    snapshot.track.copy(localPath = snapshot.localPath ?: snapshot.track.localPath)
+                },
+                status = nextStatus,
+                progressPercent = if (nextStatus == DownloadStatus.Completed) 100 else aggregateProgress,
+                errorMessage = if (nextStatus == DownloadStatus.Downloading) null else nextError
+            )
+            if (next != item) {
+                updates += next
             }
         }
 
@@ -374,6 +518,111 @@ class BookDownloadManager @Inject constructor(
             Uri.parse(value).path
         } else {
             value
+        }
+    }
+
+    private fun queryTrackProgress(
+        track: DownloadTrackItem,
+        fallbackProgressPercent: Int
+    ): DownloadTrackProgressSnapshot {
+        val downloadId = track.downloadId
+        if (downloadId == null || downloadId <= 0L) {
+            return if (localResourceExists(track.localPath)) {
+                DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Completed,
+                    progressPercent = 100,
+                    downloadedBytes = 0L,
+                    totalBytes = 0L,
+                    localPath = track.localPath
+                )
+            } else {
+                DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Failed,
+                    progressPercent = 0,
+                    downloadedBytes = 0L,
+                    totalBytes = 0L,
+                    localPath = track.localPath,
+                    errorMessage = "Download was removed."
+                )
+            }
+        }
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        val cursor = runCatching { downloadManager.query(query) }.getOrNull()
+        if (cursor == null) {
+            return DownloadTrackProgressSnapshot(
+                track = track,
+                status = DownloadTrackRuntimeStatus.Failed,
+                progressPercent = 0,
+                downloadedBytes = 0L,
+                totalBytes = 0L,
+                localPath = track.localPath,
+                errorMessage = "Download was removed."
+            )
+        }
+        cursor.use { c ->
+            if (!c.moveToFirst()) {
+                return DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Failed,
+                    progressPercent = 0,
+                    downloadedBytes = 0L,
+                    totalBytes = 0L,
+                    localPath = track.localPath,
+                    errorMessage = "Download was removed."
+                )
+            }
+            val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val downloaded = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            val localUri = c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
+            val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+            val progress = if (total > 0L) {
+                ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+            } else {
+                fallbackProgressPercent.coerceIn(0, 100)
+            }
+            return when (status) {
+                DownloadManager.STATUS_SUCCESSFUL -> DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Completed,
+                    progressPercent = 100,
+                    downloadedBytes = downloaded.coerceAtLeast(0L),
+                    totalBytes = total.coerceAtLeast(0L),
+                    localPath = resolveLocalPath(localUri) ?: track.localPath
+                )
+
+                DownloadManager.STATUS_FAILED -> DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Failed,
+                    progressPercent = progress,
+                    downloadedBytes = downloaded.coerceAtLeast(0L),
+                    totalBytes = total.coerceAtLeast(0L),
+                    localPath = track.localPath,
+                    errorMessage = "Download failed ($reason)"
+                )
+
+                DownloadManager.STATUS_PAUSED,
+                DownloadManager.STATUS_PENDING,
+                DownloadManager.STATUS_RUNNING -> DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Downloading,
+                    progressPercent = progress,
+                    downloadedBytes = downloaded.coerceAtLeast(0L),
+                    totalBytes = total.coerceAtLeast(0L),
+                    localPath = track.localPath
+                )
+
+                else -> DownloadTrackProgressSnapshot(
+                    track = track,
+                    status = DownloadTrackRuntimeStatus.Downloading,
+                    progressPercent = progress,
+                    downloadedBytes = downloaded.coerceAtLeast(0L),
+                    totalBytes = total.coerceAtLeast(0L),
+                    localPath = track.localPath
+                )
+            }
         }
     }
 
@@ -466,7 +715,7 @@ class BookDownloadManager @Inject constructor(
         mutex.withLock {
             val sanitized = mutableItems.value.filterNot { item ->
                 item.status == DownloadStatus.Completed &&
-                    !localResourceExists(item.localPath)
+                    !item.hasAllLocalTracks(::localResourceExists)
             }
             if (sanitized != mutableItems.value) {
                 persistItemsLocked(sanitized)
@@ -479,21 +728,33 @@ class BookDownloadManager @Inject constructor(
     private fun buildDestinationFilename(
         serverId: String,
         libraryId: String,
-        book: BookSummary
+        book: BookSummary,
+        trackIndex: Int,
+        trackCount: Int,
+        sourceUrl: String
     ): String {
         val safeTitle = book.title
             .replace(Regex("[^A-Za-z0-9._ -]"), "_")
             .replace(Regex("\\s+"), " ")
             .trim()
             .take(80)
-        return "${safeTitle.ifBlank { "book" }}-${serverId.take(6)}-${libraryId.take(6)}-${book.id.take(8)}.m4b"
+        val parsedPath = runCatching { Uri.parse(sourceUrl).lastPathSegment.orEmpty() }.getOrDefault("")
+        val extension = parsedPath.substringAfterLast('.', "").trim().lowercase()
+            .takeIf { it.matches(Regex("[a-z0-9]{1,8}")) }
+            ?: "mp3"
+        val trackSuffix = if (trackCount > 1) {
+            "-part${(trackIndex + 1).toString().padStart(3, '0')}"
+        } else {
+            ""
+        }
+        return "${safeTitle.ifBlank { "book" }}-${serverId.take(6)}-${libraryId.take(6)}-${book.id.take(8)}$trackSuffix.$extension"
     }
 
     private fun syncDownloadedIds(items: List<DownloadItem>) {
         scope.launch {
             val ids = items
                 .filter { it.status == DownloadStatus.Completed }
-                .filter { item -> localResourceExists(item.localPath) }
+                .filter { item -> item.hasAllLocalTracks(::localResourceExists) }
                 .map { it.targetKey() }
                 .toSet()
             sessionPreferences.setDownloadedBookIds(ids)

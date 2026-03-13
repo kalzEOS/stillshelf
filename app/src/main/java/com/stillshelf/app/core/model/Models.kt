@@ -144,6 +144,11 @@ data class BookProgressMutation(
     val isFinished: Boolean
 )
 
+data class RealtimeInvalidation(
+    val serverId: String,
+    val receivedAtMs: Long = System.currentTimeMillis()
+)
+
 data class SessionState(
     val activeServerId: String?,
     val activeLibraryId: String?,

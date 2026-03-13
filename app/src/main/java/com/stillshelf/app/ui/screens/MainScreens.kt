@@ -2527,12 +2527,8 @@ fun BookmarksBrowseScreen(
     )
 
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -2851,12 +2847,8 @@ fun CollectionsBrowseScreen(
         if (!uiState.isLoading) manualRefreshInProgress = false
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -3077,6 +3069,9 @@ fun CollectionsBrowseScreen(
                                 MaterialTheme.colorScheme.error
                             }
                         )
+                        TextButton(onClick = viewModel::refreshLibrary) {
+                            Text(if (uiState.errorMessage == null) "Refresh" else "Retry")
+                        }
                     }
                 }
             }
@@ -3181,12 +3176,8 @@ fun PlaylistsBrowseScreen(
         if (!uiState.isLoading) manualRefreshInProgress = false
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -3419,6 +3410,9 @@ fun PlaylistsBrowseScreen(
                             createDialogVisible = true
                         }) {
                             Text("Create Playlist")
+                        }
+                        TextButton(onClick = viewModel::refreshLibrary) {
+                            Text(if (uiState.errorMessage == null) "Refresh" else "Retry")
                         }
                     }
                 }
@@ -6004,7 +5998,7 @@ fun BookDetailScreen(
         collectionPickerViewModel.clearMessages()
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             viewModel.onScreenStarted()
         }
     }
@@ -6781,13 +6775,9 @@ fun PlayerScreen(
     } else {
         "Download"
     }
-    LaunchedEffect(lifecycleOwner, bookId) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshBookMetadata()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshBookMetadata()
-            }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
     val durationSeconds = when {

@@ -22,4 +22,9 @@ class DownloadProgressPoller(
             }
         }
     }
+
+    fun stop() {
+        pollingJob?.cancel()
+        pollingJob = null
+    }
 }

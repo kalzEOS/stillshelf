@@ -110,7 +110,7 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
-        private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 10_000L
+        private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
         private const val BACKGROUND_SYNC_MIN_INTERVAL_MS = 2_000L

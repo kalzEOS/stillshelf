@@ -26,6 +26,7 @@ import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.PlaybackTrack
+import com.stillshelf.app.core.model.RealtimeInvalidation
 import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.datastore.SecureTokenStorage
@@ -44,6 +45,7 @@ import com.stillshelf.app.data.api.AudiobookshelfBookDetailDto
 import com.stillshelf.app.data.api.AudiobookshelfBookmarkDto
 import com.stillshelf.app.data.api.AudiobookshelfNamedEntityDto
 import com.stillshelf.app.data.mapper.toModel
+import com.stillshelf.app.data.realtime.AudiobookshelfRealtimeClient
 import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
@@ -152,7 +154,8 @@ class SessionRepositoryImpl @Inject constructor(
     private val detailCacheDao: DetailCacheDao,
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
-    private val audiobookshelfApi: AudiobookshelfApi
+    private val audiobookshelfApi: AudiobookshelfApi,
+    private val realtimeClient: AudiobookshelfRealtimeClient
 ) : SessionRepository {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
@@ -211,6 +214,8 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     override fun observeBookProgressMutations(): Flow<BookProgressMutation> = mutableBookProgressMutations.asSharedFlow()
+
+    override fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation> = realtimeClient.invalidations
 
     override fun observeServers(): Flow<List<Server>> = serverDao.observeServers().map { servers ->
         servers.map { it.toModel() }

@@ -269,7 +269,7 @@ class BookDownloadManager @Inject constructor(
         scope.launch {
             sanitizeCompletedItems()
         }
-        progressPoller.start()
+        syncProgressPolling(mutableItems.value)
         syncDownloadedIds(mutableItems.value)
     }
 
@@ -708,6 +708,7 @@ class BookDownloadManager @Inject constructor(
     private suspend fun persistItemsLocked(items: List<DownloadItem>) {
         mutableItems.value = items
         downloadStorage.persistItems(items)
+        syncProgressPolling(items)
         syncDownloadedIds(items)
     }
 
@@ -758,6 +759,17 @@ class BookDownloadManager @Inject constructor(
                 .map { it.targetKey() }
                 .toSet()
             sessionPreferences.setDownloadedBookIds(ids)
+        }
+    }
+
+    private fun syncProgressPolling(items: List<DownloadItem>) {
+        val hasActiveDownloads = items.any { item ->
+            item.status == DownloadStatus.Queued || item.status == DownloadStatus.Downloading
+        }
+        if (hasActiveDownloads) {
+            progressPoller.start()
+        } else {
+            progressPoller.stop()
         }
     }
 }

@@ -21,13 +21,27 @@ class SeriesDetailUiStateTest {
     fun applyPersistedEntries_clearsEntriesAfterLoadedEmptyEmission() {
         val initial = SeriesDetailUiState(
             isLoading = false,
-            entries = listOf(sampleEntry("book-1")),
             hasLoadedOnce = true
         )
 
         val updated = initial.applyPersistedEntries(emptyList())
 
         assertTrue(updated.entries.isEmpty())
+        assertFalse(updated.isLoading)
+        assertTrue(updated.hasLoadedOnce)
+    }
+
+    @Test
+    fun applyPersistedEntries_keepsVisibleEntriesWhenObserverEmitsEmpty() {
+        val initial = SeriesDetailUiState(
+            isLoading = false,
+            entries = listOf(sampleEntry("book-1")),
+            hasLoadedOnce = true
+        )
+
+        val updated = initial.applyPersistedEntries(emptyList())
+
+        assertEquals(initial.entries, updated.entries)
         assertFalse(updated.isLoading)
         assertTrue(updated.hasLoadedOnce)
     }

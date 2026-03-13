@@ -100,6 +100,7 @@ import com.stillshelf.app.core.util.hasStartedProgress
 import com.stillshelf.app.core.util.remainingTimeLabel
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.data.repo.DetailRefreshPolicy
+import com.stillshelf.app.data.repo.SERVER_LIBRARY_PAGE_SIZE
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.domain.usecase.BookProgressAction
 import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
@@ -182,6 +183,11 @@ internal fun SeriesDetailUiState.applyPersistedEntries(
         entries.isNotEmpty() -> copy(
             isLoading = false,
             entries = entries,
+            errorMessage = null,
+            hasLoadedOnce = true
+        )
+        this.entries.isNotEmpty() -> copy(
+            isLoading = false,
             errorMessage = null,
             hasLoadedOnce = true
         )
@@ -580,11 +586,6 @@ class SeriesDetailViewModel @Inject constructor(
     private val playbackController: PlaybackController,
     private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
-    companion object {
-        private const val SERIES_BOOKS_PAGE_SIZE = 400
-        private const val SERIES_BOOKS_MAX_PAGES = 100
-    }
-
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val seriesId = savedStateHandle.get<String>(DetailRoute.SERIES_ID_ARG)?.trim()?.takeIf { it.isNotBlank() }
     private val mutableUiState = MutableStateFlow(SeriesDetailUiState(title = seriesName))
@@ -847,9 +848,16 @@ class SeriesDetailViewModel @Inject constructor(
 
             when (result) {
                 is AppResult.Success -> {
-                    if (result.value.entries.isEmpty() && !forceRefresh) {
+                    if (result.value.entries.isEmpty() && !forceRefresh && !hasLocalEntries) {
                         refresh(policy = DetailRefreshPolicy.Force)
                         return@launch
+                    }
+                    if (result.value.entries.isEmpty() && resolvedSeriesId != null) {
+                        sessionRepository.cacheSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = false,
+                            entries = emptyList()
+                        )
                     }
                     mutableUiState.update { state ->
                         state.applyRefreshSuccess(
@@ -1224,10 +1232,10 @@ class SeriesDetailViewModel @Inject constructor(
     private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): AppResult<List<BookSummary>> {
         val books = mutableListOf<BookSummary>()
         var page = 0
-        while (page < SERIES_BOOKS_MAX_PAGES) {
+        while (true) {
             when (
                 val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     forceRefresh = forceRefresh
                 )
@@ -1236,7 +1244,7 @@ class SeriesDetailViewModel @Inject constructor(
                     val batch = result.value
                     if (batch.isEmpty()) break
                     books += batch
-                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
                     page += 1
                 }
 

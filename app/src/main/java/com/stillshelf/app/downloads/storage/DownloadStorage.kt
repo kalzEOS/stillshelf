@@ -3,6 +3,7 @@ package com.stillshelf.app.downloads.storage
 import android.content.Context
 import com.stillshelf.app.downloads.manager.DownloadItem
 import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.downloads.manager.DownloadTrackItem
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,6 +46,25 @@ class DownloadStorage @Inject constructor(
                             progressPercent = node.optInt("progressPercent", 0).coerceIn(0, 100),
                             downloadId = node.optLong("downloadId").takeIf { it > 0L },
                             localPath = node.optString("localPath").ifBlank { null },
+                            tracks = buildList {
+                                val tracksArray = node.optJSONArray("tracks") ?: JSONArray()
+                                for (trackIndex in 0 until tracksArray.length()) {
+                                    val trackNode = tracksArray.optJSONObject(trackIndex) ?: continue
+                                    add(
+                                        DownloadTrackItem(
+                                            index = trackNode.optInt("index", trackIndex).coerceAtLeast(0),
+                                            startOffsetSeconds = trackNode.optDouble("startOffsetSeconds")
+                                                .takeIf { !it.isNaN() }
+                                                ?.coerceAtLeast(0.0)
+                                                ?: 0.0,
+                                            durationSeconds = trackNode.optDouble("durationSeconds")
+                                                .takeIf { !it.isNaN() && it >= 0.0 },
+                                            downloadId = trackNode.optLong("downloadId").takeIf { it > 0L },
+                                            localPath = trackNode.optString("localPath").ifBlank { null }
+                                        )
+                                    )
+                                }
+                            },
                             errorMessage = node.optString("errorMessage").ifBlank { null },
                             updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis())
                         )
@@ -70,6 +90,21 @@ class DownloadStorage @Inject constructor(
                         .put("progressPercent", item.progressPercent)
                         .put("downloadId", item.downloadId)
                         .put("localPath", item.localPath)
+                        .put(
+                            "tracks",
+                            JSONArray().apply {
+                                item.tracks.forEach { track ->
+                                    put(
+                                        JSONObject()
+                                            .put("index", track.index)
+                                            .put("startOffsetSeconds", track.startOffsetSeconds)
+                                            .put("durationSeconds", track.durationSeconds)
+                                            .put("downloadId", track.downloadId)
+                                            .put("localPath", track.localPath)
+                                    )
+                                }
+                            }
+                        )
                         .put("errorMessage", item.errorMessage)
                         .put("updatedAtMs", item.updatedAtMs)
                 )

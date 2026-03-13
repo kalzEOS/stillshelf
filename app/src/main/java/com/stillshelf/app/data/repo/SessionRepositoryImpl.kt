@@ -158,8 +158,6 @@ class SessionRepositoryImpl @Inject constructor(
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
         private const val CONTENT_CACHE_MAX_AGE_MS: Long = 20 * 60 * 1000L
         private const val DETAIL_CACHE_MAX_AGE_MS: Long = 30 * 60 * 1000L
-        private const val FULL_LIBRARY_PAGE_SIZE: Int = 500
-        private const val MAX_FULL_LIBRARY_PAGES: Int = 1_000
         private const val LOCAL_PROGRESS_OVERRIDE_MAX_AGE_MS: Long = 60 * 1000L
         private const val PROGRESS_MATCH_EPSILON: Double = 0.005
         private const val TIME_MATCH_EPSILON_SECONDS: Double = 1.0
@@ -961,7 +959,7 @@ class SessionRepositoryImpl @Inject constructor(
         val normalizedSeriesKey = normalizeSeriesKey(normalizedSeriesName)
         val fetchedSeries = when (
             val result = fetchSeriesForActiveLibrary(
-                limit = FULL_LIBRARY_PAGE_SIZE,
+                limit = SERVER_LIBRARY_PAGE_SIZE,
                 page = 0,
                 forceRefresh = false
             )
@@ -1073,8 +1071,12 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
-        val rawEntries = entries.filterIsInstance<SeriesDetailEntry.BookItem>()
-        if (rawEntries.isEmpty()) return AppResult.Success(Unit)
+        val rawEntries = if (entries.isEmpty()) {
+            emptyList()
+        } else {
+            entries.filterIsInstance<SeriesDetailEntry.BookItem>()
+        }
+        if (entries.isNotEmpty() && rawEntries.isEmpty()) return AppResult.Success(Unit)
         return try {
             persistSeriesContentsSnapshot(
                 serverId = connection.server.id,
@@ -1319,12 +1321,12 @@ class SessionRepositoryImpl @Inject constructor(
 
         val items = mutableListOf<AudiobookshelfLibraryItemDto>()
         var page = 0
-        while (page < MAX_FULL_LIBRARY_PAGES) {
+        while (true) {
             val itemsResult = audiobookshelfApi.getLibraryItems(
                 baseUrl = connection.server.baseUrl,
                 authToken = connection.token,
                 libraryId = library.id,
-                limit = FULL_LIBRARY_PAGE_SIZE,
+                limit = SERVER_LIBRARY_PAGE_SIZE,
                 page = page,
                 sortBy = "media.metadata.title",
                 desc = false
@@ -1346,7 +1348,7 @@ class SessionRepositoryImpl @Inject constructor(
                 break
             }
             items += batch
-            if (batch.size < FULL_LIBRARY_PAGE_SIZE) {
+            if (batch.size < SERVER_LIBRARY_PAGE_SIZE) {
                 break
             }
             page += 1
@@ -2011,7 +2013,14 @@ class SessionRepositoryImpl @Inject constructor(
         }
 
         val detail = detailResult.getOrThrow()
-        val streamPath = detail.streamPath
+        val playbackTracks = buildPlaybackTracks(detail) { streamPath ->
+            audiobookshelfApi.buildPlaybackUrl(
+                baseUrl = connection.server.baseUrl,
+                streamPath = streamPath,
+                authToken = connection.token
+            )
+        }
+        val primaryStreamUrl = playbackTracks.firstOrNull()?.streamUrl
             ?: return AppResult.Error("This book does not expose a playable audio stream.")
 
         return AppResult.Success(
@@ -2020,22 +2029,8 @@ class SessionRepositoryImpl @Inject constructor(
                     baseUrl = connection.server.baseUrl,
                     authToken = connection.token
                 ),
-                streamUrl = audiobookshelfApi.buildPlaybackUrl(
-                    baseUrl = connection.server.baseUrl,
-                    streamPath = streamPath,
-                    authToken = connection.token
-                ),
-                tracks = detail.audioTracks.map { track ->
-                    PlaybackTrack(
-                        startOffsetSeconds = track.startOffsetSeconds.coerceAtLeast(0.0),
-                        durationSeconds = track.durationSeconds?.takeIf { it >= 0.0 },
-                        streamUrl = audiobookshelfApi.buildPlaybackUrl(
-                            baseUrl = connection.server.baseUrl,
-                            streamPath = track.contentUrl,
-                            authToken = connection.token
-                        )
-                    )
-                }
+                streamUrl = primaryStreamUrl,
+                tracks = playbackTracks
             )
         )
     }
@@ -3299,12 +3294,12 @@ class SessionRepositoryImpl @Inject constructor(
         return try {
             val items = mutableListOf<AudiobookshelfLibraryItemDto>()
             var page = 0
-            while (page < MAX_FULL_LIBRARY_PAGES) {
+            while (true) {
                 val itemsResult = audiobookshelfApi.getLibraryItems(
                     baseUrl = connection.server.baseUrl,
                     authToken = connection.token,
                     libraryId = libraryId,
-                    limit = FULL_LIBRARY_PAGE_SIZE,
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     filter = "series.$seriesId",
                     collapseSeries = false
@@ -3320,7 +3315,7 @@ class SessionRepositoryImpl @Inject constructor(
                     .filter { it.libraryId == libraryId }
                 if (batch.isEmpty()) break
                 items += batch
-                if (batch.size < FULL_LIBRARY_PAGE_SIZE) break
+                if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
                 page += 1
             }
 
@@ -3341,6 +3336,17 @@ class SessionRepositoryImpl @Inject constructor(
                     mediaProgress = mediaProgressByItemId[item.id],
                     serverId = connection.server.id
                 )
+            }
+
+            if (entries.isEmpty()) {
+                val existingEntries = readPersistedRawSeriesContents(
+                    serverId = connection.server.id,
+                    libraryId = libraryId,
+                    seriesId = seriesId
+                )
+                if (!existingEntries.isNullOrEmpty()) {
+                    return AppResult.Success(Unit)
+                }
             }
 
             persistSeriesContentsSnapshot(
@@ -3469,6 +3475,7 @@ class SessionRepositoryImpl @Inject constructor(
                 )
             }
             detailCacheDao.deleteSeriesMemberships(serverId, libraryId, seriesId, collapseSubseries = false)
+            detailCacheDao.deleteSeriesMemberships(serverId, libraryId, seriesId, collapseSubseries = true)
             if (entries.isNotEmpty()) {
                 detailCacheDao.upsertSeriesMemberships(
                     entries.mapIndexed { index, entry ->

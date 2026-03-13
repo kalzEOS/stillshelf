@@ -13,6 +13,7 @@ import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
+import com.stillshelf.app.core.model.RealtimeInvalidation
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
@@ -27,6 +28,7 @@ enum class LoginPersistenceMode {
 interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
     fun observeBookProgressMutations(): Flow<BookProgressMutation>
+    fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation>
     fun observeServers(): Flow<List<Server>>
     suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
     suspend fun deleteServer(serverId: String): AppResult<Unit>

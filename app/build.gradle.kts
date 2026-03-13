@@ -23,8 +23,8 @@ android {
         applicationId = "com.stillshelf.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.1.9-beta.4"
+        versionCode = 31
+        versionName = "0.1.9-beta.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -112,6 +112,9 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.google.material)
     implementation(libs.okhttp)
+    implementation(libs.socket.io.client) {
+        exclude(group = "org.json", module = "json")
+    }
     implementation(libs.coil.compose)
     implementation(libs.androidx.media)
 

@@ -169,10 +169,19 @@ class PlayerViewModel @Inject constructor(
         playbackController.saveProgressSnapshot()
     }
 
-    fun refreshBookMetadata() {
+    fun onScreenStarted() {
+        refreshBookMetadata(forceRefresh = false)
+    }
+
+    private fun refreshBookMetadata(forceRefresh: Boolean) {
         val activeBookId = uiState.value.book?.id ?: previewItem.value?.book?.id
         if (activeBookId.isNullOrBlank()) return
-        loadBookMetadata(bookId = activeBookId, forceRefresh = true, silent = true)
+        loadBookMetadata(
+            bookId = activeBookId,
+            forceRefresh = forceRefresh,
+            silent = true,
+            allowReloadCurrent = true
+        )
     }
 
     fun seekToPositionMs(positionMs: Long, commit: Boolean) {
@@ -704,9 +713,14 @@ class PlayerViewModel @Inject constructor(
         )
     }
 
-    private fun loadBookMetadata(bookId: String, forceRefresh: Boolean = false, silent: Boolean = false) {
+    private fun loadBookMetadata(
+        bookId: String,
+        forceRefresh: Boolean = false,
+        silent: Boolean = false,
+        allowReloadCurrent: Boolean = false
+    ) {
         if (bookId.isBlank()) return
-        if (!forceRefresh && loadedBookId == bookId) return
+        if (!forceRefresh && !allowReloadCurrent && loadedBookId == bookId) return
         loadedBookId = bookId
         viewModelScope.launch {
             when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {

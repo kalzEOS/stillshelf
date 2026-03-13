@@ -439,12 +439,16 @@ class CollectionsBrowseViewModel @Inject constructor(
     }
 
     fun refreshSilent() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearCollections()
         refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun createCollection(name: String) {
@@ -506,6 +510,7 @@ class CollectionsBrowseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.fetchCollectionsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val shouldReloadAllCoverStacks = reloadAllCoverStacks || forceRefresh
                     val previousState = uiState.value
                     val filtered = result.value.filterNot { isStillShelfProbeCollection(it.name) }
                     val visibleIds = filtered.map { it.id }.toSet()
@@ -518,7 +523,7 @@ class CollectionsBrowseViewModel @Inject constructor(
                     val collectionsToReload = filtered.filter { collection ->
                         val previous = previousById[collection.id]
                         val hasCoverStack = mergedStacks.containsKey(collection.id)
-                        reloadAllCoverStacks ||
+                        shouldReloadAllCoverStacks ||
                             !hasCoverStack ||
                             (previous != null && previous.subtitle != collection.subtitle)
                     }
@@ -619,12 +624,16 @@ class PlaylistsBrowseViewModel @Inject constructor(
     }
 
     fun refreshSilent() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearPlaylists()
         refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun createPlaylist(name: String) {
@@ -686,6 +695,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.fetchPlaylistsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val shouldReloadAllCoverStacks = reloadAllCoverStacks || forceRefresh
                     val previousState = uiState.value
                     val visibleIds = result.value.map { it.id }.toSet()
                     val cachedStacks = EntityCoverStackMemoryCache.playlistsForIds(visibleIds)
@@ -697,7 +707,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
                     val playlistsToReload = result.value.filter { playlist ->
                         val previous = previousById[playlist.id]
                         val hasCoverStack = mergedStacks.containsKey(playlist.id)
-                        reloadAllCoverStacks ||
+                        shouldReloadAllCoverStacks ||
                             !hasCoverStack ||
                             (previous != null && previous.subtitle != playlist.subtitle)
                     }
@@ -799,6 +809,10 @@ class BookmarksBrowseViewModel @Inject constructor(
 
     fun refreshSilent() {
         refresh(forceRefresh = false, silent = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     private fun refresh(forceRefresh: Boolean, silent: Boolean) {

@@ -337,7 +337,7 @@ class HomeViewModel @Inject constructor(
         homeScreenVisible.value = isVisible
         if (isVisible) {
             viewModelScope.launch {
-                refreshIfCacheMissing(showLoading = false)
+                refreshForVisibleHomeEntry()
             }
         }
     }
@@ -438,7 +438,8 @@ class HomeViewModel @Inject constructor(
                     SeriesStackSummary(
                         seriesName = cleanSeriesName(lead.seriesName.orEmpty()),
                         leadBook = lead,
-                        count = books.size
+                        count = books.size,
+                        coverUrls = books.mapNotNull { it.coverUrl }.take(3)
                     )
                 }
             }
@@ -518,15 +519,13 @@ class HomeViewModel @Inject constructor(
         return source.filterNot { removedListenAgainBookIds.contains(it.id) }
     }
 
-    private suspend fun refreshIfCacheMissing(showLoading: Boolean) {
+    private suspend fun refreshForVisibleHomeEntry() {
         if (homeVisibilityRefreshInFlight) return
         homeVisibilityRefreshInFlight = true
         try {
             val activeLibraryId = activeLibraryIdState.value
             if (activeLibraryId.isNullOrBlank()) return
-            val cached = sessionRepository.fetchCachedHomeFeed(maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS)
-            if (cached is AppResult.Success && cached.value != null) return
-            refreshNetwork(showLoading = showLoading)
+            refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
         } finally {
             homeVisibilityRefreshInFlight = false
         }

@@ -38,6 +38,7 @@ data class AudiobookshelfLibraryItemDto(
     val title: String,
     val authorName: String,
     val narratorName: String?,
+    val narratorNames: List<String>,
     val durationSeconds: Double?,
     val seriesName: String?,
     val seriesNames: List<String>,
@@ -108,6 +109,7 @@ data class AudiobookshelfBookDetailDto(
     val title: String,
     val authorName: String,
     val narratorName: String?,
+    val narratorNames: List<String>,
     val durationSeconds: Double?,
     val description: String?,
     val publishedYear: String?,
@@ -2545,6 +2547,11 @@ class AudiobookshelfApi @Inject constructor(
             relPath = item.optString("relPath"),
             authorName = metadata?.optString("authorName"),
             narratorName = metadata?.optString("narratorName"),
+            narratorNames = extractNarratorNames(
+                metadata = metadata,
+                rootNarratorsArray = item.optJSONArray("narrators"),
+                mediaNarratorsArray = media?.optJSONArray("narrators")
+            ),
             durationSeconds = media?.optDoubleOrNull("duration"),
             seriesNames = seriesNames,
             seriesIds = seriesIds,
@@ -2566,6 +2573,7 @@ class AudiobookshelfApi @Inject constructor(
         relPath: String?,
         authorName: String?,
         narratorName: String?,
+        narratorNames: List<String>,
         durationSeconds: Double?,
         seriesNames: List<String>,
         seriesIds: List<String>,
@@ -2589,7 +2597,8 @@ class AudiobookshelfApi @Inject constructor(
             libraryId = libraryId,
             title = resolvedTitle,
             authorName = authorName.orEmpty().ifBlank { "Unknown Author" },
-            narratorName = narratorName.orEmpty().ifBlank { null },
+            narratorName = narratorName.orEmpty().ifBlank { narratorNames.firstOrNull() },
+            narratorNames = narratorNames,
             durationSeconds = durationSeconds,
             seriesName = seriesNames.firstOrNull(),
             seriesNames = seriesNames,
@@ -3087,10 +3096,14 @@ class AudiobookshelfApi @Inject constructor(
     private fun parseNarratorEntity(rawValue: Any?): AudiobookshelfNamedEntityDto? {
         return when (rawValue) {
             is JSONObject -> rawValue.toNarratorEntity()
-            is String -> rawValue
-                .trim()
-                .takeIf { it.isNotBlank() }
-                ?.let { AudiobookshelfNamedEntityDto(id = it, name = it) }
+            is String -> {
+                val trimmed = rawValue.trim()
+                when {
+                    trimmed.isBlank() -> null
+                    trimmed.startsWith("{") -> runCatching { JSONObject(trimmed).toNarratorEntity() }.getOrNull()
+                    else -> AudiobookshelfNamedEntityDto(id = trimmed, name = trimmed)
+                }
+            }
             else -> null
         }
     }
@@ -3527,12 +3540,19 @@ class AudiobookshelfApi @Inject constructor(
             }
         }
 
+        val narratorNames = extractNarratorNames(
+            metadata = metadata,
+            rootNarratorsArray = root.optJSONArray("narrators"),
+            mediaNarratorsArray = media.optJSONArray("narrators")
+        )
+
         return AudiobookshelfBookDetailDto(
             id = id,
             libraryId = libraryId,
             title = title,
             authorName = metadata?.optString("authorName").orEmpty().ifBlank { "Unknown Author" },
-            narratorName = metadata?.optString("narratorName").orEmpty().ifBlank { null },
+            narratorName = metadata?.optString("narratorName").orEmpty().ifBlank { narratorNames.firstOrNull() },
+            narratorNames = narratorNames,
             durationSeconds = media.optDoubleOrNull("duration"),
             description = metadata?.optString("description").sanitizeDescriptionText(),
             publishedYear = metadata?.optString("publishedYear")?.ifBlank { null },
@@ -3595,6 +3615,32 @@ class AudiobookshelfApi @Inject constructor(
                             names += value
                         }
                     }
+                }
+            }
+        }
+        return names.toList()
+    }
+
+    private fun extractNarratorNames(
+        metadata: JSONObject?,
+        rootNarratorsArray: JSONArray? = null,
+        mediaNarratorsArray: JSONArray? = null
+    ): List<String> {
+        metadata ?: return emptyList()
+        val names = linkedSetOf<String>()
+        metadata.optString("narratorName")
+            .trim()
+            .takeIf { it.isNotBlank() }
+            ?.let(names::add)
+        listOf(metadata.optJSONArray("narrators"), rootNarratorsArray, mediaNarratorsArray).forEach { narratorsArray ->
+            if (narratorsArray == null) return@forEach
+            for (index in 0 until narratorsArray.length()) {
+                val narratorName = parseNarratorEntity(narratorsArray.opt(index))
+                    ?.name
+                    ?.trim()
+                    .orEmpty()
+                if (narratorName.isNotBlank()) {
+                    names += narratorName
                 }
             }
         }

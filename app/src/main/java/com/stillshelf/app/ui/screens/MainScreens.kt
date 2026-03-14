@@ -361,6 +361,17 @@ private sealed interface BooksGridEntry {
     }
 }
 
+private fun BooksGridEntry.SeriesStack.stackCoverUrls(): List<String> {
+    return books
+        .asSequence()
+        .mapNotNull { it.coverUrl?.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+        .take(3)
+        .toList()
+        .ifEmpty { listOfNotNull(leadBook.coverUrl) }
+}
+
 internal fun normalizeSeriesStackCoverUrls(coverUrls: List<String>): List<String> {
     return coverUrls
         .asSequence()
@@ -2058,7 +2069,7 @@ private fun SeriesStackGridItem(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrls = listOfNotNull(book.coverUrl),
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,
@@ -2326,10 +2337,7 @@ private fun SeriesStackListItem(
             val layerCount = entry.books.size.coerceIn(2, 3)
             val frameSize = 88.dp
             SeriesStackCoverLayers(
-                coverUrls = entry.books
-                    .asSequence()
-                    .mapNotNull { it.coverUrl }
-                    .toList(),
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameSize,
@@ -10609,7 +10617,7 @@ private fun SeriesStackCard(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrls = listOfNotNull(book.coverUrl),
+                coverUrls = series.coverUrls.ifEmpty { listOfNotNull(book.coverUrl) },
                 contentDescription = series.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,

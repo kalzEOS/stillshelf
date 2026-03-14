@@ -271,7 +271,51 @@ private fun FacetSeriesStackCoverLayers(
     frameHeight: Dp,
     modifier: Modifier = Modifier
 ) {
-    val resolvedLayerCount = layerCount.coerceIn(2, 3)
+    FacetSeriesStackCoverLayers(
+        coverUrls = listOfNotNull(coverUrl),
+        contentDescription = contentDescription,
+        layerCount = layerCount,
+        frameWidth = frameWidth,
+        frameHeight = frameHeight,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun FacetSeriesStackCoverLayers(
+    coverUrls: List<String>,
+    contentDescription: String?,
+    layerCount: Int,
+    frameWidth: Dp,
+    frameHeight: Dp,
+    modifier: Modifier = Modifier
+) {
+    val normalizedCoverUrls = remember(coverUrls) {
+        coverUrls
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .toList()
+    }
+    val displayCoverUrls = remember(normalizedCoverUrls, layerCount) {
+        when {
+            normalizedCoverUrls.isEmpty() -> List(layerCount.coerceIn(2, 3)) { null }
+            normalizedCoverUrls.size == 1 -> List(layerCount.coerceIn(2, 3)) { normalizedCoverUrls.first() }
+            normalizedCoverUrls.size >= 3 && layerCount >= 3 -> {
+                listOf(
+                    normalizedCoverUrls.getOrNull(2),
+                    normalizedCoverUrls.getOrNull(1),
+                    normalizedCoverUrls.firstOrNull()
+                )
+            }
+            else -> listOf(
+                normalizedCoverUrls.getOrNull(1),
+                normalizedCoverUrls.firstOrNull()
+            )
+        }
+    }
+    val resolvedLayerCount = displayCoverUrls.size.coerceIn(2, 3)
     val layerShape = FacetSeriesStackCornerShape
     Box(
         modifier = modifier.clipToBounds()
@@ -283,7 +327,7 @@ private fun FacetSeriesStackCoverLayers(
             val yOffset = (frameHeight - cardHeight).coerceAtLeast(0.dp)
             val layerShadow = facetStackedLayerShadow(layer = layer, layerCount = resolvedLayerCount)
             FramedCoverImage(
-                coverUrl = coverUrl,
+                coverUrl = displayCoverUrls.getOrNull(layer),
                 contentDescription = contentDescription,
                 modifier = Modifier
                     .offset(x = xOffset, y = yOffset)
@@ -332,6 +376,17 @@ private sealed interface AuthorDisplayEntry {
         val leadBook: BookSummary get() = books.first()
         val count: Int get() = books.size
     }
+}
+
+private fun AuthorDisplayEntry.SeriesItem.stackCoverUrls(): List<String> {
+    return books
+        .asSequence()
+        .mapNotNull { it.coverUrl?.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+        .take(3)
+        .toList()
+        .ifEmpty { listOfNotNull(leadBook.coverUrl) }
 }
 
 @HiltViewModel
@@ -1558,8 +1613,8 @@ class NarratorDetailViewModel @Inject constructor(
                 is AppResult.Success -> {
                     if (requestId != refreshRequestId) return@launch
                     val initialBooks = initialResult.value
-                    val initialMatches = initialBooks.filter {
-                        it.narratorName?.equals(narratorName, ignoreCase = true) == true
+                    val initialMatches = initialBooks.filter { book ->
+                        matchesNarrator(book, narratorName)
                     }.sortedBy { it.title.lowercase() }
                     val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
                     val canRenderInitialMatches = initialMatches.isNotEmpty() || !shouldReconcileFullLibrary
@@ -1580,8 +1635,8 @@ class NarratorDetailViewModel @Inject constructor(
                     when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
                         is AppResult.Success -> {
                             if (requestId != refreshRequestId) return@launch
-                            val books = allBooksResult.value.filter {
-                                it.narratorName?.equals(narratorName, ignoreCase = true) == true
+                            val books = allBooksResult.value.filter { book ->
+                                matchesNarrator(book, narratorName)
                             }.sortedBy { it.title.lowercase() }
                             mutableUiState.update {
                                 it.copy(
@@ -1678,6 +1733,23 @@ class NarratorDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun matchesNarrator(book: BookSummary, narratorName: String): Boolean {
+        val normalizedNarrator = narratorName.trim()
+        if (normalizedNarrator.isBlank()) return false
+        return buildList {
+            book.narratorNames.forEach { candidate ->
+                candidate.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+            book.narratorName?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+        }
+            .flatMap { narrator ->
+                narrator
+                    .split(Regex("\\s*(?:,|&| and )\\s*", RegexOption.IGNORE_CASE))
+                    .map { it.trim() }
+            }
+            .any { candidate -> candidate.equals(normalizedNarrator, ignoreCase = true) }
     }
 }
 
@@ -2574,7 +2646,7 @@ private fun AuthorSeriesGridItem(
             contentAlignment = Alignment.TopCenter
         ) {
             FacetSeriesStackCoverLayers(
-                coverUrl = lead.coverUrl,
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = StandardGridCoverWidth,
@@ -2766,7 +2838,7 @@ private fun AuthorSeriesListRow(
                 val layerCount = entry.count.coerceIn(2, 3)
                 val frameSize = 88.dp
                 FacetSeriesStackCoverLayers(
-                    coverUrl = lead.coverUrl,
+                    coverUrls = entry.stackCoverUrls(),
                     contentDescription = entry.seriesName,
                     layerCount = layerCount,
                     frameWidth = frameSize,

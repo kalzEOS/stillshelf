@@ -654,27 +654,34 @@ class SessionRepositoryImpl @Inject constructor(
             }
         }
         val staleCache = if (forceRefresh) null else getAnyCache(narratorsCache, cacheKey)
-
-        val result = audiobookshelfApi.getNarrators(
-            baseUrl = connection.server.baseUrl,
-            authToken = connection.token,
-            libraryId = library.id
-        )
-        if (result.isFailure) {
-            if (!staleCache.isNullOrEmpty()) {
-                return AppResult.Success(staleCache)
-            }
-            return AppResult.Error(
-                message = result.exceptionOrNull()?.message ?: "Unable to load narrators.",
-                cause = result.exceptionOrNull()
-            )
+        val derivedNarrators = when (val booksResult = fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
+            is AppResult.Success -> buildNarratorSummariesFromBooks(booksResult.value)
+            is AppResult.Error -> emptyList()
         }
-
-        val narrators = result.getOrThrow().map {
-            it.toModel(
+        val narrators = if (derivedNarrators.isNotEmpty()) {
+            derivedNarrators
+        } else {
+            val result = audiobookshelfApi.getNarrators(
                 baseUrl = connection.server.baseUrl,
-                authToken = connection.token
+                authToken = connection.token,
+                libraryId = library.id
             )
+            if (result.isFailure) {
+                if (!staleCache.isNullOrEmpty()) {
+                    return AppResult.Success(staleCache)
+                }
+                return AppResult.Error(
+                    message = result.exceptionOrNull()?.message ?: "Unable to load narrators.",
+                    cause = result.exceptionOrNull()
+                )
+            }
+
+            result.getOrThrow().map {
+                it.toModel(
+                    baseUrl = connection.server.baseUrl,
+                    authToken = connection.token
+                )
+            }
         }
         putCache(narratorsCache, cacheKey, narrators)
         return AppResult.Success(narrators)
@@ -2871,10 +2878,16 @@ class SessionRepositoryImpl @Inject constructor(
                         ).withResolvedProgress(mediaProgressByItemId[item.id])
                             .withLocalProgressOverride(connection.server.id)
                     }
+                val recentSeriesCandidates = enrichRecentBooksForSeriesMatching(
+                    recentlyAdded = recentlyAdded,
+                    forceRefresh = forceRefreshDerivedContent
+                )
                 val allBooks = when (allBooksResult) {
                     is AppResult.Success -> allBooksResult.value
                     is AppResult.Error -> emptyList()
                 }
+                val recentBookIds = recentSeriesCandidates.map { it.id }.toSet()
+                val detailCache = mutableMapOf<String, BookSummary?>()
                 val listenAgain = allBooks
                     .asSequence()
                     .filter { it.isFinished }
@@ -2887,36 +2900,52 @@ class SessionRepositoryImpl @Inject constructor(
                     .toList()
                 val seriesCountByKey = allBooks
                     .asSequence()
-                    .mapNotNull { item ->
-                        val series = item.seriesName?.trim().orEmpty()
-                        if (series.isBlank()) {
-                            null
-                        } else {
-                            normalizeSeriesKey(series) to 1
-                        }
-                    }
+                    .flatMap { item -> seriesKeysForHome(item).asSequence() }
                     .groupingBy { it.first }
                     .fold(0) { acc, _ -> acc + 1 }
-                val recentSeries = recentlyAdded
-                    .asSequence()
-                    .mapNotNull { book ->
-                        val series = book.seriesName?.trim().orEmpty()
-                        if (series.isBlank()) null else normalizeSeriesKey(series) to book
+                val recentSeriesBooksByKey = linkedMapOf<String, Pair<String, MutableList<BookSummary>>>()
+                recentSeriesCandidates.forEach { book ->
+                    seriesKeysForHome(book).forEach { (key, displayName) ->
+                        val existing = recentSeriesBooksByKey[key]
+                        if (existing == null) {
+                            recentSeriesBooksByKey[key] = displayName to mutableListOf(book)
+                        } else {
+                            existing.second += book
+                        }
                     }
-                    .distinctBy { (key, _) -> key }
-                    .mapNotNull { (key, leadBook) ->
-                        val count = seriesCountByKey[key] ?: 0
-                        if (count <= 1) {
+                }
+                val recentSeries = recentSeriesBooksByKey
+                    .mapNotNull { (key, value) ->
+                        val (displayName, books) = value
+                        val leadBook = books.firstOrNull() ?: return@mapNotNull null
+                        val count = maxOf(seriesCountByKey[key] ?: 0, books.size)
+                        if (count <= 1 || displayName.isBlank()) {
                             null
                         } else {
                             SeriesStackSummary(
-                                seriesName = leadBook.seriesName.orEmpty(),
+                                seriesName = displayName,
                                 leadBook = leadBook,
-                                count = count
+                                count = count,
+                                coverUrls = books.mapNotNull { it.coverUrl }.take(3)
                             )
                         }
                     }
-                    .toList()
+                    .toMutableList()
+                if (recentBookIds.isNotEmpty()) {
+                    val seriesSummaries = fetchAllSeriesForHome(forceRefresh = forceRefreshDerivedContent)
+                    val supplementalRecentSeries = resolveRecentSeriesFromSeriesSummaries(
+                        series = seriesSummaries,
+                        allBooks = allBooks,
+                        recentBookIds = recentBookIds,
+                        forceRefresh = forceRefreshDerivedContent,
+                        detailCache = detailCache
+                    )
+                    recentSeries += supplementalRecentSeries
+                }
+                val dedupedRecentSeries = recentSeries
+                    .distinctBy { normalizeSeriesKey(it.seriesName) }
+                    .sortedByDescending { it.leadBook.addedAtMs ?: 0L }
+                    .take(20)
                 val authorImageUrls = if (authorsResult.isSuccess) {
                     authorsResult.getOrThrow()
                         .asSequence()
@@ -2938,7 +2967,7 @@ class SessionRepositoryImpl @Inject constructor(
                     continueListening = continueListening,
                     recentlyAdded = recentlyAdded,
                     listenAgain = listenAgain,
-                    recentSeries = recentSeries,
+                    recentSeries = dedupedRecentSeries,
                     authorImageUrls = authorImageUrls
                 )
                 runCatching {
@@ -3898,7 +3927,265 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     private fun normalizeAuthorKey(name: String): String = name.trim().lowercase()
-    private fun normalizeSeriesKey(name: String): String = name.trim().lowercase()
+    private fun normalizeSeriesKey(name: String): String {
+        return name
+            .trim()
+            .replace(Regex("\\s*#\\d+.*$"), "")
+            .replace(Regex("\\s+"), " ")
+            .lowercase()
+    }
+
+    private fun buildNarratorSummariesFromBooks(books: List<BookSummary>): List<NamedEntitySummary> {
+        val countsByKey = linkedMapOf<String, Pair<String, Int>>()
+        books.forEach { book ->
+            narratorCandidatesForBook(book).forEach { narratorName ->
+                val normalizedKey = narratorName.trim().lowercase()
+                if (normalizedKey.isBlank()) return@forEach
+                val existing = countsByKey[normalizedKey]
+                countsByKey[normalizedKey] = if (existing == null) {
+                    narratorName to 1
+                } else {
+                    existing.first to (existing.second + 1)
+                }
+            }
+        }
+        return countsByKey.entries
+            .map { (key, value) ->
+                NamedEntitySummary(
+                    id = key,
+                    name = value.first,
+                    subtitle = "${value.second} books"
+                )
+            }
+            .sortedWith(compareBy<NamedEntitySummary> { it.name.lowercase() }.thenBy { it.id })
+    }
+
+    private fun narratorCandidatesForBook(book: BookSummary): List<String> {
+        val directNames = buildList {
+            book.narratorNames.forEach { narratorName ->
+                narratorName.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+            book.narratorName?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+        }
+        return directNames
+            .flatMap { narratorName ->
+                narratorName
+                    .split(Regex("\\s*(?:,|&| and )\\s*", RegexOption.IGNORE_CASE))
+                    .map { it.trim() }
+            }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+    }
+
+    private fun seriesKeysForHome(book: BookSummary): List<Pair<String, String>> {
+        val seriesNames = buildList {
+            book.seriesName?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+            book.seriesNames.forEach { seriesName ->
+                seriesName.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }.distinctBy { it.lowercase() }
+        return seriesNames.map { seriesName -> normalizeSeriesKey(seriesName) to seriesName }
+    }
+
+    private suspend fun enrichRecentBooksForSeriesMatching(
+        recentlyAdded: List<BookSummary>,
+        forceRefresh: Boolean
+    ): List<BookSummary> {
+        return recentlyAdded.map { book ->
+            if (book.seriesName != null || book.seriesNames.isNotEmpty() || book.seriesIds.isNotEmpty()) {
+                book
+            } else {
+                when (val detailResult = fetchBookDetail(book.id, forceRefresh = forceRefresh)) {
+                    is AppResult.Success -> {
+                        val detailBook = detailResult.value.book
+                        book.copy(
+                            seriesName = detailBook.seriesName ?: book.seriesName,
+                            seriesNames = if (detailBook.seriesNames.isNotEmpty()) detailBook.seriesNames else book.seriesNames,
+                            seriesIds = if (detailBook.seriesIds.isNotEmpty()) detailBook.seriesIds else book.seriesIds,
+                            seriesSequence = detailBook.seriesSequence ?: book.seriesSequence
+                        )
+                    }
+
+                    is AppResult.Error -> book
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchAllSeriesForHome(
+        forceRefresh: Boolean
+    ): List<NamedEntitySummary> {
+        val series = mutableListOf<NamedEntitySummary>()
+        var page = 0
+        while (true) {
+            when (
+                val result = fetchSeriesForActiveLibrary(
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
+                    page = page,
+                    forceRefresh = forceRefresh
+                )
+            ) {
+                is AppResult.Success -> {
+                    val batch = result.value
+                    if (batch.isEmpty()) break
+                    series += batch
+                    if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
+                    page += 1
+                }
+
+                is AppResult.Error -> break
+            }
+        }
+        return series.distinctBy { it.id.ifBlank { it.name.lowercase() } }
+    }
+
+    private suspend fun resolveRecentSeriesFromSeriesSummaries(
+        series: List<NamedEntitySummary>,
+        allBooks: List<BookSummary>,
+        recentBookIds: Set<String>,
+        forceRefresh: Boolean,
+        detailCache: MutableMap<String, BookSummary?>
+    ): List<SeriesStackSummary> {
+        if (series.isEmpty() || recentBookIds.isEmpty() || allBooks.isEmpty()) return emptyList()
+        val booksBySeries = mutableMapOf<String, MutableList<BookSummary>>()
+        val booksBySeriesId = mutableMapOf<String, MutableList<BookSummary>>()
+        allBooks.forEach { book ->
+            seriesKeysForHome(book).forEach { (key, _) ->
+                booksBySeries.getOrPut(key) { mutableListOf() }.add(book)
+            }
+            book.seriesIds.forEach { seriesId ->
+                val normalizedId = seriesId.trim()
+                if (normalizedId.isNotBlank()) {
+                    booksBySeriesId.getOrPut(normalizedId) { mutableListOf() }.add(book)
+                }
+            }
+        }
+        return series.mapNotNull { seriesSummary ->
+            val initialMatchedBooks = booksBySeries[normalizeSeriesKey(seriesSummary.name)].orEmpty()
+                .ifEmpty { booksBySeriesId[seriesSummary.id].orEmpty() }
+            val expectedCount = extractHomeEntityCount(seriesSummary.subtitle)
+            val matchedBooks = if (
+                initialMatchedBooks.isEmpty() ||
+                (expectedCount != null && initialMatchedBooks.size < expectedCount)
+            ) {
+                resolveSeriesBooksForHome(
+                    series = seriesSummary,
+                    books = allBooks,
+                    initialMatchedBooks = initialMatchedBooks,
+                    expectedCount = expectedCount,
+                    forceRefresh = forceRefresh,
+                    detailCache = detailCache
+                )
+            } else {
+                initialMatchedBooks
+            }
+            val recentMatchedBooks = matchedBooks.filter { recentBookIds.contains(it.id) }
+            val count = maxOf(expectedCount ?: 0, matchedBooks.size)
+            val leadBook = recentMatchedBooks.maxByOrNull { it.addedAtMs ?: 0L }
+                ?: matchedBooks.maxByOrNull { it.addedAtMs ?: 0L }
+                ?: return@mapNotNull null
+            if (recentMatchedBooks.isEmpty() || count <= 1) {
+                null
+            } else {
+                SeriesStackSummary(
+                    seriesName = seriesSummary.name,
+                    leadBook = leadBook,
+                    count = count,
+                    coverUrls = buildList {
+                        recentMatchedBooks.forEach { book ->
+                            book.coverUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                        matchedBooks.forEach { book ->
+                            book.coverUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                        seriesSummary.imageUrl?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+                    }.distinctBy { it.lowercase() }.take(3)
+                )
+            }
+        }
+    }
+
+    private suspend fun resolveSeriesBooksForHome(
+        series: NamedEntitySummary,
+        books: List<BookSummary>,
+        initialMatchedBooks: List<BookSummary>,
+        expectedCount: Int?,
+        forceRefresh: Boolean,
+        detailCache: MutableMap<String, BookSummary?>
+    ): List<BookSummary> {
+        if (series.id.isBlank()) return initialMatchedBooks
+        val resolvedFromContents = when (
+            val result = fetchSeriesContentsForActiveLibrary(
+                seriesId = series.id,
+                collapseSubseries = false,
+                forceRefresh = forceRefresh
+            )
+        ) {
+            is AppResult.Success -> mergeHomeSeriesBooks(
+                initialMatchedBooks = initialMatchedBooks,
+                seriesEntries = result.value
+            )
+            is AppResult.Error -> initialMatchedBooks
+        }
+        if (expectedCount != null && resolvedFromContents.size >= expectedCount) {
+            return resolvedFromContents
+        }
+        val resolved = LinkedHashMap<String, BookSummary>()
+        resolvedFromContents.forEach { book -> resolved[book.id] = book }
+        books.forEach { book ->
+            if (expectedCount != null && expectedCount > 0 && resolved.size >= expectedCount) {
+                return resolved.values.toList()
+            }
+            val detailBook = detailCache.getOrPut(book.id) {
+                when (val detailResult = fetchBookDetail(book.id, forceRefresh = forceRefresh)) {
+                    is AppResult.Success -> detailResult.value.book
+                    is AppResult.Error -> null
+                }
+            } ?: return@forEach
+            val matchesById = detailBook.seriesIds.any { candidateId ->
+                seriesIdsLikelyMatchForHome(candidateId, series.id)
+            }
+            val matchesByName = seriesKeysForHome(detailBook).any { (key, _) ->
+                key == normalizeSeriesKey(series.name)
+            }
+            if (matchesById || matchesByName) {
+                resolved[book.id] = book.copy(
+                    seriesName = detailBook.seriesName ?: book.seriesName,
+                    seriesNames = if (detailBook.seriesNames.isNotEmpty()) detailBook.seriesNames else book.seriesNames,
+                    seriesIds = if (detailBook.seriesIds.isNotEmpty()) detailBook.seriesIds else book.seriesIds,
+                    seriesSequence = detailBook.seriesSequence ?: book.seriesSequence,
+                    coverUrl = detailBook.coverUrl ?: book.coverUrl
+                )
+            }
+        }
+        return resolved.values.toList()
+    }
+
+    private fun mergeHomeSeriesBooks(
+        initialMatchedBooks: List<BookSummary>,
+        seriesEntries: List<SeriesDetailEntry>
+    ): List<BookSummary> {
+        val merged = LinkedHashMap<String, BookSummary>()
+        initialMatchedBooks.forEach { book -> merged[book.id] = book }
+        seriesEntries.forEach { entry ->
+            val book = (entry as? SeriesDetailEntry.BookItem)?.book ?: return@forEach
+            merged[book.id] = book
+        }
+        return merged.values.toList()
+    }
+
+    private fun extractHomeEntityCount(subtitle: String?): Int? {
+        return subtitle?.trim().orEmpty().substringBefore(" ").toIntOrNull()?.takeIf { it >= 0 }
+    }
+
+    private fun seriesIdsLikelyMatchForHome(candidateId: String, targetId: String): Boolean {
+        val normalizedCandidate = candidateId.trim()
+        val normalizedTarget = targetId.trim()
+        if (normalizedCandidate.isBlank() || normalizedTarget.isBlank()) return false
+        return normalizedCandidate.equals(normalizedTarget, ignoreCase = true) ||
+            normalizedCandidate.endsWith(normalizedTarget, ignoreCase = true) ||
+            normalizedTarget.endsWith(normalizedCandidate, ignoreCase = true)
+    }
 
     private fun serializeHomeFeed(feed: HomeFeed): String {
         val root = JSONObject()
@@ -3948,6 +4235,12 @@ class SessionRepositoryImpl @Inject constructor(
                         JSONObject()
                             .put("seriesName", series.seriesName)
                             .put("count", series.count)
+                            .put(
+                                "coverUrls",
+                                JSONArray().apply {
+                                    series.coverUrls.forEach { coverUrl -> put(coverUrl) }
+                                }
+                            )
                             .put("leadBook", serializeBook(series.leadBook))
                     )
                 }
@@ -3992,13 +4285,23 @@ class SessionRepositoryImpl @Inject constructor(
                 val item = source.optJSONObject(index) ?: continue
                 val seriesName = item.optString("seriesName").trim()
                 val count = item.optInt("count")
+                val coverUrls = buildList {
+                    val sourceCovers = item.optJSONArray("coverUrls") ?: JSONArray()
+                    for (coverIndex in 0 until sourceCovers.length()) {
+                        val coverUrl = sourceCovers.optString(coverIndex).trim()
+                        if (coverUrl.isNotBlank()) {
+                            add(coverUrl)
+                        }
+                    }
+                }
                 val leadBook = item.optJSONObject("leadBook")?.let(::parseBook) ?: continue
                 if (seriesName.isNotBlank() && count > 1) {
                     add(
                         SeriesStackSummary(
                             seriesName = seriesName,
                             leadBook = leadBook,
-                            count = count
+                            count = count,
+                            coverUrls = coverUrls
                         )
                     )
                 }
@@ -4032,6 +4335,7 @@ class SessionRepositoryImpl @Inject constructor(
             .put("title", book.title)
             .put("authorName", book.authorName)
             .put("narratorName", book.narratorName)
+            .put("narratorNames", JSONArray(book.narratorNames))
             .put("durationSeconds", book.durationSeconds)
             .put("coverUrl", book.coverUrl)
             .put("seriesName", book.seriesName)
@@ -4060,6 +4364,7 @@ class SessionRepositoryImpl @Inject constructor(
             title = source.optString("title"),
             authorName = source.optString("authorName").ifBlank { "Unknown Author" },
             narratorName = source.optStringOrNull("narratorName"),
+            narratorNames = source.optStringList("narratorNames"),
             durationSeconds = source.optDoubleOrNull("durationSeconds"),
             coverUrl = source.optStringOrNull("coverUrl"),
             seriesName = source.optStringOrNull("seriesName"),
@@ -4111,6 +4416,7 @@ class SessionRepositoryImpl @Inject constructor(
             title = title,
             authorName = authorName,
             narratorName = narratorName,
+            narratorNames = narratorNames,
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,
@@ -4306,6 +4612,7 @@ class SessionRepositoryImpl @Inject constructor(
             title = title,
             authorName = authorName,
             narratorName = narratorName,
+            narratorNames = narratorNames,
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,
@@ -4341,6 +4648,7 @@ class SessionRepositoryImpl @Inject constructor(
             title = title,
             authorName = authorName,
             narratorName = narratorName,
+            narratorNames = narratorNames,
             durationSeconds = durationSeconds,
             coverUrl = audiobookshelfApi.buildCoverUrl(baseUrl, id, authToken),
             seriesName = seriesName,

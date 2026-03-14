@@ -61,6 +61,7 @@ class PlaybackSourceTracksTest {
             title = "Sample",
             authorName = "Author",
             narratorName = null,
+            narratorNames = emptyList(),
             durationSeconds = 180.0,
             description = null,
             publishedYear = null,

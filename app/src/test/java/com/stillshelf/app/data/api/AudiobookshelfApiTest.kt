@@ -18,6 +18,7 @@ class AudiobookshelfApiTest {
             relPath = null,
             authorName = null,
             narratorName = null,
+            narratorNames = emptyList(),
             durationSeconds = null,
             seriesNames = emptyList(),
             seriesIds = emptyList(),
@@ -52,6 +53,7 @@ class AudiobookshelfApiTest {
             relPath = null,
             authorName = "Author",
             narratorName = null,
+            narratorNames = emptyList(),
             durationSeconds = 123.0,
             seriesNames = emptyList(),
             seriesIds = emptyList(),
@@ -75,5 +77,39 @@ class AudiobookshelfApiTest {
         assertEquals("Parent", parsed?.title)
         assertEquals("Sub-Series", parsed?.collapsedSeries?.name)
         assertEquals("6", parsed?.collapsedSeries?.sequenceLabel)
+    }
+
+    @Test
+    fun narratorEntityFromRawValue_parsesNarratorObjectsAsNames() {
+        val parsed = api.narratorEntityFromRawValueForTest(
+            mapOf(
+                "id" to "UmF1bCBFc3Bhcnph",
+                "name" to "Raul Esparza",
+                "numBooks" to 1
+            )
+        )
+
+        assertNotNull(parsed)
+        assertEquals("UmF1bCBFc3Bhcnph", parsed?.id)
+        assertEquals("Raul Esparza", parsed?.name)
+        assertEquals("1 books", parsed?.subtitle)
+    }
+
+    @Test
+    fun narratorEntityFromRawValue_preservesPlainStringFallback() {
+        val parsed = api.narratorEntityFromRawValueForTest("Raul Esparza")
+
+        assertNotNull(parsed)
+        assertEquals("Raul Esparza", parsed?.id)
+        assertEquals("Raul Esparza", parsed?.name)
+    }
+
+    @Test
+    fun sanitizeDescriptionText_stripsHtmlTags() {
+        val parsed = api.sanitizeDescriptionTextForTest(
+            "<p>Hello <strong>world</strong></p><p>Second line</p>"
+        )
+
+        assertEquals("Hello world\n\nSecond line", parsed)
     }
 }

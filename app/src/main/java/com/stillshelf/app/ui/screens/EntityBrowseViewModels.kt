@@ -10,6 +10,7 @@ import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.data.repo.SERVER_LIBRARY_PAGE_SIZE
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -39,7 +40,8 @@ data class SeriesBrowseUiState(
     val isRefreshing: Boolean = false,
     val series: List<SeriesBrowseCard> = emptyList(),
     val gridMode: Boolean = true,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 )
 
 internal data class SeriesBrowseCandidate(
@@ -157,11 +159,6 @@ class SeriesBrowseViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
-    companion object {
-        private const val SERIES_BOOKS_PAGE_SIZE = 400
-        private const val SERIES_BOOKS_MAX_PAGES = 100
-    }
-
     private val mutableUiState = MutableStateFlow(SeriesBrowseUiState())
     val uiState: StateFlow<SeriesBrowseUiState> = mutableUiState.asStateFlow()
 
@@ -263,7 +260,8 @@ class SeriesBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            series = visibleCards
+                            series = visibleCards,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -273,7 +271,8 @@ class SeriesBrowseViewModel @Inject constructor(
                         it.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = seriesResult.message
+                            errorMessage = seriesResult.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }
@@ -284,10 +283,10 @@ class SeriesBrowseViewModel @Inject constructor(
     private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): List<BookSummary> {
         val books = mutableListOf<BookSummary>()
         var page = 0
-        while (page < SERIES_BOOKS_MAX_PAGES) {
+        while (true) {
             when (
                 val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     forceRefresh = forceRefresh
                 )
@@ -296,7 +295,7 @@ class SeriesBrowseViewModel @Inject constructor(
                     val batch = result.value
                     if (batch.isEmpty()) break
                     books += batch
-                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
                     page += 1
                 }
 
@@ -440,12 +439,16 @@ class CollectionsBrowseViewModel @Inject constructor(
     }
 
     fun refreshSilent() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearCollections()
         refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun createCollection(name: String) {
@@ -507,6 +510,7 @@ class CollectionsBrowseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.fetchCollectionsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val shouldReloadAllCoverStacks = reloadAllCoverStacks || forceRefresh
                     val previousState = uiState.value
                     val filtered = result.value.filterNot { isStillShelfProbeCollection(it.name) }
                     val visibleIds = filtered.map { it.id }.toSet()
@@ -519,7 +523,7 @@ class CollectionsBrowseViewModel @Inject constructor(
                     val collectionsToReload = filtered.filter { collection ->
                         val previous = previousById[collection.id]
                         val hasCoverStack = mergedStacks.containsKey(collection.id)
-                        reloadAllCoverStacks ||
+                        shouldReloadAllCoverStacks ||
                             !hasCoverStack ||
                             (previous != null && previous.subtitle != collection.subtitle)
                     }
@@ -620,12 +624,16 @@ class PlaylistsBrowseViewModel @Inject constructor(
     }
 
     fun refreshSilent() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun refreshLibrary() {
         EntityCoverStackMemoryCache.clearPlaylists()
         refresh(forceRefresh = true, silent = false, reloadAllCoverStacks = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     fun createPlaylist(name: String) {
@@ -687,6 +695,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.fetchPlaylistsForActiveLibrary(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    val shouldReloadAllCoverStacks = reloadAllCoverStacks || forceRefresh
                     val previousState = uiState.value
                     val visibleIds = result.value.map { it.id }.toSet()
                     val cachedStacks = EntityCoverStackMemoryCache.playlistsForIds(visibleIds)
@@ -698,7 +707,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
                     val playlistsToReload = result.value.filter { playlist ->
                         val previous = previousById[playlist.id]
                         val hasCoverStack = mergedStacks.containsKey(playlist.id)
-                        reloadAllCoverStacks ||
+                        shouldReloadAllCoverStacks ||
                             !hasCoverStack ||
                             (previous != null && previous.subtitle != playlist.subtitle)
                     }
@@ -800,6 +809,10 @@ class BookmarksBrowseViewModel @Inject constructor(
 
     fun refreshSilent() {
         refresh(forceRefresh = false, silent = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = true, silent = true)
     }
 
     private fun refresh(forceRefresh: Boolean, silent: Boolean) {

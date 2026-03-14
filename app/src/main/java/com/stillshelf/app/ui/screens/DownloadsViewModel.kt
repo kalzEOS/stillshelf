@@ -6,9 +6,15 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.BookProgressAction
+import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
 import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.playback.controller.PlaybackController
+import com.stillshelf.app.ui.common.buildLibraryScopedDownloadKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -33,7 +39,9 @@ data class DownloadsUiState(
 class DownloadsViewModel @Inject constructor(
     private val bookDownloadManager: BookDownloadManager,
     private val sessionPreferences: SessionPreferences,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(DownloadsUiState())
     val uiState: StateFlow<DownloadsUiState> = mutableUiState.asStateFlow()
@@ -44,6 +52,7 @@ class DownloadsViewModel @Inject constructor(
         restoreListMode()
         observeDownloads()
         observeBookProgressMutations()
+        observeLivePlaybackState()
     }
 
     fun refresh() {
@@ -57,8 +66,12 @@ class DownloadsViewModel @Inject constructor(
         viewModelScope.launch {
             bookDownloadManager.removeDownload(bookId)
             mutableUiState.update { state ->
+                val removedDownloadKey = state.downloadItems
+                    .firstOrNull { it.bookId == bookId }
+                    ?.let { item -> buildLibraryScopedDownloadKey(item.libraryId, item.bookId) }
                 state.copy(
-                    downloadedBookIds = state.downloadedBookIds - bookId,
+                    downloadedBookIds = removedDownloadKey?.let(state.downloadedBookIds::minus)
+                        ?: state.downloadedBookIds,
                     books = state.books.filterNot { it.id == bookId },
                     downloadItems = state.downloadItems.filterNot { it.bookId == bookId },
                     actionMessage = "Download removed"
@@ -70,15 +83,9 @@ class DownloadsViewModel @Inject constructor(
     fun resetBookProgress(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                 }
 
                 is AppResult.Error -> {
@@ -108,7 +115,7 @@ class DownloadsViewModel @Inject constructor(
 
     private fun observeDownloads() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
+            bookDownloadManager.activeItems.collect { items ->
                 val visible = items
                     .filter { it.status != DownloadStatus.Failed }
                     .sortedByDescending { it.updatedAtMs }
@@ -140,7 +147,7 @@ class DownloadsViewModel @Inject constructor(
                     } else {
                         BookSummary(
                             id = item.bookId,
-                            libraryId = "",
+                            libraryId = item.libraryId,
                             title = item.title,
                             authorName = item.authorName,
                             narratorName = null,
@@ -154,10 +161,7 @@ class DownloadsViewModel @Inject constructor(
                         isLoading = false,
                         errorMessage = null,
                         downloadItems = visible,
-                        downloadedBookIds = visible
-                            .filter { it.status == DownloadStatus.Completed }
-                            .map { item -> item.bookId }
-                            .toSet(),
+                        downloadedBookIds = visible.completedDownloadUiKeys(),
                         books = books
                     )
                 }
@@ -172,6 +176,21 @@ class DownloadsViewModel @Inject constructor(
                     state.copy(
                         books = state.books.map { it.withBookProgressMutation(mutation) }
                     )
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    }
                 }
             }
         }

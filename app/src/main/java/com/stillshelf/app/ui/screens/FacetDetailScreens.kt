@@ -52,6 +52,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -98,22 +99,38 @@ import com.stillshelf.app.core.util.hasFinishedProgress
 import com.stillshelf.app.core.util.hasStartedProgress
 import com.stillshelf.app.core.util.remainingTimeLabel
 import com.stillshelf.app.core.model.SeriesDetailEntry
+import com.stillshelf.app.data.repo.DetailRefreshPolicy
+import com.stillshelf.app.data.repo.SERVER_LIBRARY_PAGE_SIZE
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.BookProgressAction
+import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.WideCoverBackgroundBlur
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.containsDownloadedBook
+import com.stillshelf.app.ui.common.downloadProgressForBook
+import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -142,7 +159,8 @@ data class SeriesDetailUiState(
     val errorMessage: String? = null,
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),
-    val actionMessage: String? = null
+    val actionMessage: String? = null,
+    val hasLoadedOnce: Boolean = false
 ) {
     val books: List<BookSummary>
         get() = entries.mapNotNull { entry ->
@@ -156,6 +174,60 @@ data class SeriesDetailUiState(
                 is SeriesDetailEntry.SubseriesItem -> entry.bookCount.coerceAtLeast(1)
             }
         }
+}
+
+internal fun SeriesDetailUiState.applyPersistedEntries(
+    entries: List<SeriesDetailEntry>
+): SeriesDetailUiState {
+    return when {
+        entries.isNotEmpty() -> copy(
+            isLoading = false,
+            entries = entries,
+            errorMessage = null,
+            hasLoadedOnce = true
+        )
+        this.entries.isNotEmpty() -> copy(
+            isLoading = false,
+            errorMessage = null,
+            hasLoadedOnce = true
+        )
+        hasLoadedOnce -> copy(
+            isLoading = false,
+            entries = emptyList(),
+            errorMessage = null
+        )
+        else -> this
+    }
+}
+
+internal fun SeriesDetailUiState.applyRefreshSuccess(
+    entries: List<SeriesDetailEntry>,
+    hasCollapsibleSubseries: Boolean
+): SeriesDetailUiState {
+    return copy(
+        isLoading = false,
+        isRefreshing = false,
+        entries = entries,
+        canCollapseSubseries = hasCollapsibleSubseries,
+        errorMessage = null,
+        hasLoadedOnce = true
+    )
+}
+
+internal fun SeriesDetailUiState.beginRefresh(
+    hasLocalEntries: Boolean,
+    silent: Boolean,
+    isUserRefresh: Boolean
+): SeriesDetailUiState {
+    return if (!silent || !hasLocalEntries) {
+        copy(
+            isLoading = !hasLocalEntries,
+            isRefreshing = (hasLocalEntries && !silent) || isUserRefresh,
+            errorMessage = null
+        )
+    } else {
+        this
+    }
 }
 
 private val FacetBackTitleSpacing = 12.dp
@@ -175,6 +247,21 @@ private fun facetStackedLayerShadow(layer: Int, layerCount: Int): Dp {
     return if (layer == layerCount - 1) FacetSeriesStackFrontShadow else FacetSeriesStackBackShadow
 }
 
+private fun facetBooksSortComparator(sortKey: BooksSortKey): Comparator<BookSummary> {
+    return when (sortKey) {
+        BooksSortKey.Title -> compareBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
+        BooksSortKey.Author -> compareBy<BookSummary, String>(String.CASE_INSENSITIVE_ORDER) { it.authorName.trim() }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
+        BooksSortKey.PublicationDate -> compareByDescending<BookSummary> {
+            it.publishedYear?.trim()?.take(4)?.toIntOrNull() ?: Int.MIN_VALUE
+        }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
+        BooksSortKey.DateAdded -> compareByDescending<BookSummary> { it.addedAtMs ?: Long.MIN_VALUE }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
+        BooksSortKey.Duration -> compareByDescending<BookSummary> { it.durationSeconds ?: -1.0 }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title.trim() }
+    }
+}
+
 @Composable
 private fun FacetSeriesStackCoverLayers(
     coverUrl: String?,
@@ -184,7 +271,51 @@ private fun FacetSeriesStackCoverLayers(
     frameHeight: Dp,
     modifier: Modifier = Modifier
 ) {
-    val resolvedLayerCount = layerCount.coerceIn(2, 3)
+    FacetSeriesStackCoverLayers(
+        coverUrls = listOfNotNull(coverUrl),
+        contentDescription = contentDescription,
+        layerCount = layerCount,
+        frameWidth = frameWidth,
+        frameHeight = frameHeight,
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun FacetSeriesStackCoverLayers(
+    coverUrls: List<String>,
+    contentDescription: String?,
+    layerCount: Int,
+    frameWidth: Dp,
+    frameHeight: Dp,
+    modifier: Modifier = Modifier
+) {
+    val normalizedCoverUrls = remember(coverUrls) {
+        coverUrls
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .toList()
+    }
+    val displayCoverUrls = remember(normalizedCoverUrls, layerCount) {
+        when {
+            normalizedCoverUrls.isEmpty() -> List(layerCount.coerceIn(2, 3)) { null }
+            normalizedCoverUrls.size == 1 -> List(layerCount.coerceIn(2, 3)) { normalizedCoverUrls.first() }
+            normalizedCoverUrls.size >= 3 && layerCount >= 3 -> {
+                listOf(
+                    normalizedCoverUrls.getOrNull(2),
+                    normalizedCoverUrls.getOrNull(1),
+                    normalizedCoverUrls.firstOrNull()
+                )
+            }
+            else -> listOf(
+                normalizedCoverUrls.getOrNull(1),
+                normalizedCoverUrls.firstOrNull()
+            )
+        }
+    }
+    val resolvedLayerCount = displayCoverUrls.size.coerceIn(2, 3)
     val layerShape = FacetSeriesStackCornerShape
     Box(
         modifier = modifier.clipToBounds()
@@ -196,7 +327,7 @@ private fun FacetSeriesStackCoverLayers(
             val yOffset = (frameHeight - cardHeight).coerceAtLeast(0.dp)
             val layerShadow = facetStackedLayerShadow(layer = layer, layerCount = resolvedLayerCount)
             FramedCoverImage(
-                coverUrl = coverUrl,
+                coverUrl = displayCoverUrls.getOrNull(layer),
                 contentDescription = contentDescription,
                 modifier = Modifier
                     .offset(x = xOffset, y = yOffset)
@@ -247,12 +378,25 @@ private sealed interface AuthorDisplayEntry {
     }
 }
 
+private fun AuthorDisplayEntry.SeriesItem.stackCoverUrls(): List<String> {
+    return books
+        .asSequence()
+        .mapNotNull { it.coverUrl?.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+        .take(3)
+        .toList()
+        .ifEmpty { listOfNotNull(leadBook.coverUrl) }
+}
+
 @HiltViewModel
 class AuthorDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val authorName = savedStateHandle.get<String>(DetailRoute.AUTHOR_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = authorName))
@@ -267,6 +411,7 @@ class AuthorDetailViewModel @Inject constructor(
         viewModelScope.launch { restoreUiPreferences() }
         observeDownloadedState()
         observeBookProgressMutations()
+        observeLivePlaybackState()
         refresh(forceRefresh = false)
     }
 
@@ -298,57 +443,15 @@ class AuthorDetailViewModel @Inject constructor(
     }
 
     fun markAsFinished(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
-                    refresh(forceRefresh = true)
-                }
-
-                is AppResult.Error -> {
-                    mutableUiState.update { it.copy(actionMessage = result.message) }
-                }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.MarkFinished)
     }
 
     fun markAsUnfinished(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
-                    refresh(forceRefresh = true)
-                }
-
-                is AppResult.Error -> {
-                    mutableUiState.update { it.copy(actionMessage = result.message) }
-                }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.MarkUnfinished)
     }
 
     fun resetBookProgress(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
-                    refresh(forceRefresh = true)
-                }
-
-                is AppResult.Error -> {
-                    mutableUiState.update { it.copy(actionMessage = result.message) }
-                }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.ResetProgress)
     }
 
     fun toggleDownload(bookId: String) {
@@ -380,6 +483,21 @@ class AuthorDetailViewModel @Inject constructor(
             sessionRepository.observeBookProgressMutations().collect { mutation ->
                 mutableUiState.update { state ->
                     state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    }
                 }
             }
         }
@@ -485,19 +603,28 @@ class AuthorDetailViewModel @Inject constructor(
 
     private fun observeDownloadedState() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressByBookId = items
-                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+            bookDownloadManager.activeItems.collect { items ->
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
-                        downloadProgressByBookId = progressByBookId
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
                     )
+                }
+            }
+        }
+    }
+
+    private fun performBookProgressAction(bookId: String, action: BookProgressAction) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = bookProgressActionCoordinator(bookId, action)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
                 }
             }
         }
@@ -505,20 +632,18 @@ class AuthorDetailViewModel @Inject constructor(
 }
 
 @HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
 class SeriesDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
-    companion object {
-        private const val SERIES_BOOKS_PAGE_SIZE = 400
-        private const val SERIES_BOOKS_MAX_PAGES = 100
-    }
-
     private val seriesName = savedStateHandle.get<String>(DetailRoute.SERIES_NAME_ARG).orEmpty()
     private val seriesId = savedStateHandle.get<String>(DetailRoute.SERIES_ID_ARG)?.trim()?.takeIf { it.isNotBlank() }
-    private val mutableUiState = MutableStateFlow(SeriesDetailUiState(isLoading = true, title = seriesName))
+    private val mutableUiState = MutableStateFlow(SeriesDetailUiState(title = seriesName))
     val uiState: StateFlow<SeriesDetailUiState> = mutableUiState.asStateFlow()
     private val mutableListMode = MutableStateFlow(true)
     val listMode: StateFlow<Boolean> = mutableListMode.asStateFlow()
@@ -544,19 +669,26 @@ class SeriesDetailViewModel @Inject constructor(
 
     private data class SeriesEntriesResult(
         val entries: List<SeriesDetailEntry>,
-        val hasCollapsibleSubseries: Boolean
+        val hasCollapsibleSubseries: Boolean,
+        val rawEntries: List<SeriesDetailEntry.BookItem> = emptyList()
     )
 
+    private val mutableResolvedSeriesId = MutableStateFlow(seriesId)
     init {
         viewModelScope.launch {
             sessionPreferences.state.first().let { prefs ->
                 mutableListMode.value = prefs.seriesDetailListMode
                 mutableCollapseSubseries.value = prefs.seriesDetailCollapseSubseries
             }
+            primeLocalSeriesState()
+            refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
         }
         observeDownloadedState()
         observeBookProgressMutations()
-        refresh(forceRefresh = false, isUserRefresh = false)
+        observeLivePlaybackState()
+        observePersistedSeriesDetail()
+        observeResolvedSeriesSummary()
+        observeCollapseAvailability()
     }
 
     fun setListMode(value: Boolean) {
@@ -571,61 +703,23 @@ class SeriesDetailViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setSeriesDetailCollapseSubseries(value)
         }
-        refresh(forceRefresh = false, isUserRefresh = false)
+        refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
     }
 
     fun refresh() {
-        refresh(forceRefresh = true, isUserRefresh = true)
+        refresh(policy = DetailRefreshPolicy.Force, isUserRefresh = true)
     }
 
     fun markAsFinished(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
-                }
-
-                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.MarkFinished)
     }
 
     fun markAsUnfinished(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
-                }
-
-                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.MarkUnfinished)
     }
 
     fun resetBookProgress(bookId: String) {
-        if (bookId.isBlank()) return
-        viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
-                is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
-                    refresh(forceRefresh = true, isUserRefresh = false)
-                }
-
-                is AppResult.Error -> {
-                    mutableUiState.update { it.copy(actionMessage = result.message) }
-                }
-            }
-        }
+        performBookProgressAction(bookId, BookProgressAction.ResetProgress)
     }
 
     fun toggleDownload(bookId: String) {
@@ -672,89 +766,263 @@ class SeriesDetailViewModel @Inject constructor(
         }
     }
 
-    private fun refresh(forceRefresh: Boolean, isUserRefresh: Boolean) {
-        mutableUiState.update {
-            it.copy(
-                isLoading = true,
-                isRefreshing = isUserRefresh,
-                errorMessage = null
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    val hasMatchingBook = state.entries.any { entry ->
+                        (entry as? SeriesDetailEntry.BookItem)?.book?.id == mutation.bookId
+                    }
+                    if (!hasMatchingBook) {
+                        state
+                    } else {
+                        state.copy(
+                            entries = state.entries.map { entry ->
+                                when (entry) {
+                                    is SeriesDetailEntry.BookItem ->
+                                        SeriesDetailEntry.BookItem(entry.book.withBookProgressMutation(mutation))
+                                    is SeriesDetailEntry.SubseriesItem -> entry
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun observePersistedSeriesDetail() {
+        viewModelScope.launch {
+            combine(
+                mutableResolvedSeriesId,
+                mutableCollapseSubseries
+            ) { resolvedSeriesId, collapseSubseries ->
+                resolvedSeriesId?.trim()?.takeIf { it.isNotBlank() } to collapseSubseries
+            }
+                .distinctUntilChanged()
+                .flatMapLatest { (resolvedSeriesId, collapseSubseries) ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(emptyList())
+                    } else {
+                        sessionRepository.observeSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = collapseSubseries
+                        )
+                    }
+                }
+                .collect { entries ->
+                    mutableUiState.update { state ->
+                        state.applyPersistedEntries(entries)
+                    }
+                }
+        }
+    }
+
+    private fun observeResolvedSeriesSummary() {
+        viewModelScope.launch {
+            mutableResolvedSeriesId
+                .map { it?.trim()?.takeIf(String::isNotBlank) }
+                .distinctUntilChanged()
+                .flatMapLatest { resolvedSeriesId ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(null)
+                    } else {
+                        sessionRepository.observeSeriesSummary(resolvedSeriesId)
+                    }
+                }
+                .collect { summary ->
+                    mutableUiState.update { state ->
+                        state.copy(title = summary?.name ?: seriesName)
+                    }
+                }
+        }
+    }
+
+    private fun observeCollapseAvailability() {
+        viewModelScope.launch {
+            mutableResolvedSeriesId
+                .map { it?.trim()?.takeIf(String::isNotBlank) }
+                .distinctUntilChanged()
+                .flatMapLatest { resolvedSeriesId ->
+                    if (resolvedSeriesId == null) {
+                        flowOf(false)
+                    } else {
+                        sessionRepository.observeSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = true
+                        ).map { entries ->
+                            entries.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                        }
+                    }
+                }
+                .collect { canCollapseSubseries ->
+                    mutableUiState.update { state ->
+                        state.copy(canCollapseSubseries = canCollapseSubseries)
+                    }
+                }
+        }
+    }
+
+    private fun refresh(
+        policy: DetailRefreshPolicy,
+        isUserRefresh: Boolean = false,
+        silent: Boolean = false
+    ) {
+        val hasLocalEntries = uiState.value.entries.isNotEmpty()
+        mutableUiState.update { state ->
+            state.beginRefresh(
+                hasLocalEntries = hasLocalEntries,
+                silent = silent,
+                isUserRefresh = isUserRefresh
             )
         }
         viewModelScope.launch {
+            val forceRefresh = policy == DetailRefreshPolicy.Force
             val collapseSubseries = mutableCollapseSubseries.value
             val targetSeries = resolveTargetSeriesTarget(forceRefresh = forceRefresh)
-            val resolvedSeriesId = seriesId ?: targetSeries.id
-            val serverResult: AppResult<SeriesEntriesResult>? = if (collapseSubseries && resolvedSeriesId != null) {
-                when (val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
-                    seriesId = resolvedSeriesId,
-                    collapseSubseries = true,
-                    forceRefresh = forceRefresh
-                )) {
-                    is AppResult.Success -> AppResult.Success(
-                        SeriesEntriesResult(
-                            entries = result.value,
-                            hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
-                        )
-                    )
+            val resolvedSeriesId = seriesId
+                ?: targetSeries.id
+                ?: sessionRepository.resolveSeriesIdForActiveLibrary(seriesName)
+            mutableResolvedSeriesId.value = resolvedSeriesId
 
-                    is AppResult.Error -> result
-                }
+            val result = if (resolvedSeriesId != null) {
+                refreshResolvedSeriesEntries(
+                    resolvedSeriesId = resolvedSeriesId,
+                    targetSeries = targetSeries,
+                    collapseSubseries = collapseSubseries,
+                    forceRefresh = forceRefresh
+                )
             } else {
-                null
-            }
-            val shouldLoadFallback = !collapseSubseries ||
-                resolvedSeriesId == null ||
-                serverResult !is AppResult.Success ||
-                serverResult.value.entries.isEmpty() ||
-                serverResult.value.entries.none { entry -> entry is SeriesDetailEntry.SubseriesItem }
-            val fallbackResult = if (shouldLoadFallback) {
                 fetchLegacySeriesEntries(
                     forceRefresh = forceRefresh,
                     targetSeries = targetSeries,
                     collapseSubseries = collapseSubseries
                 )
-            } else {
-                null
             }
-            val fallbackHasSubseries = fallbackResult is AppResult.Success &&
-                fallbackResult.value.hasCollapsibleSubseries
-            val serverHasSubseries = serverResult is AppResult.Success &&
-                serverResult.value.hasCollapsibleSubseries
-            val result = when {
-                fallbackHasSubseries && !serverHasSubseries -> fallbackResult
-                serverResult is AppResult.Success && serverResult.value.entries.isNotEmpty() -> serverResult
-                fallbackResult is AppResult.Success && fallbackResult.value.entries.isNotEmpty() -> fallbackResult
-                serverResult != null -> serverResult
-                fallbackResult != null -> fallbackResult
-                else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
-            }
+
             when (result) {
                 is AppResult.Success -> {
-                    if (result.value.entries.isEmpty() && !forceRefresh) {
-                        refresh(forceRefresh = true, isUserRefresh = false)
+                    if (result.value.entries.isEmpty() && !forceRefresh && !hasLocalEntries) {
+                        refresh(policy = DetailRefreshPolicy.Force)
                         return@launch
                     }
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            isRefreshing = false,
+                    if (result.value.entries.isEmpty() && resolvedSeriesId != null) {
+                        sessionRepository.cacheSeriesDetail(
+                            seriesId = resolvedSeriesId,
+                            collapseSubseries = false,
+                            entries = emptyList()
+                        )
+                    }
+                    mutableUiState.update { state ->
+                        state.applyRefreshSuccess(
                             entries = result.value.entries,
-                            canCollapseSubseries = result.value.hasCollapsibleSubseries
+                            hasCollapsibleSubseries = result.value.hasCollapsibleSubseries
                         )
                     }
                 }
 
                 is AppResult.Error -> {
-                    mutableUiState.update {
-                        it.copy(
+                    mutableUiState.update { state ->
+                        state.copy(
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = result.message
+                            errorMessage = if (state.entries.isNotEmpty()) state.errorMessage else result.message,
+                            hasLoadedOnce = true
                         )
                     }
                 }
             }
         }
+    }
+
+    private suspend fun primeLocalSeriesState() {
+        val resolvedSeriesId = seriesId ?: sessionRepository.resolveCachedSeriesIdForActiveLibrary(seriesName)
+        if (resolvedSeriesId == null) return
+        mutableResolvedSeriesId.value = resolvedSeriesId
+        val collapseSubseries = mutableCollapseSubseries.value
+        val cachedEntries = sessionRepository.peekSeriesDetail(
+            seriesId = resolvedSeriesId,
+            collapseSubseries = collapseSubseries
+        )
+        val cachedCollapsedEntries = sessionRepository.peekSeriesDetail(
+            seriesId = resolvedSeriesId,
+            collapseSubseries = true
+        )
+        val hasVisibleCachedEntries = !cachedEntries.isNullOrEmpty()
+        val hasCollapsedCachedEntries = !cachedCollapsedEntries.isNullOrEmpty()
+        if (!hasVisibleCachedEntries && !hasCollapsedCachedEntries) return
+        mutableUiState.update { state ->
+            state.copy(
+                isLoading = !hasVisibleCachedEntries,
+                entries = cachedEntries ?: state.entries,
+                canCollapseSubseries = cachedCollapsedEntries.orEmpty().any { entry ->
+                    entry is SeriesDetailEntry.SubseriesItem
+                },
+                hasLoadedOnce = hasVisibleCachedEntries || state.hasLoadedOnce
+            )
+        }
+    }
+
+    private suspend fun refreshResolvedSeriesEntries(
+        resolvedSeriesId: String,
+        targetSeries: SeriesMatchTarget,
+        collapseSubseries: Boolean,
+        forceRefresh: Boolean
+    ): AppResult<SeriesEntriesResult> {
+        val serverResult: AppResult<SeriesEntriesResult>? = if (collapseSubseries) {
+            when (val result = sessionRepository.fetchSeriesContentsForActiveLibrary(
+                seriesId = resolvedSeriesId,
+                collapseSubseries = true,
+                forceRefresh = forceRefresh
+            )) {
+                is AppResult.Success -> AppResult.Success(
+                    SeriesEntriesResult(
+                        entries = result.value,
+                        hasCollapsibleSubseries = result.value.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                    )
+                )
+
+                is AppResult.Error -> result
+            }
+        } else {
+            null
+        }
+        val shouldLoadFallback = !collapseSubseries ||
+            serverResult !is AppResult.Success ||
+            serverResult.value.entries.isEmpty() ||
+            serverResult.value.entries.none { entry -> entry is SeriesDetailEntry.SubseriesItem }
+        val fallbackResult = if (shouldLoadFallback) {
+            fetchLegacySeriesEntries(
+                forceRefresh = forceRefresh,
+                targetSeries = targetSeries,
+                collapseSubseries = collapseSubseries
+            )
+        } else {
+            null
+        }
+        val fallbackHasSubseries = fallbackResult is AppResult.Success &&
+            fallbackResult.value.hasCollapsibleSubseries
+        val serverHasSubseries = serverResult is AppResult.Success &&
+            serverResult.value.hasCollapsibleSubseries
+        val result = when {
+            fallbackHasSubseries && !serverHasSubseries -> fallbackResult
+            serverResult is AppResult.Success && serverResult.value.entries.isNotEmpty() -> serverResult
+            fallbackResult is AppResult.Success && fallbackResult.value.entries.isNotEmpty() -> fallbackResult
+            serverResult != null -> serverResult
+            fallbackResult != null -> fallbackResult
+            else -> AppResult.Success(SeriesEntriesResult(entries = emptyList(), hasCollapsibleSubseries = false))
+        }
+        if (result is AppResult.Success) {
+            if (result.value.rawEntries.isNotEmpty()) {
+                sessionRepository.cacheSeriesDetail(
+                    seriesId = resolvedSeriesId,
+                    collapseSubseries = false,
+                    entries = result.value.rawEntries
+                )
+            }
+        }
+        return result
     }
 
     private suspend fun fetchLegacySeriesEntries(
@@ -810,7 +1078,11 @@ class SeriesDetailViewModel @Inject constructor(
                 AppResult.Success(
                     SeriesEntriesResult(
                         entries = displayedEntries,
-                        hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem }
+                        hasCollapsibleSubseries = collapsedEntries.any { entry -> entry is SeriesDetailEntry.SubseriesItem },
+                        rawEntries = sortSeriesBooksForDisplay(
+                            books = detailedBooks.map { it.book },
+                            targetSeriesName = seriesName
+                        ).map { book -> SeriesDetailEntry.BookItem(book) }
                     )
                 )
             }
@@ -1015,10 +1287,10 @@ class SeriesDetailViewModel @Inject constructor(
     private suspend fun fetchAllBooksForSeriesMatching(forceRefresh: Boolean): AppResult<List<BookSummary>> {
         val books = mutableListOf<BookSummary>()
         var page = 0
-        while (page < SERIES_BOOKS_MAX_PAGES) {
+        while (true) {
             when (
                 val result = sessionRepository.fetchBooksForActiveLibrary(
-                    limit = SERIES_BOOKS_PAGE_SIZE,
+                    limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     forceRefresh = forceRefresh
                 )
@@ -1027,7 +1299,7 @@ class SeriesDetailViewModel @Inject constructor(
                     val batch = result.value
                     if (batch.isEmpty()) break
                     books += batch
-                    if (batch.size < SERIES_BOOKS_PAGE_SIZE) break
+                    if (batch.size < SERVER_LIBRARY_PAGE_SIZE) break
                     page += 1
                 }
 
@@ -1044,19 +1316,28 @@ class SeriesDetailViewModel @Inject constructor(
 
     private fun observeDownloadedState() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val ids = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressByBookId = items
-                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+            bookDownloadManager.activeItems.collect { items ->
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = ids,
-                        downloadProgressByBookId = progressByBookId
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
                     )
+                }
+            }
+        }
+    }
+
+    private fun performBookProgressAction(bookId: String, action: BookProgressAction) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = bookProgressActionCoordinator(bookId, action)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                    refresh(policy = DetailRefreshPolicy.Force)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
                 }
             }
         }
@@ -1266,7 +1547,10 @@ private fun buildAuthorDisplayEntries(
 @HiltViewModel
 class NarratorDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val narratorName = savedStateHandle.get<String>(DetailRoute.NARRATOR_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = narratorName))
@@ -1274,12 +1558,45 @@ class NarratorDetailViewModel @Inject constructor(
     private var refreshRequestId: Long = 0L
 
     init {
+        observeDownloadedState()
         observeBookProgressMutations()
+        observeLivePlaybackState()
         refresh(forceRefresh = false)
     }
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    fun markAsFinished(bookId: String) {
+        updateFinishedState(bookId = bookId, finished = true)
+    }
+
+    fun markAsUnfinished(bookId: String) {
+        updateFinishedState(bookId = bookId, finished = false)
+    }
+
+    fun resetBookProgress(bookId: String) {
+        performBookProgressAction(bookId, BookProgressAction.ResetProgress)
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val book = uiState.value.books.firstOrNull { it.id == bookId }
+            if (book == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -1296,8 +1613,8 @@ class NarratorDetailViewModel @Inject constructor(
                 is AppResult.Success -> {
                     if (requestId != refreshRequestId) return@launch
                     val initialBooks = initialResult.value
-                    val initialMatches = initialBooks.filter {
-                        it.narratorName?.equals(narratorName, ignoreCase = true) == true
+                    val initialMatches = initialBooks.filter { book ->
+                        matchesNarrator(book, narratorName)
                     }.sortedBy { it.title.lowercase() }
                     val shouldReconcileFullLibrary = initialBooks.size >= FACET_INITIAL_BOOKS_PAGE_SIZE
                     val canRenderInitialMatches = initialMatches.isNotEmpty() || !shouldReconcileFullLibrary
@@ -1318,8 +1635,8 @@ class NarratorDetailViewModel @Inject constructor(
                     when (val allBooksResult = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
                         is AppResult.Success -> {
                             if (requestId != refreshRequestId) return@launch
-                            val books = allBooksResult.value.filter {
-                                it.narratorName?.equals(narratorName, ignoreCase = true) == true
+                            val books = allBooksResult.value.filter { book ->
+                                matchesNarrator(book, narratorName)
                             }.sortedBy { it.title.lowercase() }
                             mutableUiState.update {
                                 it.copy(
@@ -1364,6 +1681,75 @@ class NarratorDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun observeDownloadedState() {
+        viewModelScope.launch {
+            bookDownloadManager.activeItems.collect { items ->
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
+                    )
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateFinishedState(bookId: String, finished: Boolean) {
+        val action = if (finished) {
+            BookProgressAction.MarkFinished
+        } else {
+            BookProgressAction.MarkUnfinished
+        }
+        performBookProgressAction(bookId, action)
+    }
+
+    private fun performBookProgressAction(bookId: String, action: BookProgressAction) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = bookProgressActionCoordinator(bookId, action)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
+                }
+            }
+        }
+    }
+
+    private fun matchesNarrator(book: BookSummary, narratorName: String): Boolean {
+        val normalizedNarrator = narratorName.trim()
+        if (normalizedNarrator.isBlank()) return false
+        return buildList {
+            book.narratorNames.forEach { candidate ->
+                candidate.trim().takeIf { it.isNotBlank() }?.let(::add)
+            }
+            book.narratorName?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+        }
+            .flatMap { narrator ->
+                narrator
+                    .split(Regex("\\s*(?:,|&| and )\\s*", RegexOption.IGNORE_CASE))
+                    .map { it.trim() }
+            }
+            .any { candidate -> candidate.equals(normalizedNarrator, ignoreCase = true) }
     }
 }
 
@@ -1460,20 +1846,76 @@ class GenresBrowseViewModel @Inject constructor(
 @HiltViewModel
 class GenreDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val sessionRepository: SessionRepository
+    private val sessionRepository: SessionRepository,
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val genreName = savedStateHandle.get<String>(DetailRoute.GENRE_NAME_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(FacetBooksUiState(isLoading = true, title = genreName))
     val uiState: StateFlow<FacetBooksUiState> = mutableUiState.asStateFlow()
+    private val mutableLayoutMode = MutableStateFlow(BooksLayoutMode.Grid)
+    val layoutMode: StateFlow<BooksLayoutMode> = mutableLayoutMode.asStateFlow()
+    private val mutableSortKey = MutableStateFlow(BooksSortKey.Title)
+    val sortKey: StateFlow<BooksSortKey> = mutableSortKey.asStateFlow()
     private var refreshRequestId: Long = 0L
 
     init {
+        restoreUiPreferences()
+        observeDownloadedState()
         observeBookProgressMutations()
+        observeLivePlaybackState()
         refresh(forceRefresh = false)
     }
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun clearActionMessage() {
+        mutableUiState.update { it.copy(actionMessage = null) }
+    }
+
+    fun setLayoutMode(value: BooksLayoutMode) {
+        mutableLayoutMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setBooksLayoutMode(value.name)
+        }
+    }
+
+    fun setSortKey(value: BooksSortKey) {
+        mutableSortKey.value = value
+        viewModelScope.launch {
+            sessionPreferences.setBooksSortKey(value.name)
+        }
+    }
+
+    fun markAsFinished(bookId: String) {
+        updateFinishedState(bookId = bookId, finished = true)
+    }
+
+    fun markAsUnfinished(bookId: String) {
+        updateFinishedState(bookId = bookId, finished = false)
+    }
+
+    fun resetBookProgress(bookId: String) {
+        performBookProgressAction(bookId, BookProgressAction.ResetProgress)
+    }
+
+    fun toggleDownload(bookId: String) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            val book = uiState.value.books.firstOrNull { it.id == bookId }
+            if (book == null) {
+                mutableUiState.update { it.copy(actionMessage = "Unable to find book for download.") }
+                return@launch
+            }
+            when (val result = bookDownloadManager.toggleDownload(book)) {
+                is AppResult.Success -> mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
+            }
+        }
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -1550,11 +1992,75 @@ class GenreDetailViewModel @Inject constructor(
         }
     }
 
+    private fun restoreUiPreferences() {
+        viewModelScope.launch {
+            val pref = sessionPreferences.state.first()
+            mutableLayoutMode.value = pref.booksLayoutMode
+                ?.let { raw -> enumValueOrNull<BooksLayoutMode>(raw) }
+                ?: BooksLayoutMode.Grid
+            mutableSortKey.value = pref.booksSortKey
+                ?.let { raw -> enumValueOrNull<BooksSortKey>(raw) }
+                ?: BooksSortKey.Title
+        }
+    }
+
+    private fun observeDownloadedState() {
+        viewModelScope.launch {
+            bookDownloadManager.activeItems.collect { items ->
+                mutableUiState.update {
+                    it.copy(
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
+                    )
+                }
+            }
+        }
+    }
+
     private fun observeBookProgressMutations() {
         viewModelScope.launch {
             sessionRepository.observeBookProgressMutations().collect { mutation ->
                 mutableUiState.update { state ->
                     state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateFinishedState(bookId: String, finished: Boolean) {
+        val action = if (finished) {
+            BookProgressAction.MarkFinished
+        } else {
+            BookProgressAction.MarkUnfinished
+        }
+        performBookProgressAction(bookId, action)
+    }
+
+    private fun performBookProgressAction(bookId: String, action: BookProgressAction) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val result = bookProgressActionCoordinator(bookId, action)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(actionMessage = result.message) }
                 }
             }
         }
@@ -1669,8 +2175,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.BookItem -> {
                                 AuthorGridBookItem(
                                     book = entry.book,
-                                    isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                    isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                     onClick = { onBookClick(entry.book.id) },
                                     onAddToCollection = { addToListBookId = entry.book.id },
                                     onMarkAsFinished = {
@@ -1688,8 +2194,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.SeriesItem -> {
                                 AuthorSeriesGridItem(
                                     entry = entry,
-                                    isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                    isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                     onClick = { onSeriesClick(entry.seriesName) }
                                 )
                             }
@@ -1757,8 +2263,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.BookItem -> {
                                 AuthorBookRow(
                                     book = entry.book,
-                                    isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                    isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                     onClick = { onBookClick(entry.book.id) },
                                     onAddToCollection = { addToListBookId = entry.book.id },
                                     onMarkAsFinished = {
@@ -1776,8 +2282,8 @@ fun AuthorDetailScreen(
                             is AuthorDisplayEntry.SeriesItem -> {
                                 AuthorSeriesListRow(
                                     entry = entry,
-                                    isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                    downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                    isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                     onClick = { onSeriesClick(entry.seriesName) }
                                 )
                             }
@@ -2140,7 +2646,7 @@ private fun AuthorSeriesGridItem(
             contentAlignment = Alignment.TopCenter
         ) {
             FacetSeriesStackCoverLayers(
-                coverUrl = lead.coverUrl,
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = StandardGridCoverWidth,
@@ -2332,7 +2838,7 @@ private fun AuthorSeriesListRow(
                 val layerCount = entry.count.coerceIn(2, 3)
                 val frameSize = 88.dp
                 FacetSeriesStackCoverLayers(
-                    coverUrl = lead.coverUrl,
+                    coverUrls = entry.stackCoverUrls(),
                     contentDescription = entry.seriesName,
                     layerCount = layerCount,
                     frameWidth = frameSize,
@@ -2649,8 +3155,8 @@ fun SeriesDetailScreen(
                                         book = book,
                                         orderLabel = orderLabel,
                                         onClick = { onBookClick(book.id) },
-                                        isDownloaded = uiState.downloadedBookIds.contains(book.id),
-                                        downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                        isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                        downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
                                         onAddToCollection = { addToListBookId = book.id },
                                         onMarkAsFinished = {
                                             if (book.hasFinishedStatusProgress()) {
@@ -2691,8 +3197,8 @@ fun SeriesDetailScreen(
                                                 orderLabel = orderLabel,
                                                 modifier = Modifier.weight(1f),
                                                 onClick = { onBookClick(book.id) },
-                                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
-                                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
                                                 onAddToCollection = { addToListBookId = book.id },
                                                 onMarkAsFinished = {
                                                     if (book.hasFinishedStatusProgress()) {
@@ -2733,11 +3239,13 @@ fun SeriesDetailScreen(
             }
 
             else -> {
-                Text(
-                    text = "No series items found.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (uiState.hasLoadedOnce) {
+                    Text(
+                        text = "No series items found.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
@@ -2746,6 +3254,14 @@ fun SeriesDetailScreen(
             state = refreshState,
             modifier = Modifier.align(Alignment.TopCenter)
         )
+
+        if (uiState.isRefreshing && uiState.entries.isNotEmpty()) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+            )
+        }
     }
 
     val targetBookId = addToListBookId
@@ -2788,7 +3304,9 @@ fun SeriesDetailScreen(
 class CollectionDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val collectionId = savedStateHandle.get<String>(DetailRoute.COLLECTION_ID_ARG).orEmpty()
     private val collectionName = savedStateHandle.get<String>(DetailRoute.COLLECTION_NAME_ARG).orEmpty()
@@ -2809,6 +3327,7 @@ class CollectionDetailViewModel @Inject constructor(
             mutableListMode.value = sessionPreferences.state.first().collectionDetailListMode
         }
         observeBookProgressMutations()
+        observeLivePlaybackState()
         refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
@@ -2853,15 +3372,9 @@ class CollectionDetailViewModel @Inject constructor(
     fun resetBookProgress(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refresh(forceRefresh = true, showLoader = false)
                 }
 
@@ -2883,6 +3396,23 @@ class CollectionDetailViewModel @Inject constructor(
                     val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
                     FacetBooksMemoryCache.updateCollectionBooks(collectionId, updatedBooks)
                     state.copy(books = updatedBooks)
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
+                        FacetBooksMemoryCache.updateCollectionBooks(collectionId, updatedBooks)
+                        state.copy(books = updatedBooks)
+                    }
                 }
             }
         }
@@ -3060,7 +3590,9 @@ fun CollectionDetailScreen(
 class PlaylistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val playlistId = savedStateHandle.get<String>(DetailRoute.PLAYLIST_ID_ARG).orEmpty()
     private val playlistName = savedStateHandle.get<String>(DetailRoute.PLAYLIST_NAME_ARG).orEmpty()
@@ -3081,6 +3613,7 @@ class PlaylistDetailViewModel @Inject constructor(
             mutableListMode.value = sessionPreferences.state.first().playlistDetailListMode
         }
         observeBookProgressMutations()
+        observeLivePlaybackState()
         refresh(forceRefresh = false, showLoader = initialBooks.isEmpty())
     }
 
@@ -3140,15 +3673,9 @@ class PlaylistDetailViewModel @Inject constructor(
     fun resetBookProgress(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refresh(forceRefresh = true, showLoader = false)
                 }
 
@@ -3170,6 +3697,23 @@ class PlaylistDetailViewModel @Inject constructor(
                     val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
                     FacetBooksMemoryCache.updatePlaylistBooks(playlistId, updatedBooks)
                     state.copy(books = updatedBooks)
+                }
+            }
+        }
+    }
+
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        val updatedBooks = state.books.map { it.withBookProgressMutation(mutation) }
+                        FacetBooksMemoryCache.updatePlaylistBooks(playlistId, updatedBooks)
+                        state.copy(books = updatedBooks)
+                    }
                 }
             }
         }
@@ -3742,22 +4286,275 @@ fun GenresBrowseScreen(
     }
 }
 
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun GenreDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: GenreDetailViewModel = hiltViewModel()
+    viewModel: GenreDetailViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    FacetBooksScreen(
-        uiState = uiState,
-        onBackClick = onBackClick,
-        onHomeClick = onHomeClick,
-        onBookClick = onBookClick,
-        onRetry = viewModel::refresh,
-        showMoreIcon = true
+    val layoutMode by viewModel.layoutMode.collectAsStateWithLifecycle()
+    val sortKey by viewModel.sortKey.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
+    var optionsMenuExpanded by remember { mutableStateOf(false) }
+    var collectionPickerBookId by rememberSaveable { mutableStateOf<String?>(null) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading,
+        onRefresh = viewModel::refresh
     )
+    val displayBooks = remember(uiState.books, sortKey) {
+        uiState.books.sortedWith(facetBooksSortComparator(sortKey))
+    }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(collectionPickerBookId) {
+        if (!collectionPickerBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FacetTopBar(
+                title = uiState.title,
+                onBackClick = onBackClick,
+                onHomeClick = onHomeClick,
+                modifier = Modifier.weight(1f)
+            )
+            Box {
+                IconButton(
+                    onClick = { optionsMenuExpanded = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Options"
+                    )
+                }
+                AppDropdownMenu(
+                    expanded = optionsMenuExpanded,
+                    onDismissRequest = { optionsMenuExpanded = false }
+                ) {
+                    AppDropdownMenuItem(
+                        text = { Text("Grid") },
+                        leadingIcon = { Icon(imageVector = Icons.Outlined.GridView, contentDescription = null) },
+                        trailingIcon = {
+                            if (layoutMode == BooksLayoutMode.Grid) {
+                                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            viewModel.setLayoutMode(BooksLayoutMode.Grid)
+                            optionsMenuExpanded = false
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("List") },
+                        leadingIcon = { Icon(imageVector = Icons.AutoMirrored.Outlined.ViewList, contentDescription = null) },
+                        trailingIcon = {
+                            if (layoutMode == BooksLayoutMode.List) {
+                                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            viewModel.setLayoutMode(BooksLayoutMode.List)
+                            optionsMenuExpanded = false
+                        }
+                    )
+                    HorizontalDivider()
+                    BooksSortKey.entries.forEach { option ->
+                        val isSelected = sortKey == option
+                        AppDropdownMenuItem(
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    Text(option.label)
+                                    if (isSelected) {
+                                        Text(
+                                            text = option.hint,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            },
+                            trailingIcon = {
+                                if (isSelected) {
+                                    Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                                }
+                            },
+                            onClick = {
+                                viewModel.setSortKey(option)
+                                optionsMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.isLoading && displayBooks.isEmpty() -> {
+                    Text(
+                        text = "Loading...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                uiState.errorMessage != null && displayBooks.isEmpty() -> {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = uiState.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::refresh) {
+                            Text("Retry")
+                        }
+                    }
+                }
+
+                displayBooks.isEmpty() -> {
+                    Text(
+                        text = "No books found.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                layoutMode == BooksLayoutMode.Grid -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        gridItems(displayBooks, key = { it.id }) { book ->
+                            BookGridItem(
+                                book = book,
+                                onClick = { onBookClick(book.id) },
+                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
+                                onAddToCollection = { collectionPickerBookId = book.id },
+                                onMarkFinished = {
+                                    if (book.hasFinishedProgress()) {
+                                        viewModel.markAsUnfinished(book.id)
+                                    } else {
+                                        viewModel.markAsFinished(book.id)
+                                    }
+                                },
+                                onResetProgress = { viewModel.resetBookProgress(book.id) },
+                                onToggleDownload = { viewModel.toggleDownload(book.id) }
+                            )
+                        }
+                    }
+                }
+
+                else -> {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(bottom = 120.dp)
+                    ) {
+                        items(displayBooks, key = { it.id }) { book ->
+                            BookListItem(
+                                book = book,
+                                onClick = { onBookClick(book.id) },
+                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
+                                onAddToCollection = { collectionPickerBookId = book.id },
+                                onMarkFinished = {
+                                    if (book.hasFinishedProgress()) {
+                                        viewModel.markAsUnfinished(book.id)
+                                    } else {
+                                        viewModel.markAsFinished(book.id)
+                                    }
+                                },
+                                onResetProgress = { viewModel.resetBookProgress(book.id) },
+                                onToggleDownload = { viewModel.toggleDownload(book.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
+
+    val targetBookId = collectionPickerBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                collectionPickerBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
 }
 
 @Composable
@@ -3765,16 +4562,87 @@ fun NarratorDetailScreen(
     onBackClick: () -> Unit,
     onBookClick: (String) -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: NarratorDetailViewModel = hiltViewModel()
+    viewModel: NarratorDetailViewModel = hiltViewModel(),
+    collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
+    var collectionPickerBookId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearActionMessage()
+    }
+    LaunchedEffect(collectionPickerBookId) {
+        if (!collectionPickerBookId.isNullOrBlank()) {
+            collectionPickerViewModel.loadDestinations(forceRefresh = false)
+        }
+    }
+    LaunchedEffect(collectionPickerUiState.actionMessage) {
+        val message = collectionPickerUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(collectionPickerUiState.errorMessage) {
+        val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        collectionPickerViewModel.clearMessages()
+    }
+
     FacetBooksScreen(
         uiState = uiState,
         onBackClick = onBackClick,
         onHomeClick = onHomeClick,
         onBookClick = onBookClick,
-        onRetry = viewModel::refresh
+        onRetry = viewModel::refresh,
+        onAddToCollection = { bookId -> collectionPickerBookId = bookId },
+        onMarkFinishedToggle = { book ->
+            if (book.hasFinishedProgress()) {
+                viewModel.markAsUnfinished(book.id)
+            } else {
+                viewModel.markAsFinished(book.id)
+            }
+        },
+        onResetProgress = { bookId -> viewModel.resetBookProgress(bookId) },
+        onToggleDownload = { bookId -> viewModel.toggleDownload(bookId) }
     )
+
+    val targetBookId = collectionPickerBookId
+    if (!targetBookId.isNullOrBlank()) {
+        AddToListDialog(
+            uiState = collectionPickerUiState,
+            onDismiss = {
+                collectionPickerBookId = null
+                collectionPickerViewModel.clearMessages()
+            },
+            onAddToExistingCollection = { collectionId ->
+                collectionPickerViewModel.addBookToExistingCollection(
+                    bookId = targetBookId,
+                    collectionId = collectionId
+                )
+            },
+            onCreateCollection = { name ->
+                collectionPickerViewModel.createCollectionAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            },
+            onAddToExistingPlaylist = { playlistId ->
+                collectionPickerViewModel.addBookToExistingPlaylist(
+                    bookId = targetBookId,
+                    playlistId = playlistId
+                )
+            },
+            onCreatePlaylist = { name ->
+                collectionPickerViewModel.createPlaylistAndAddBook(
+                    bookId = targetBookId,
+                    name = name
+                )
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterialApi::class)
@@ -3785,7 +4653,11 @@ private fun FacetBooksScreen(
     onHomeClick: (() -> Unit)? = null,
     onBookClick: (String) -> Unit,
     onRetry: () -> Unit,
-    showMoreIcon: Boolean = false
+    showMoreIcon: Boolean = false,
+    onAddToCollection: ((String) -> Unit)? = null,
+    onMarkFinishedToggle: ((BookSummary) -> Unit)? = null,
+    onResetProgress: ((String) -> Unit)? = null,
+    onToggleDownload: ((String) -> Unit)? = null
 ) {
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
@@ -3843,10 +4715,28 @@ private fun FacetBooksScreen(
                         contentPadding = PaddingValues(bottom = 120.dp)
                     ) {
                         items(uiState.books, key = { it.id }) { book ->
-                            FacetBookRow(
-                                book = book,
-                                onClick = { onBookClick(book.id) }
-                            )
+                            if (
+                                onAddToCollection != null &&
+                                onMarkFinishedToggle != null &&
+                                onResetProgress != null &&
+                                onToggleDownload != null
+                            ) {
+                                BookListItem(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) },
+                                    isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
+                                    onAddToCollection = { onAddToCollection(book.id) },
+                                    onMarkFinished = { onMarkFinishedToggle(book) },
+                                    onResetProgress = { onResetProgress(book.id) },
+                                    onToggleDownload = { onToggleDownload(book.id) }
+                                )
+                            } else {
+                                FacetBookRow(
+                                    book = book,
+                                    onClick = { onBookClick(book.id) }
+                                )
+                            }
                         }
                     }
                 }
@@ -3866,13 +4756,14 @@ private fun FacetTopBar(
     title: String,
     onBackClick: () -> Unit,
     onHomeClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
     showMoreIcon: Boolean = false,
     trailingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     trailingIconDescription: String? = null,
     onTrailingIconClick: (() -> Unit)? = null
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(
@@ -4086,7 +4977,8 @@ private fun List<SeriesDetailEntry>.totalSeriesBookCount(): Int {
 private data class SeriesCoverStackItem(
     val title: String,
     val coverUrl: String?,
-    val bookId: String? = null
+    val bookId: String? = null,
+    val libraryId: String? = null
 )
 
 private fun SeriesDetailEntry.toSeriesCoverStackItem(): SeriesCoverStackItem {
@@ -4094,7 +4986,8 @@ private fun SeriesDetailEntry.toSeriesCoverStackItem(): SeriesCoverStackItem {
         is SeriesDetailEntry.BookItem -> SeriesCoverStackItem(
             title = book.title,
             coverUrl = book.coverUrl,
-            bookId = book.id
+            bookId = book.id,
+            libraryId = book.libraryId
         )
 
         is SeriesDetailEntry.SubseriesItem -> SeriesCoverStackItem(
@@ -4291,9 +5184,18 @@ private fun SeriesCoverStack(
             )
             val frontBookId = frontItem.bookId
             if (frontBookId != null) {
+                val frontBook = BookSummary(
+                    id = frontBookId,
+                    libraryId = frontItem.libraryId.orEmpty(),
+                    title = frontItem.title,
+                    authorName = "",
+                    narratorName = null,
+                    durationSeconds = null,
+                    coverUrl = frontItem.coverUrl
+                )
                 DownloadBadge(
-                    isDownloaded = downloadedBookIds.contains(frontBookId),
-                    downloadProgressPercent = downloadProgressByBookId[frontBookId],
+                    isDownloaded = downloadedBookIds.containsDownloadedBook(frontBook),
+                    downloadProgressPercent = downloadProgressByBookId.downloadProgressForBook(frontBook),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .offset(x = (-8).dp * scale, y = 8.dp * scale)

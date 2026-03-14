@@ -7,8 +7,13 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.BookProgressAction
+import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
 import com.stillshelf.app.downloads.manager.BookDownloadManager
-import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.playback.controller.PlaybackController
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -40,7 +45,9 @@ data class SearchUiState(
 class SearchViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SearchUiState())
     val uiState: StateFlow<SearchUiState> = mutableUiState.asStateFlow()
@@ -71,18 +78,11 @@ class SearchViewModel @Inject constructor(
                 }
         }
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressByBookId = items
-                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+            bookDownloadManager.activeItems.collect { items ->
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
-                        downloadProgressByBookId = progressByBookId
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
                     )
                 }
             }
@@ -93,6 +93,18 @@ class SearchViewModel @Inject constructor(
                     state.copy(
                         books = state.books.map { it.withBookProgressMutation(mutation) }
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    if (state.books.none { it.id == mutation.bookId }) {
+                        state
+                    } else {
+                        state.copy(books = state.books.map { it.withBookProgressMutation(mutation) })
+                    }
                 }
             }
         }
@@ -159,10 +171,10 @@ class SearchViewModel @Inject constructor(
     fun markAsFinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = true)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkFinished)) {
                 is AppResult.Success -> {
                     mutableUiState.update {
-                        it.copy(actionMessage = "Marked as finished. Progress is now 100%.")
+                        it.copy(actionMessage = result.value.message)
                     }
                 }
 
@@ -176,9 +188,9 @@ class SearchViewModel @Inject constructor(
     fun markAsUnfinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId = bookId, finished = false)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkUnfinished)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                 }
 
                 is AppResult.Error -> {

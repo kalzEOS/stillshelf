@@ -225,6 +225,8 @@ import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.WideCoverBackgroundBlur
+import com.stillshelf.app.ui.common.containsDownloadedBook
+import com.stillshelf.app.ui.common.downloadProgressForBook
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.navigation.AuthRoute
 import com.stillshelf.app.ui.navigation.BrowseRoute
@@ -357,6 +359,17 @@ private sealed interface BooksGridEntry {
         val leadBook: BookSummary get() = books.first()
         val count: Int get() = books.size
     }
+}
+
+private fun BooksGridEntry.SeriesStack.stackCoverUrls(): List<String> {
+    return books
+        .asSequence()
+        .mapNotNull { it.coverUrl?.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+        .take(3)
+        .toList()
+        .ifEmpty { listOfNotNull(leadBook.coverUrl) }
 }
 
 internal fun normalizeSeriesStackCoverUrls(coverUrls: List<String>): List<String> {
@@ -888,8 +901,8 @@ fun HomeScreen(
                                                 cardHeight = continueListeningCardHeight,
                                                 posterWidth = continueListeningPosterWidth,
                                                 posterHeight = continueListeningPosterHeight,
-                                                isDownloaded = uiState.downloadedBookIds.contains(item.book.id),
-                                                downloadProgressPercent = uiState.downloadProgressByBookId[item.book.id],
+                                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(item.book),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(item.book),
                                                 onClick = { onOpenPlayer(item.book.id) },
                                                 onGoToBook = { onOpenBook(item.book.id) },
                                                 onAddToCollection = { addToListBookId = item.book.id },
@@ -940,8 +953,8 @@ fun HomeScreen(
                                             width = homeShelfPosterWidth,
                                             height = homeShelfPosterHeight,
                                             contentScale = ContentScale.Fit,
-                                            showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                            showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                         )
                                         Row(
                                             modifier = Modifier.width(homeShelfPosterWidth),
@@ -1014,7 +1027,7 @@ fun HomeScreen(
                                                     AppDropdownMenuItem(
                                                         text = {
                                                             Text(
-                                                                if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                     "Remove Download"
                                                                 } else {
                                                                     "Download"
@@ -1095,8 +1108,8 @@ fun HomeScreen(
                                                     width = homeShelfPosterWidth,
                                                     height = homeShelfPosterHeight,
                                                     contentScale = ContentScale.Fit,
-                                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                                    downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                                    showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                                    downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                                 )
                                                 Row(
                                                     modifier = Modifier.width(homeShelfPosterWidth),
@@ -1173,7 +1186,7 @@ fun HomeScreen(
                                                             AppDropdownMenuItem(
                                                                 text = {
                                                                     Text(
-                                                                        if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                        if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                             "Remove Download"
                                                                         } else {
                                                                             "Download"
@@ -1224,8 +1237,8 @@ fun HomeScreen(
                                     items(seriesItems, key = { it.seriesName }) { series ->
                                         SeriesStackCard(
                                             series = series,
-                                            isDownloaded = uiState.downloadedBookIds.contains(series.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[series.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(series.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(series.leadBook),
                                             onClick = { onOpenSeries(series.seriesName) }
                                         )
                                     }
@@ -1267,8 +1280,8 @@ fun HomeScreen(
                                                 width = homeShelfPosterWidth,
                                                 height = homeShelfPosterHeight,
                                                 contentScale = ContentScale.Fit,
-                                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
-                                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id]
+                                                showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book)
                                             )
                                             Row(
                                                 modifier = Modifier.width(homeShelfPosterWidth),
@@ -1341,7 +1354,7 @@ fun HomeScreen(
                                                         AppDropdownMenuItem(
                                                             text = {
                                                                 Text(
-                                                                    if (uiState.downloadedBookIds.contains(book.id)) {
+                                                                    if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
                                                                         "Remove Download"
                                                                     } else {
                                                                         "Download"
@@ -1790,8 +1803,8 @@ fun BrowseScreen(
                                         BookGridItem(
                                             book = entry.book,
                                             onClick = { onBookClick(entry.book.id) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
                                             onMarkFinished = {
                                                 if (entry.book.hasFinishedProgress()) {
@@ -1809,8 +1822,8 @@ fun BrowseScreen(
                                         SeriesStackGridItem(
                                             entry = entry,
                                             onClick = { onSeriesClick(entry.seriesName) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
                                             onMarkFinished = {
                                                 if (entry.leadBook.hasFinishedProgress()) {
@@ -1837,8 +1850,8 @@ fun BrowseScreen(
                                         BookListItem(
                                             book = entry.book,
                                             onClick = { onBookClick(entry.book.id) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.book.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.book.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.book),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.book),
                                             onAddToCollection = { collectionPickerBookId = entry.book.id },
                                             onMarkFinished = {
                                                 if (entry.book.hasFinishedProgress()) {
@@ -1856,8 +1869,8 @@ fun BrowseScreen(
                                         SeriesStackListItem(
                                             entry = entry,
                                             onClick = { onSeriesClick(entry.seriesName) },
-                                            isDownloaded = uiState.downloadedBookIds.contains(entry.leadBook.id),
-                                            downloadProgressPercent = uiState.downloadProgressByBookId[entry.leadBook.id],
+                                            isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(entry.leadBook),
+                                            downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(entry.leadBook),
                                             onAddToCollection = { collectionPickerBookId = entry.leadBook.id },
                                             onMarkFinished = {
                                                 if (entry.leadBook.hasFinishedProgress()) {
@@ -1922,7 +1935,7 @@ fun BrowseScreen(
 }
 
 @Composable
-private fun BookGridItem(
+internal fun BookGridItem(
     book: BookSummary,
     onClick: () -> Unit,
     isDownloaded: Boolean,
@@ -2056,7 +2069,7 @@ private fun SeriesStackGridItem(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrls = listOfNotNull(book.coverUrl),
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,
@@ -2179,7 +2192,7 @@ private fun SeriesStackGridItem(
 }
 
 @Composable
-private fun BookListItem(
+internal fun BookListItem(
     book: BookSummary,
     onClick: () -> Unit,
     isDownloaded: Boolean,
@@ -2324,10 +2337,7 @@ private fun SeriesStackListItem(
             val layerCount = entry.books.size.coerceIn(2, 3)
             val frameSize = 88.dp
             SeriesStackCoverLayers(
-                coverUrls = entry.books
-                    .asSequence()
-                    .mapNotNull { it.coverUrl }
-                    .toList(),
+                coverUrls = entry.stackCoverUrls(),
                 contentDescription = entry.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameSize,
@@ -2525,12 +2535,8 @@ fun BookmarksBrowseScreen(
     )
 
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -2849,12 +2855,8 @@ fun CollectionsBrowseScreen(
         if (!uiState.isLoading) manualRefreshInProgress = false
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -3075,6 +3077,9 @@ fun CollectionsBrowseScreen(
                                 MaterialTheme.colorScheme.error
                             }
                         )
+                        TextButton(onClick = viewModel::refreshLibrary) {
+                            Text(if (uiState.errorMessage == null) "Refresh" else "Retry")
+                        }
                     }
                 }
             }
@@ -3179,12 +3184,8 @@ fun PlaylistsBrowseScreen(
         if (!uiState.isLoading) manualRefreshInProgress = false
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
 
@@ -3417,6 +3418,9 @@ fun PlaylistsBrowseScreen(
                             createDialogVisible = true
                         }) {
                             Text("Create Playlist")
+                        }
+                        TextButton(onClick = viewModel::refreshLibrary) {
+                            Text(if (uiState.errorMessage == null) "Refresh" else "Retry")
                         }
                     }
                 }
@@ -3816,18 +3820,20 @@ fun SeriesBrowseScreen(
                 }
 
                 else -> {
-                    Column(
-                        modifier = Modifier.align(Alignment.Center),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "No Series found.",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(onClick = viewModel::refresh) {
-                            Text("Retry")
+                    if (uiState.hasLoadedOnce) {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "No Series found.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(onClick = viewModel::refresh) {
+                                Text("Retry")
+                            }
                         }
                     }
                 }
@@ -4009,8 +4015,8 @@ fun SearchScreen(
                         items(matchedBooks.take(20), key = { it.id }) { book ->
                             SearchBookRow(
                                 book = book,
-                                isDownloaded = uiState.downloadedBookIds.contains(book.id),
-                                downloadProgressPercent = uiState.downloadProgressByBookId[book.id],
+                                isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(book),
+                                downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(book),
                                 onAddToCollection = { collectionPickerBookId = book.id },
                                 onMarkFinished = {
                                     if (book.hasFinishedProgress()) {
@@ -4449,7 +4455,7 @@ fun DownloadsScreen(
                                 shape = RoundedCornerShape(8.dp),
                                 contentScale = ContentScale.Fit,
                                 backgroundBlur = WideCoverBackgroundBlur,
-                                showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
                                 downloadProgressPercent = downloadItem?.progressPercent
                             )
                             Column(
@@ -6000,12 +6006,8 @@ fun BookDetailScreen(
         collectionPickerViewModel.clearMessages()
     }
     LaunchedEffect(lifecycleOwner) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshSilent()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshSilent()
-            }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
     val detailBook = uiState.detail?.book
@@ -6038,7 +6040,6 @@ fun BookDetailScreen(
     val finishedFromDetailProgress = resolvedDetailProgress >= 0.995
     val effectiveDetailFinished = when {
         isPlayingDetailBookNow &&
-            playbackUiState.isPlaying &&
             resolvedDetailProgress < 0.995 &&
             (detailCurrentSeconds ?: 0.0) > 0.5 -> false
         else -> (detailBook?.isFinished == true) || finishedFromDetailProgress
@@ -6102,7 +6103,7 @@ fun BookDetailScreen(
                                 val hasActiveDownload = (uiState.downloadProgressPercent ?: -1) in 0..99
                                 Text(
                                     if (
-                                        uiState.detail?.book?.id?.let(uiState.downloadedBookIds::contains) == true ||
+                                        uiState.downloadedBookIds.containsDownloadedBook(uiState.detail?.book) ||
                                         hasActiveDownload
                                     ) {
                                         "Remove Download"
@@ -6302,7 +6303,7 @@ fun BookDetailScreen(
                                     limitInsetToAvoidVerticalLetterbox = true,
                                     forcedFrameSideInset = detailForcedFrameSideInset,
                                     disableBlurredFrame = false,
-                                    showDownloadIndicator = uiState.downloadedBookIds.contains(book.id),
+                                    showDownloadIndicator = uiState.downloadedBookIds.containsDownloadedBook(book),
                                     downloadProgressPercent = uiState.downloadProgressPercent
                                 )
                             }
@@ -6643,6 +6644,13 @@ fun BookDetailScreen(
             }
         }
         }
+        if (uiState.isRefreshing && uiState.detail != null) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+            )
+        }
         SnackbarHost(
             hostState = detailSnackbarHostState,
             modifier = Modifier
@@ -6759,13 +6767,13 @@ fun PlayerScreen(
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
-    val downloadedBookIds by viewModel.downloadedBookIds.collectAsStateWithLifecycle()
+    val downloadedBookKeys by viewModel.downloadedBookKeys.collectAsStateWithLifecycle()
     val playerDownloadProgressPercent by viewModel.downloadProgressPercent.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
     val bookId = book?.id
-    val isBookDownloaded = bookId != null && downloadedBookIds.contains(bookId)
+    val isBookDownloaded = downloadedBookKeys.containsDownloadedBook(book)
     val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
     val downloadToolText = if (hasActivePlayerDownload) {
@@ -6775,13 +6783,9 @@ fun PlayerScreen(
     } else {
         "Download"
     }
-    LaunchedEffect(lifecycleOwner, bookId) {
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.refreshBookMetadata()
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                viewModel.refreshBookMetadata()
-            }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
         }
     }
     val durationSeconds = when {
@@ -6801,8 +6805,12 @@ fun PlayerScreen(
     }
     val effectivePlayerFinished = if (book != null) {
         val finishedFromPlayback = progress >= 0.995f
-        val finishedFromBook = book.hasFinishedProgress()
-        finishedFromPlayback || finishedFromBook
+        when {
+            playbackUiState.book?.id == book.id &&
+                progress < 0.995f &&
+                positionSeconds > 0.5 -> false
+            else -> finishedFromPlayback || book.hasFinishedProgress()
+        }
     } else {
         false
     }
@@ -10609,7 +10617,7 @@ private fun SeriesStackCard(
             contentAlignment = Alignment.TopCenter
         ) {
             SeriesStackCoverLayers(
-                coverUrls = listOfNotNull(book.coverUrl),
+                coverUrls = series.coverUrls.ifEmpty { listOfNotNull(book.coverUrl) },
                 contentDescription = series.seriesName,
                 layerCount = layerCount,
                 frameWidth = frameWidth,

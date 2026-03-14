@@ -19,6 +19,7 @@ data class BookSummary(
     val title: String,
     val authorName: String,
     val narratorName: String?,
+    val narratorNames: List<String> = emptyList(),
     val durationSeconds: Double?,
     val coverUrl: String?,
     val seriesName: String? = null,
@@ -87,7 +88,8 @@ data class HomeFeed(
 data class SeriesStackSummary(
     val seriesName: String,
     val leadBook: BookSummary,
-    val count: Int
+    val count: Int,
+    val coverUrls: List<String> = emptyList()
 )
 
 sealed interface SeriesDetailEntry {

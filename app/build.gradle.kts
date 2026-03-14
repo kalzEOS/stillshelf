@@ -1,9 +1,19 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt.android)
 }
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use(keystoreProperties::load)
+}
+val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { key -> !keystoreProperties.getProperty(key).isNullOrBlank() }
 
 android {
     namespace = "com.stillshelf.app"
@@ -13,8 +23,8 @@ android {
         applicationId = "com.stillshelf.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 26
-        versionName = "0.1.8"
+        versionCode = 32
+        versionName = "0.1.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -31,9 +41,23 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -88,6 +112,9 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.google.material)
     implementation(libs.okhttp)
+    implementation(libs.socket.io.client) {
+        exclude(group = "org.json", module = "json")
+    }
     implementation(libs.coil.compose)
     implementation(libs.androidx.media)
 

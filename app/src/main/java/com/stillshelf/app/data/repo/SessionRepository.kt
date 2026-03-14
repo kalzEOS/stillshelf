@@ -13,6 +13,7 @@ import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
+import com.stillshelf.app.core.model.RealtimeInvalidation
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
@@ -27,6 +28,7 @@ enum class LoginPersistenceMode {
 interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
     fun observeBookProgressMutations(): Flow<BookProgressMutation>
+    fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation>
     fun observeServers(): Flow<List<Server>>
     suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
     suspend fun deleteServer(serverId: String): AppResult<Unit>
@@ -69,6 +71,33 @@ interface SessionRepository {
         collapseSubseries: Boolean = true,
         forceRefresh: Boolean = false
     ): AppResult<List<SeriesDetailEntry>>
+    fun observeSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true
+    ): Flow<List<SeriesDetailEntry>>
+    fun observeSeriesSummary(
+        seriesId: String
+    ): Flow<NamedEntitySummary?>
+    suspend fun resolveCachedSeriesIdForActiveLibrary(
+        seriesName: String
+    ): String?
+    suspend fun resolveSeriesIdForActiveLibrary(
+        seriesName: String
+    ): String?
+    suspend fun peekSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true
+    ): List<SeriesDetailEntry>?
+    suspend fun refreshSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean = true,
+        policy: DetailRefreshPolicy = DetailRefreshPolicy.IfStale
+    ): AppResult<Unit>
+    suspend fun cacheSeriesDetail(
+        seriesId: String,
+        collapseSubseries: Boolean,
+        entries: List<SeriesDetailEntry>
+    ): AppResult<Unit>
     suspend fun fetchCollectionsForActiveLibrary(
         forceRefresh: Boolean = false
     ): AppResult<List<NamedEntitySummary>>
@@ -99,6 +128,11 @@ interface SessionRepository {
         bookId: String,
         forceRefresh: Boolean = false
     ): AppResult<BookDetail>
+    fun observeBookDetail(bookId: String): Flow<BookDetail?>
+    suspend fun refreshBookDetail(
+        bookId: String,
+        policy: DetailRefreshPolicy = DetailRefreshPolicy.IfStale
+    ): AppResult<Unit>
     suspend fun fetchPlaybackSource(bookId: String): AppResult<PlaybackSource>
     suspend fun fetchPlaybackProgress(bookId: String): AppResult<PlaybackProgress?>
     suspend fun syncPlaybackProgress(

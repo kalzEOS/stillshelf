@@ -8,13 +8,16 @@ import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.resolveUnfinishedProgressState
+import com.stillshelf.app.data.repo.DetailRefreshPolicy
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.downloads.manager.BookDownloadManager
-import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.downloadProgressForBook
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.DetailRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +34,7 @@ import kotlin.math.abs
 
 data class BookDetailUiState(
     val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
     val detail: BookDetail? = null,
     val errorMessage: String? = null,
     val actionMessage: String? = null,
@@ -40,6 +44,40 @@ data class BookDetailUiState(
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressPercent: Int? = null
 )
+
+internal fun BookDetailUiState.beginRefresh(
+    hasLocalDetail: Boolean,
+    silent: Boolean
+): BookDetailUiState {
+    return if (!silent || !hasLocalDetail) {
+        copy(
+            isLoading = !hasLocalDetail,
+            isRefreshing = hasLocalDetail,
+            errorMessage = null
+        )
+    } else {
+        this
+    }
+}
+
+internal fun BookDetailUiState.applyPersistedDetail(
+    detail: BookDetail?
+): BookDetailUiState {
+    return if (detail == null) {
+        copy(
+            detail = null,
+            isLoading = isLoading && this.detail == null
+        )
+    } else {
+        copy(
+            isLoading = false,
+            detail = detail,
+            errorMessage = null,
+            progressPercent = detail.book.progressPercent,
+            currentTimeSeconds = detail.book.currentTimeSeconds
+        )
+    }
+}
 
 @HiltViewModel
 class BookDetailViewModel @Inject constructor(
@@ -65,50 +103,84 @@ class BookDetailViewModel @Inject constructor(
 
     init {
         observePreferences()
+        observePersistedDetail()
         observeBookProgressMutations()
-        refresh(forceRefresh = true)
+        refresh(policy = DetailRefreshPolicy.IfStale)
+        refreshProgress()
     }
 
     fun refresh() {
-        refresh(forceRefresh = true)
+        refresh(policy = DetailRefreshPolicy.Force)
     }
 
     fun refreshSilent() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(policy = DetailRefreshPolicy.IfStale, silent = true)
     }
 
-    private fun refresh(forceRefresh: Boolean, silent: Boolean = false) {
+    fun onScreenStarted() {
+        refreshSilent()
+        refreshProgress(silent = true)
+    }
+
+    private fun refresh(policy: DetailRefreshPolicy, silent: Boolean = false) {
         if (bookId.isBlank()) {
             mutableUiState.update { it.copy(isLoading = false, errorMessage = "Invalid book id.") }
             return
         }
-        if (!silent || uiState.value.detail == null) {
-            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
-        }
+        val hasLocalDetail = uiState.value.detail != null
+        mutableUiState.update { state -> state.beginRefresh(hasLocalDetail = hasLocalDetail, silent = silent) }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {
+            when (val result = sessionRepository.refreshBookDetail(bookId, policy = policy)) {
                 is AppResult.Success -> {
-                    val progress = when (val progressResult = sessionRepository.fetchPlaybackProgress(bookId)) {
-                        is AppResult.Success -> progressResult.value
-                        is AppResult.Error -> null
-                    }
                     mutableUiState.update {
                         it.copy(
                             isLoading = false,
-                            detail = result.value,
-                            actionMessage = null,
-                            progressPercent = progress?.progressPercent,
-                            currentTimeSeconds = progress?.currentTimeSeconds
+                            isRefreshing = false,
+                            actionMessage = null
                         )
                     }
+                    refreshProgress(silent = true)
                 }
 
                 is AppResult.Error -> {
                     mutableUiState.update { state ->
                         state.copy(
                             isLoading = false,
+                            isRefreshing = false,
                             errorMessage = if (silent && state.detail != null) state.errorMessage else result.message
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun observePersistedDetail() {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            sessionRepository.observeBookDetail(bookId).collect { detail ->
+                mutableUiState.update { state -> state.applyPersistedDetail(detail) }
+            }
+        }
+    }
+
+    private fun refreshProgress(silent: Boolean = false) {
+        if (bookId.isBlank()) return
+        viewModelScope.launch {
+            when (val progressResult = sessionRepository.fetchPlaybackProgress(bookId)) {
+                is AppResult.Success -> {
+                    val progress = progressResult.value
+                    mutableUiState.update {
+                        it.copy(
+                            progressPercent = progress?.progressPercent ?: it.detail?.book?.progressPercent,
+                            currentTimeSeconds = progress?.currentTimeSeconds ?: it.detail?.book?.currentTimeSeconds
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    if (!silent) {
+                        mutableUiState.update { it.copy(errorMessage = progressResult.message) }
                     }
                 }
             }
@@ -208,7 +280,7 @@ class BookDetailViewModel @Inject constructor(
                             currentTimeSeconds = detailDuration
                         )
                     }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -253,7 +325,7 @@ class BookDetailViewModel @Inject constructor(
                             actionMessage = "Undid mark as finished."
                         )
                     }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> {
@@ -293,7 +365,7 @@ class BookDetailViewModel @Inject constructor(
                             actionMessage = "Marked as unfinished."
                         )
                     }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -331,7 +403,7 @@ class BookDetailViewModel @Inject constructor(
                             actionMessage = "Book progress reset."
                         )
                     }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> {
@@ -448,7 +520,7 @@ class BookDetailViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Bookmark updated.") }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> {
@@ -482,7 +554,7 @@ class BookDetailViewModel @Inject constructor(
             when (val result = sessionRepository.deleteBookmark(bookId = bookId, bookmark = bookmark)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(actionMessage = "Bookmark deleted.") }
-                    refresh(forceRefresh = true)
+                    refresh(policy = DetailRefreshPolicy.Force)
                 }
 
                 is AppResult.Error -> {
@@ -499,18 +571,13 @@ class BookDetailViewModel @Inject constructor(
 
     private fun observePreferences() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressPercent = items.firstOrNull {
-                    it.bookId == bookId &&
-                        (it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading)
-                }?.progressPercent
+            bookDownloadManager.activeItems.collect { items ->
+                val progressPercent = items
+                    .activeDownloadProgressByUiKey()
+                    .downloadProgressForBook(uiState.value.detail?.book)
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
+                        downloadedBookIds = items.completedDownloadUiKeys(),
                         downloadProgressPercent = progressPercent
                     )
                 }

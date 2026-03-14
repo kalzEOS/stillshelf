@@ -12,9 +12,14 @@ import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.domain.usecase.BookProgressAction
+import com.stillshelf.app.domain.usecase.BookProgressActionCoordinator
 import com.stillshelf.app.downloads.manager.BookDownloadManager
-import com.stillshelf.app.downloads.manager.DownloadStatus
+import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.ui.common.isResetToStart
+import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
+import com.stillshelf.app.ui.common.completedDownloadUiKeys
+import com.stillshelf.app.ui.common.toLiveBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -35,7 +40,9 @@ import kotlinx.coroutines.launch
 class HomeViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val playbackController: PlaybackController,
+    private val bookProgressActionCoordinator: BookProgressActionCoordinator
 ) : ViewModel() {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 15 * 60 * 1000L
@@ -77,6 +84,7 @@ class HomeViewModel @Inject constructor(
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
         observeBookProgressMutations()
+        observeLivePlaybackState()
         observeDownloadedState()
         observeSilentRefreshTicker()
     }
@@ -147,6 +155,38 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun observeLivePlaybackState() {
+        viewModelScope.launch {
+            playbackController.uiState.collect { playbackState ->
+                val mutation = playbackState.toLiveBookProgressMutation() ?: return@collect
+                mutableUiState.update { state ->
+                    val bookExists = state.continueListening.any { it.book.id == mutation.bookId } ||
+                        state.recentlyAdded.any { it.id == mutation.bookId } ||
+                        state.listenAgain.any { it.id == mutation.bookId } ||
+                        state.recentSeries.any { it.leadBook.id == mutation.bookId } ||
+                        state.discoverBooks.any { it.id == mutation.bookId }
+                    if (!bookExists) {
+                        state
+                    } else {
+                        state.copy(
+                            continueListening = state.continueListening.map { it.withBookProgressMutation(mutation) },
+                            recentlyAdded = state.recentlyAdded.map { it.withBookProgressMutation(mutation) },
+                            listenAgain = state.listenAgain.map { it.withBookProgressMutation(mutation) },
+                            recentSeries = state.recentSeries.map { series ->
+                                if (series.leadBook.id == mutation.bookId) {
+                                    series.copy(leadBook = series.leadBook.withBookProgressMutation(mutation))
+                                } else {
+                                    series
+                                }
+                            },
+                            discoverBooks = state.discoverBooks.map { it.withBookProgressMutation(mutation) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private suspend fun loadCachedThenMaybeRefresh() {
         val cachedResult = sessionRepository.fetchCachedHomeFeed(
             maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS
@@ -203,11 +243,11 @@ class HomeViewModel @Inject constructor(
     fun markAsFinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId, finished = true)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkFinished)) {
                 is AppResult.Success -> {
                     removedListenAgainBookIds = removedListenAgainBookIds - bookId
                     applyBookFinishedState(bookId = bookId, finished = true)
-                    mutableUiState.update { it.copy(actionMessage = "Marked as finished. Progress is now 100%.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
                 is AppResult.Error -> mutableUiState.update { it.copy(actionMessage = result.message) }
@@ -218,9 +258,9 @@ class HomeViewModel @Inject constructor(
     fun markAsUnfinished(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (val result = sessionRepository.markBookFinished(bookId, finished = false)) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.MarkUnfinished)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(actionMessage = "Marked as unfinished.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookFinishedState(bookId = bookId, finished = false)
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
@@ -233,17 +273,11 @@ class HomeViewModel @Inject constructor(
     fun resetBookProgress(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId = bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
                     removedListenAgainBookIds = removedListenAgainBookIds + bookId
                     applyBookResetState(bookId = bookId)
-                    mutableUiState.update { it.copy(actionMessage = "Book progress reset.") }
+                    mutableUiState.update { it.copy(actionMessage = result.value.message) }
                     refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
                 }
 
@@ -255,13 +289,7 @@ class HomeViewModel @Inject constructor(
     fun removeFromContinueListening(bookId: String) {
         if (bookId.isBlank()) return
         viewModelScope.launch {
-            when (
-                val result = sessionRepository.markBookFinished(
-                    bookId,
-                    finished = false,
-                    resetProgressWhenUnfinished = true
-                )
-            ) {
+            when (val result = bookProgressActionCoordinator(bookId, BookProgressAction.ResetProgress)) {
                 is AppResult.Success -> {
                     mutableUiState.update {
                         it.copy(
@@ -309,7 +337,7 @@ class HomeViewModel @Inject constructor(
         homeScreenVisible.value = isVisible
         if (isVisible) {
             viewModelScope.launch {
-                refreshIfCacheMissing(showLoading = false)
+                refreshForVisibleHomeEntry()
             }
         }
     }
@@ -410,7 +438,8 @@ class HomeViewModel @Inject constructor(
                     SeriesStackSummary(
                         seriesName = cleanSeriesName(lead.seriesName.orEmpty()),
                         leadBook = lead,
-                        count = books.size
+                        count = books.size,
+                        coverUrls = books.mapNotNull { it.coverUrl }.take(3)
                     )
                 }
             }
@@ -431,18 +460,11 @@ class HomeViewModel @Inject constructor(
 
     private fun observeDownloadedState() {
         viewModelScope.launch {
-            bookDownloadManager.items.collect { items ->
-                val downloadedIds = items
-                    .filter { it.status == DownloadStatus.Completed }
-                    .map { it.bookId }
-                    .toSet()
-                val progressByBookId = items
-                    .filter { it.status == DownloadStatus.Queued || it.status == DownloadStatus.Downloading }
-                    .associate { it.bookId to it.progressPercent.coerceIn(0, 100) }
+            bookDownloadManager.activeItems.collect { items ->
                 mutableUiState.update {
                     it.copy(
-                        downloadedBookIds = downloadedIds,
-                        downloadProgressByBookId = progressByBookId
+                        downloadedBookIds = items.completedDownloadUiKeys(),
+                        downloadProgressByBookId = items.activeDownloadProgressByUiKey()
                     )
                 }
             }
@@ -497,15 +519,13 @@ class HomeViewModel @Inject constructor(
         return source.filterNot { removedListenAgainBookIds.contains(it.id) }
     }
 
-    private suspend fun refreshIfCacheMissing(showLoading: Boolean) {
+    private suspend fun refreshForVisibleHomeEntry() {
         if (homeVisibilityRefreshInFlight) return
         homeVisibilityRefreshInFlight = true
         try {
             val activeLibraryId = activeLibraryIdState.value
             if (activeLibraryId.isNullOrBlank()) return
-            val cached = sessionRepository.fetchCachedHomeFeed(maxAgeMs = HOME_FEED_CACHE_MAX_AGE_MS)
-            if (cached is AppResult.Success && cached.value != null) return
-            refreshNetwork(showLoading = showLoading)
+            refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
         } finally {
             homeVisibilityRefreshInFlight = false
         }

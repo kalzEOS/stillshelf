@@ -3,8 +3,6 @@ package com.stillshelf.app.ui.screens
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -67,6 +65,7 @@ import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
@@ -238,6 +237,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.net.URI
 import kotlin.math.max
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
@@ -2501,6 +2501,7 @@ fun AuthorsBrowseScreen(
     onHomeClick: (() -> Unit)? = null,
     viewModel: AuthorsBrowseViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     EntityBrowseScreen(
         title = "Authors",
@@ -3525,6 +3526,7 @@ fun NarratorsBrowseScreen(
     onHomeClick: (() -> Unit)? = null,
     viewModel: NarratorsBrowseViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     Column(
@@ -4640,11 +4642,6 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val avatarPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { selected ->
-        viewModel.setServerAvatarFromUri(selected)
-    }
     var infoMessage by remember { mutableStateOf<String?>(null) }
     var skipForwardDialogVisible by remember { mutableStateOf(false) }
     var skipBackwardDialogVisible by remember { mutableStateOf(false) }
@@ -4682,114 +4679,6 @@ fun SettingsScreen(
             onBackClick = onBackClick
         )
 
-        Card(
-            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
-            shape = RoundedCornerShape(20.dp),
-            border = sectionCardBorder
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.34f),
-                            shape = CircleShape
-                        )
-                        .clickable { avatarPickerLauncher.launch("image/*") },
-                    contentAlignment = Alignment.Center
-                ) {
-                    val avatarUri = uiState.serverAvatarUri
-                    if (!avatarUri.isNullOrBlank()) {
-                        val avatarRequest = remember(avatarUri, context) {
-                            val localFile = if (!avatarUri.contains("://")) {
-                                File(avatarUri).takeIf { it.exists() }
-                            } else {
-                                null
-                            }
-                            val cacheKey = localFile?.let { file ->
-                                "${file.absolutePath}:${file.length()}:${file.lastModified()}"
-                            }
-                            ImageRequest.Builder(context).apply {
-                                cacheKey?.let {
-                                    memoryCacheKey(it)
-                                    diskCacheKey(it)
-                                }
-                            }
-                                .data(localFile ?: avatarUri)
-                                .crossfade(false)
-                                .build()
-                        }
-                        AsyncImage(
-                            model = avatarRequest,
-                            contentDescription = "Server profile photo",
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Outlined.Person,
-                            contentDescription = "Add server profile photo",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-                Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(uiState.serverDisplayName, style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        uiState.serverHost,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = if (uiState.serverAvatarUri.isNullOrBlank()) {
-                                "Tap photo to add"
-                            } else {
-                                "Tap photo to change"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (!uiState.serverAvatarUri.isNullOrBlank()) {
-                            TextButton(
-                                onClick = {
-                                    viewModel.clearServerAvatar()
-                                    infoMessage = "Profile photo removed."
-                                },
-                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.RemoveCircleOutline,
-                                    contentDescription = "Remove server profile photo",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text("Remove")
-                            }
-                        }
-                    }
-                }
-                Icon(
-                    imageVector = Icons.Filled.Check,
-                    contentDescription = "Active",
-                    tint = Color(0xFF2EAE62)
-                )
-            }
-        }
-
         Text(
             text = "APPEARANCE",
             style = MaterialTheme.typography.bodySmall,
@@ -4800,31 +4689,17 @@ fun SettingsScreen(
             shape = RoundedCornerShape(18.dp),
             border = sectionCardBorder
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Immersive Player", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Switch(
-                    checked = uiState.immersivePlayerEnabled,
-                    onCheckedChange = viewModel::setImmersivePlayerEnabled
-                )
-            }
+            SettingsSwitchRow(
+                title = "Immersive Player",
+                checked = uiState.immersivePlayerEnabled,
+                onCheckedChange = viewModel::setImmersivePlayerEnabled
+            )
             HorizontalDivider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Material Design", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Switch(
-                    checked = uiState.materialDesignEnabled,
-                    onCheckedChange = viewModel::setMaterialDesignEnabled
-                )
-            }
+            SettingsSwitchRow(
+                title = "Material Design",
+                checked = uiState.materialDesignEnabled,
+                onCheckedChange = viewModel::setMaterialDesignEnabled
+            )
         }
 
         Card(
@@ -4867,12 +4742,16 @@ fun SettingsScreen(
             SettingsRow(
                 title = "Skip Forward",
                 value = "${uiState.skipForwardSeconds} seconds",
+                trailingContentWidth = 168.dp,
+                valueTextAlign = TextAlign.End,
                 onClick = { skipForwardDialogVisible = true }
             )
             HorizontalDivider()
             SettingsRow(
                 title = "Skip Backward",
                 value = "${uiState.skipBackwardSeconds} seconds",
+                trailingContentWidth = 168.dp,
+                valueTextAlign = TextAlign.End,
                 onClick = { skipBackwardDialogVisible = true }
             )
         }
@@ -4921,6 +4800,7 @@ fun SettingsScreen(
             ) {
                 SettingsRow(
                     title = "Check for Updates",
+                    trailingContentWidth = 144.dp,
                     showChevronWhenUnselected = false,
                     onClick = {
                         infoMessage = null
@@ -4930,39 +4810,17 @@ fun SettingsScreen(
                     }
                 )
                 HorizontalDivider()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Check on Startup",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = uiState.updateCheckOnStartupEnabled,
-                        onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
-                    )
-                }
+                SettingsSwitchRow(
+                    title = "Check on Startup",
+                    checked = uiState.updateCheckOnStartupEnabled,
+                    onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
+                )
                 HorizontalDivider()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Include Pre-releases",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = uiState.includePrereleaseUpdates,
-                        onCheckedChange = viewModel::setIncludePrereleaseUpdates
-                    )
-                }
+                SettingsSwitchRow(
+                    title = "Include Pre-releases",
+                    checked = uiState.includePrereleaseUpdates,
+                    onCheckedChange = viewModel::setIncludePrereleaseUpdates
+                )
             }
         }
 
@@ -4971,13 +4829,15 @@ fun SettingsScreen(
             shape = RoundedCornerShape(18.dp),
             border = sectionCardBorder
         ) {
-            SettingsRow(title = "Manage Servers", onClick = onManageServers)
-            HorizontalDivider()
             SettingsRow(
+                title = "Manage Servers",
+                trailingContentWidth = 144.dp,
+                onClick = onManageServers
+            )
+            HorizontalDivider()
+            SyncStatusRow(
                 title = "Sync Libraries",
-                value = lastSyncedValue,
-                showChevronWhenValue = false,
-                showChevronWhenUnselected = false,
+                subtitle = lastSyncedValue,
                 onClick = {
                     infoMessage = null
                     viewModel.onSyncLibrariesClick()
@@ -4986,6 +4846,7 @@ fun SettingsScreen(
             HorizontalDivider()
             SettingsRow(
                 title = "Sign Out",
+                trailingContentWidth = 144.dp,
                 onClick = {
                     infoMessage = null
                     signOutDialogVisible = true
@@ -4999,6 +4860,7 @@ fun SettingsScreen(
         ) {
             SettingsRow(
                 title = "About",
+                trailingContentWidth = 144.dp,
                 onClick = onOpenAbout
             )
         }
@@ -5381,10 +5243,23 @@ private fun SettingsRow(
     title: String,
     value: String? = null,
     selected: Boolean = false,
+    titleMaxLines: Int = 1,
     showChevronWhenValue: Boolean = true,
     showChevronWhenUnselected: Boolean = true,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    trailingContentWidth: Dp? = null,
+    valueTextAlign: TextAlign = TextAlign.Start,
+    trailingActionIcon: ImageVector? = null,
+    trailingActionContentDescription: String? = null,
+    onTrailingActionClick: (() -> Unit)? = null,
+    forceTitleTwoLineHeight: Boolean = false
 ) {
+    val resolvedTrailingContentWidth = trailingContentWidth ?: when {
+        !value.isNullOrBlank() && trailingActionIcon != null -> 168.dp
+        !value.isNullOrBlank() && onClick != null -> 144.dp
+        !value.isNullOrBlank() -> 136.dp
+        else -> 24.dp
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -5394,28 +5269,119 @@ private fun SettingsRow(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        if (!value.isNullOrBlank()) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (showChevronWhenValue) {
-                Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+                .then(
+                    if (forceTitleTwoLineHeight) Modifier.heightIn(min = 44.dp) else Modifier
+                ),
+            maxLines = titleMaxLines,
+            overflow = TextOverflow.Ellipsis
+        )
+        Row(
+            modifier = Modifier.width(resolvedTrailingContentWidth),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (!value.isNullOrBlank()) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = valueTextAlign,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (showChevronWhenValue && onClick != null) {
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else if (trailingActionIcon != null && onTrailingActionClick != null) {
+                    Spacer(modifier = Modifier.width(24.dp))
+                }
+            } else if (selected) {
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+            } else if (showChevronWhenUnselected) {
+                Spacer(modifier = Modifier.weight(1f))
                 Icon(
                     imageVector = Icons.Outlined.ChevronRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
             }
-        } else if (selected) {
-            Icon(imageVector = Icons.Filled.Check, contentDescription = null)
-        } else if (showChevronWhenUnselected) {
-            Icon(
-                imageVector = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            if (trailingActionIcon != null && onTrailingActionClick != null) {
+                Icon(
+                    modifier = Modifier.clickable(onClick = onTrailingActionClick),
+                    imageVector = trailingActionIcon,
+                    contentDescription = trailingActionContentDescription,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange
+        )
+    }
+}
+
+@Composable
+private fun SyncStatusRow(
+    title: String,
+    subtitle: String?,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        subtitle?.takeIf { it.isNotBlank() }?.let { value ->
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -5424,6 +5390,18 @@ private fun SettingsRow(
 private fun formatLastSyncedTimestamp(timestampMs: Long): String {
     val formatter = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
     return formatter.format(Date(timestampMs))
+}
+
+private fun formatServerAddressForDisplay(url: String): String {
+    val trimmed = url.trim().removeSuffix("/")
+    if (trimmed.isBlank()) return ""
+    val parsedUri = runCatching { URI(trimmed) }.getOrNull()
+    val host = parsedUri?.host.orEmpty()
+    val port = parsedUri?.port ?: -1
+    if (host.isBlank()) {
+        return trimmed.removePrefix("https://").removePrefix("http://")
+    }
+    return if (port > 0) "$host:$port" else host
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -5735,19 +5713,49 @@ fun ServersManagementScreen(
     onBackClick: () -> Unit,
     onAddServerClick: () -> Unit,
     onHomeClick: (() -> Unit)? = null,
-    viewModel: ServerManagementViewModel = hiltViewModel()
+    viewModel: ServerManagementViewModel = hiltViewModel(),
+    settingsViewModel: SettingsViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val routingUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
     var expandedServerMenuId by remember { mutableStateOf<String?>(null) }
     var editingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
     var editingName by remember { mutableStateOf("") }
     var editingUrl by remember { mutableStateOf("") }
     var editingError by remember { mutableStateOf<String?>(null) }
     var deletingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
+    var advancedUrlActionTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var advancedUrlPickerTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var advancedUrlDialogTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
+    var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
+    val sectionCardColor = if (routingUiState.materialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (routingUiState.materialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+    val openUrl: (String) -> Unit = { url ->
+        val normalizedUrl = url.trim()
+        if (normalizedUrl.isNotBlank()) {
+            runCatching { uriHandler.openUri(normalizedUrl) }
+                .onFailure {
+                    Toast.makeText(context, "Unable to open link.", Toast.LENGTH_SHORT).show()
+                }
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
             .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -5765,14 +5773,20 @@ fun ServersManagementScreen(
 
         Card(
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            border = sectionCardBorder
         ) {
             Column {
                 uiState.servers.forEachIndexed { index, server ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.setActiveServer(server.id) }
+                            .clickable {
+                                editingServer = server
+                                editingName = server.name
+                                editingUrl = server.baseUrl
+                                editingError = null
+                            }
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -5807,16 +5821,15 @@ fun ServersManagementScreen(
                                 expanded = expandedServerMenuId == server.id,
                                 onDismissRequest = { expandedServerMenuId = null }
                             ) {
-                                AppDropdownMenuItem(
-                                    text = { Text("Edit") },
-                                    onClick = {
-                                        expandedServerMenuId = null
-                                        editingServer = server
-                                        editingName = server.name
-                                        editingUrl = server.baseUrl
-                                        editingError = null
-                                    }
-                                )
+                                if (server.id != uiState.activeServerId) {
+                                    AppDropdownMenuItem(
+                                        text = { Text("Set active") },
+                                        onClick = {
+                                            expandedServerMenuId = null
+                                            viewModel.setActiveServer(server.id)
+                                        }
+                                    )
+                                }
                                 AppDropdownMenuItem(
                                     text = { Text("Delete") },
                                     onClick = {
@@ -5843,6 +5856,16 @@ fun ServersManagementScreen(
                 )
             }
         }
+
+        AutomaticServerRoutingSection(
+            uiState = routingUiState,
+            sectionCardColor = sectionCardColor,
+            sectionCardBorder = sectionCardBorder,
+            openUrl = openUrl,
+            onToggleAutomaticServerSwitching = settingsViewModel::setAutomaticServerSwitchingEnabled,
+            onEditLocalServer = { advancedUrlActionTarget = "LOCAL" },
+            onEditRemoteServer = { advancedUrlActionTarget = "REMOTE" }
+        )
 
         if (editingServer != null) {
             AlertDialog(
@@ -5946,6 +5969,372 @@ fun ServersManagementScreen(
                 Text("Dismiss")
             }
         }
+        routingUiState.errorMessage?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+            Button(onClick = settingsViewModel::clearError) {
+                Text("Dismiss")
+            }
+        }
+
+        AutomaticServerRoutingDialogs(
+            uiState = routingUiState,
+            advancedUrlActionTarget = advancedUrlActionTarget,
+            onDismissActionDialog = { advancedUrlActionTarget = null },
+            onOpenManualEditor = { target ->
+                advancedUrlActionTarget = null
+                advancedUrlDialogTarget = target
+                advancedUrlDraft = when (target) {
+                    "REMOTE" -> routingUiState.wanServerUrl
+                    else -> routingUiState.lanServerUrl
+                }
+                advancedUrlError = null
+            },
+            onOpenSavedServersPicker = { target ->
+                advancedUrlActionTarget = null
+                advancedUrlPickerTarget = target
+            },
+            onClearUrl = { target ->
+                advancedUrlActionTarget = null
+                advancedUrlError = null
+                when (target) {
+                    "REMOTE" -> settingsViewModel.updateWanServerUrl("")
+                    else -> settingsViewModel.updateLanServerUrl("")
+                }
+            },
+            advancedUrlPickerTarget = advancedUrlPickerTarget,
+            onDismissPickerDialog = { advancedUrlPickerTarget = null },
+            onPickSavedServer = { target, baseUrl ->
+                when (target) {
+                    "REMOTE" -> settingsViewModel.updateWanServerUrl(baseUrl)
+                    else -> settingsViewModel.updateLanServerUrl(baseUrl)
+                }
+                advancedUrlPickerTarget = null
+            },
+            advancedUrlDialogTarget = advancedUrlDialogTarget,
+            advancedUrlDraft = advancedUrlDraft,
+            onAdvancedUrlDraftChange = {
+                advancedUrlDraft = it.replace(" ", "")
+                advancedUrlError = null
+            },
+            advancedUrlError = advancedUrlError,
+            onDismissEditDialog = {
+                advancedUrlDialogTarget = null
+                advancedUrlError = null
+            },
+            onSaveManualUrl = { target ->
+                val trimmedUrl = advancedUrlDraft.trim()
+                val validUrl = trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                    trimmedUrl.startsWith("http://", ignoreCase = true)
+                if (trimmedUrl.isBlank()) {
+                    if (routingUiState.automaticServerSwitchingEnabled) {
+                        advancedUrlError = when (target) {
+                            "REMOTE" -> "Remote server is required."
+                            else -> "Local server is required."
+                        }
+                        return@AutomaticServerRoutingDialogs
+                    }
+                    when (target) {
+                        "REMOTE" -> settingsViewModel.updateWanServerUrl("")
+                        else -> settingsViewModel.updateLanServerUrl("")
+                    }
+                } else if (!validUrl) {
+                    advancedUrlError = "Server URL must start with http:// or https://"
+                    return@AutomaticServerRoutingDialogs
+                } else {
+                    when (target) {
+                        "REMOTE" -> settingsViewModel.updateWanServerUrl(trimmedUrl)
+                        else -> settingsViewModel.updateLanServerUrl(trimmedUrl)
+                    }
+                }
+                advancedUrlDialogTarget = null
+                advancedUrlError = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun AutomaticServerRoutingSection(
+    uiState: SettingsUiState,
+    sectionCardColor: Color,
+    sectionCardBorder: BorderStroke?,
+    openUrl: (String) -> Unit,
+    onToggleAutomaticServerSwitching: (Boolean) -> Unit,
+    onEditLocalServer: () -> Unit,
+    onEditRemoteServer: () -> Unit
+) {
+    Text(
+        text = "AUTOMATIC SERVER ROUTING",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Card(
+        colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+        shape = RoundedCornerShape(18.dp),
+        border = sectionCardBorder
+    ) {
+        val hasLocalServer = uiState.lanServerUrl.isNotBlank()
+        val hasRemoteServer = uiState.wanServerUrl.isNotBlank()
+        val hasRoutingPair = hasLocalServer && hasRemoteServer
+        val statusValue = buildString {
+            append(uiState.connectionStatusLabel)
+            uiState.connectionLatencyMs?.takeIf { uiState.connectionStatusLabel == "Reachable" }?.let { latencyMs ->
+                append(" • ")
+                append(latencyMs)
+                append(" ms")
+            }
+        }
+        Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "For: ${uiState.serverDisplayName}",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = "Set the local and remote addresses for this server. The app can use the local one on home Wi-Fi and the remote one everywhere else.\n",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Tip: Set the server to \"Remote\" in the drop-down menu on the home screen for best results. Automatic Server Routing switches to the local address when you're on home Wi-Fi and falls back to the remote address if the local network is unavailable. If the selected server does not have a local address configured, this feature will have no effect.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!hasRoutingPair) {
+                    Text(
+                        text = "Add both local and remote addresses to enable this feature.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            HorizontalDivider()
+            SettingsSwitchRow(
+                title = "Use Local Server at Home",
+                checked = uiState.automaticServerSwitchingEnabled,
+                enabled = hasRoutingPair || uiState.automaticServerSwitchingEnabled,
+                onCheckedChange = onToggleAutomaticServerSwitching
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Connection",
+                value = uiState.currentConnectionLabel.ifBlank { "Not configured" },
+                trailingContentWidth = 168.dp,
+                valueTextAlign = TextAlign.End,
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = null
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Status",
+                value = statusValue,
+                trailingContentWidth = 168.dp,
+                valueTextAlign = TextAlign.End,
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = null
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Current endpoint",
+                titleMaxLines = 2,
+                value = formatServerAddressForDisplay(uiState.currentEndpointUrl),
+                trailingContentWidth = 216.dp,
+                valueTextAlign = TextAlign.End,
+                forceTitleTwoLineHeight = true,
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = null,
+                trailingActionIcon = Icons.AutoMirrored.Outlined.OpenInNew,
+                trailingActionContentDescription = "Open current endpoint",
+                onTrailingActionClick = {
+                    if (uiState.currentEndpointUrl.isNotBlank()) {
+                        openUrl(uiState.currentEndpointUrl)
+                    }
+                }
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Local Server",
+                titleMaxLines = 2,
+                value = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
+                    ?: "Not set",
+                trailingContentWidth = 216.dp,
+                valueTextAlign = TextAlign.End,
+                forceTitleTwoLineHeight = true,
+                onClick = onEditLocalServer,
+                trailingActionIcon = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let { Icons.AutoMirrored.Outlined.OpenInNew },
+                trailingActionContentDescription = "Open local server",
+                onTrailingActionClick = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let {
+                    { openUrl(it) }
+                }
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Remote Server",
+                titleMaxLines = 2,
+                value = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
+                    ?: "Not set",
+                trailingContentWidth = 216.dp,
+                valueTextAlign = TextAlign.End,
+                forceTitleTwoLineHeight = true,
+                onClick = onEditRemoteServer,
+                trailingActionIcon = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let { Icons.AutoMirrored.Outlined.OpenInNew },
+                trailingActionContentDescription = "Open remote server",
+                onTrailingActionClick = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let {
+                    { openUrl(it) }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AutomaticServerRoutingDialogs(
+    uiState: SettingsUiState,
+    advancedUrlActionTarget: String?,
+    onDismissActionDialog: () -> Unit,
+    onOpenManualEditor: (String) -> Unit,
+    onOpenSavedServersPicker: (String) -> Unit,
+    onClearUrl: (String) -> Unit,
+    advancedUrlPickerTarget: String?,
+    onDismissPickerDialog: () -> Unit,
+    onPickSavedServer: (String, String) -> Unit,
+    advancedUrlDialogTarget: String?,
+    advancedUrlDraft: String,
+    onAdvancedUrlDraftChange: (String) -> Unit,
+    advancedUrlError: String?,
+    onDismissEditDialog: () -> Unit,
+    onSaveManualUrl: (String) -> Unit
+) {
+    advancedUrlActionTarget?.let { target ->
+        val dialogTitle = when (target) {
+            "REMOTE" -> "Remote Server"
+            else -> "Local Server"
+        }
+        AlertDialog(
+            onDismissRequest = onDismissActionDialog,
+            title = { Text(dialogTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Choose how to fill this address. Saved server choices copy the URL as plain text only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    SettingsRow(
+                        title = "Enter manually",
+                        showChevronWhenUnselected = false,
+                        onClick = { onOpenManualEditor(target) }
+                    )
+                    HorizontalDivider()
+                    SettingsRow(
+                        title = "Choose from saved servers",
+                        showChevronWhenUnselected = false,
+                        onClick = { onOpenSavedServersPicker(target) }
+                    )
+                    HorizontalDivider()
+                    SettingsRow(
+                        title = "Clear",
+                        showChevronWhenUnselected = false,
+                        onClick = { onClearUrl(target) }
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = onDismissActionDialog) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    advancedUrlPickerTarget?.let { target ->
+        val dialogTitle = when (target) {
+            "REMOTE" -> "Choose Remote Server"
+            else -> "Choose Local Server"
+        }
+        AlertDialog(
+            onDismissRequest = onDismissPickerDialog,
+            title = { Text(dialogTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Selecting a saved server copies its address into this field. It does not create a link.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    uiState.savedServers.forEachIndexed { index, serverOption ->
+                        if (index > 0) {
+                            HorizontalDivider()
+                        }
+                        SettingsRow(
+                            title = serverOption.name,
+                            value = serverOption.host,
+                            showChevronWhenValue = false,
+                            onClick = {
+                                onPickSavedServer(target, serverOption.baseUrl)
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = onDismissPickerDialog) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    advancedUrlDialogTarget?.let { target ->
+        val dialogTitle = when (target) {
+            "REMOTE" -> "Remote Server"
+            else -> "Local Server"
+        }
+        AlertDialog(
+            onDismissRequest = onDismissEditDialog,
+            title = { Text(dialogTitle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = advancedUrlDraft,
+                        onValueChange = onAdvancedUrlDraftChange,
+                        label = { Text(dialogTitle) },
+                        singleLine = true
+                    )
+                    advancedUrlError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { onSaveManualUrl(target) }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissEditDialog) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

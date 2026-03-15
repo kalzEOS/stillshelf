@@ -5,6 +5,7 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
 import com.stillshelf.app.core.model.NamedEntitySummary
+import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookmarkEntry
@@ -14,6 +15,8 @@ import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.model.RealtimeInvalidation
+import com.stillshelf.app.core.model.ServerConnectionMode
+import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
@@ -29,9 +32,19 @@ interface SessionRepository {
     fun observeSessionState(): Flow<SessionState>
     fun observeBookProgressMutations(): Flow<BookProgressMutation>
     fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation>
+    fun observeServerConnectionMessages(): Flow<String>
+    fun observeActiveServerConnectionStatus(): Flow<ActiveServerConnectionStatus?>
     fun observeServers(): Flow<List<Server>>
     suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
     suspend fun deleteServer(serverId: String): AppResult<Unit>
+    suspend fun updateServerEndpointSwitchingConfig(
+        serverId: String,
+        config: ServerEndpointSwitchingConfig
+    ): AppResult<Unit>
+    suspend fun setServerEndpointConnectionMode(
+        serverId: String,
+        connectionMode: ServerConnectionMode
+    ): AppResult<Unit>
     fun observeLibrariesForActiveServer(): Flow<List<Library>>
     suspend fun setActiveServer(serverId: String): AppResult<Unit>
     suspend fun setActiveLibrary(libraryId: String): AppResult<Unit>

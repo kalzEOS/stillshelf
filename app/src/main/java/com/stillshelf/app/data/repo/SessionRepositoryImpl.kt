@@ -31,9 +31,14 @@ import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.Library
+import com.stillshelf.app.core.model.ServerConnectionMode
+import com.stillshelf.app.core.model.ServerConnectionRoute
+import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
+import com.stillshelf.app.core.network.ActiveServerEndpointResolver
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.UnfinishedProgressState
 import com.stillshelf.app.core.util.resolveUnfinishedProgressState
@@ -50,11 +55,15 @@ import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -65,6 +74,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import androidx.room.withTransaction
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -145,6 +155,25 @@ private fun approxEqualsInternal(left: Double?, right: Double?, epsilon: Double)
     return kotlin.math.abs(left - right) <= epsilon
 }
 
+internal suspend fun retryResolvedServerRefresh(
+    maxAttempts: Int,
+    retryDelayMs: Long,
+    block: suspend () -> AppResult<Unit>
+): AppResult<Unit> {
+    require(maxAttempts > 0) { "maxAttempts must be greater than zero." }
+    var lastResult: AppResult<Unit> = AppResult.Error("Unable to refresh libraries.")
+    repeat(maxAttempts) { attempt ->
+        lastResult = block()
+        if (lastResult is AppResult.Success) {
+            return lastResult
+        }
+        if (attempt < maxAttempts - 1) {
+            delay(retryDelayMs)
+        }
+    }
+    return lastResult
+}
+
 @Singleton
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryImpl @Inject constructor(
@@ -155,7 +184,8 @@ class SessionRepositoryImpl @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
     private val audiobookshelfApi: AudiobookshelfApi,
-    private val realtimeClient: AudiobookshelfRealtimeClient
+    private val realtimeClient: AudiobookshelfRealtimeClient,
+    private val activeServerEndpointResolver: ActiveServerEndpointResolver
 ) : SessionRepository {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
@@ -169,6 +199,8 @@ class SessionRepositoryImpl @Inject constructor(
         private const val DETAIL_RESOURCE_VARIANT_DEFAULT = ""
         private const val SERIES_ENTRY_TYPE_BOOK = "book"
         private const val SERIES_ENTRY_TYPE_SUBSERIES = "subseries"
+        private const val ROUTE_REFRESH_RETRY_DELAY_MS = 1_000L
+        private const val ROUTE_REFRESH_MAX_ATTEMPTS = 3
     }
 
     private data class TimedCacheEntry<T>(
@@ -194,8 +226,10 @@ class SessionRepositoryImpl @Inject constructor(
     )
 
     private val cacheMutex = Mutex()
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val finishedProgressSnapshots = mutableMapOf<String, FinishedProgressSnapshot>()
     private val mutableBookProgressMutations = MutableSharedFlow<BookProgressMutation>(extraBufferCapacity = 32)
+    private val mutableServerConnectionMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     private val localBookProgressOverrides = mutableMapOf<String, LocalBookProgressOverride>()
     private val booksCache = mutableMapOf<String, TimedCacheEntry<List<BookSummary>>>()
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
@@ -204,6 +238,27 @@ class SessionRepositoryImpl @Inject constructor(
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val refreshDeduper = DetailRefreshDeduper()
+    @Volatile
+    private var lastObservedActiveConnectionStatus: ActiveServerConnectionStatus? = null
+    @Volatile
+    private var hasObservedInitialActiveConnectionStatus = false
+
+    init {
+        repositoryScope.launch {
+            activeServerEndpointResolver.observeActiveConnectionStatus().collect { status ->
+                val previousStatus = lastObservedActiveConnectionStatus
+                lastObservedActiveConnectionStatus = status
+                if (!hasObservedInitialActiveConnectionStatus) {
+                    hasObservedInitialActiveConnectionStatus = true
+                    return@collect
+                }
+                if (status == null || !didActiveConnectionStatusChange(previousStatus, status)) {
+                    return@collect
+                }
+                applyResolvedActiveConnectionStatus(status)
+            }
+        }
+    }
 
     override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
         SessionState(
@@ -216,6 +271,11 @@ class SessionRepositoryImpl @Inject constructor(
     override fun observeBookProgressMutations(): Flow<BookProgressMutation> = mutableBookProgressMutations.asSharedFlow()
 
     override fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation> = realtimeClient.invalidations
+
+    override fun observeServerConnectionMessages(): Flow<String> = mutableServerConnectionMessages.asSharedFlow()
+
+    override fun observeActiveServerConnectionStatus(): Flow<ActiveServerConnectionStatus?> =
+        activeServerEndpointResolver.observeActiveConnectionStatus()
 
     override fun observeServers(): Flow<List<Server>> = serverDao.observeServers().map { servers ->
         servers.map { it.toModel() }
@@ -261,7 +321,7 @@ class SessionRepositoryImpl @Inject constructor(
             secureTokenStorage.clearToken(existing.id)
             serverDao.deleteById(existing.id)
             deletePersistedDetailCacheForServer(existing.id)
-            sessionPreferences.setServerAvatarUri(existing.id, null)
+            sessionPreferences.removeServerEndpointSwitchingConfig(existing.id)
             clearContentCaches()
             val session = sessionPreferences.state.first()
             if (session.activeServerId == existing.id) {
@@ -277,6 +337,58 @@ class SessionRepositoryImpl @Inject constructor(
         } catch (t: Throwable) {
             AppResult.Error("Unable to delete server.", t)
         }
+    }
+
+    override suspend fun updateServerEndpointSwitchingConfig(
+        serverId: String,
+        config: ServerEndpointSwitchingConfig
+    ): AppResult<Unit> {
+        serverDao.getById(serverId) ?: return AppResult.Error("Server not found.")
+        val normalizedLanBaseUrl = config.lanBaseUrl?.trim()?.takeIf { it.isNotBlank() }
+            ?.let(::normalizedBaseUrl)
+        val normalizedWanBaseUrl = config.wanBaseUrl?.trim()?.takeIf { it.isNotBlank() }
+            ?.let(::normalizedBaseUrl)
+        if (!normalizedLanBaseUrl.isNullOrBlank() && !isHttpUrl(normalizedLanBaseUrl)) {
+            return AppResult.Error("LAN server URL must use http or https.")
+        }
+        if (!normalizedWanBaseUrl.isNullOrBlank() && !isHttpUrl(normalizedWanBaseUrl)) {
+            return AppResult.Error("WAN server URL must use http or https.")
+        }
+        if (config.enabled && normalizedWanBaseUrl.isNullOrBlank()) {
+            return AppResult.Error("Set the remote server URL before enabling automatic routing.")
+        }
+        if (config.enabled && normalizedLanBaseUrl.isNullOrBlank()) {
+            return AppResult.Error("Set the local server URL before enabling automatic routing.")
+        }
+        if (config.connectionMode == ServerConnectionMode.Local && normalizedLanBaseUrl.isNullOrBlank()) {
+            return AppResult.Error("Set the LAN server URL before using Local mode.")
+        }
+        if (config.connectionMode == ServerConnectionMode.Remote && normalizedWanBaseUrl.isNullOrBlank()) {
+            return AppResult.Error("Set the WAN server URL before using Remote mode.")
+        }
+        val sanitizedConfig = config.copy(
+            lanBaseUrl = normalizedLanBaseUrl,
+            wanBaseUrl = normalizedWanBaseUrl
+        )
+        return try {
+            sessionPreferences.setServerEndpointSwitchingConfig(serverId, sanitizedConfig)
+            AppResult.Success(Unit)
+        } catch (t: Throwable) {
+            AppResult.Error("Unable to save advanced server settings.", t)
+        }
+    }
+
+    override suspend fun setServerEndpointConnectionMode(
+        serverId: String,
+        connectionMode: ServerConnectionMode
+    ): AppResult<Unit> {
+        val currentConfig = sessionPreferences.state.first()
+            .serverEndpointSwitchingConfigs[serverId]
+            ?: ServerEndpointSwitchingConfig(enabled = false)
+        return updateServerEndpointSwitchingConfig(
+            serverId = serverId,
+            config = currentConfig.copy(connectionMode = connectionMode)
+        )
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -302,7 +414,10 @@ class SessionRepositoryImpl @Inject constructor(
         val token = secureTokenStorage.getToken(server.id)
             ?: return AppResult.Error("No saved session for this server. Please log in again.")
 
-        when (val syncResult = refreshLibrariesFromServer(server, token)) {
+        val resolvedStatus = activeServerEndpointResolver.resolveForServer(server)
+        val resolvedServer = server.copy(baseUrl = resolvedStatus.effectiveBaseUrl)
+
+        when (val syncResult = refreshLibrariesFromServer(resolvedServer, token)) {
             is AppResult.Success -> Unit
             is AppResult.Error -> return syncResult
         }
@@ -339,7 +454,7 @@ class SessionRepositoryImpl @Inject constructor(
                 serverDao.deleteById(activeServerId)
                 deletePersistedDetailCacheForServer(activeServerId)
             }
-            sessionPreferences.setServerAvatarUri(activeServerId, null)
+            sessionPreferences.removeServerEndpointSwitchingConfig(activeServerId)
             sessionPreferences.setLastPlayedBookId(null)
             sessionPreferences.clearCachedHomeFeed()
             sessionPreferences.setActiveSelection(
@@ -446,7 +561,7 @@ class SessionRepositoryImpl @Inject constructor(
                         libraryDao.deleteByServerId(duplicate.id)
                         serverDao.deleteById(duplicate.id)
                         deletePersistedDetailCacheForServer(duplicate.id)
-                        sessionPreferences.setServerAvatarUri(duplicate.id, null)
+                        sessionPreferences.removeServerEndpointSwitchingConfig(duplicate.id)
                     }
             }
 
@@ -3089,7 +3204,7 @@ class SessionRepositoryImpl @Inject constructor(
         runCatching { libraryDao.deleteByServerId(serverId) }
         runCatching { serverDao.deleteById(serverId) }
         runCatching { deletePersistedDetailCacheForServer(serverId) }
-        runCatching { sessionPreferences.setServerAvatarUri(serverId, null) }
+        runCatching { sessionPreferences.removeServerEndpointSwitchingConfig(serverId) }
         clearContentCaches()
     }
 
@@ -3126,11 +3241,13 @@ class SessionRepositoryImpl @Inject constructor(
                 }
                 return AppResult.Error("No saved session for this server.")
             }
+        val resolvedStatus = activeServerEndpointResolver.resolveForServer(server)
+        val resolvedServer = server.copy(baseUrl = resolvedStatus.effectiveBaseUrl)
 
         if (!requireLibrary) {
             return AppResult.Success(
                 ActiveConnection(
-                    server = server,
+                    server = resolvedServer,
                     token = token,
                     library = null
                 )
@@ -3152,11 +3269,94 @@ class SessionRepositoryImpl @Inject constructor(
 
         return AppResult.Success(
             ActiveConnection(
-                server = server,
+                server = resolvedServer,
                 token = token,
                 library = library
             )
         )
+    }
+
+    private fun didActiveConnectionStatusChange(
+        previous: ActiveServerConnectionStatus?,
+        current: ActiveServerConnectionStatus
+    ): Boolean {
+        return previous?.serverId != current.serverId ||
+            previous.effectiveBaseUrl != current.effectiveBaseUrl ||
+            previous.route != current.route ||
+            previous.connectionMode != current.connectionMode ||
+            previous.switchingEnabled != current.switchingEnabled ||
+            previous.lanFallbackToRemote != current.lanFallbackToRemote
+    }
+
+    private suspend fun applyResolvedActiveConnectionStatus(status: ActiveServerConnectionStatus) {
+        val session = sessionPreferences.state.first()
+        if (session.activeServerId != status.serverId) return
+        val server = serverDao.getById(status.serverId) ?: return
+        val token = secureTokenStorage.getToken(server.id) ?: return
+        val resolvedServer = server.copy(baseUrl = status.effectiveBaseUrl)
+        when (refreshLibrariesForResolvedServerWithRetry(resolvedServer, token)) {
+            is AppResult.Success -> {
+                reconcileActiveLibraryAfterRefresh(
+                    serverId = server.id,
+                    activeLibraryId = session.activeLibraryId
+                )
+                sessionPreferences.clearCachedHomeFeed()
+                deletePersistedDetailCacheForServer(server.id)
+                clearContentCachesForServer(server.id)
+                if (status.switchingEnabled) {
+                    mutableServerConnectionMessages.tryEmit(connectionStatusMessage(status))
+                }
+            }
+
+            is AppResult.Error -> {
+                sessionPreferences.clearCachedHomeFeed()
+                deletePersistedDetailCacheForServer(server.id)
+                clearContentCachesForServer(server.id)
+                if (status.switchingEnabled) {
+                    mutableServerConnectionMessages.tryEmit(
+                        "Server connection changed, but data refresh failed. Pull to refresh."
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshLibrariesForResolvedServerWithRetry(
+        server: ServerEntity,
+        token: String
+    ): AppResult<Unit> {
+        return retryResolvedServerRefresh(
+            maxAttempts = ROUTE_REFRESH_MAX_ATTEMPTS,
+            retryDelayMs = ROUTE_REFRESH_RETRY_DELAY_MS
+        ) {
+            refreshLibrariesFromServer(server, token)
+        }
+    }
+
+    private suspend fun reconcileActiveLibraryAfterRefresh(
+        serverId: String,
+        activeLibraryId: String?
+    ) {
+        val normalizedLibraryId = activeLibraryId?.trim().orEmpty()
+        val preservedLibraryId = normalizedLibraryId.takeIf {
+            it.isNotBlank() && libraryDao.getByServerAndId(serverId, it) != null
+        }
+        if (preservedLibraryId != null) {
+            sessionPreferences.setActiveLibraryId(preservedLibraryId)
+            sessionPreferences.setRequiresLibrarySelection(false)
+        } else {
+            sessionPreferences.setActiveLibraryId(null)
+            sessionPreferences.setRequiresLibrarySelection(true)
+        }
+    }
+
+    private fun connectionStatusMessage(status: ActiveServerConnectionStatus): String {
+        return when {
+            status.lanFallbackToRemote -> "Local server not reachable. Using remote server."
+            status.route == ServerConnectionRoute.Local -> "Connected to local server"
+            status.route == ServerConnectionRoute.Remote -> "Connected to remote server"
+            else -> "Connected to server"
+        }
     }
 
     private fun normalizedBaseUrl(value: String): String = value.trim().removeSuffix("/")

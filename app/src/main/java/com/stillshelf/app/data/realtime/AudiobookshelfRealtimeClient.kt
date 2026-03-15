@@ -4,6 +4,7 @@ import com.stillshelf.app.core.database.ServerDao
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.RealtimeInvalidation
+import com.stillshelf.app.core.network.ActiveServerEndpointResolver
 import io.socket.client.IO
 import io.socket.client.Socket
 import java.net.URI
@@ -59,6 +60,7 @@ class AudiobookshelfRealtimeClient @Inject constructor(
     serverDao: ServerDao,
     sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
+    private val activeServerEndpointResolver: ActiveServerEndpointResolver,
     okHttpClient: OkHttpClient
 ) {
     private data class RealtimeTarget(
@@ -91,19 +93,23 @@ class AudiobookshelfRealtimeClient @Inject constructor(
         scope.launch {
             combine(
                 serverDao.observeServers(),
-                sessionPreferences.state
-            ) { servers, pref ->
-                servers.firstOrNull { it.id == pref.activeServerId }
+                sessionPreferences.state,
+                activeServerEndpointResolver.observeActiveConnectionStatus()
+            ) { servers, pref, connectionStatus ->
+                Triple(servers, pref, connectionStatus)
             }
-                .mapLatest { server ->
+                .mapLatest { (servers, pref, connectionStatus) ->
+                    val server = servers.firstOrNull { it.id == pref.activeServerId }
                     if (server == null) {
                         null
                     } else {
                         val token = secureTokenStorage.getToken(server.id)
+                        val resolvedStatus = connectionStatus?.takeIf { it.serverId == server.id }
+                            ?: activeServerEndpointResolver.resolveForServer(server)
                         token?.takeIf { it.isNotBlank() }?.let {
                             RealtimeTarget(
                                 serverId = server.id,
-                                baseUrl = server.baseUrl,
+                                baseUrl = resolvedStatus.effectiveBaseUrl,
                                 token = it
                             )
                         }

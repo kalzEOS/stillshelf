@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.stillshelf.app.core.model.ServerConnectionMode
+import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -51,7 +53,7 @@ class SessionPreferences @Inject constructor(
     private val lockScreenControlModeKey = stringPreferencesKey("lock_screen_control_mode")
     private val lastBookDetailTabKey = stringPreferencesKey("last_book_detail_tab")
     private val downloadedBookIdsKey = stringPreferencesKey("downloaded_book_ids")
-    private val serverAvatarUrisKey = stringPreferencesKey("server_avatar_uris")
+    private val serverEndpointSwitchingConfigsKey = stringPreferencesKey("server_endpoint_switching_configs")
     private val cachedHomeFeedLibraryIdKey = stringPreferencesKey("cached_home_feed_library_id")
     private val cachedHomeFeedPayloadKey = stringPreferencesKey("cached_home_feed_payload")
     private val cachedHomeFeedSavedAtKey = longPreferencesKey("cached_home_feed_saved_at")
@@ -97,7 +99,9 @@ class SessionPreferences @Inject constructor(
             lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
             lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
             downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey]),
-            serverAvatarUris = parseServerAvatarUris(prefs[serverAvatarUrisKey]),
+            serverEndpointSwitchingConfigs = parseServerEndpointSwitchingConfigs(
+                prefs[serverEndpointSwitchingConfigsKey]
+            ),
             lastLibrarySyncAtMs = prefs[lastLibrarySyncAtMsKey],
             updateCheckOnStartup = prefs[updateCheckOnStartupKey] ?: true,
             updateIncludePrereleases = prefs[updateIncludePrereleasesKey] ?: false,
@@ -506,20 +510,44 @@ class SessionPreferences @Inject constructor(
         }
     }
 
-    suspend fun setServerAvatarUri(serverId: String, avatarUri: String?) {
+    suspend fun setServerEndpointSwitchingConfig(
+        serverId: String,
+        config: ServerEndpointSwitchingConfig?
+    ) {
         val normalizedServerId = serverId.trim()
         if (normalizedServerId.isBlank()) return
         dataStore.edit { prefs ->
-            val current = parseServerAvatarUris(prefs[serverAvatarUrisKey]).toMutableMap()
-            if (avatarUri.isNullOrBlank()) {
+            val current = parseServerEndpointSwitchingConfigs(
+                prefs[serverEndpointSwitchingConfigsKey]
+            ).toMutableMap()
+            if (config == null || !config.enabled && config.lanBaseUrl.isNullOrBlank() && config.wanBaseUrl.isNullOrBlank()) {
                 current.remove(normalizedServerId)
             } else {
-                current[normalizedServerId] = avatarUri.trim()
+                current[normalizedServerId] = config.copy(
+                    lanBaseUrl = config.lanBaseUrl?.trim()?.takeIf { it.isNotBlank() },
+                    wanBaseUrl = config.wanBaseUrl?.trim()?.takeIf { it.isNotBlank() }
+                )
             }
             if (current.isEmpty()) {
-                prefs.remove(serverAvatarUrisKey)
+                prefs.remove(serverEndpointSwitchingConfigsKey)
             } else {
-                prefs[serverAvatarUrisKey] = encodeServerAvatarUris(current)
+                prefs[serverEndpointSwitchingConfigsKey] = encodeServerEndpointSwitchingConfigs(current)
+            }
+        }
+    }
+
+    suspend fun removeServerEndpointSwitchingConfig(serverId: String) {
+        val normalizedServerId = serverId.trim()
+        if (normalizedServerId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseServerEndpointSwitchingConfigs(
+                prefs[serverEndpointSwitchingConfigsKey]
+            ).toMutableMap()
+            current.remove(normalizedServerId)
+            if (current.isEmpty()) {
+                prefs.remove(serverEndpointSwitchingConfigsKey)
+            } else {
+                prefs[serverEndpointSwitchingConfigsKey] = encodeServerEndpointSwitchingConfigs(current)
             }
         }
     }
@@ -614,24 +642,6 @@ class SessionPreferences @Inject constructor(
             .filter { it.isNotBlank() }
     }
 
-    private fun parseServerAvatarUris(raw: String?): Map<String, String> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching {
-            val node = JSONObject(raw)
-            buildMap {
-                val keys = node.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next().trim()
-                    if (key.isBlank()) continue
-                    val value = node.optString(key).trim()
-                    if (value.isNotBlank()) {
-                        put(key, value)
-                    }
-                }
-            }
-        }.getOrDefault(emptyMap())
-    }
-
     private fun parseStringArray(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
@@ -645,16 +655,33 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
-    private fun encodeServerAvatarUris(values: Map<String, String>): String {
-        val node = JSONObject()
-        values.forEach { (key, value) ->
-            val normalizedKey = key.trim()
-            val normalizedValue = value.trim()
-            if (normalizedKey.isNotBlank() && normalizedValue.isNotBlank()) {
-                node.put(normalizedKey, normalizedValue)
+    private fun parseServerEndpointSwitchingConfigs(raw: String?): Map<String, ServerEndpointSwitchingConfig> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(raw)
+            buildMap {
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val serverId = keys.next().trim()
+                    if (serverId.isBlank()) continue
+                    val node = root.optJSONObject(serverId) ?: continue
+                    val mode = when (node.optString("mode").trim().lowercase()) {
+                        "local" -> ServerConnectionMode.Local
+                        "remote" -> ServerConnectionMode.Remote
+                        else -> ServerConnectionMode.Auto
+                    }
+                    put(
+                        serverId,
+                        ServerEndpointSwitchingConfig(
+                            enabled = node.optBoolean("enabled"),
+                            lanBaseUrl = node.optString("lanBaseUrl").trim().takeIf { it.isNotBlank() },
+                            wanBaseUrl = node.optString("wanBaseUrl").trim().takeIf { it.isNotBlank() },
+                            connectionMode = mode
+                        )
+                    )
+                }
             }
-        }
-        return node.toString()
+        }.getOrDefault(emptyMap())
     }
 
     private fun encodeStringArray(values: List<String>): String {
@@ -666,6 +693,34 @@ class SessionPreferences @Inject constructor(
                 }
             }
         }.toString()
+    }
+
+    private fun encodeServerEndpointSwitchingConfigs(
+        values: Map<String, ServerEndpointSwitchingConfig>
+    ): String {
+        val root = JSONObject()
+        values.forEach { (serverId, config) ->
+            val normalizedServerId = serverId.trim()
+            if (normalizedServerId.isBlank()) return@forEach
+            root.put(
+                normalizedServerId,
+                JSONObject()
+                    .put("enabled", config.enabled)
+                    .put(
+                        "mode",
+                        when (config.connectionMode) {
+                            ServerConnectionMode.Auto -> "auto"
+                            ServerConnectionMode.Local -> "local"
+                            ServerConnectionMode.Remote -> "remote"
+                        }
+                    )
+                    .apply {
+                        config.lanBaseUrl?.trim()?.takeIf { it.isNotBlank() }?.let { put("lanBaseUrl", it) }
+                        config.wanBaseUrl?.trim()?.takeIf { it.isNotBlank() }?.let { put("wanBaseUrl", it) }
+                    }
+            )
+        }
+        return root.toString()
     }
 
     private fun parsePlaybackCheckpoints(raw: String?): List<PlaybackCheckpointSnapshot> {
@@ -746,7 +801,7 @@ data class SessionPreferenceState(
     val lockScreenControlMode: String = "skip",
     val lastBookDetailTab: String = "About",
     val downloadedBookIds: Set<String> = emptySet(),
-    val serverAvatarUris: Map<String, String> = emptyMap(),
+    val serverEndpointSwitchingConfigs: Map<String, ServerEndpointSwitchingConfig> = emptyMap(),
     val lastLibrarySyncAtMs: Long? = null,
     val updateCheckOnStartup: Boolean = true,
     val updateIncludePrereleases: Boolean = false,

@@ -1,20 +1,18 @@
 package com.stillshelf.app.ui.screens
 
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import android.webkit.MimeTypeMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.BuildConfig
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.EndpointReachabilityStatus
+import com.stillshelf.app.core.model.ServerConnectionRoute
+import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
+import com.stillshelf.app.core.network.ActiveEndpointHealthMonitor
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.update.AppUpdateManager
 import com.stillshelf.app.update.AppUpdateRelease
-import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.File
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.net.URI
 import javax.inject.Inject
@@ -25,11 +23,50 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+data class SettingsServerOption(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val host: String
+)
+
+internal fun resolveCurrentConnectionLabel(
+    serverPresent: Boolean,
+    switchingIsActive: Boolean,
+    currentRoute: ServerConnectionRoute?,
+    effectiveBaseUrl: String?,
+    localBaseUrl: String?,
+    remoteBaseUrl: String?
+): String {
+    if (!serverPresent) return ""
+
+    val normalizedEffectiveBaseUrl = effectiveBaseUrl?.trim()?.removeSuffix("/").orEmpty()
+    val normalizedLocalBaseUrl = localBaseUrl?.trim()?.removeSuffix("/").orEmpty()
+    val normalizedRemoteBaseUrl = remoteBaseUrl?.trim()?.removeSuffix("/").orEmpty()
+
+    if (switchingIsActive) {
+        return when (currentRoute) {
+            ServerConnectionRoute.Local -> "Local"
+            ServerConnectionRoute.Remote -> "Remote"
+            else -> if (normalizedEffectiveBaseUrl.isNotBlank()) "Current server" else ""
+        }
+    }
+
+    return when {
+        normalizedLocalBaseUrl.isNotBlank() &&
+            normalizedEffectiveBaseUrl.equals(normalizedLocalBaseUrl, ignoreCase = true) -> "Local"
+        normalizedRemoteBaseUrl.isNotBlank() &&
+            normalizedEffectiveBaseUrl.equals(normalizedRemoteBaseUrl, ignoreCase = true) -> "Remote"
+        normalizedEffectiveBaseUrl.isNotBlank() -> "Current server"
+        else -> ""
+    }
+}
+
 data class SettingsUiState(
     val activeServerId: String? = null,
     val serverDisplayName: String = "Account",
     val serverHost: String = "-",
-    val serverAvatarUri: String? = null,
+    val serverBaseUrl: String? = null,
     val immersivePlayerEnabled: Boolean = false,
     val themeMode: AppThemeMode = AppThemeMode.FollowSystem,
     val materialDesignEnabled: Boolean = false,
@@ -42,6 +79,14 @@ data class SettingsUiState(
     val appUpdatesEnabled: Boolean = BuildConfig.IN_APP_UPDATES_ENABLED,
     val updateCheckOnStartupEnabled: Boolean = true,
     val includePrereleaseUpdates: Boolean = false,
+    val automaticServerSwitchingEnabled: Boolean = false,
+    val lanServerUrl: String = "",
+    val wanServerUrl: String = "",
+    val savedServers: List<SettingsServerOption> = emptyList(),
+    val currentConnectionLabel: String = "",
+    val currentEndpointUrl: String = "",
+    val connectionStatusLabel: String = "Checking",
+    val connectionLatencyMs: Long? = null,
     val isCheckingForUpdates: Boolean = false,
     val availableUpdate: AppUpdateRelease? = null,
     val errorMessage: String? = null
@@ -51,8 +96,8 @@ data class SettingsUiState(
 class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val appUpdateManager: AppUpdateManager,
-    @param:ApplicationContext private val appContext: Context
+    private val activeEndpointHealthMonitor: ActiveEndpointHealthMonitor,
+    private val appUpdateManager: AppUpdateManager
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = mutableUiState.asStateFlow()
@@ -62,15 +107,35 @@ class SettingsViewModel @Inject constructor(
             combine(
                 sessionRepository.observeSessionState(),
                 sessionRepository.observeServers(),
-                sessionPreferences.state
-            ) { session, servers, pref ->
+                sessionPreferences.state,
+                sessionRepository.observeActiveServerConnectionStatus(),
+                activeEndpointHealthMonitor.observeHealth()
+            ) { session, servers, pref, connectionStatus, endpointHealth ->
                 val server = servers.firstOrNull { it.id == session.activeServerId }
+                val switchingConfig = server?.id?.let(pref.serverEndpointSwitchingConfigs::get)
+                    ?: ServerEndpointSwitchingConfig()
+                val effectiveBaseUrl = connectionStatus?.effectiveBaseUrl ?: server?.baseUrl
+                val currentRoute = connectionStatus?.route
+                val switchingIsActive = connectionStatus?.switchingEnabled == true
+                val currentConnectionLabel = resolveCurrentConnectionLabel(
+                    serverPresent = server != null,
+                    switchingIsActive = switchingIsActive,
+                    currentRoute = currentRoute,
+                    effectiveBaseUrl = effectiveBaseUrl,
+                    localBaseUrl = switchingConfig.lanBaseUrl,
+                    remoteBaseUrl = switchingConfig.wanBaseUrl
+                )
+                val connectionStatusLabel = when (endpointHealth?.reachabilityStatus) {
+                    EndpointReachabilityStatus.Reachable -> "Reachable"
+                    EndpointReachabilityStatus.Unavailable -> "Unavailable"
+                    EndpointReachabilityStatus.Checking, null -> "Checking"
+                }
+                val currentEndpointUrl = endpointHealth?.endpointUrl ?: effectiveBaseUrl.orEmpty()
                 if (server == null) {
                     SettingsUiState(
                         activeServerId = session.activeServerId,
                         appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
-                        serverAvatarUri = pref.serverAvatarUris[session.activeServerId],
                         themeMode = parseThemeMode(pref.appThemeMode),
                         materialDesignEnabled = pref.materialDesignEnabled,
                         skipForwardSeconds = pref.skipForwardSeconds,
@@ -78,15 +143,30 @@ class SettingsViewModel @Inject constructor(
                         lockScreenControlMode = pref.lockScreenControlMode,
                         lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
                         updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
-                        includePrereleaseUpdates = pref.updateIncludePrereleases
+                        includePrereleaseUpdates = pref.updateIncludePrereleases,
+                        automaticServerSwitchingEnabled = switchingConfig.enabled,
+                        lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
+                        wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
+                        savedServers = servers.map { candidate ->
+                            SettingsServerOption(
+                                id = candidate.id,
+                                name = candidate.name,
+                                baseUrl = candidate.baseUrl,
+                                host = parseHost(candidate.baseUrl)
+                            )
+                        },
+                        currentConnectionLabel = currentConnectionLabel,
+                        currentEndpointUrl = currentEndpointUrl,
+                        connectionStatusLabel = connectionStatusLabel,
+                        connectionLatencyMs = endpointHealth?.latencyMs
                     )
                 } else {
                     SettingsUiState(
                         activeServerId = server.id,
                         serverDisplayName = server.name,
                         serverHost = parseHost(server.baseUrl),
+                        serverBaseUrl = server.baseUrl,
                         appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
-                        serverAvatarUri = pref.serverAvatarUris[server.id],
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         themeMode = parseThemeMode(pref.appThemeMode),
                         materialDesignEnabled = pref.materialDesignEnabled,
@@ -95,7 +175,22 @@ class SettingsViewModel @Inject constructor(
                         lockScreenControlMode = pref.lockScreenControlMode,
                         lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
                         updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
-                        includePrereleaseUpdates = pref.updateIncludePrereleases
+                        includePrereleaseUpdates = pref.updateIncludePrereleases,
+                        automaticServerSwitchingEnabled = switchingConfig.enabled,
+                        lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
+                        wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
+                        savedServers = servers.map { candidate ->
+                            SettingsServerOption(
+                                id = candidate.id,
+                                name = candidate.name,
+                                baseUrl = candidate.baseUrl,
+                                host = parseHost(candidate.baseUrl)
+                            )
+                        },
+                        currentConnectionLabel = currentConnectionLabel,
+                        currentEndpointUrl = currentEndpointUrl,
+                        connectionStatusLabel = connectionStatusLabel,
+                        connectionLatencyMs = endpointHealth?.latencyMs
                     )
                 }
             }.collect { state ->
@@ -291,123 +386,43 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setServerAvatarFromUri(uri: Uri?) {
-        if (uri == null) return
-        val serverId = uiState.value.activeServerId
-        if (serverId.isNullOrBlank()) return
-        viewModelScope.launch {
-            when (val result = copyServerAvatarToInternalStorage(serverId, uri)) {
-                is AppResult.Success -> {
-                    sessionPreferences.setServerAvatarUri(serverId, result.value)
-                    mutableUiState.update { it.copy(serverAvatarUri = result.value, errorMessage = null) }
-                }
-                is AppResult.Error -> {
-                    mutableUiState.update { it.copy(errorMessage = result.message) }
-                }
-            }
-        }
-    }
-
-    fun clearServerAvatar() {
-        val serverId = uiState.value.activeServerId
-        if (serverId.isNullOrBlank()) return
-        val avatarUri = uiState.value.serverAvatarUri
-        viewModelScope.launch {
-            deleteManagedServerAvatar(avatarUri)
-            sessionPreferences.setServerAvatarUri(serverId, null)
-            mutableUiState.update { it.copy(serverAvatarUri = null, errorMessage = null) }
-        }
-    }
-
-    private fun copyServerAvatarToInternalStorage(serverId: String, source: Uri): AppResult<String> {
-        return runCatching {
-            val safeServerId = serverId.trim().ifBlank { "default" }
-                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
-            val avatarDir = File(appContext.filesDir, "server_avatars")
-            if (!avatarDir.exists() && !avatarDir.mkdirs()) {
-                throw IllegalStateException("Unable to create server avatar directory.")
-            }
-            val extension = resolveAvatarExtension(source)
-            val avatarBaseName = "server_avatar_${safeServerId}_${System.currentTimeMillis()}"
-            val finalTarget = File(avatarDir, "$avatarBaseName.$extension")
-            copyAvatarRaw(source, finalTarget)
-            avatarDir.listFiles()?.forEach { existing ->
-                if (existing == finalTarget) return@forEach
-                if (existing.name.startsWith("server_avatar_${safeServerId}_")) {
-                    runCatching { existing.delete() }
-                }
-            }
-            if (finalTarget.length() <= 0L) {
-                throw IllegalStateException("Selected image is empty.")
-            }
-            finalTarget.absolutePath
-        }.fold(
-            onSuccess = { AppResult.Success(it) },
-            onFailure = {
-                AppResult.Error(
-                    it.message ?: "Unable to set profile photo for this server.",
-                    it
-                )
-            }
+    fun setAutomaticServerSwitchingEnabled(enabled: Boolean) {
+        val serverId = uiState.value.activeServerId ?: return
+        saveAdvancedServerConfig(
+            serverId = serverId,
+            config = ServerEndpointSwitchingConfig(
+                enabled = enabled,
+                lanBaseUrl = uiState.value.lanServerUrl,
+                wanBaseUrl = uiState.value.wanServerUrl,
+                connectionMode = ServerEndpointSwitchingConfig().connectionMode
+            )
         )
     }
 
-    private fun deleteManagedServerAvatar(avatarUri: String?) {
-        if (avatarUri.isNullOrBlank() || avatarUri.contains("://")) return
-        val avatarFile = runCatching { File(avatarUri).canonicalFile }.getOrNull() ?: return
-        val avatarDir = runCatching {
-            File(appContext.filesDir, "server_avatars").canonicalFile
-        }.getOrNull() ?: return
-        if (avatarFile.parentFile != avatarDir) return
-        if (!avatarFile.name.startsWith("server_avatar_")) return
-        runCatching {
-            if (avatarFile.exists()) {
-                avatarFile.delete()
-            }
-        }
+    fun updateLanServerUrl(url: String) {
+        val serverId = uiState.value.activeServerId ?: return
+        saveAdvancedServerConfig(
+            serverId = serverId,
+            config = ServerEndpointSwitchingConfig(
+                enabled = uiState.value.automaticServerSwitchingEnabled,
+                lanBaseUrl = url,
+                wanBaseUrl = uiState.value.wanServerUrl,
+                connectionMode = ServerEndpointSwitchingConfig().connectionMode
+            )
+        )
     }
 
-    private fun resolveAvatarExtension(source: Uri): String {
-        val contentResolver = appContext.contentResolver
-        val mimeType = contentResolver.getType(source).orEmpty()
-        val extensionFromMime = MimeTypeMap.getSingleton()
-            .getExtensionFromMimeType(mimeType)
-            .orEmpty()
-        val extensionFromDisplayName = runCatching {
-            contentResolver.query(
-                source,
-                arrayOf(OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                val displayNameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (displayNameIndex >= 0 && cursor.moveToFirst()) {
-                    cursor.getString(displayNameIndex).orEmpty()
-                        .substringAfterLast('.', missingDelimiterValue = "")
-                } else {
-                    ""
-                }
-            }.orEmpty()
-        }.getOrDefault("")
-        val extensionFromPath = source.lastPathSegment
-            ?.substringAfterLast('.', missingDelimiterValue = "")
-            .orEmpty()
-        val candidate = listOf(
-            extensionFromMime,
-            extensionFromDisplayName,
-            extensionFromPath
-        ).firstOrNull { it.isNotBlank() }.orEmpty()
-        val normalized = candidate.lowercase().replace(Regex("[^a-z0-9]"), "")
-        return normalized.ifBlank { "img" }
-    }
-
-    private fun copyAvatarRaw(source: Uri, target: File) {
-        appContext.contentResolver.openInputStream(source)?.use { input ->
-            target.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        } ?: throw IllegalStateException("Unable to open selected image.")
+    fun updateWanServerUrl(url: String) {
+        val serverId = uiState.value.activeServerId ?: return
+        saveAdvancedServerConfig(
+            serverId = serverId,
+            config = ServerEndpointSwitchingConfig(
+                enabled = uiState.value.automaticServerSwitchingEnabled,
+                lanBaseUrl = uiState.value.lanServerUrl,
+                wanBaseUrl = url,
+                connectionMode = ServerEndpointSwitchingConfig().connectionMode
+            )
+        )
     }
 
     private fun parseHost(url: String): String {
@@ -420,6 +435,18 @@ class SettingsViewModel @Inject constructor(
             "light" -> AppThemeMode.Light
             "dark" -> AppThemeMode.Dark
             else -> AppThemeMode.FollowSystem
+        }
+    }
+
+    private fun saveAdvancedServerConfig(
+        serverId: String,
+        config: ServerEndpointSwitchingConfig
+    ) {
+        viewModelScope.launch {
+            when (val result = sessionRepository.updateServerEndpointSwitchingConfig(serverId, config)) {
+                is AppResult.Success -> mutableUiState.update { it.copy(errorMessage = null) }
+                is AppResult.Error -> mutableUiState.update { it.copy(errorMessage = result.message) }
+            }
         }
     }
 }

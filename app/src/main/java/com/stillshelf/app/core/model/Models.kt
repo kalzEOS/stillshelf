@@ -7,6 +7,50 @@ data class Server(
     val createdAt: Long
 )
 
+enum class ServerConnectionMode {
+    Auto,
+    Local,
+    Remote
+}
+
+enum class ServerConnectionRoute {
+    Default,
+    Local,
+    Remote
+}
+
+data class ServerEndpointSwitchingConfig(
+    val enabled: Boolean = false,
+    val lanBaseUrl: String? = null,
+    val wanBaseUrl: String? = null,
+    val connectionMode: ServerConnectionMode = ServerConnectionMode.Auto
+)
+
+data class ActiveServerConnectionStatus(
+    val serverId: String,
+    val effectiveBaseUrl: String,
+    val route: ServerConnectionRoute,
+    val connectionMode: ServerConnectionMode,
+    val switchingEnabled: Boolean,
+    val lanFallbackToRemote: Boolean = false,
+    val lanBaseUrl: String? = null,
+    val wanBaseUrl: String? = null
+)
+
+enum class EndpointReachabilityStatus {
+    Checking,
+    Reachable,
+    Unavailable
+}
+
+data class ActiveEndpointHealth(
+    val serverId: String,
+    val endpointUrl: String,
+    val reachabilityStatus: EndpointReachabilityStatus,
+    val latencyMs: Long? = null,
+    val checkedAtMs: Long = System.currentTimeMillis()
+)
+
 data class Library(
     val id: String,
     val serverId: String,

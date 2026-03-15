@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,7 +19,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -55,12 +55,14 @@ import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
+import com.stillshelf.app.ui.screens.ServerConnectionViewModel
 import com.stillshelf.app.ui.screens.SeriesDetailScreen
 import com.stillshelf.app.ui.screens.SeriesBrowseScreen
 import com.stillshelf.app.ui.screens.SettingsScreen
 import com.stillshelf.app.ui.screens.auth.AddServerRoute
 import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
+import kotlinx.coroutines.flow.collectLatest
 
 fun NavGraphBuilder.mainNavGraph(
     onHomeScreenReached: () -> Unit = {}
@@ -102,6 +104,7 @@ private fun MainShell(
     val currentRoute = currentBackStackEntry?.destination?.route
     val currentTab = MainTab.fromRoute(currentRoute)
     val miniPlayerViewModel: MiniPlayerViewModel = hiltViewModel()
+    val serverConnectionViewModel: ServerConnectionViewModel = hiltViewModel()
     val miniPlayerState by miniPlayerViewModel.uiState.collectAsStateWithLifecycle()
     val onHomeClick: () -> Unit = {
         if (!tabsNavController.popBackStack(MainTab.Home.route, inclusive = false)) {
@@ -118,6 +121,11 @@ private fun MainShell(
     LaunchedEffect(currentRoute) {
         if (currentRoute == MainTab.Home.route) {
             onHomeScreenReached()
+        }
+    }
+    LaunchedEffect(serverConnectionViewModel) {
+        serverConnectionViewModel.messages.collectLatest { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
 

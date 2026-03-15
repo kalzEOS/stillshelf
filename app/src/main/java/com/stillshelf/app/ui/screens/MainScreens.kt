@@ -7453,7 +7453,7 @@ fun PlayerScreen(
         useSlimStripTools -> 2.dp
         else -> 4.dp
     }
-    val toolsShowIconBubble = useFloatingChipsTools
+    val toolsShowIconBubble = false
     val toolsItemHeight = when {
         useFloatingChipsTools -> 56.dp
         useSlimStripTools -> 56.dp
@@ -9022,6 +9022,9 @@ private fun PlayerBottomToolItem(
                     Modifier
                         .padding(top = if (showSecondaryText) 1.dp else 2.dp)
                         .size(if (showSecondaryText) 28.dp else 30.dp)
+                        .clip(CircleShape)
+                        .background(iconChipColor)
+                        .border(1.dp, iconChipBorderColor, CircleShape)
                 } else {
                     Modifier
                         .padding(top = if (showSecondaryText) 2.dp else 4.dp)

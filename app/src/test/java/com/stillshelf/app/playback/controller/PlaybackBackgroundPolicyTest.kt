@@ -37,6 +37,34 @@ class PlaybackBackgroundPolicyTest {
         )
     }
 
+    @Test
+    fun shouldContinuePlaybackSyncRetry_requiresPlaybackToStillBeActiveForSameBook() {
+        assertFalse(
+            shouldContinuePlaybackSyncRetry(
+                allowBackgroundRetry = true,
+                requestBookId = "book-1",
+                currentBookId = "book-1",
+                isPlaybackActive = false
+            )
+        )
+        assertFalse(
+            shouldContinuePlaybackSyncRetry(
+                allowBackgroundRetry = true,
+                requestBookId = "book-1",
+                currentBookId = "book-2",
+                isPlaybackActive = true
+            )
+        )
+        assertTrue(
+            shouldContinuePlaybackSyncRetry(
+                allowBackgroundRetry = true,
+                requestBookId = "book-1",
+                currentBookId = "book-1",
+                isPlaybackActive = true
+            )
+        )
+    }
+
     private fun sampleBook(): BookSummary {
         return BookSummary(
             id = "book-1",

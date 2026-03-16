@@ -1,5 +1,7 @@
 package com.stillshelf.app.data.repo
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.stillshelf.app.core.database.LibraryDao
 import com.stillshelf.app.core.database.LibraryEntity
 import com.stillshelf.app.core.database.AppDatabase
@@ -251,14 +253,18 @@ class SessionRepositoryImpl @Inject constructor(
         repositoryScope.launch {
             activeServerEndpointResolver.observeActiveConnectionStatus().collect { status ->
                 val previousStatus = lastObservedActiveConnectionStatus
-                lastObservedActiveConnectionStatus = status
                 if (!hasObservedInitialActiveConnectionStatus) {
                     hasObservedInitialActiveConnectionStatus = true
+                    lastObservedActiveConnectionStatus = status
                     return@collect
                 }
                 if (status == null || !didActiveConnectionStatusChange(previousStatus, status)) {
                     return@collect
                 }
+                if (!shouldApplyResolvedActiveConnectionStatus()) {
+                    return@collect
+                }
+                lastObservedActiveConnectionStatus = status
                 applyResolvedActiveConnectionStatus(status)
             }
         }
@@ -3328,7 +3334,7 @@ class SessionRepositoryImpl @Inject constructor(
                 deletePersistedDetailCacheForServer(server.id)
                 clearContentCachesForServer(server.id)
                 clearServerDataState(server.id)
-                if (status.switchingEnabled) {
+                if (status.switchingEnabled && shouldShowServerConnectionMessage()) {
                     mutableServerConnectionMessages.tryEmit(connectionStatusMessage(status))
                 }
             }
@@ -3341,7 +3347,7 @@ class SessionRepositoryImpl @Inject constructor(
                     serverId = server.id,
                     message = "Data may be out of date. Pull to refresh."
                 )
-                if (status.switchingEnabled) {
+                if (status.switchingEnabled && shouldShowServerConnectionMessage()) {
                     mutableServerConnectionMessages.tryEmit(
                         "Server connection changed, but data refresh failed. Pull to refresh."
                     )
@@ -3386,6 +3392,14 @@ class SessionRepositoryImpl @Inject constructor(
             status.route == ServerConnectionRoute.Remote -> "Connected to remote server"
             else -> "Connected to server"
         }
+    }
+
+    private fun shouldShowServerConnectionMessage(): Boolean {
+        return ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    }
+
+    private fun shouldApplyResolvedActiveConnectionStatus(): Boolean {
+        return ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
 
     private fun markServerDataStale(serverId: String, message: String) {

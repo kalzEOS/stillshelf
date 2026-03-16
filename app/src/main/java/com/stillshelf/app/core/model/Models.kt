@@ -51,6 +51,13 @@ data class ActiveEndpointHealth(
     val checkedAtMs: Long = System.currentTimeMillis()
 )
 
+data class ActiveServerDataState(
+    val serverId: String,
+    val isStale: Boolean,
+    val message: String? = null,
+    val staleSinceMs: Long? = null
+)
+
 data class Library(
     val id: String,
     val serverId: String,

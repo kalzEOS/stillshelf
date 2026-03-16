@@ -1,6 +1,8 @@
 package com.stillshelf.app.data.realtime
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudiobookshelfRealtimeClientTest {
@@ -19,5 +21,35 @@ class AudiobookshelfRealtimeClientTest {
 
         assertEquals("https://example.com", endpoint.originUrl)
         assertEquals("/audiobookshelf/socket.io/", endpoint.socketPath)
+    }
+
+    @Test
+    fun shouldMaintainRealtimeConnection_requiresForegroundAppState() {
+        assertFalse(
+            shouldMaintainRealtimeConnection(
+                isAppInForeground = false,
+                hasAuthenticatedTarget = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldMaintainRealtimeConnection_requiresAuthenticatedTarget() {
+        assertFalse(
+            shouldMaintainRealtimeConnection(
+                isAppInForeground = true,
+                hasAuthenticatedTarget = false
+            )
+        )
+    }
+
+    @Test
+    fun shouldMaintainRealtimeConnection_allowsForegroundSocketWhenTargetExists() {
+        assertTrue(
+            shouldMaintainRealtimeConnection(
+                isAppInForeground = true,
+                hasAuthenticatedTarget = true
+            )
+        )
     }
 }

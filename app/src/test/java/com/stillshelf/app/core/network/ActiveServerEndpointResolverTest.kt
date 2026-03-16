@@ -102,4 +102,50 @@ class ActiveServerEndpointResolverTest {
         assertEquals("https://saved.example.com", status.effectiveBaseUrl)
         assertFalse(status.switchingEnabled)
     }
+
+    @Test
+    fun shouldRetryLanOnWifi_retriesWhileAutoRoutingIsOnWifiAndStillRemote() {
+        val status = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://books.example.com",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true,
+            lanFallbackToRemote = false,
+            lanBaseUrl = "http://192.168.1.10:13378",
+            wanBaseUrl = "https://books.example.com"
+        )
+
+        assertTrue(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+    }
+
+    @Test
+    fun shouldRetryLanOnWifi_stopsOnceLocalRouteIsActive() {
+        val status = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "http://192.168.1.10:13378",
+            route = ServerConnectionRoute.Local,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true,
+            lanBaseUrl = "http://192.168.1.10:13378",
+            wanBaseUrl = "https://books.example.com"
+        )
+
+        assertFalse(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+    }
+
+    @Test
+    fun shouldRetryLanOnWifi_doesNotRetryWithoutCompleteLanWanConfig() {
+        val status = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://saved.example.com",
+            route = ServerConnectionRoute.Default,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = false,
+            lanBaseUrl = "http://192.168.1.10:13378",
+            wanBaseUrl = null
+        )
+
+        assertFalse(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+    }
 }

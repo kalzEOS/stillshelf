@@ -6,6 +6,7 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
 import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.ActiveServerConnectionStatus
+import com.stillshelf.app.core.model.ActiveServerDataState
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookmarkEntry
@@ -34,6 +35,7 @@ interface SessionRepository {
     fun observeRealtimeInvalidations(): Flow<RealtimeInvalidation>
     fun observeServerConnectionMessages(): Flow<String>
     fun observeActiveServerConnectionStatus(): Flow<ActiveServerConnectionStatus?>
+    fun observeActiveServerDataState(): Flow<ActiveServerDataState?>
     fun observeServers(): Flow<List<Server>>
     suspend fun updateServer(serverId: String, name: String, baseUrl: String): AppResult<Unit>
     suspend fun deleteServer(serverId: String): AppResult<Unit>

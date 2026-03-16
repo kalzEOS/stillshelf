@@ -116,7 +116,13 @@ class ActiveServerEndpointResolverTest {
             wanBaseUrl = "https://books.example.com"
         )
 
-        assertTrue(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+        assertTrue(
+            shouldRetryLanOnWifi(
+                status = status,
+                networkType = NetworkConnectionType.Wifi,
+                isAppInForeground = true
+            )
+        )
     }
 
     @Test
@@ -131,7 +137,13 @@ class ActiveServerEndpointResolverTest {
             wanBaseUrl = "https://books.example.com"
         )
 
-        assertFalse(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+        assertFalse(
+            shouldRetryLanOnWifi(
+                status = status,
+                networkType = NetworkConnectionType.Wifi,
+                isAppInForeground = true
+            )
+        )
     }
 
     @Test
@@ -146,6 +158,33 @@ class ActiveServerEndpointResolverTest {
             wanBaseUrl = null
         )
 
-        assertFalse(shouldRetryLanOnWifi(status, NetworkConnectionType.Wifi))
+        assertFalse(
+            shouldRetryLanOnWifi(
+                status = status,
+                networkType = NetworkConnectionType.Wifi,
+                isAppInForeground = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldRetryLanOnWifi_doesNotRetryWhileAppIsBackgrounded() {
+        val status = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://books.example.com",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true,
+            lanBaseUrl = "http://192.168.1.10:13378",
+            wanBaseUrl = "https://books.example.com"
+        )
+
+        assertFalse(
+            shouldRetryLanOnWifi(
+                status = status,
+                networkType = NetworkConnectionType.Wifi,
+                isAppInForeground = false
+            )
+        )
     }
 }

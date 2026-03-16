@@ -1,5 +1,8 @@
 package com.stillshelf.app.core.network
 
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.stillshelf.app.core.database.ServerDao
 import com.stillshelf.app.core.database.ServerEntity
 import com.stillshelf.app.core.datastore.SessionPreferenceState
@@ -21,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -31,9 +35,11 @@ import java.util.concurrent.TimeUnit
 
 internal fun shouldRetryLanOnWifi(
     status: ActiveServerConnectionStatus,
-    networkType: NetworkConnectionType
+    networkType: NetworkConnectionType,
+    isAppInForeground: Boolean
 ): Boolean {
-    return networkType == NetworkConnectionType.Wifi &&
+    return isAppInForeground &&
+        networkType == NetworkConnectionType.Wifi &&
         status.connectionMode == ServerConnectionMode.Auto &&
         status.switchingEnabled &&
         status.route != ServerConnectionRoute.Local &&
@@ -153,17 +159,46 @@ class ActiveServerEndpointResolver @Inject constructor(
         .writeTimeout(LAN_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .callTimeout(LAN_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
+    private val foregroundRefreshNonce = MutableStateFlow(0L)
+    private val appInForeground = MutableStateFlow(
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(
+            androidx.lifecycle.Lifecycle.State.STARTED
+        )
+    )
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            appInForeground.value = true
+            foregroundRefreshNonce.value += 1L
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            appInForeground.value = false
+        }
+    }
     @Volatile
     private var lastObservedResolvedStatus: ActiveServerConnectionStatus? = null
+
+    init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+    }
 
     val activeConnectionStatus: StateFlow<ActiveServerConnectionStatus?> = combine(
         serverDao.observeServers(),
         sessionPreferences.state,
-        networkMonitor.observeConnectionState()
-    ) { servers, prefState, networkState ->
-        Triple(servers, prefState, networkState)
+        networkMonitor.observeConnectionState(),
+        foregroundRefreshNonce
+    ) { servers, prefState, networkState, refreshNonce ->
+        RoutingInputs(
+            servers = servers,
+            prefState = prefState,
+            networkState = networkState,
+            refreshNonce = refreshNonce
+        )
     }
-        .transformLatest { (servers, prefState, networkState) ->
+        .transformLatest { inputs ->
+            val servers = inputs.servers
+            val prefState = inputs.prefState
+            val networkState = inputs.networkState
             val activeServerId = prefState.activeServerId ?: return@transformLatest
             val activeServer = servers.firstOrNull { it.id == activeServerId } ?: return@transformLatest
             val previousStatus = lastObservedResolvedStatus?.takeIf { it.serverId == activeServerId }
@@ -179,7 +214,8 @@ class ActiveServerEndpointResolver @Inject constructor(
                 currentCoroutineContext().isActive &&
                 shouldRetryLanOnWifi(
                     status = resolvedStatus,
-                    networkType = networkState.type
+                    networkType = networkState.type,
+                    isAppInForeground = appInForeground.value
                 )
             ) {
                 delay(LAN_RETRY_INTERVAL_MS)
@@ -199,6 +235,13 @@ class ActiveServerEndpointResolver @Inject constructor(
             started = SharingStarted.Eagerly,
             initialValue = null
         )
+
+    private data class RoutingInputs(
+        val servers: List<ServerEntity>,
+        val prefState: SessionPreferenceState,
+        val networkState: NetworkConnectionState,
+        val refreshNonce: Long
+    )
 
     fun observeActiveConnectionStatus(): Flow<ActiveServerConnectionStatus?> = activeConnectionStatus
 

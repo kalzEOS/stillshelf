@@ -1601,7 +1601,15 @@ class PlaybackController @Inject constructor(
                     clearPlaybackCheckpointIfCovered(nextRequest)
                     continue
                 }
-                if (!nextRequest.allowBackgroundRetry) {
+                if (
+                    !shouldContinuePlaybackSyncRetry(
+                        allowBackgroundRetry = nextRequest.allowBackgroundRetry,
+                        requestBookId = nextRequest.bookId,
+                        currentBookId = currentBookId,
+                        isPlaybackActive = uiState.value.isPlaying
+                    )
+                ) {
+                    PlaybackProgressSyncScheduler.cancel(appContext)
                     continue
                 }
                 val failedRequestKey = progressSyncKey(
@@ -2826,6 +2834,18 @@ internal fun resolveMergedProgressSyncFinishedState(
     existingIsFinished: Boolean,
     incomingIsFinished: Boolean
 ): Boolean = incomingIsFinished
+
+internal fun shouldContinuePlaybackSyncRetry(
+    allowBackgroundRetry: Boolean,
+    requestBookId: String,
+    currentBookId: String?,
+    isPlaybackActive: Boolean
+): Boolean {
+    return allowBackgroundRetry &&
+        isPlaybackActive &&
+        !currentBookId.isNullOrBlank() &&
+        currentBookId == requestBookId
+}
 
 internal fun shouldReplayLocalCheckpointAtStartup(
     selectedSourceIsLocal: Boolean,

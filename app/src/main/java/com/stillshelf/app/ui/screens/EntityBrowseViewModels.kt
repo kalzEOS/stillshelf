@@ -82,6 +82,10 @@ class AuthorsBrowseViewModel @Inject constructor(
         refresh(forceRefresh = true)
     }
 
+    fun onScreenStarted() {
+        refresh(forceRefresh = false)
+    }
+
     private fun refresh(forceRefresh: Boolean) {
         if (uiState.value.isLoading) return
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -124,6 +128,10 @@ class NarratorsBrowseViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = false)
     }
 
     private fun refresh(forceRefresh: Boolean) {
@@ -169,6 +177,10 @@ class SeriesBrowseViewModel @Inject constructor(
 
     fun refresh() {
         refresh(forceRefresh = true, isUserRefresh = true)
+    }
+
+    fun onScreenStarted() {
+        refresh(forceRefresh = false, isUserRefresh = false)
     }
 
     fun setGridMode(gridMode: Boolean) {
@@ -448,7 +460,7 @@ class CollectionsBrowseViewModel @Inject constructor(
     }
 
     fun onScreenStarted() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun createCollection(name: String) {
@@ -633,7 +645,7 @@ class PlaylistsBrowseViewModel @Inject constructor(
     }
 
     fun onScreenStarted() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     fun createPlaylist(name: String) {
@@ -812,7 +824,7 @@ class BookmarksBrowseViewModel @Inject constructor(
     }
 
     fun onScreenStarted() {
-        refresh(forceRefresh = true, silent = true)
+        refresh(forceRefresh = false, silent = true)
     }
 
     private fun refresh(forceRefresh: Boolean, silent: Boolean) {

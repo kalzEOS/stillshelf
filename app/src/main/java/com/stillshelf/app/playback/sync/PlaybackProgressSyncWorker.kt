@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.workDataOf
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -19,14 +20,27 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import java.util.concurrent.TimeUnit
 
+internal fun shouldRetryPlaybackCheckpointSync(
+    allowBackgroundRetry: Boolean,
+    hasPendingCheckpoints: Boolean
+): Boolean = allowBackgroundRetry && hasPendingCheckpoints
+
 object PlaybackProgressSyncScheduler {
     private const val UNIQUE_WORK_NAME = "playback-progress-sync"
     private const val URGENT_DELAY_SECONDS = 2L
     private const val NORMAL_DELAY_SECONDS = 15L
+    internal const val ALLOW_BACKGROUND_RETRY_KEY = "allow_background_retry"
 
-    fun enqueue(context: Context, urgent: Boolean) {
+    fun enqueue(
+        context: Context,
+        urgent: Boolean,
+        allowBackgroundRetry: Boolean
+    ) {
         val delaySeconds = if (urgent) URGENT_DELAY_SECONDS else NORMAL_DELAY_SECONDS
         val request = OneTimeWorkRequestBuilder<PlaybackProgressSyncWorker>()
+            .setInputData(
+                workDataOf(ALLOW_BACKGROUND_RETRY_KEY to allowBackgroundRetry)
+            )
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -60,6 +74,10 @@ class PlaybackProgressSyncWorker(
         val sessionRepository = entryPoint.sessionRepository()
         val serverDao = entryPoint.serverDao()
         val secureTokenStorage = entryPoint.secureTokenStorage()
+        val allowBackgroundRetry = inputData.getBoolean(
+            PlaybackProgressSyncScheduler.ALLOW_BACKGROUND_RETRY_KEY,
+            false
+        )
         val checkpoints = sessionPreferences.getPlaybackCheckpoints()
             .sortedBy { checkpoint -> checkpoint.savedAtMs }
         if (checkpoints.isEmpty()) {
@@ -96,7 +114,12 @@ class PlaybackProgressSyncWorker(
             }
         }
 
-        return if (shouldRetry && sessionPreferences.getPlaybackCheckpoints().isNotEmpty()) {
+        return if (
+            shouldRetryPlaybackCheckpointSync(
+                allowBackgroundRetry = allowBackgroundRetry,
+                hasPendingCheckpoints = sessionPreferences.getPlaybackCheckpoints().isNotEmpty()
+            )
+        ) {
             Result.retry()
         } else {
             Result.success()

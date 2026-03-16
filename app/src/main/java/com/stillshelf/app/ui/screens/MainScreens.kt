@@ -773,6 +773,44 @@ fun HomeScreen(
                 }
             }
 
+            uiState.staleDataMessage?.let { staleMessage ->
+                item {
+                    Card(
+                        modifier = homeFullBleedModifier,
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
+                        ),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Content may be out of date",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = staleMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            TextButton(
+                                onClick = viewModel::refresh,
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Refresh")
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 val sectionContent: @Composable () -> Unit = {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1512,6 +1550,7 @@ fun BrowseScreen(
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     var statusMenuExpanded by remember { mutableStateOf(false) }
@@ -1550,6 +1589,11 @@ fun BrowseScreen(
         val message = collectionPickerUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         collectionPickerViewModel.clearMessages()
+    }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
+        }
     }
 
     Column(
@@ -2507,6 +2551,7 @@ fun AuthorsBrowseScreen(
         title = "Authors",
         uiState = uiState,
         onRetry = viewModel::refresh,
+        onScreenStarted = viewModel::onScreenStarted,
         onEntityClick = { onAuthorClick(it.name) },
         onBackClick = onBackClick,
         onHomeClick = onHomeClick,
@@ -3527,7 +3572,13 @@ fun NarratorsBrowseScreen(
     viewModel: NarratorsBrowseViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -3630,11 +3681,17 @@ fun SeriesBrowseScreen(
     onHomeClick: (() -> Unit)? = null,
     viewModel: SeriesBrowseViewModel = hiltViewModel()
 ) {
+    val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isRefreshing,
         onRefresh = viewModel::refresh
     )
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.onScreenStarted()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -6165,7 +6222,7 @@ private fun AutomaticServerRoutingSection(
             )
             HorizontalDivider()
             SettingsRow(
-                title = "Local Server",
+                title = "Local\nServer",
                 titleMaxLines = 2,
                 value = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
                     ?: "Not set",
@@ -6181,7 +6238,7 @@ private fun AutomaticServerRoutingSection(
             )
             HorizontalDivider()
             SettingsRow(
-                title = "Remote Server",
+                title = "Remote\nServer",
                 titleMaxLines = 2,
                 value = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
                     ?: "Not set",
@@ -6240,6 +6297,7 @@ private fun AutomaticServerRoutingDialogs(
                     HorizontalDivider()
                     SettingsRow(
                         title = "Choose from saved servers",
+                        trailingContentWidth = 0.dp,
                         showChevronWhenUnselected = false,
                         onClick = { onOpenSavedServersPicker(target) }
                     )
@@ -6879,14 +6937,12 @@ fun BookDetailScreen(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(
-                                        if (isActive) {
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                        } else if (appearanceUiState.materialDesignEnabled) {
-                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
-                                        }
-                                    )
+                                            if (appearanceUiState.materialDesignEnabled) {
+                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
+                                            }
+                                        )
                                         .clickable { viewModel.playChapter(chapter.startSeconds) }
                                         .padding(horizontal = 12.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -6898,11 +6954,7 @@ fun BookDetailScreen(
                                         Text(
                                             text = chapter.title,
                                             style = MaterialTheme.typography.titleMedium,
-                                            color = if (isActive) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
+                                            color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
                                             text = formatChapterDurationForRow(
@@ -6917,7 +6969,6 @@ fun BookDetailScreen(
                                     }
                                     if (isActive) {
                                         ChapterPlaybackIndicator(
-                                            isPlaying = playbackUiState.isPlaying,
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
@@ -6985,7 +7036,6 @@ fun BookDetailScreen(
                                     ) {
                                         if (isActiveBookmark) {
                                             ChapterPlaybackIndicator(
-                                                isPlaying = playbackUiState.isPlaying,
                                                 tint = MaterialTheme.colorScheme.primary
                                             )
                                         }
@@ -8538,9 +8588,7 @@ private fun PlayerChapterBookmarkSheet(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (isActiveChapter) {
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                        } else if (materialDesignEnabled) {
+                                        if (materialDesignEnabled) {
                                             MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
                                         } else {
                                             MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
@@ -8559,11 +8607,7 @@ private fun PlayerChapterBookmarkSheet(
                                         style = MaterialTheme.typography.titleMedium,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
-                                        color = if (isActiveChapter) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        }
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         text = formatChapterDurationForRow(
@@ -8578,7 +8622,6 @@ private fun PlayerChapterBookmarkSheet(
                                 }
                                 if (isActiveChapter) {
                                     ChapterPlaybackIndicator(
-                                        isPlaying = isPlaying,
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
@@ -8675,7 +8718,6 @@ private fun PlayerChapterBookmarkSheet(
                                 ) {
                                     if (isActiveBookmark) {
                                         ChapterPlaybackIndicator(
-                                            isPlaying = isPlaying,
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
@@ -10281,47 +10323,8 @@ private fun formatChapterDurationForRow(
 
 @Composable
 private fun ChapterPlaybackIndicator(
-    isPlaying: Boolean,
     tint: Color
 ) {
-    if (!isPlaying) {
-        Icon(
-            imageVector = Icons.Outlined.PlayArrow,
-            contentDescription = "Play chapter",
-            tint = tint
-        )
-        return
-    }
-
-    val transition = rememberInfiniteTransition(label = "chapter-playing-bars")
-    val bar1 by transition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 420),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bar1"
-    )
-    val bar2 by transition.animateFloat(
-        initialValue = 0.95f,
-        targetValue = 0.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 470),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bar2"
-    )
-    val bar3 by transition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 510),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "bar3"
-    )
-
     Row(
         modifier = Modifier
             .width(14.dp)
@@ -10332,21 +10335,21 @@ private fun ChapterPlaybackIndicator(
         Box(
             modifier = Modifier
                 .width(3.dp)
-                .height((4.dp + 10.dp * bar1))
+                .height(9.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
         Box(
             modifier = Modifier
                 .width(3.dp)
-                .height((4.dp + 10.dp * bar2))
+                .height(14.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
         Box(
             modifier = Modifier
                 .width(3.dp)
-                .height((4.dp + 10.dp * bar3))
+                .height(11.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
@@ -10840,15 +10843,23 @@ private fun EntityBrowseScreen(
     title: String,
     uiState: EntityBrowseUiState,
     onRetry: () -> Unit,
+    onScreenStarted: (() -> Unit)? = null,
     onEntityClick: ((com.stillshelf.app.core.model.NamedEntitySummary) -> Unit)? = null,
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     showAvatar: Boolean = false
 ) {
+    val lifecycleOwner = LocalLifecycleOwner.current
     val refreshState = rememberPullRefreshState(
         refreshing = uiState.isLoading,
         onRefresh = onRetry
     )
+    LaunchedEffect(lifecycleOwner, onScreenStarted) {
+        if (onScreenStarted == null) return@LaunchedEffect
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            onScreenStarted()
+        }
+    }
 
     Column(
         modifier = Modifier

@@ -22,6 +22,7 @@ import com.stillshelf.app.core.model.BookmarkEntry
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.HomeFeed
 import com.stillshelf.app.core.model.NamedEntitySummary
+import com.stillshelf.app.core.model.ActiveServerDataState
 import com.stillshelf.app.core.model.SeriesStackSummary
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackProgress
@@ -66,7 +67,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -230,6 +233,7 @@ class SessionRepositoryImpl @Inject constructor(
     private val finishedProgressSnapshots = mutableMapOf<String, FinishedProgressSnapshot>()
     private val mutableBookProgressMutations = MutableSharedFlow<BookProgressMutation>(extraBufferCapacity = 32)
     private val mutableServerConnectionMessages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    private val mutableServerDataStates = MutableStateFlow<Map<String, ActiveServerDataState>>(emptyMap())
     private val localBookProgressOverrides = mutableMapOf<String, LocalBookProgressOverride>()
     private val booksCache = mutableMapOf<String, TimedCacheEntry<List<BookSummary>>>()
     private val authorsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
@@ -277,6 +281,14 @@ class SessionRepositoryImpl @Inject constructor(
     override fun observeActiveServerConnectionStatus(): Flow<ActiveServerConnectionStatus?> =
         activeServerEndpointResolver.observeActiveConnectionStatus()
 
+    override fun observeActiveServerDataState(): Flow<ActiveServerDataState?> =
+        combine(
+            sessionPreferences.state.map { it.activeServerId }.distinctUntilChanged(),
+            mutableServerDataStates.asStateFlow()
+        ) { activeServerId, serverStates ->
+            activeServerId?.let(serverStates::get)
+        }
+
     override fun observeServers(): Flow<List<Server>> = serverDao.observeServers().map { servers ->
         servers.map { it.toModel() }
     }
@@ -322,6 +334,7 @@ class SessionRepositoryImpl @Inject constructor(
             serverDao.deleteById(existing.id)
             deletePersistedDetailCacheForServer(existing.id)
             sessionPreferences.removeServerEndpointSwitchingConfig(existing.id)
+            clearServerDataState(existing.id)
             clearContentCaches()
             val session = sessionPreferences.state.first()
             if (session.activeServerId == existing.id) {
@@ -455,6 +468,7 @@ class SessionRepositoryImpl @Inject constructor(
                 deletePersistedDetailCacheForServer(activeServerId)
             }
             sessionPreferences.removeServerEndpointSwitchingConfig(activeServerId)
+            clearServerDataState(activeServerId)
             sessionPreferences.setLastPlayedBookId(null)
             sessionPreferences.clearCachedHomeFeed()
             sessionPreferences.setActiveSelection(
@@ -696,6 +710,7 @@ class SessionRepositoryImpl @Inject constructor(
                 .withLocalProgressOverride(connection.server.id)
         }
         putCache(booksCache, cacheKey, books)
+        clearServerDataState(connection.server.id)
 
         return AppResult.Success(books)
     }
@@ -747,6 +762,7 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
         putCache(authorsCache, cacheKey, authors)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(authors)
     }
 
@@ -799,6 +815,7 @@ class SessionRepositoryImpl @Inject constructor(
             }
         }
         putCache(narratorsCache, cacheKey, narrators)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(narrators)
     }
 
@@ -853,6 +870,7 @@ class SessionRepositoryImpl @Inject constructor(
             series = series
         )
         putCache(seriesCache, cacheKey, series)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(series)
     }
 
@@ -1274,6 +1292,7 @@ class SessionRepositoryImpl @Inject constructor(
                 .awaitAll()
         }
         putCache(collectionsCache, cacheKey, collections)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(collections)
     }
 
@@ -1329,6 +1348,7 @@ class SessionRepositoryImpl @Inject constructor(
             }.awaitAll()
         }
         putCache(playlistsCache, cacheKey, playlists)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(playlists)
     }
 
@@ -1501,6 +1521,7 @@ class SessionRepositoryImpl @Inject constructor(
                     .withLocalProgressOverride(connection.server.id)
             }
         putCache(booksCache, cacheKey, books)
+        clearServerDataState(connection.server.id)
         return AppResult.Success(books)
     }
 
@@ -2367,6 +2388,7 @@ class SessionRepositoryImpl @Inject constructor(
                     .thenBy { it.book.title.lowercase() }
             )
 
+        clearServerDataState(connection.server.id)
         return AppResult.Success(bookmarkEntries)
     }
 
@@ -3092,6 +3114,7 @@ class SessionRepositoryImpl @Inject constructor(
                         savedAtMs = System.currentTimeMillis()
                     )
                 }
+                clearServerDataState(connection.server.id)
                 AppResult.Success(feed)
             }
         } catch (t: Throwable) {
@@ -3136,6 +3159,7 @@ class SessionRepositoryImpl @Inject constructor(
                 detailCacheDao.deleteDetailSyncStateForServer(server.id)
             }
             clearContentCachesForServer(server.id)
+            clearServerDataState(server.id)
             AppResult.Success(Unit)
         } catch (t: Throwable) {
             AppResult.Error("Unable to refresh server libraries.", t)
@@ -3303,6 +3327,7 @@ class SessionRepositoryImpl @Inject constructor(
                 sessionPreferences.clearCachedHomeFeed()
                 deletePersistedDetailCacheForServer(server.id)
                 clearContentCachesForServer(server.id)
+                clearServerDataState(server.id)
                 if (status.switchingEnabled) {
                     mutableServerConnectionMessages.tryEmit(connectionStatusMessage(status))
                 }
@@ -3312,6 +3337,10 @@ class SessionRepositoryImpl @Inject constructor(
                 sessionPreferences.clearCachedHomeFeed()
                 deletePersistedDetailCacheForServer(server.id)
                 clearContentCachesForServer(server.id)
+                markServerDataStale(
+                    serverId = server.id,
+                    message = "Data may be out of date. Pull to refresh."
+                )
                 if (status.switchingEnabled) {
                     mutableServerConnectionMessages.tryEmit(
                         "Server connection changed, but data refresh failed. Pull to refresh."
@@ -3356,6 +3385,24 @@ class SessionRepositoryImpl @Inject constructor(
             status.route == ServerConnectionRoute.Local -> "Connected to local server"
             status.route == ServerConnectionRoute.Remote -> "Connected to remote server"
             else -> "Connected to server"
+        }
+    }
+
+    private fun markServerDataStale(serverId: String, message: String) {
+        mutableServerDataStates.value = mutableServerDataStates.value.toMutableMap().apply {
+            this[serverId] = ActiveServerDataState(
+                serverId = serverId,
+                isStale = true,
+                message = message,
+                staleSinceMs = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private fun clearServerDataState(serverId: String) {
+        if (!mutableServerDataStates.value.containsKey(serverId)) return
+        mutableServerDataStates.value = mutableServerDataStates.value.toMutableMap().apply {
+            remove(serverId)
         }
     }
 
@@ -3513,6 +3560,7 @@ class SessionRepositoryImpl @Inject constructor(
                     libraryId = libraryId,
                     detail = detail
                 )
+                clearServerDataState(connection.server.id)
                 AppResult.Success(Unit)
             }
         } catch (t: Throwable) {
@@ -3589,6 +3637,7 @@ class SessionRepositoryImpl @Inject constructor(
                 seriesId = seriesId,
                 entries = entries
             )
+            clearServerDataState(connection.server.id)
             AppResult.Success(Unit)
         } catch (t: Throwable) {
             AppResult.Error("Unable to load series.", t)

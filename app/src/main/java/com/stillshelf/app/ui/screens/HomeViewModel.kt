@@ -9,6 +9,7 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
+import com.stillshelf.app.core.model.ActiveServerDataState
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.hasMeaningfulStartedProgress
 import com.stillshelf.app.data.repo.SessionRepository
@@ -86,6 +87,8 @@ class HomeViewModel @Inject constructor(
         observeBookProgressMutations()
         observeLivePlaybackState()
         observeDownloadedState()
+        observeActiveServerDataState()
+        observeAppForegroundRefresh()
         observeSilentRefreshTicker()
     }
 
@@ -471,6 +474,38 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun observeActiveServerDataState() {
+        viewModelScope.launch {
+            sessionRepository.observeActiveServerDataState().collect { dataState ->
+                mutableUiState.update {
+                    it.copy(
+                        staleDataMessage = dataState?.takeIf(ActiveServerDataState::isStale)?.message,
+                        staleDataSinceMs = dataState?.takeIf(ActiveServerDataState::isStale)?.staleSinceMs
+                    )
+                }
+            }
+        }
+    }
+
+    private fun observeAppForegroundRefresh() {
+        viewModelScope.launch {
+            var wasInForeground = appInForeground.value
+            appInForeground
+                .collect { isInForeground ->
+                    val shouldRefresh = shouldRefreshHomeOnAppForeground(
+                        wasInForeground = wasInForeground,
+                        isInForeground = isInForeground,
+                        homeScreenVisible = homeScreenVisible.value,
+                        activeLibraryId = activeLibraryIdState.value
+                    )
+                    wasInForeground = isInForeground
+                    if (shouldRefresh) {
+                        refreshForVisibleHomeEntry()
+                    }
+                }
+        }
+    }
+
     private fun findBookById(bookId: String): BookSummary? {
         val state = uiState.value
         return state.continueListening.firstOrNull { it.book.id == bookId }?.book
@@ -703,6 +738,20 @@ data class HomeUiState(
     val authorImageUrls: Map<String, String> = emptyMap(),
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),
+    val staleDataMessage: String? = null,
+    val staleDataSinceMs: Long? = null,
     val actionMessage: String? = null,
     val errorMessage: String? = null
 )
+
+internal fun shouldRefreshHomeOnAppForeground(
+    wasInForeground: Boolean,
+    isInForeground: Boolean,
+    homeScreenVisible: Boolean,
+    activeLibraryId: String?
+): Boolean {
+    return !wasInForeground &&
+        isInForeground &&
+        homeScreenVisible &&
+        !activeLibraryId.isNullOrBlank()
+}

@@ -29,6 +29,18 @@ import okhttp3.Request
 import okhttp3.Response
 import java.util.concurrent.TimeUnit
 
+internal fun shouldRetryLanOnWifi(
+    status: ActiveServerConnectionStatus,
+    networkType: NetworkConnectionType
+): Boolean {
+    return networkType == NetworkConnectionType.Wifi &&
+        status.connectionMode == ServerConnectionMode.Auto &&
+        status.switchingEnabled &&
+        status.route != ServerConnectionRoute.Local &&
+        !status.lanBaseUrl.isNullOrBlank() &&
+        !status.wanBaseUrl.isNullOrBlank()
+}
+
 internal suspend fun resolveActiveServerConnectionStatus(
     serverId: String,
     serverBaseUrl: String,
@@ -233,14 +245,5 @@ class ActiveServerEndpointResolver @Inject constructor(
                 response.isSuccessful
             }
         }.getOrDefault(false)
-    }
-    private fun shouldRetryLanOnWifi(
-        status: ActiveServerConnectionStatus,
-        networkType: NetworkConnectionType
-    ): Boolean {
-        return networkType == NetworkConnectionType.Wifi &&
-            status.connectionMode == ServerConnectionMode.Auto &&
-            status.lanFallbackToRemote &&
-            status.switchingEnabled
     }
 }

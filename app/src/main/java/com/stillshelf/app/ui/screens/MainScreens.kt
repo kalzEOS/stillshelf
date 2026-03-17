@@ -3592,7 +3592,7 @@ fun NarratorsBrowseScreen(
         )
         Spacer(modifier = Modifier.height(10.dp))
         when {
-            uiState.isLoading -> {
+            uiState.isLoading && uiState.entities.isEmpty() -> {
                 Text(
                     text = "Loading Narrators...",
                     style = MaterialTheme.typography.bodyLarge,
@@ -3622,7 +3622,7 @@ fun NarratorsBrowseScreen(
                 }
             }
 
-            uiState.errorMessage != null -> {
+            uiState.errorMessage != null && uiState.entities.isEmpty() -> {
                 Text(
                     text = uiState.errorMessage.orEmpty(),
                     style = MaterialTheme.typography.bodyLarge,

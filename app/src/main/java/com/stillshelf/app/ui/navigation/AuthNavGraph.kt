@@ -15,7 +15,8 @@ fun NavGraphBuilder.authNavGraph(
     navController: NavHostController,
     startDestination: String,
     hasAnyServer: Boolean,
-    onAuthCompleted: () -> Unit
+    onAuthCompleted: () -> Unit,
+    onExitAuthFlow: () -> Unit
 ) {
     navigation(
         route = GraphRoute.AUTH,
@@ -27,18 +28,22 @@ fun NavGraphBuilder.authNavGraph(
                 onServerSelected = { navController.navigate(AuthRoute.LIBRARY_PICKER) },
                 onReauthenticate = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
-                }
+                },
+                onBackToBackendSelection = onExitAuthFlow
             )
         }
 
         composable(AuthRoute.ADD_SERVER) {
-            val canNavigateBack = navController.previousBackStackEntry != null
             AddServerRoute(
                 onContinue = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
                 },
-                onBack = { navController.popBackStack() },
-                showBackButton = canNavigateBack
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        onExitAuthFlow()
+                    }
+                },
+                showBackButton = true
             )
         }
 
@@ -50,7 +55,11 @@ fun NavGraphBuilder.authNavGraph(
             )
         ) {
             LoginRoute(
-                onBack = { navController.popBackStack() },
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        onExitAuthFlow()
+                    }
+                },
                 onLoginSuccess = { navController.navigate(AuthRoute.LIBRARY_PICKER) }
             )
         }
@@ -69,7 +78,8 @@ fun NavGraphBuilder.authNavGraph(
                             launchSingleTop = true
                         }
                     }
-                }
+                },
+                onBackToBackendSelection = onExitAuthFlow
             )
         }
     }

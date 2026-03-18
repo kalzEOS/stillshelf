@@ -4737,6 +4737,31 @@ fun SettingsScreen(
         )
 
         Text(
+            text = "PRODUCT MODE",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
+        ) {
+            SettingsRow(
+                title = "Selected backend",
+                value = uiState.selectedBackend?.displayName ?: "Choose on next launch",
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = null
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Switch product mode",
+                value = "Return to backend selector",
+                onClick = viewModel::resetSelectedBackend
+            )
+        }
+
+        Text(
             text = "APPEARANCE",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant

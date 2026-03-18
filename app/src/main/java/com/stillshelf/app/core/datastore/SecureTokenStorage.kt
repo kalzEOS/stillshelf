@@ -94,12 +94,66 @@ class SecureTokenStorage @Inject constructor(
         persistAcrossRestarts: Boolean = true,
         allowInsecureStorage: Boolean = false
     ) {
+        saveSecret(
+            key = tokenKey(serverId),
+            value = token,
+            inMemoryKey = serverId,
+            persistAcrossRestarts = persistAcrossRestarts,
+            allowInsecureStorage = allowInsecureStorage
+        )
+    }
+
+    suspend fun getToken(serverId: String): String? = getSecret(
+        key = tokenKey(serverId),
+        inMemoryKey = serverId
+    )
+
+    suspend fun clearToken(serverId: String) {
+        clearSecret(
+            key = tokenKey(serverId),
+            inMemoryKey = serverId
+        )
+    }
+
+    suspend fun saveNamedSecret(
+        key: String,
+        value: String,
+        persistAcrossRestarts: Boolean = true,
+        allowInsecureStorage: Boolean = false
+    ) {
+        saveSecret(
+            key = "secret_$key",
+            value = value,
+            inMemoryKey = "secret_$key",
+            persistAcrossRestarts = persistAcrossRestarts,
+            allowInsecureStorage = allowInsecureStorage
+        )
+    }
+
+    suspend fun getNamedSecret(key: String): String? = getSecret(
+        key = "secret_$key",
+        inMemoryKey = "secret_$key"
+    )
+
+    suspend fun clearNamedSecret(key: String) {
+        clearSecret(
+            key = "secret_$key",
+            inMemoryKey = "secret_$key"
+        )
+    }
+
+    private suspend fun saveSecret(
+        key: String,
+        value: String,
+        inMemoryKey: String,
+        persistAcrossRestarts: Boolean,
+        allowInsecureStorage: Boolean
+    ) {
         withContext(Dispatchers.IO) {
-            val key = tokenKey(serverId)
             if (!persistAcrossRestarts) {
                 clearPersistedToken(key)
                 synchronized(sharedPreferencesLock) {
-                    sessionTokens[serverId] = token
+                    sessionTokens[inMemoryKey] = value
                 }
                 return@withContext
             }
@@ -108,7 +162,7 @@ class SecureTokenStorage @Inject constructor(
             when {
                 encryptedPrefs != null -> {
                     encryptedPrefs.edit()
-                        .putString(key, token)
+                        .putString(key, value)
                         .apply()
                     fallbackPreferences().edit()
                         .remove(key)
@@ -117,7 +171,7 @@ class SecureTokenStorage @Inject constructor(
 
                 allowInsecureStorage -> {
                     fallbackPreferences().edit()
-                        .putString(key, token)
+                        .putString(key, value)
                         .apply()
                 }
 
@@ -125,21 +179,23 @@ class SecureTokenStorage @Inject constructor(
             }
 
             synchronized(sharedPreferencesLock) {
-                sessionTokens[serverId] = token
+                sessionTokens[inMemoryKey] = value
             }
         }
     }
 
-    suspend fun getToken(serverId: String): String? = withContext(Dispatchers.IO) {
+    private suspend fun getSecret(
+        key: String,
+        inMemoryKey: String
+    ): String? = withContext(Dispatchers.IO) {
         synchronized(sharedPreferencesLock) {
-            sessionTokens[serverId]
+            sessionTokens[inMemoryKey]
         }?.let { return@withContext it }
 
-        val key = tokenKey(serverId)
         val encrypted = getEncryptedSharedPreferences()?.getString(key, null)
         if (!encrypted.isNullOrBlank()) {
             synchronized(sharedPreferencesLock) {
-                sessionTokens[serverId] = encrypted
+                sessionTokens[inMemoryKey] = encrypted
             }
             return@withContext encrypted
         }
@@ -156,7 +212,7 @@ class SecureTokenStorage @Inject constructor(
                     .apply()
             }
             synchronized(sharedPreferencesLock) {
-                sessionTokens[serverId] = fallback
+                sessionTokens[inMemoryKey] = fallback
             }
             return@withContext fallback
         }
@@ -164,12 +220,14 @@ class SecureTokenStorage @Inject constructor(
         null
     }
 
-    suspend fun clearToken(serverId: String) {
+    private suspend fun clearSecret(
+        key: String,
+        inMemoryKey: String
+    ) {
         withContext(Dispatchers.IO) {
-            val key = tokenKey(serverId)
             clearPersistedToken(key)
             synchronized(sharedPreferencesLock) {
-                sessionTokens.remove(serverId)
+                sessionTokens.remove(inMemoryKey)
             }
         }
     }

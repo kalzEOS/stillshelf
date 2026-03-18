@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,9 @@ class SessionPreferences @Inject constructor(
 ) {
     private val activeServerIdKey = stringPreferencesKey("active_server_id")
     private val activeLibraryIdKey = stringPreferencesKey("active_library_id")
+    private val selectedBackendKey = stringPreferencesKey("selected_backend")
+    private val navidromeBaseUrlKey = stringPreferencesKey("navidrome_base_url")
+    private val navidromeUsernameKey = stringPreferencesKey("navidrome_username")
     private val requiresLibrarySelectionKey = booleanPreferencesKey("requires_library_selection")
     private val lastPlayedBookIdKey = stringPreferencesKey("last_played_book_id")
     private val hiddenBrowseSectionsKey = stringPreferencesKey("hidden_browse_sections")
@@ -70,6 +74,9 @@ class SessionPreferences @Inject constructor(
         SessionPreferenceState(
             activeServerId = prefs[activeServerIdKey],
             activeLibraryId = prefs[activeLibraryIdKey],
+            selectedBackend = BackendProvider.fromStorageValue(prefs[selectedBackendKey]),
+            navidromeBaseUrl = prefs[navidromeBaseUrlKey],
+            navidromeUsername = prefs[navidromeUsernameKey],
             requiresLibrarySelection = prefs[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = prefs[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(prefs[hiddenBrowseSectionsKey]),
@@ -128,6 +135,30 @@ class SessionPreferences @Inject constructor(
             } else {
                 prefs[activeLibraryIdKey] = libraryId
             }
+        }
+    }
+
+    suspend fun setSelectedBackend(provider: BackendProvider?) {
+        dataStore.edit { prefs ->
+            if (provider == null) {
+                prefs.remove(selectedBackendKey)
+            } else {
+                prefs[selectedBackendKey] = provider.storageValue
+            }
+        }
+    }
+
+    suspend fun setNavidromeSession(baseUrl: String, username: String) {
+        dataStore.edit { prefs ->
+            prefs[navidromeBaseUrlKey] = baseUrl.trim().removeSuffix("/")
+            prefs[navidromeUsernameKey] = username.trim()
+        }
+    }
+
+    suspend fun clearNavidromeSession() {
+        dataStore.edit { prefs ->
+            prefs.remove(navidromeBaseUrlKey)
+            prefs.remove(navidromeUsernameKey)
         }
     }
 
@@ -772,6 +803,9 @@ class SessionPreferences @Inject constructor(
 data class SessionPreferenceState(
     val activeServerId: String?,
     val activeLibraryId: String?,
+    val selectedBackend: BackendProvider? = null,
+    val navidromeBaseUrl: String? = null,
+    val navidromeUsername: String? = null,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),

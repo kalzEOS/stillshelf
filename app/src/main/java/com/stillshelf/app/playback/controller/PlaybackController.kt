@@ -1014,11 +1014,12 @@ class PlaybackController @Inject constructor(
             pendingPlayStartsProgressUpdates = false
             runCatching { player.start() }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            startProgressUpdates()
             return
         }
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
             pendingPlayAfterAudioFocusGain = true
-            pendingPlayStartsProgressUpdates = false
+            pendingPlayStartsProgressUpdates = true
             updateUiState { it.copy(isPlaying = false, errorMessage = null) }
             return
         }

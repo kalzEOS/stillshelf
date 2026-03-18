@@ -4,6 +4,11 @@ import com.stillshelf.app.core.database.ServerDao
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.RealtimeInvalidation
+import com.stillshelf.app.core.network.ActiveServerEndpointResolver
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import io.socket.client.IO
 import io.socket.client.Socket
 import java.net.URI
@@ -16,6 +21,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -53,12 +59,19 @@ internal fun buildRealtimeSocketEndpoint(baseUrl: String): RealtimeSocketEndpoin
     )
 }
 
+// Battery-first policy: keep the live socket only while the app is in foreground and able to use it.
+internal fun shouldMaintainRealtimeConnection(
+    isAppInForeground: Boolean,
+    hasAuthenticatedTarget: Boolean
+): Boolean = isAppInForeground && hasAuthenticatedTarget
+
 @Singleton
 @OptIn(ExperimentalCoroutinesApi::class)
 class AudiobookshelfRealtimeClient @Inject constructor(
     serverDao: ServerDao,
     sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
+    private val activeServerEndpointResolver: ActiveServerEndpointResolver,
     okHttpClient: OkHttpClient
 ) {
     private data class RealtimeTarget(
@@ -76,6 +89,9 @@ class AudiobookshelfRealtimeClient @Inject constructor(
         .readTimeout(1, TimeUnit.MINUTES)
         .build()
     private val mutableInvalidations = MutableSharedFlow<RealtimeInvalidation>(extraBufferCapacity = 32)
+    private val mutableAppInForeground = MutableStateFlow(
+        ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+    )
     val invalidations: Flow<RealtimeInvalidation> = mutableInvalidations.asSharedFlow()
 
     @Volatile
@@ -87,25 +103,46 @@ class AudiobookshelfRealtimeClient @Inject constructor(
     @Volatile
     private var lastInvalidationAtMs: Long = 0L
 
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            mutableAppInForeground.value = true
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            mutableAppInForeground.value = false
+        }
+    }
+
     init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         scope.launch {
             combine(
                 serverDao.observeServers(),
-                sessionPreferences.state
-            ) { servers, pref ->
-                servers.firstOrNull { it.id == pref.activeServerId }
+                sessionPreferences.state,
+                activeServerEndpointResolver.observeActiveConnectionStatus(),
+                mutableAppInForeground
+            ) { servers, pref, connectionStatus, isAppInForeground ->
+                RealtimeConnectionInputs(servers, pref.activeServerId, connectionStatus, isAppInForeground)
             }
-                .mapLatest { server ->
+                .mapLatest { inputs ->
+                    val server = inputs.servers.firstOrNull { it.id == inputs.activeServerId }
                     if (server == null) {
                         null
                     } else {
                         val token = secureTokenStorage.getToken(server.id)
-                        token?.takeIf { it.isNotBlank() }?.let {
+                        val resolvedStatus = inputs.connectionStatus?.takeIf { it.serverId == server.id }
+                            ?: activeServerEndpointResolver.resolveForServer(server)
+                        val target = token?.takeIf { it.isNotBlank() }?.let {
                             RealtimeTarget(
                                 serverId = server.id,
-                                baseUrl = server.baseUrl,
+                                baseUrl = resolvedStatus.effectiveBaseUrl,
                                 token = it
                             )
+                        }
+                        if (shouldMaintainRealtimeConnection(inputs.isAppInForeground, target != null)) {
+                            target
+                        } else {
+                            null
                         }
                     }
                 }
@@ -115,6 +152,13 @@ class AudiobookshelfRealtimeClient @Inject constructor(
                 }
         }
     }
+
+    private data class RealtimeConnectionInputs(
+        val servers: List<com.stillshelf.app.core.database.ServerEntity>,
+        val activeServerId: String?,
+        val connectionStatus: com.stillshelf.app.core.model.ActiveServerConnectionStatus?,
+        val isAppInForeground: Boolean
+    )
 
     private fun reconnect(target: RealtimeTarget?) {
         disconnect()

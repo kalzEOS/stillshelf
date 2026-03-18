@@ -13,6 +13,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.composable
+import com.stillshelf.app.core.model.BackendProvider
+import com.stillshelf.app.ui.screens.BackendSelectionScreen
+import com.stillshelf.app.ui.screens.navidrome.NavidromeAppRoute
+import com.stillshelf.app.ui.screens.navidrome.NavidromeLoginRoute
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.rememberNavController
 
@@ -28,10 +33,18 @@ fun RootNavGraph(
         return
     }
 
-    val startGraph = if (uiState.hasActiveServer && uiState.hasActiveLibrary) {
-        GraphRoute.MAIN
-    } else {
-        GraphRoute.AUTH
+    val startGraph = when (uiState.selectedBackend) {
+        null -> GraphRoute.BACKEND_SELECTOR
+        BackendProvider.NAVIDROME -> if (uiState.hasNavidromeSession) {
+            GraphRoute.NAVIDROME
+        } else {
+            GraphRoute.NAVIDROME_AUTH
+        }
+        BackendProvider.AUDIOBOOKSHELF -> if (uiState.hasActiveServer && uiState.hasActiveLibrary) {
+            GraphRoute.MAIN
+        } else {
+            GraphRoute.AUTH
+        }
     }
     val authStartDestination = when {
         uiState.hasActiveServer -> AuthRoute.LIBRARY_PICKER
@@ -69,6 +82,17 @@ fun RootNavGraph(
                 )
             }
         ) {
+            composable(GraphRoute.BACKEND_SELECTOR) {
+                BackendSelectionScreen(
+                    hasAudiobookshelfSession = uiState.hasActiveServer,
+                    onBackendSelected = rootViewModel::selectBackend
+                )
+            }
+            composable(GraphRoute.NAVIDROME_AUTH) {
+                NavidromeLoginRoute(
+                    onSwitchMode = rootViewModel::clearSelectedBackend
+                )
+            }
             authNavGraph(
                 navController = navController,
                 startDestination = authStartDestination,
@@ -78,11 +102,17 @@ fun RootNavGraph(
                         popUpTo(GraphRoute.AUTH) { inclusive = true }
                         launchSingleTop = true
                     }
-                }
+                },
+                onExitAuthFlow = rootViewModel::clearSelectedBackend
             )
             mainNavGraph(
                 onHomeScreenReached = onHomeScreenReached
             )
+            composable(GraphRoute.NAVIDROME) {
+                NavidromeAppRoute(
+                    onSwitchMode = rootViewModel::clearSelectedBackend
+                )
+            }
         }
     }
 }

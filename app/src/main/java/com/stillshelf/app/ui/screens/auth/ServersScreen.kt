@@ -55,6 +55,7 @@ fun ServersRoute(
     onAddServer: () -> Unit,
     onServerSelected: () -> Unit,
     onReauthenticate: (serverName: String, baseUrl: String) -> Unit,
+    onBackToBackendSelection: (() -> Unit)? = null,
     viewModel: ServersViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -81,7 +82,8 @@ fun ServersRoute(
         onAddServer = onAddServer,
         onServerSelected = viewModel::onServerSelected,
         onUpdateServer = viewModel::updateServer,
-        onDeleteServer = viewModel::deleteServer
+        onDeleteServer = viewModel::deleteServer,
+        onBackToBackendSelection = onBackToBackendSelection
     )
 }
 
@@ -92,7 +94,8 @@ private fun ServersScreen(
     onAddServer: () -> Unit,
     onServerSelected: (String) -> Unit,
     onUpdateServer: (serverId: String, name: String, baseUrl: String) -> Unit,
-    onDeleteServer: (serverId: String) -> Unit
+    onDeleteServer: (serverId: String) -> Unit,
+    onBackToBackendSelection: (() -> Unit)?
 ) {
     var openMenuServerId by remember { mutableStateOf<String?>(null) }
     var editingServer by remember { mutableStateOf<Server?>(null) }
@@ -189,6 +192,17 @@ private fun ServersScreen(
                     enabled = !uiState.isBusy
                 ) {
                     Text("Add Server")
+                }
+                onBackToBackendSelection?.let { onBack ->
+                    Button(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        onClick = onBack,
+                        enabled = !uiState.isBusy
+                    ) {
+                        Text("Back to Product Modes")
+                    }
                 }
             } else {
                 LazyColumn(
@@ -302,6 +316,17 @@ private fun ServersScreen(
                     enabled = !uiState.isBusy
                 ) {
                     Text("Add Server")
+                }
+                onBackToBackendSelection?.let { onBack ->
+                    Button(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        onClick = onBack,
+                        enabled = !uiState.isBusy
+                    ) {
+                        Text("Back to Product Modes")
+                    }
                 }
             }
         }

@@ -45,6 +45,7 @@ import androidx.compose.foundation.layout.PaddingValues
 fun LibraryPickerRoute(
     onLibrarySelected: () -> Unit,
     onManageServers: () -> Unit,
+    onBackToBackendSelection: (() -> Unit)? = null,
     viewModel: LibraryPickerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -69,7 +70,8 @@ fun LibraryPickerRoute(
         uiState = uiState,
         snackbarHostState = snackbarHostState,
         onLibrarySelected = viewModel::onLibrarySelected,
-        onManageServers = onManageServers
+        onManageServers = onManageServers,
+        onBackToBackendSelection = onBackToBackendSelection
     )
 }
 
@@ -78,7 +80,8 @@ private fun LibraryPickerScreen(
     uiState: LibraryPickerUiState,
     snackbarHostState: SnackbarHostState,
     onLibrarySelected: (String) -> Unit,
-    onManageServers: () -> Unit
+    onManageServers: () -> Unit,
+    onBackToBackendSelection: (() -> Unit)?
 ) {
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
@@ -181,6 +184,14 @@ private fun LibraryPickerScreen(
                     ) {
                         Text("Manage Servers")
                     }
+                    onBackToBackendSelection?.let { onBack ->
+                        Button(
+                            onClick = onBack,
+                            modifier = Modifier.padding(top = 10.dp)
+                        ) {
+                            Text("Back to Product Modes")
+                        }
+                    }
                 }
             } else {
                 val reachableLayout = uiState.libraries.size <= 3
@@ -229,6 +240,14 @@ private fun LibraryPickerScreen(
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+                onBackToBackendSelection?.let { onBack ->
+                    Button(
+                        onClick = onBack,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Back to Product Modes")
+                    }
+                }
             }
         }
     }

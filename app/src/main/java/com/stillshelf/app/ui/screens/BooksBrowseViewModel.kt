@@ -57,6 +57,10 @@ class BooksBrowseViewModel @Inject constructor(
         viewModelScope.launch { loadBooks(isUserRefresh = true) }
     }
 
+    fun onScreenStarted() {
+        viewModelScope.launch { loadBooks(isUserRefresh = false) }
+    }
+
     fun setLayoutMode(value: BooksLayoutMode) {
         mutableUiState.update { it.copy(layoutMode = value) }
         viewModelScope.launch {

@@ -99,6 +99,12 @@ data class PlaybackUiState(
     val errorMessage: String? = null
 )
 
+// Battery-first policy: only keep the playback session/service alive while audio is actively playing.
+internal fun shouldKeepPlaybackSessionActive(
+    book: BookSummary?,
+    isPlaying: Boolean
+): Boolean = book != null && isPlaying
+
 @Singleton
 class PlaybackController @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
@@ -234,7 +240,8 @@ class PlaybackController @Inject constructor(
         val currentTimeSeconds: Double,
         val durationSeconds: Double?,
         val isFinished: Boolean,
-        val checkpointSavedAtMs: Long
+        val checkpointSavedAtMs: Long,
+        val allowBackgroundRetry: Boolean
     )
 
     private data class ResolvedPlaybackStart(
@@ -259,6 +266,7 @@ class PlaybackController @Inject constructor(
         override fun onStart(owner: LifecycleOwner) {
             lastAppBackgroundSyncAtElapsedMs = 0L
             lastAppBackgroundSyncPositionMs = -1L
+            syncPendingPlaybackCheckpointsOnForeground()
         }
 
         override fun onStop(owner: LifecycleOwner) {
@@ -296,7 +304,7 @@ class PlaybackController @Inject constructor(
             override fun onSkipToPrevious() = performLockScreenPreviousControl()
             override fun onSkipToNext() = performLockScreenNextControl()
         })
-        mediaSession.isActive = true
+        mediaSession.isActive = false
         registerNoisyAudioReceiver()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
@@ -495,7 +503,8 @@ class PlaybackController @Inject constructor(
         ) {
             enqueueProgressSyncRequest(
                 request = localCheckpoint.toProgressSyncRequest(),
-                bypassGate = true
+                bypassGate = true,
+                allowBackgroundRetry = false
             )
         }
         val shouldRestartFromBeginning = resolvedProgress.shouldRestartFromBeginning(
@@ -609,7 +618,8 @@ class PlaybackController @Inject constructor(
             currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
             durationSeconds = durationSeconds,
             isFinished = isFinished,
-            checkpointSavedAtMs = savedAtMs
+            checkpointSavedAtMs = savedAtMs,
+            allowBackgroundRetry = false
         )
     }
 
@@ -982,7 +992,11 @@ class PlaybackController @Inject constructor(
             )
         }
         if (forceSync) {
-            syncProgress(force = true, isFinished = false)
+            syncProgress(
+                force = true,
+                isFinished = false,
+                allowBackgroundRetry = uiState.value.isPlaying
+            )
         }
     }
 
@@ -1154,6 +1168,8 @@ class PlaybackController @Inject constructor(
             runCatching { player.pause() }
             updateProgress(player)
         }
+        progressJob?.cancel()
+        progressJob = null
         pendingPlayAfterAudioFocusGain = false
         pendingPlayStartsProgressUpdates = false
         if (reason != PauseReason.AudioFocusTransientLoss) {
@@ -1166,7 +1182,11 @@ class PlaybackController @Inject constructor(
         ) {
             abandonAudioFocus()
         }
-        syncProgress(force = true, isFinished = false)
+        syncProgress(
+            force = true,
+            isFinished = false,
+            allowBackgroundRetry = false
+        )
         updateUiState { it.copy(isPlaying = false) }
     }
 
@@ -1314,7 +1334,11 @@ class PlaybackController @Inject constructor(
                 mediaPlayer?.let {
                     updateProgress(it)
                     if (uiState.value.isPlaying) {
-                        syncProgress(force = false, isFinished = false)
+                        syncProgress(
+                            force = false,
+                            isFinished = false,
+                            allowBackgroundRetry = true
+                        )
                     }
                 }
                 delay(500L)
@@ -1410,7 +1434,11 @@ class PlaybackController @Inject constructor(
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
         if (syncProgressBeforeRelease) {
-            syncProgress(force = true, isFinished = shouldSyncAsFinished())
+            syncProgress(
+                force = true,
+                isFinished = shouldSyncAsFinished(),
+                allowBackgroundRetry = false
+            )
         }
         progressJob?.cancel()
         progressJob = null
@@ -1429,7 +1457,11 @@ class PlaybackController @Inject constructor(
     }
 
     fun saveProgressSnapshot() {
-        syncProgress(force = true, isFinished = shouldSyncAsFinished())
+        syncProgress(
+            force = true,
+            isFinished = shouldSyncAsFinished(),
+            allowBackgroundRetry = false
+        )
     }
 
     fun cacheContinueListeningItem(item: ContinueListeningItem?) {
@@ -1448,7 +1480,11 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun syncProgress(force: Boolean, isFinished: Boolean) {
+    private fun syncProgress(
+        force: Boolean,
+        isFinished: Boolean,
+        allowBackgroundRetry: Boolean
+    ) {
         val bookId = currentBookId ?: return
         val state = uiState.value
         val currentMs = state.positionMs.coerceAtLeast(0L)
@@ -1463,10 +1499,12 @@ class PlaybackController @Inject constructor(
                 currentTimeSeconds = currentMs / 1000.0,
                 durationSeconds = durationSeconds,
                 isFinished = isFinished,
-                checkpointSavedAtMs = checkpoint?.savedAtMs ?: 0L
+                checkpointSavedAtMs = checkpoint?.savedAtMs ?: 0L,
+                allowBackgroundRetry = allowBackgroundRetry
             ),
             bypassGate = true,
-            urgentBackstop = force
+            urgentBackstop = force,
+            allowBackgroundRetry = allowBackgroundRetry
         )
     }
 
@@ -1484,7 +1522,11 @@ class PlaybackController @Inject constructor(
 
         lastAppBackgroundSyncAtElapsedMs = elapsedNow
         lastAppBackgroundSyncPositionMs = currentPositionMs
-        syncProgress(force = true, isFinished = shouldSyncAsFinished())
+        syncProgress(
+            force = true,
+            isFinished = shouldSyncAsFinished(),
+            allowBackgroundRetry = state.isPlaying
+        )
     }
 
     private fun persistPlaybackCheckpointIfNeeded(force: Boolean, isFinished: Boolean): PlaybackCheckpointSnapshot? {
@@ -1516,7 +1558,8 @@ class PlaybackController @Inject constructor(
     private fun enqueueProgressSyncRequest(
         request: ProgressSyncRequest,
         bypassGate: Boolean,
-        urgentBackstop: Boolean = false
+        urgentBackstop: Boolean = false,
+        allowBackgroundRetry: Boolean
     ) {
         if (
             !bypassGate &&
@@ -1529,7 +1572,15 @@ class PlaybackController @Inject constructor(
             existing = pendingSyncRequests[requestKey],
             incoming = request
         )
-        PlaybackProgressSyncScheduler.enqueue(appContext, urgent = urgentBackstop)
+        if (allowBackgroundRetry) {
+            PlaybackProgressSyncScheduler.enqueue(
+                context = appContext,
+                urgent = urgentBackstop,
+                allowBackgroundRetry = true
+            )
+        } else {
+            PlaybackProgressSyncScheduler.cancel(appContext)
+        }
         if (syncQueueJob?.isActive == true) return
         syncQueueJob = scope.launch {
             while (true) {
@@ -1548,6 +1599,17 @@ class PlaybackController @Inject constructor(
                 if (syncSucceeded) {
                     playbackSyncGate.markSyncFinished(currentPositionMs = nextRequest.positionMs)
                     clearPlaybackCheckpointIfCovered(nextRequest)
+                    continue
+                }
+                if (
+                    !shouldContinuePlaybackSyncRetry(
+                        allowBackgroundRetry = nextRequest.allowBackgroundRetry,
+                        requestBookId = nextRequest.bookId,
+                        currentBookId = currentBookId,
+                        isPlaybackActive = uiState.value.isPlaying
+                    )
+                ) {
+                    PlaybackProgressSyncScheduler.cancel(appContext)
                     continue
                 }
                 val failedRequestKey = progressSyncKey(
@@ -1574,7 +1636,8 @@ class PlaybackController @Inject constructor(
             isFinished = resolveMergedProgressSyncFinishedState(
                 existingIsFinished = existing.isFinished,
                 incomingIsFinished = incoming.isFinished
-            )
+            ),
+            allowBackgroundRetry = incoming.allowBackgroundRetry
         )
     }
 
@@ -2401,6 +2464,10 @@ class PlaybackController @Inject constructor(
 
     private fun updatePlaybackSurface() {
         val state = uiState.value
+        val keepPlaybackSessionActive = shouldKeepPlaybackSessionActive(
+            book = state.book,
+            isPlaying = state.isPlaying
+        )
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(
                 PlaybackStateCompat.ACTION_PLAY or
@@ -2416,7 +2483,7 @@ class PlaybackController @Inject constructor(
             )
             .build()
         mediaSession.setPlaybackState(playbackState)
-        mediaSession.isActive = state.book != null
+        mediaSession.isActive = keepPlaybackSessionActive
 
         val book = state.book
         if (book == null) {
@@ -2441,6 +2508,13 @@ class PlaybackController @Inject constructor(
             artworkJob = null
             artworkBookId = null
             artworkBitmap = null
+            lastNotificationSignature = null
+            PlaybackServiceController.stop(appContext)
+            NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+            return
+        }
+
+        if (!keepPlaybackSessionActive) {
             lastNotificationSignature = null
             PlaybackServiceController.stop(appContext)
             NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
@@ -2705,7 +2779,54 @@ class PlaybackController @Inject constructor(
             )
         }
         updateCachedFromUiState()
-        syncProgress(force = true, isFinished = true)
+        syncProgress(
+            force = true,
+            isFinished = true,
+            allowBackgroundRetry = false
+        )
+    }
+
+    private fun syncPendingPlaybackCheckpointsOnForeground() {
+        scope.launch(Dispatchers.IO) {
+            val checkpoints = sessionPreferences.getPlaybackCheckpoints()
+                .sortedBy { checkpoint -> checkpoint.savedAtMs }
+            if (checkpoints.isEmpty()) {
+                PlaybackProgressSyncScheduler.cancel(appContext)
+                return@launch
+            }
+            PlaybackProgressSyncScheduler.cancel(appContext)
+            checkpoints.forEach { checkpoint ->
+                val serverId = checkpoint.serverId?.trim()
+                if (serverId.isNullOrBlank()) {
+                    sessionPreferences.clearPlaybackCheckpoint(
+                        serverId = checkpoint.serverId,
+                        bookId = checkpoint.bookId
+                    )
+                    return@forEach
+                }
+                when (
+                    sessionRepository.syncPlaybackProgressForServer(
+                        serverId = serverId,
+                        bookId = checkpoint.bookId,
+                        currentTimeSeconds = checkpoint.currentTimeSeconds,
+                        durationSeconds = checkpoint.durationSeconds,
+                        isFinished = checkpoint.isFinished
+                    )
+                ) {
+                    is AppResult.Success -> {
+                        sessionPreferences.clearPlaybackCheckpoint(
+                            serverId = serverId,
+                            bookId = checkpoint.bookId
+                        )
+                    }
+
+                    is AppResult.Error -> Unit
+                }
+            }
+            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+                PlaybackProgressSyncScheduler.cancel(appContext)
+            }
+        }
     }
 }
 
@@ -2713,6 +2834,18 @@ internal fun resolveMergedProgressSyncFinishedState(
     existingIsFinished: Boolean,
     incomingIsFinished: Boolean
 ): Boolean = incomingIsFinished
+
+internal fun shouldContinuePlaybackSyncRetry(
+    allowBackgroundRetry: Boolean,
+    requestBookId: String,
+    currentBookId: String?,
+    isPlaybackActive: Boolean
+): Boolean {
+    return allowBackgroundRetry &&
+        isPlaybackActive &&
+        !currentBookId.isNullOrBlank() &&
+        currentBookId == requestBookId
+}
 
 internal fun shouldReplayLocalCheckpointAtStartup(
     selectedSourceIsLocal: Boolean,

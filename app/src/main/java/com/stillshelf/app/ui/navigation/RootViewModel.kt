@@ -2,29 +2,47 @@ package com.stillshelf.app.ui.navigation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.playback.navidrome.NavidromePlayerController
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 @HiltViewModel
 class RootViewModel @Inject constructor(
     sessionRepository: SessionRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val secureTokenStorage: SecureTokenStorage,
+    private val navidromePlayerController: NavidromePlayerController
 ) : ViewModel() {
+
+    private val hasNavidromeAuthFlow = sessionPreferences.state
+        .mapLatest { preferences ->
+            val hasSessionIdentity = !preferences.navidromeBaseUrl.isNullOrBlank() &&
+                !preferences.navidromeUsername.isNullOrBlank()
+            if (!hasSessionIdentity) {
+                false
+            } else {
+                secureTokenStorage.getNamedSecret(NAVIDROME_PASSWORD_KEY)
+                    ?.isNotBlank() == true
+            }
+        }
 
     val uiState: StateFlow<RootUiState> = combine(
         sessionRepository.observeSessionState(),
         sessionRepository.observeServers(),
         sessionRepository.observeLibrariesForActiveServer(),
-        sessionPreferences.state
-    ) { session, servers, libraries, preferences ->
+        sessionPreferences.state,
+        hasNavidromeAuthFlow
+    ) { session, servers, libraries, preferences, hasNavidromeAuth ->
         val activeServerId = session.activeServerId
         val activeLibraryId = session.activeLibraryId
         val requiresLibrarySelection = session.requiresLibrarySelection
@@ -39,8 +57,7 @@ class RootViewModel @Inject constructor(
         RootUiState(
             isLoading = false,
             selectedBackend = preferences.selectedBackend,
-            hasNavidromeSession = !preferences.navidromeBaseUrl.isNullOrBlank() &&
-                !preferences.navidromeUsername.isNullOrBlank(),
+            hasNavidromeSession = hasNavidromeAuth,
             serverCount = servers.size,
             hasAnyServer = hasAnyServer,
             hasActiveServer = hasActiveServer,
@@ -55,14 +72,22 @@ class RootViewModel @Inject constructor(
 
     fun selectBackend(provider: BackendProvider) {
         viewModelScope.launch {
+            if (provider != BackendProvider.NAVIDROME) {
+                navidromePlayerController.stop()
+            }
             sessionPreferences.setSelectedBackend(provider)
         }
     }
 
     fun clearSelectedBackend() {
         viewModelScope.launch {
+            navidromePlayerController.stop()
             sessionPreferences.setSelectedBackend(null)
         }
+    }
+
+    private companion object {
+        const val NAVIDROME_PASSWORD_KEY = "navidrome_password"
     }
 }
 

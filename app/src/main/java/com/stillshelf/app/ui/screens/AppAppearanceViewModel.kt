@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.ui.theme.AppThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -14,10 +15,28 @@ import kotlinx.coroutines.launch
 
 data class AppAppearanceUiState(
     val themeMode: AppThemeMode = AppThemeMode.FollowSystem,
+    val navidromeThemeMode: AppThemeMode = AppThemeMode.FollowSystem,
     val materialDesignEnabled: Boolean = false,
+    val navidromeMaterialDesignEnabled: Boolean = false,
     val immersivePlayerEnabled: Boolean = false,
     val playerBottomToolsStyle: String = "dock"
-)
+) {
+    fun themeModeForBackend(selectedBackend: BackendProvider?): AppThemeMode {
+        return if (selectedBackend == BackendProvider.NAVIDROME) {
+            navidromeThemeMode
+        } else {
+            themeMode
+        }
+    }
+
+    fun materialDesignEnabledForBackend(selectedBackend: BackendProvider?): Boolean {
+        return if (selectedBackend == BackendProvider.NAVIDROME) {
+            navidromeMaterialDesignEnabled
+        } else {
+            materialDesignEnabled
+        }
+    }
+}
 
 @HiltViewModel
 class AppAppearanceViewModel @Inject constructor(
@@ -32,7 +51,9 @@ class AppAppearanceViewModel @Inject constructor(
                 mutableUiState.update {
                     it.copy(
                         themeMode = parseThemeMode(state.appThemeMode),
+                        navidromeThemeMode = parseThemeMode(state.navidromeThemeMode),
                         materialDesignEnabled = state.materialDesignEnabled,
+                        navidromeMaterialDesignEnabled = state.navidromeMaterialDesignEnabled,
                         immersivePlayerEnabled = state.immersivePlayerEnabled,
                         playerBottomToolsStyle = state.playerBottomToolsStyle
                     )
@@ -47,9 +68,21 @@ class AppAppearanceViewModel @Inject constructor(
         }
     }
 
+    fun setNavidromeThemeMode(mode: AppThemeMode) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeThemeMode(mode.toPreferenceValue())
+        }
+    }
+
     fun setMaterialDesignEnabled(enabled: Boolean) {
         viewModelScope.launch {
             sessionPreferences.setMaterialDesignEnabled(enabled)
+        }
+    }
+
+    fun setNavidromeMaterialDesignEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeMaterialDesignEnabled(enabled)
         }
     }
 

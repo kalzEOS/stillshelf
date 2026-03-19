@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stillshelf.app.ui.components.UpdateNotesDialogContent
+import com.stillshelf.app.ui.navigation.RootViewModel
 import com.stillshelf.app.ui.navigation.RootNavGraph
 import com.stillshelf.app.ui.screens.AppAppearanceViewModel
 import com.stillshelf.app.ui.theme.StillShelfTheme
@@ -20,18 +21,21 @@ import com.stillshelf.app.ui.theme.StillShelfTheme
 fun StillShelfApp() {
     val appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
     val appearance by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val rootViewModel: RootViewModel = hiltViewModel()
+    val rootUiState by rootViewModel.uiState.collectAsStateWithLifecycle()
     val startupViewModel: StartupViewModel = hiltViewModel()
     val startupUpdatePrompt by startupViewModel.startupUpdatePrompt.collectAsStateWithLifecycle()
     StillShelfTheme(
-        themeMode = appearance.themeMode,
-        materialDesignEnabled = appearance.materialDesignEnabled
+        themeMode = appearance.themeModeForBackend(rootUiState.selectedBackend),
+        materialDesignEnabled = appearance.materialDesignEnabledForBackend(rootUiState.selectedBackend)
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
             RootNavGraph(
-                onHomeScreenReached = startupViewModel::onHomeScreenReached
+                onHomeScreenReached = startupViewModel::onHomeScreenReached,
+                rootViewModel = rootViewModel
             )
             startupUpdatePrompt?.let { release ->
                 AlertDialog(

@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.stillshelf.app.core.model.BackendProvider
+import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import kotlinx.coroutines.flow.Flow
@@ -28,6 +29,21 @@ class SessionPreferences @Inject constructor(
     private val selectedBackendKey = stringPreferencesKey("selected_backend")
     private val navidromeBaseUrlKey = stringPreferencesKey("navidrome_base_url")
     private val navidromeUsernameKey = stringPreferencesKey("navidrome_username")
+    private val navidromeHiddenBrowseSectionsKey = stringPreferencesKey("navidrome_hidden_browse_sections")
+    private val navidromeHiddenHomeSectionsKey = stringPreferencesKey("navidrome_hidden_home_sections")
+    private val navidromeBrowseSectionOrderKey = stringPreferencesKey("navidrome_browse_section_order")
+    private val navidromeHomeSectionOrderKey = stringPreferencesKey("navidrome_home_section_order")
+    private val navidromeArtistLayoutModeKey = stringPreferencesKey("navidrome_artist_layout_mode")
+    private val navidromeArtistSortKey = stringPreferencesKey("navidrome_artist_sort")
+    private val navidromeAlbumLayoutModeKey = stringPreferencesKey("navidrome_album_layout_mode")
+    private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
+    private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
+    private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
+    private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
+    private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
+    private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
+    private val cachedNavidromePlaybackPayloadKey = stringPreferencesKey("cached_navidrome_playback_payload")
+    private val cachedNavidromePlaybackSavedAtKey = longPreferencesKey("cached_navidrome_playback_saved_at")
     private val requiresLibrarySelectionKey = booleanPreferencesKey("requires_library_selection")
     private val lastPlayedBookIdKey = stringPreferencesKey("last_played_book_id")
     private val hiddenBrowseSectionsKey = stringPreferencesKey("hidden_browse_sections")
@@ -77,6 +93,18 @@ class SessionPreferences @Inject constructor(
             selectedBackend = BackendProvider.fromStorageValue(prefs[selectedBackendKey]),
             navidromeBaseUrl = prefs[navidromeBaseUrlKey],
             navidromeUsername = prefs[navidromeUsernameKey],
+            navidromeHiddenBrowseSectionIds = parseCsv(prefs[navidromeHiddenBrowseSectionsKey]),
+            navidromeHiddenHomeSectionIds = parseCsv(prefs[navidromeHiddenHomeSectionsKey]),
+            navidromeBrowseSectionOrder = parseList(prefs[navidromeBrowseSectionOrderKey]),
+            navidromeHomeSectionOrder = parseList(prefs[navidromeHomeSectionOrderKey]),
+            navidromeArtistLayoutMode = prefs[navidromeArtistLayoutModeKey],
+            navidromeArtistSort = prefs[navidromeArtistSortKey],
+            navidromeAlbumLayoutMode = prefs[navidromeAlbumLayoutModeKey],
+            navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
+                prefs[navidromeFavoriteTracksPayloadKey]
+            ),
+            navidromeThemeMode = prefs[navidromeThemeModeKey] ?: "follow_system",
+            navidromeMaterialDesignEnabled = prefs[navidromeMaterialDesignEnabledKey] ?: false,
             requiresLibrarySelection = prefs[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = prefs[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(prefs[hiddenBrowseSectionsKey]),
@@ -159,6 +187,217 @@ class SessionPreferences @Inject constructor(
         dataStore.edit { prefs ->
             prefs.remove(navidromeBaseUrlKey)
             prefs.remove(navidromeUsernameKey)
+        }
+    }
+
+    suspend fun getCachedNavidromeHome(): CachedNavidromeHomePayload? {
+        val prefs = dataStore.data.first()
+        val sessionKey = prefs[cachedNavidromeHomeSessionKey] ?: return null
+        val payload = prefs[cachedNavidromeHomePayloadKey] ?: return null
+        val savedAtMs = prefs[cachedNavidromeHomeSavedAtKey] ?: 0L
+        return CachedNavidromeHomePayload(
+            sessionKey = sessionKey,
+            payload = payload,
+            savedAtMs = savedAtMs
+        )
+    }
+
+    suspend fun setCachedNavidromeHome(
+        sessionKey: String,
+        payload: String,
+        savedAtMs: Long
+    ) {
+        dataStore.edit { prefs ->
+            prefs[cachedNavidromeHomeSessionKey] = sessionKey
+            prefs[cachedNavidromeHomePayloadKey] = payload
+            prefs[cachedNavidromeHomeSavedAtKey] = savedAtMs
+        }
+    }
+
+    suspend fun clearCachedNavidromeHome() {
+        dataStore.edit { prefs ->
+            prefs.remove(cachedNavidromeHomeSessionKey)
+            prefs.remove(cachedNavidromeHomePayloadKey)
+            prefs.remove(cachedNavidromeHomeSavedAtKey)
+        }
+    }
+
+    suspend fun getCachedNavidromePlayback(): CachedNavidromePlaybackSnapshot? {
+        val prefs = dataStore.data.first()
+        val payload = prefs[cachedNavidromePlaybackPayloadKey] ?: return null
+        val savedAtMs = prefs[cachedNavidromePlaybackSavedAtKey] ?: 0L
+        return CachedNavidromePlaybackSnapshot(
+            payload = payload,
+            savedAtMs = savedAtMs
+        )
+    }
+
+    suspend fun setCachedNavidromePlayback(payload: String, savedAtMs: Long) {
+        dataStore.edit { prefs ->
+            prefs[cachedNavidromePlaybackPayloadKey] = payload
+            prefs[cachedNavidromePlaybackSavedAtKey] = savedAtMs
+        }
+    }
+
+    suspend fun clearCachedNavidromePlayback() {
+        dataStore.edit { prefs ->
+            prefs.remove(cachedNavidromePlaybackPayloadKey)
+            prefs.remove(cachedNavidromePlaybackSavedAtKey)
+        }
+    }
+
+    suspend fun setNavidromeHiddenBrowseSectionIds(ids: Set<String>) {
+        dataStore.edit { prefs ->
+            if (ids.isEmpty()) {
+                prefs.remove(navidromeHiddenBrowseSectionsKey)
+            } else {
+                prefs[navidromeHiddenBrowseSectionsKey] = ids.sorted().joinToString(",")
+            }
+        }
+    }
+
+    suspend fun setNavidromeHiddenHomeSectionIds(ids: Set<String>) {
+        dataStore.edit { prefs ->
+            if (ids.isEmpty()) {
+                prefs.remove(navidromeHiddenHomeSectionsKey)
+            } else {
+                prefs[navidromeHiddenHomeSectionsKey] = ids.sorted().joinToString(",")
+            }
+        }
+    }
+
+    suspend fun setNavidromeBrowseSectionOrder(ids: List<String>) {
+        dataStore.edit { prefs ->
+            if (ids.isEmpty()) {
+                prefs.remove(navidromeBrowseSectionOrderKey)
+            } else {
+                prefs[navidromeBrowseSectionOrderKey] = ids.joinToString(",")
+            }
+        }
+    }
+
+    suspend fun setNavidromeHomeSectionOrder(ids: List<String>) {
+        dataStore.edit { prefs ->
+            if (ids.isEmpty()) {
+                prefs.remove(navidromeHomeSectionOrderKey)
+            } else {
+                prefs[navidromeHomeSectionOrderKey] = ids.joinToString(",")
+            }
+        }
+    }
+
+    suspend fun setNavidromeArtistLayoutMode(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeArtistLayoutModeKey)
+            } else {
+                prefs[navidromeArtistLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromeArtistSort(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeArtistSortKey)
+            } else {
+                prefs[navidromeArtistSortKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromeAlbumLayoutMode(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeAlbumLayoutModeKey)
+            } else {
+                prefs[navidromeAlbumLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun toggleNavidromeFavoriteTrack(sessionKey: String, track: NavidromeTrack): Boolean {
+        val normalizedSessionKey = sessionKey.trim()
+        val normalizedTrackId = track.id.trim()
+        if (normalizedSessionKey.isBlank() || normalizedTrackId.isBlank()) return false
+        var nowFavorite = false
+        dataStore.edit { prefs ->
+            val current = parseNavidromeFavoriteTracksBySession(
+                prefs[navidromeFavoriteTracksPayloadKey]
+            ).toMutableMap()
+            val updatedTracks = current[normalizedSessionKey].orEmpty()
+                .filterNot { it.id == normalizedTrackId }
+                .toMutableList()
+            nowFavorite = updatedTracks.size == current[normalizedSessionKey].orEmpty().size
+            if (nowFavorite) {
+                updatedTracks.add(0, track.copy(id = normalizedTrackId))
+            }
+            if (updatedTracks.isEmpty()) {
+                current.remove(normalizedSessionKey)
+            } else {
+                current[normalizedSessionKey] = updatedTracks
+            }
+            if (current.isEmpty()) {
+                prefs.remove(navidromeFavoriteTracksPayloadKey)
+            } else {
+                prefs[navidromeFavoriteTracksPayloadKey] = encodeNavidromeFavoriteTracksBySession(current)
+            }
+        }
+        return nowFavorite
+    }
+
+    suspend fun removeNavidromeFavoriteTrack(sessionKey: String, trackId: String) {
+        val normalizedSessionKey = sessionKey.trim()
+        val normalizedTrackId = trackId.trim()
+        if (normalizedSessionKey.isBlank() || normalizedTrackId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseNavidromeFavoriteTracksBySession(
+                prefs[navidromeFavoriteTracksPayloadKey]
+            ).toMutableMap()
+            val updatedTracks = current[normalizedSessionKey].orEmpty()
+                .filterNot { it.id == normalizedTrackId }
+            if (updatedTracks.isEmpty()) {
+                current.remove(normalizedSessionKey)
+            } else {
+                current[normalizedSessionKey] = updatedTracks
+            }
+            if (current.isEmpty()) {
+                prefs.remove(navidromeFavoriteTracksPayloadKey)
+            } else {
+                prefs[navidromeFavoriteTracksPayloadKey] = encodeNavidromeFavoriteTracksBySession(current)
+            }
+        }
+    }
+
+    suspend fun clearNavidromeFavoriteTracks(sessionKey: String) {
+        val normalizedSessionKey = sessionKey.trim()
+        if (normalizedSessionKey.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseNavidromeFavoriteTracksBySession(
+                prefs[navidromeFavoriteTracksPayloadKey]
+            ).toMutableMap()
+            current.remove(normalizedSessionKey)
+            if (current.isEmpty()) {
+                prefs.remove(navidromeFavoriteTracksPayloadKey)
+            } else {
+                prefs[navidromeFavoriteTracksPayloadKey] = encodeNavidromeFavoriteTracksBySession(current)
+            }
+        }
+    }
+
+    suspend fun setNavidromeThemeMode(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeThemeModeKey)
+            } else {
+                prefs[navidromeThemeModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromeMaterialDesignEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[navidromeMaterialDesignEnabledKey] = enabled
         }
     }
 
@@ -686,6 +925,89 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
+    private fun parseNavidromeFavoriteTracksBySession(
+        raw: String?
+    ): Map<String, List<NavidromeTrack>> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(raw)
+            buildMap {
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val sessionKey = keys.next().trim()
+                    if (sessionKey.isBlank()) continue
+                    val array = root.optJSONArray(sessionKey) ?: continue
+                    val tracks = buildList {
+                        for (index in 0 until array.length()) {
+                            val item = array.optJSONObject(index) ?: continue
+                            val trackId = item.optString("id").trim()
+                            val title = item.optString("title").trim()
+                            val streamUrl = item.optString("streamUrl").trim()
+                            if (trackId.isBlank() || title.isBlank() || streamUrl.isBlank()) continue
+                            add(
+                                NavidromeTrack(
+                                    id = trackId,
+                                    title = title,
+                                    artistName = item.optString("artistName").ifBlank { "Unknown artist" },
+                                    albumName = item.optString("albumName").ifBlank { "Unknown album" },
+                                    albumId = item.optString("albumId").ifBlank { null },
+                                    artistId = item.optString("artistId").ifBlank { null },
+                                    trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber"),
+                                    durationSeconds = item.takeIf { it.has("durationSeconds") }?.optInt("durationSeconds"),
+                                    coverUrl = item.optString("coverUrl").ifBlank { null },
+                                    streamUrl = streamUrl,
+                                    formatLabel = item.optString("formatLabel").ifBlank { null },
+                                    bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+                                )
+                            )
+                        }
+                    }
+                    if (tracks.isNotEmpty()) {
+                        put(sessionKey, tracks)
+                    }
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeNavidromeFavoriteTracksBySession(
+        values: Map<String, List<NavidromeTrack>>
+    ): String {
+        val root = JSONObject()
+        values.forEach { (sessionKey, tracks) ->
+            val normalizedSessionKey = sessionKey.trim()
+            if (normalizedSessionKey.isBlank()) return@forEach
+            val array = JSONArray()
+            tracks.forEach { track ->
+                val normalizedTrackId = track.id.trim()
+                val normalizedTitle = track.title.trim()
+                val normalizedStreamUrl = track.streamUrl.trim()
+                if (normalizedTrackId.isBlank() || normalizedTitle.isBlank() || normalizedStreamUrl.isBlank()) {
+                    return@forEach
+                }
+                array.put(
+                    JSONObject()
+                        .put("id", normalizedTrackId)
+                        .put("title", normalizedTitle)
+                        .put("artistName", track.artistName)
+                        .put("albumName", track.albumName)
+                        .put("albumId", track.albumId)
+                        .put("artistId", track.artistId)
+                        .put("trackNumber", track.trackNumber)
+                        .put("durationSeconds", track.durationSeconds)
+                        .put("coverUrl", track.coverUrl)
+                        .put("streamUrl", normalizedStreamUrl)
+                        .put("formatLabel", track.formatLabel)
+                        .put("bitRateKbps", track.bitRateKbps)
+                )
+            }
+            if (array.length() > 0) {
+                root.put(normalizedSessionKey, array)
+            }
+        }
+        return root.toString()
+    }
+
     private fun parseServerEndpointSwitchingConfigs(raw: String?): Map<String, ServerEndpointSwitchingConfig> {
         if (raw.isNullOrBlank()) return emptyMap()
         return runCatching {
@@ -806,6 +1128,16 @@ data class SessionPreferenceState(
     val selectedBackend: BackendProvider? = null,
     val navidromeBaseUrl: String? = null,
     val navidromeUsername: String? = null,
+    val navidromeHiddenBrowseSectionIds: Set<String> = emptySet(),
+    val navidromeHiddenHomeSectionIds: Set<String> = emptySet(),
+    val navidromeBrowseSectionOrder: List<String> = emptyList(),
+    val navidromeHomeSectionOrder: List<String> = emptyList(),
+    val navidromeArtistLayoutMode: String? = null,
+    val navidromeArtistSort: String? = null,
+    val navidromeAlbumLayoutMode: String? = null,
+    val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
+    val navidromeThemeMode: String = "follow_system",
+    val navidromeMaterialDesignEnabled: Boolean = false,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),
@@ -846,6 +1178,17 @@ data class SessionPreferenceState(
 
 data class CachedHomeFeedPayload(
     val libraryId: String,
+    val payload: String,
+    val savedAtMs: Long
+)
+
+data class CachedNavidromeHomePayload(
+    val sessionKey: String,
+    val payload: String,
+    val savedAtMs: Long
+)
+
+data class CachedNavidromePlaybackSnapshot(
     val payload: String,
     val savedAtMs: Long
 )

@@ -1,21 +1,213 @@
 package com.stillshelf.app.playback.navidrome
 
-import android.media.AudioAttributes
-import android.media.MediaPlayer
+import android.content.Context
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeTrack
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 
 @Singleton
-class NavidromePlayerController @Inject constructor() {
+class NavidromePlayerController @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val sessionPreferences: SessionPreferences
+) {
+    private companion object {
+        const val MAX_RECENT_TRACKS = 7
+    }
+
+    private enum class OutputRefreshReason {
+        General,
+        DeviceAdded,
+        DeviceRemoved
+    }
+
+    private data class OutputRouteCandidate(
+        val routeKey: String,
+        val priority: Int,
+        val device: AudioDeviceInfo
+    )
+
+    private data class NavidromePlaybackSnapshot(
+        val queue: List<NavidromeTrack>,
+        val recentTracks: List<NavidromeTrack>,
+        val currentIndex: Int,
+        val positionMs: Int
+    )
+
     private val mutableState = MutableStateFlow(NavidromePlayerState())
     val state: StateFlow<NavidromePlayerState> = mutableState.asStateFlow()
 
-    private var mediaPlayer: MediaPlayer? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var progressJob: Job? = null
+    private var queueTracks: List<NavidromeTrack> = emptyList()
+    private var recentTracks: List<NavidromeTrack> = emptyList()
+    private var lastRecordedTrackId: String? = null
+    private var appInForeground = false
+    private var preferredOutputDeviceId: Int? = null
+    private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
+    private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
+    private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
+    private val audioManager: AudioManager =
+        appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    private val playbackAudioAttributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+    }
+
+    private val playerListener = object : Player.Listener {
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            updateStateFromPlayer()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            updateStateFromPlayer()
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            updateStateFromPlayer()
+        }
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            mutableState.value = mutableState.value.copy(
+                isLoading = false,
+                isPlaying = false,
+                errorMessage = error.message ?: "Playback failed for this track."
+            )
+        }
+    }
+
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceAdded)
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+            refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceRemoved)
+        }
+    }
+
+    private var player: ExoPlayer? = null
+
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            appInForeground = true
+            updateStateFromPlayer()
+            ensureProgressUpdates()
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            appInForeground = false
+            stopProgressUpdates()
+            if (shouldSuspendForBackground()) {
+                suspendForBackground()
+            } else {
+                persistPlaybackSnapshot()
+            }
+        }
+    }
+
+    init {
+        appInForeground = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        refreshAudioOutputDevices(reason = OutputRefreshReason.General)
+        restorePlaybackSnapshot()
+        ensureProgressUpdates()
+    }
+
+    private fun createPlayer(): ExoPlayer {
+        return ExoPlayer.Builder(appContext)
+            .setHandleAudioBecomingNoisy(true)
+            .build()
+            .apply {
+                setAudioAttributes(playbackAudioAttributes, true)
+                addListener(playerListener)
+            }
+    }
+
+    private fun getOrCreatePlayer(): ExoPlayer {
+        val existing = player
+        if (existing != null) return existing
+        return createPlayer().also { created ->
+            player = created
+            applyPreferredOutputDevice(created)
+        }
+    }
+
+    fun refreshAudioOutputs() {
+        refreshAudioOutputDevices(reason = OutputRefreshReason.General)
+    }
+
+    fun selectAudioOutputDevice(deviceId: Int?): Boolean {
+        val available = queryOutputDevices()
+        if (available.none { output -> output.id == deviceId }) {
+            refreshAudioOutputs()
+            return false
+        }
+        preferredOutputDeviceId = deviceId
+        val activePlayer = player
+        if (activePlayer == null) {
+            refreshAudioOutputs()
+            return true
+        }
+        if (deviceId == null) {
+            applySystemDefaultOutputRouting(activePlayer)
+        } else {
+            applySystemDefaultOutputRouting(activePlayer)
+            val speakerTarget = isSpeakerOutputDevice(deviceId)
+            var applied = if (speakerTarget) {
+                applyOutputViaAudioManagerFallback(deviceId)
+            } else {
+                applyPreferredOutputForDisplayedId(activePlayer, deviceId)
+            }
+            if (!applied) {
+                applied = if (speakerTarget) {
+                    applyPreferredOutputForDisplayedId(activePlayer, deviceId)
+                } else {
+                    applyOutputViaAudioManagerFallback(deviceId)
+                }
+            }
+            if (!applied) {
+                refreshAudioOutputs()
+                return false
+            }
+        }
+        refreshAudioOutputs()
+        return true
+    }
 
     fun playTracks(
         tracks: List<NavidromeTrack>,
@@ -23,103 +215,762 @@ class NavidromePlayerController @Inject constructor() {
     ) {
         if (tracks.isEmpty()) return
         val index = startIndex.coerceIn(0, tracks.lastIndex)
+        queueTracks = tracks
         mutableState.value = mutableState.value.copy(
             queue = tracks,
             currentIndex = index,
             currentTrack = tracks[index],
+            recentTracks = recentTracks,
             isLoading = true,
+            isPlaying = false,
+            positionMs = 0,
+            durationMs = resolveTrackDurationMs(tracks[index]),
             errorMessage = null
         )
-        prepareTrack(tracks[index])
+        val activePlayer = getOrCreatePlayer()
+        activePlayer.setMediaItems(
+            tracks.map { track ->
+                MediaItem.Builder()
+                    .setMediaId(track.id)
+                    .setUri(track.streamUrl)
+                    .build()
+            },
+            index,
+            0L
+        )
+        applyPreferredOutputDevice(activePlayer)
+        activePlayer.prepare()
+        activePlayer.play()
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
     }
 
     fun togglePlayPause() {
-        val player = mediaPlayer ?: return
-        if (player.isPlaying) {
-            player.pause()
-            mutableState.value = mutableState.value.copy(isPlaying = false)
-        } else {
-            player.start()
-            mutableState.value = mutableState.value.copy(isPlaying = true)
+        if (queueTracks.isEmpty()) return
+        val currentTrack = queueTracks.getOrNull(mutableState.value.currentIndex)
+        if (currentTrack != null && currentTrack.isRadioTrack()) {
+            restartOrStopRadio(currentTrack)
+            return
         }
+        val activePlayer = player
+        if (activePlayer == null) {
+            resumeFromSnapshot(playWhenReady = true)
+            return
+        }
+        if (activePlayer.isPlaying) {
+            activePlayer.pause()
+        } else {
+            activePlayer.play()
+        }
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
     }
 
     fun playNext() {
-        val state = mutableState.value
-        val nextIndex = state.currentIndex + 1
-        if (nextIndex in state.queue.indices) {
-            playTracks(state.queue, nextIndex)
+        val activePlayer = player
+        if (activePlayer == null) {
+            val nextIndex = (mutableState.value.currentIndex + 1).takeIf { it in queueTracks.indices } ?: return
+            startPlaybackAt(index = nextIndex, positionMs = 0, playWhenReady = true)
+            return
         }
+        if (!activePlayer.hasNextMediaItem()) return
+        activePlayer.seekToNextMediaItem()
+        activePlayer.play()
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
     }
 
     fun playPrevious() {
-        val state = mutableState.value
-        val previousIndex = state.currentIndex - 1
-        if (previousIndex in state.queue.indices) {
-            playTracks(state.queue, previousIndex)
+        val activePlayer = player
+        if (activePlayer == null) {
+            val previousIndex = (mutableState.value.currentIndex - 1).takeIf { it in queueTracks.indices } ?: return
+            startPlaybackAt(index = previousIndex, positionMs = 0, playWhenReady = true)
+            return
         }
+        if (!activePlayer.hasPreviousMediaItem()) return
+        activePlayer.seekToPreviousMediaItem()
+        activePlayer.play()
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
+    }
+
+    fun playQueueIndex(index: Int) {
+        if (index !in queueTracks.indices) return
+        val activePlayer = player
+        if (activePlayer == null) {
+            startPlaybackAt(index = index, positionMs = 0, playWhenReady = true)
+            return
+        }
+        activePlayer.seekTo(index, 0L)
+        activePlayer.play()
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
     }
 
     fun stop() {
-        releasePlayer()
-        mutableState.value = NavidromePlayerState()
+        queueTracks = emptyList()
+        lastRecordedTrackId = null
+        releasePlayer(clearQueue = true)
+        stopProgressUpdates()
+        scope.launch(Dispatchers.IO) {
+            sessionPreferences.clearCachedNavidromePlayback()
+        }
+        mutableState.value = NavidromePlayerState(
+            recentTracks = recentTracks,
+            outputDevices = mutableState.value.outputDevices,
+            selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId
+        )
     }
 
-    private fun prepareTrack(track: NavidromeTrack) {
-        releasePlayer()
-        val player = MediaPlayer()
-        mediaPlayer = player
+    fun seekTo(positionMs: Int) {
+        val durationMs = resolvePlayerDurationMs()
+        val clampedPosition = positionMs.coerceIn(0, durationMs.coerceAtLeast(0))
+        player?.seekTo(clampedPosition.toLong())
+        mutableState.value = mutableState.value.copy(
+            positionMs = clampedPosition,
+            durationMs = durationMs
+        )
+        persistPlaybackSnapshot()
+    }
 
-        try {
-            player.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+    private fun startPlaybackAt(index: Int, positionMs: Int, playWhenReady: Boolean) {
+        if (queueTracks.isEmpty()) return
+        val safeIndex = index.coerceIn(0, queueTracks.lastIndex)
+        val safePositionMs = positionMs.coerceAtLeast(0)
+        releasePlayer(clearQueue = false)
+        val activePlayer = getOrCreatePlayer()
+        activePlayer.setMediaItems(
+            queueTracks.map { track ->
+                MediaItem.Builder()
+                    .setMediaId(track.id)
+                    .setUri(track.streamUrl)
                     .build()
+            },
+            safeIndex,
+            safePositionMs.toLong()
+        )
+        applyPreferredOutputDevice(activePlayer)
+        activePlayer.prepare()
+        if (playWhenReady) {
+            activePlayer.play()
+        }
+        mutableState.value = mutableState.value.copy(
+            queue = queueTracks,
+            currentIndex = safeIndex,
+            currentTrack = queueTracks[safeIndex],
+            recentTracks = recentTracks,
+            isLoading = playWhenReady,
+            isPlaying = false,
+            positionMs = safePositionMs,
+            durationMs = resolveTrackDurationMs(queueTracks[safeIndex]),
+            errorMessage = null
+        )
+        persistPlaybackSnapshot()
+        updateStateFromPlayer()
+        ensureProgressUpdates()
+    }
+
+    private fun resumeFromSnapshot(playWhenReady: Boolean) {
+        if (queueTracks.isEmpty()) return
+        val state = mutableState.value
+        val index = state.currentIndex.takeIf { it in queueTracks.indices } ?: 0
+        val positionMs = if (queueTracks.getOrNull(index).isRadioTrack()) {
+            0
+        } else {
+            state.positionMs.coerceAtLeast(0)
+        }
+        startPlaybackAt(index = index, positionMs = positionMs, playWhenReady = playWhenReady)
+    }
+
+    private fun shouldSuspendForBackground(): Boolean {
+        val activePlayer = player ?: return queueTracks.isNotEmpty() && !mutableState.value.isPlaying
+        return queueTracks.isNotEmpty() &&
+            !activePlayer.isPlaying &&
+            activePlayer.playbackState != Player.STATE_BUFFERING
+    }
+
+    private fun suspendForBackground() {
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        releasePlayer(clearQueue = false)
+        mutableState.value = mutableState.value.copy(
+            isPlaying = false,
+            isLoading = false
+        )
+    }
+
+    private fun releasePlayer(clearQueue: Boolean) {
+        val activePlayer = player
+        if (activePlayer != null) {
+            stopProgressUpdates()
+            runCatching { activePlayer.removeListener(playerListener) }
+            runCatching { activePlayer.release() }
+            player = null
+        }
+        if (clearQueue) {
+            queueTracks = emptyList()
+        }
+    }
+
+    private fun persistPlaybackSnapshot() {
+        if (queueTracks.isEmpty()) {
+            scope.launch(Dispatchers.IO) {
+                sessionPreferences.clearCachedNavidromePlayback()
+            }
+            return
+        }
+        val state = mutableState.value
+        val currentIndex = state.currentIndex.takeIf { it in queueTracks.indices } ?: 0
+        val currentTrack = queueTracks.getOrNull(currentIndex)
+        val payload = JSONObject()
+            .put("currentIndex", currentIndex)
+            .put(
+                "positionMs",
+                if (currentTrack.isRadioTrack()) 0 else state.positionMs.coerceAtLeast(0)
             )
-            player.setDataSource(track.streamUrl)
-            player.setOnPreparedListener {
-                it.start()
+            .put(
+                "queue",
+                JSONArray().apply {
+                    queueTracks.forEach { put(it.toJson()) }
+                }
+            )
+            .put(
+                "recentTracks",
+                JSONArray().apply {
+                    recentTracks.forEach { put(it.toJson()) }
+                }
+            )
+            .toString()
+        scope.launch(Dispatchers.IO) {
+            sessionPreferences.setCachedNavidromePlayback(
+                payload = payload,
+                savedAtMs = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private fun restorePlaybackSnapshot() {
+        scope.launch(Dispatchers.IO) {
+            val snapshot = sessionPreferences.getCachedNavidromePlayback()
+                ?.payload
+                ?.let(::parsePlaybackSnapshot)
+                ?: return@launch
+            scope.launch(Dispatchers.Main.immediate) {
+                queueTracks = snapshot.queue
+                recentTracks = snapshot.recentTracks
+                val currentTrack = snapshot.queue.getOrNull(snapshot.currentIndex)
+                lastRecordedTrackId = currentTrack?.id
                 mutableState.value = mutableState.value.copy(
-                    currentTrack = track,
-                    isPlaying = true,
+                    queue = snapshot.queue,
+                    currentIndex = snapshot.currentIndex,
+                    currentTrack = currentTrack,
+                    recentTracks = snapshot.recentTracks,
+                    isPlaying = false,
                     isLoading = false,
+                    positionMs = if (currentTrack.isRadioTrack()) 0 else snapshot.positionMs,
+                    durationMs = currentTrack?.let(::resolveTrackDurationMs) ?: 0,
+                    outputDevices = mutableState.value.outputDevices,
+                    selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId,
                     errorMessage = null
                 )
             }
-            player.setOnCompletionListener {
-                val state = mutableState.value
-                val nextIndex = state.currentIndex + 1
-                if (nextIndex in state.queue.indices) {
-                    playTracks(state.queue, nextIndex)
-                } else {
-                    mutableState.value = state.copy(isPlaying = false)
-                }
-            }
-            player.setOnErrorListener { _, _, _ ->
-                mutableState.value = mutableState.value.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    errorMessage = "Playback failed for this track."
-                )
-                true
-            }
-            player.prepareAsync()
-        } catch (t: Throwable) {
-            mutableState.value = mutableState.value.copy(
-                isLoading = false,
-                isPlaying = false,
-                errorMessage = t.message ?: "Playback failed."
-            )
-            releasePlayer()
         }
     }
 
-    private fun releasePlayer() {
-        mediaPlayer?.runCatching {
-            stop()
+    private fun startProgressUpdates() {
+        if (progressJob?.isActive == true) return
+        progressJob = scope.launch {
+            while (isActive) {
+                if (queueTracks.isNotEmpty()) {
+                    updateStateFromPlayer()
+                }
+                delay(500)
+            }
         }
-        mediaPlayer?.release()
-        mediaPlayer = null
+    }
+
+    private fun stopProgressUpdates() {
+        progressJob?.cancel()
+        progressJob = null
+    }
+
+    private fun ensureProgressUpdates() {
+        val activePlayer = player
+        val shouldRun = appInForeground &&
+            queueTracks.isNotEmpty() &&
+            activePlayer != null &&
+            (activePlayer.isPlaying || activePlayer.playbackState == Player.STATE_BUFFERING)
+        if (shouldRun) {
+            startProgressUpdates()
+        } else {
+            stopProgressUpdates()
+        }
+    }
+
+    private fun updateStateFromPlayer() {
+        val activePlayer = player
+        if (activePlayer == null) {
+            mutableState.value = mutableState.value.copy(
+                queue = queueTracks,
+                recentTracks = recentTracks,
+                isPlaying = false,
+                isLoading = false,
+                outputDevices = mutableState.value.outputDevices,
+                selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId
+            )
+            ensureProgressUpdates()
+            return
+        }
+        val currentIndex = activePlayer.currentMediaItemIndex
+            .takeIf { it in queueTracks.indices }
+            ?: -1
+        val currentTrack = queueTracks.getOrNull(currentIndex)
+        if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
+            recentTracks = buildList {
+                add(currentTrack)
+                addAll(
+                    recentTracks.filterNot { it.id == currentTrack.id }
+                        .take(MAX_RECENT_TRACKS - 1)
+                )
+            }
+            lastRecordedTrackId = currentTrack.id
+        } else if (currentTrack == null) {
+            lastRecordedTrackId = null
+        }
+        val playbackState = activePlayer.playbackState
+        val durationMs = resolvePlayerDurationMs(currentTrack)
+        val positionMs = resolvePlayerPositionMs(durationMs)
+
+        mutableState.value = mutableState.value.copy(
+            queue = queueTracks,
+            currentIndex = currentIndex,
+            currentTrack = currentTrack,
+            recentTracks = recentTracks,
+            outputDevices = mutableState.value.outputDevices,
+            selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId,
+            isPlaying = activePlayer.isPlaying,
+            isLoading = currentTrack != null && playbackState == Player.STATE_BUFFERING,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            errorMessage = if (playbackState == Player.STATE_IDLE) {
+                mutableState.value.errorMessage
+            } else {
+                null
+            }
+        )
+        ensureProgressUpdates()
+    }
+
+    private fun resolvePlayerDurationMs(
+        currentTrack: NavidromeTrack? = queueTracks.getOrNull(player?.currentMediaItemIndex ?: mutableState.value.currentIndex)
+    ): Int {
+        val activePlayer = player
+        val durationMs = activePlayer?.duration ?: C.TIME_UNSET
+        return if (durationMs == C.TIME_UNSET || durationMs < 0L) {
+            currentTrack?.let(::resolveTrackDurationMs) ?: mutableState.value.durationMs
+        } else {
+            durationMs.coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        }
+    }
+
+    private fun resolvePlayerPositionMs(durationMs: Int): Int {
+        val activePlayer = player ?: return mutableState.value.positionMs.coerceIn(0, durationMs.coerceAtLeast(0))
+        val positionMs = activePlayer.currentPosition
+        if (positionMs == C.TIME_UNSET || positionMs < 0L) return 0
+        return positionMs
+            .coerceAtLeast(0L)
+            .coerceAtMost(durationMs.toLong().takeIf { durationMs > 0 } ?: positionMs)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+    }
+
+    private fun resolveTrackDurationMs(track: NavidromeTrack): Int =
+        ((track.durationSeconds ?: 0) * 1000).coerceAtLeast(0)
+
+    private fun restartOrStopRadio(currentTrack: NavidromeTrack) {
+        val currentIndex = mutableState.value.currentIndex.takeIf { it in queueTracks.indices } ?: 0
+        val activePlayer = player
+        if (activePlayer != null && activePlayer.isPlaying) {
+            releasePlayer(clearQueue = false)
+            mutableState.value = mutableState.value.copy(
+                queue = queueTracks,
+                currentIndex = currentIndex,
+                currentTrack = currentTrack,
+                isPlaying = false,
+                isLoading = false,
+                positionMs = 0,
+                durationMs = 0,
+                errorMessage = null
+            )
+            persistPlaybackSnapshot()
+            ensureProgressUpdates()
+        } else {
+            startPlaybackAt(index = currentIndex, positionMs = 0, playWhenReady = true)
+        }
+    }
+
+    private fun NavidromeTrack?.isRadioTrack(): Boolean {
+        return this?.id?.startsWith("radio:") == true
+    }
+
+    private fun NavidromeTrack.toJson(): JSONObject {
+        return JSONObject()
+            .put("id", id)
+            .put("title", title)
+            .put("artistName", artistName)
+            .put("albumName", albumName)
+            .apply {
+                albumId?.let { put("albumId", it) }
+                artistId?.let { put("artistId", it) }
+                trackNumber?.let { put("trackNumber", it) }
+                durationSeconds?.let { put("durationSeconds", it) }
+                coverUrl?.let { put("coverUrl", it) }
+                put("streamUrl", streamUrl)
+                formatLabel?.let { put("formatLabel", it) }
+                bitRateKbps?.let { put("bitRateKbps", it) }
+            }
+    }
+
+    private fun parsePlaybackSnapshot(payload: String): NavidromePlaybackSnapshot? {
+        return runCatching {
+            val root = JSONObject(payload)
+            val queue = root.optJSONArray("queue").orEmptyTracks()
+            if (queue.isEmpty()) return null
+            val currentIndex = root.optInt("currentIndex", 0).coerceIn(0, queue.lastIndex)
+            val recent = root.optJSONArray("recentTracks").orEmptyTracks()
+            NavidromePlaybackSnapshot(
+                queue = queue,
+                recentTracks = recent,
+                currentIndex = currentIndex,
+                positionMs = root.optInt("positionMs", 0).coerceAtLeast(0)
+            )
+        }.getOrNull()
+    }
+
+    private fun JSONArray?.orEmptyTracks(): List<NavidromeTrack> {
+        if (this == null) return emptyList()
+        return buildList {
+            repeat(length()) { index ->
+                val item = optJSONObject(index) ?: return@repeat
+                val id = item.optString("id").trim()
+                val streamUrl = item.optString("streamUrl").trim()
+                if (id.isBlank() || streamUrl.isBlank()) return@repeat
+                add(
+                    NavidromeTrack(
+                        id = id,
+                        title = item.optString("title").ifBlank { "Unknown track" },
+                        artistName = item.optString("artistName").ifBlank { "Unknown artist" },
+                        albumName = item.optString("albumName").ifBlank { "Unknown album" },
+                        albumId = item.optString("albumId").ifBlank { null },
+                        artistId = item.optString("artistId").ifBlank { null },
+                        trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber")?.takeIf { it > 0 },
+                        durationSeconds = item.takeIf { it.has("durationSeconds") }?.optInt("durationSeconds")?.takeIf { it > 0 },
+                        coverUrl = item.optString("coverUrl").ifBlank { null },
+                        streamUrl = streamUrl,
+                        formatLabel = item.optString("formatLabel").ifBlank { null },
+                        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")?.takeIf { it > 0 }
+                    )
+                )
+            }
+        }
+    }
+
+    private fun refreshAudioOutputDevices(reason: OutputRefreshReason) {
+        val available = queryOutputDevices()
+        val availableIds = available.mapNotNull { it.id }.toSet()
+        val bluetoothOutputId = available.firstOrNull { output ->
+            val displayedId = output.id ?: return@firstOrNull false
+            outputRouteKeyByDisplayedId[displayedId]?.startsWith("bt:") == true
+        }?.id
+        val shouldAutoSwitchToBluetooth = reason == OutputRefreshReason.DeviceAdded &&
+            bluetoothOutputId != null &&
+            bluetoothOutputId !in lastKnownOutputDeviceIds
+        val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
+            available.any { it.id == preferredId }
+        }
+        preferredOutputDeviceId = when {
+            shouldAutoSwitchToBluetooth -> bluetoothOutputId
+            validPreferredId != null -> validPreferredId
+            else -> available.firstOrNull()?.id
+        }
+        player?.let(::applyPreferredOutputDevice)
+        mutableState.value = mutableState.value.copy(
+            outputDevices = available,
+            selectedOutputDeviceId = preferredOutputDeviceId
+        )
+        lastKnownOutputDeviceIds = availableIds
+    }
+
+    private fun queryOutputDevices(): List<NavidromeOutputDevice> {
+        val rawDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val groupedCandidates = rawDevices
+            .asSequence()
+            .filter { device -> isMainOutputType(device.type) }
+            .mapNotNull { device ->
+                val routeKey = outputRouteKey(device) ?: return@mapNotNull null
+                OutputRouteCandidate(
+                    routeKey = routeKey,
+                    priority = outputRoutePriority(device.type),
+                    device = device
+                )
+            }
+            .groupBy { it.routeKey }
+            .mapValues { (_, candidates) -> candidates.sortedByDescending { it.priority } }
+            .values
+            .filter { it.isNotEmpty() }
+            .map { it.first() }
+            .sortedWith(
+                compareByDescending<OutputRouteCandidate> { it.priority }
+                    .thenBy { resolveOutputDeviceName(it.device).lowercase() }
+            )
+        outputRouteDeviceIdsByRouteKey = groupedCandidates.associate { candidate ->
+            val routeKey = candidate.routeKey
+            val candidateIds = rawDevices
+                .asSequence()
+                .filter { device -> outputRouteKey(device) == routeKey }
+                .sortedByDescending { device -> outputRoutePriority(device.type) }
+                .map { device -> device.id }
+                .distinct()
+                .toList()
+            routeKey to candidateIds
+        }
+        outputRouteKeyByDisplayedId = groupedCandidates.associate { candidate ->
+            candidate.device.id to candidate.routeKey
+        }
+        return groupedCandidates.map { candidate ->
+            NavidromeOutputDevice(
+                id = candidate.device.id,
+                name = resolveOutputDeviceName(candidate.device),
+                typeLabel = outputTypeLabel(candidate.device.type)
+            )
+        }
+    }
+
+    private fun resolveOutputDeviceName(device: AudioDeviceInfo): String {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired headphones"
+            else -> {
+                val productName = device.productName?.toString()?.trim().orEmpty()
+                productName.ifBlank { outputTypeLabel(device.type) }
+            }
+        }
+    }
+
+    private fun isMainOutputType(type: Int): Boolean {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC,
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_DOCK,
+            AudioDeviceInfo.TYPE_AUX_LINE,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> true
+            else -> false
+        }
+    }
+
+    private fun outputRouteKey(device: AudioDeviceInfo): String? {
+        return when (device.type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "usb"
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC -> "hdmi"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_AUX_LINE -> "line"
+            AudioDeviceInfo.TYPE_DOCK -> "dock"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> {
+                val name = resolveBluetoothRouteName(device) ?: return null
+                "bt:${name.lowercase()}"
+            }
+            else -> null
+        }
+    }
+
+    private fun resolveBluetoothRouteName(device: AudioDeviceInfo): String? {
+        val productName = device.productName?.toString()?.trim().orEmpty()
+        if (productName.isBlank()) return null
+        val model = Build.MODEL.orEmpty().trim()
+        val deviceName = Build.DEVICE.orEmpty().trim()
+        if (productName.equals(model, ignoreCase = true) || productName.equals(deviceName, ignoreCase = true)) {
+            return null
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val address = device.address.orEmpty()
+            if (address.isBlank() || address == "00:00:00:00:00:00") {
+                return null
+            }
+        }
+        return productName
+    }
+
+    private fun outputRoutePriority(type: Int): Int {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 100
+            AudioDeviceInfo.TYPE_BLE_SPEAKER -> 95
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> 92
+            AudioDeviceInfo.TYPE_HEARING_AID -> 90
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> 88
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> 85
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> 84
+            AudioDeviceInfo.TYPE_USB_HEADSET -> 80
+            AudioDeviceInfo.TYPE_USB_DEVICE -> 79
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> 78
+            AudioDeviceInfo.TYPE_HDMI_EARC -> 75
+            AudioDeviceInfo.TYPE_HDMI_ARC -> 74
+            AudioDeviceInfo.TYPE_HDMI -> 73
+            AudioDeviceInfo.TYPE_DOCK -> 72
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> 71
+            AudioDeviceInfo.TYPE_LINE_ANALOG -> 70
+            AudioDeviceInfo.TYPE_AUX_LINE -> 69
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 20
+            else -> 0
+        }
+    }
+
+    private fun outputTypeLabel(type: Int): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Phone speaker"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_HEARING_AID,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "Bluetooth"
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB"
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC,
+            AudioDeviceInfo.TYPE_HDMI_EARC -> "HDMI"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL,
+            AudioDeviceInfo.TYPE_AUX_LINE -> "Line out"
+            AudioDeviceInfo.TYPE_DOCK -> "Dock"
+            else -> "Output"
+        }
+    }
+
+    private fun applyPreferredOutputDevice(player: ExoPlayer) {
+        val preferredId = preferredOutputDeviceId
+        if (preferredId == null) {
+            applySystemDefaultOutputRouting(player)
+            return
+        }
+        val preferredApplied = applyPreferredOutputForDisplayedId(player, preferredId)
+        if (!preferredApplied) {
+            applyOutputViaAudioManagerFallback(preferredId)
+        }
+    }
+
+    private fun applySystemDefaultOutputRouting(player: ExoPlayer): Boolean {
+        val preferredCleared = runCatching {
+            player.setPreferredAudioDevice(null)
+            true
+        }.getOrDefault(false)
+        val communicationCleared = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                audioManager.clearCommunicationDevice()
+                true
+            }.getOrDefault(false)
+        } else {
+            true
+        }
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
+    }
+
+    private fun isSpeakerOutputDevice(displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        return candidates.firstOrNull()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+    }
+
+    private fun resolveOutputCandidatesForDisplayedId(displayedDeviceId: Int): List<AudioDeviceInfo> {
+        val currentOutputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+        val routeKey = outputRouteKeyByDisplayedId[displayedDeviceId]
+        val candidateIds = routeKey
+            ?.let { key -> outputRouteDeviceIdsByRouteKey[key] }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(displayedDeviceId)
+        return candidateIds
+            .mapNotNull { candidateId -> currentOutputs.firstOrNull { output -> output.id == candidateId } }
+            .ifEmpty {
+                routeKey?.let { key ->
+                    currentOutputs.filter { output -> outputRouteKey(output) == key }
+                        .sortedByDescending { output -> outputRoutePriority(output.type) }
+                }.orEmpty()
+            }
+    }
+
+    private fun applyPreferredOutputForDisplayedId(player: ExoPlayer, displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        return candidates.any { targetDevice ->
+            runCatching {
+                player.setPreferredAudioDevice(targetDevice)
+                true
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun applyOutputViaAudioManagerFallback(displayedDeviceId: Int): Boolean {
+        val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
+        if (candidates.isEmpty()) return false
+        val speakerRoute = candidates.first().type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        if (speakerRoute) {
+            return runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    audioManager.clearCommunicationDevice()
+                }
+                audioManager.mode = AudioManager.MODE_NORMAL
+                audioManager.isSpeakerphoneOn = true
+                true
+            }.getOrDefault(false)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val communicationApplied = candidates.any { candidate ->
+                runCatching { audioManager.setCommunicationDevice(candidate) }.getOrDefault(false)
+            }
+            if (communicationApplied) return true
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+        }
+        return false
     }
 }

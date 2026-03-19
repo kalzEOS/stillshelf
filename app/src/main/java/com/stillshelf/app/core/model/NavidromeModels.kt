@@ -35,7 +35,9 @@ data class NavidromeTrack(
     val trackNumber: Int?,
     val durationSeconds: Int?,
     val coverUrl: String?,
-    val streamUrl: String
+    val streamUrl: String,
+    val formatLabel: String?,
+    val bitRateKbps: Int?
 )
 
 data class NavidromePlaylist(
@@ -43,6 +45,13 @@ data class NavidromePlaylist(
     val name: String,
     val songCount: Int? = null,
     val durationSeconds: Int? = null
+)
+
+data class NavidromeRadio(
+    val id: String,
+    val name: String,
+    val streamUrl: String,
+    val homePageUrl: String?
 )
 
 data class NavidromeArtistDetail(
@@ -64,14 +73,26 @@ data class NavidromeSearchResults(
 data class NavidromeHome(
     val recentAlbums: List<NavidromeAlbum>,
     val artists: List<NavidromeArtist>,
-    val playlists: List<NavidromePlaylist>
+    val playlists: List<NavidromePlaylist>,
+    val radios: List<NavidromeRadio>
+)
+
+data class NavidromeOutputDevice(
+    val id: Int?,
+    val name: String,
+    val typeLabel: String
 )
 
 data class NavidromePlayerState(
     val currentTrack: NavidromeTrack? = null,
+    val recentTracks: List<NavidromeTrack> = emptyList(),
     val queue: List<NavidromeTrack> = emptyList(),
     val currentIndex: Int = -1,
+    val outputDevices: List<NavidromeOutputDevice> = emptyList(),
+    val selectedOutputDeviceId: Int? = null,
     val isPlaying: Boolean = false,
     val isLoading: Boolean = false,
+    val positionMs: Int = 0,
+    val durationMs: Int = 0,
     val errorMessage: String? = null
 )

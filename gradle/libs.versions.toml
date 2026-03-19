@@ -17,6 +17,7 @@ material = "1.12.0"
 okhttp = "4.12.0"
 coil = "2.7.0"
 androidxMedia = "1.7.0"
+media3 = "1.9.2"
 androidxWork = "2.10.0"
 junit4 = "4.13.2"
 coroutines = "1.8.1"
@@ -54,6 +55,7 @@ google-material = { group = "com.google.android.material", name = "material", ve
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 androidx-media = { group = "androidx.media", name = "media", version.ref = "androidxMedia" }
+androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "androidxWork" }
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }

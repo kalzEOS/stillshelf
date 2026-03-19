@@ -47,7 +47,10 @@ data class NavidromeTrackDto(
     val artistId: String?,
     val trackNumber: Int?,
     val durationSeconds: Int?,
-    val coverArtId: String?
+    val coverArtId: String?,
+    val suffix: String?,
+    val contentType: String?,
+    val bitRateKbps: Int?
 )
 
 data class NavidromePlaylistDto(
@@ -55,6 +58,13 @@ data class NavidromePlaylistDto(
     val name: String,
     val songCount: Int? = null,
     val durationSeconds: Int? = null
+)
+
+data class NavidromeRadioDto(
+    val id: String,
+    val name: String,
+    val streamUrl: String,
+    val homePageUrl: String?
 )
 
 data class NavidromeArtistDetailDto(
@@ -131,6 +141,17 @@ class NavidromeApi @Inject constructor(
             }
         }
 
+    suspend fun getRadios(auth: NavidromeAuth): Result<List<NavidromeRadioDto>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = execute(buildRequest(auth, "rest/getInternetRadioStations.view"))
+                parseRadios(
+                    root.optJSONObject("internetRadioStations")
+                        ?.optJSONArray("internetRadioStation")
+                )
+            }
+        }
+
     suspend fun getArtist(
         auth: NavidromeAuth,
         artistId: String
@@ -199,6 +220,30 @@ class NavidromeApi @Inject constructor(
                 albums = parseAlbumArray(searchNode?.optJSONArray("album")),
                 tracks = parseTrackArray(searchNode?.optJSONArray("song"))
             )
+        }
+    }
+
+    suspend fun getSongs(
+        auth: NavidromeAuth,
+        query: String = "",
+        songCount: Int = 200,
+        songOffset: Int = 0
+    ): Result<List<NavidromeTrackDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/search3.view",
+                    query = mapOf(
+                        "query" to query,
+                        "songCount" to songCount.coerceIn(1, 500).toString(),
+                        "songOffset" to songOffset.coerceAtLeast(0).toString(),
+                        "artistCount" to "0",
+                        "albumCount" to "0"
+                    )
+                )
+            )
+            parseTrackArray(root.optJSONObject("searchResult3")?.optJSONArray("song"))
         }
     }
 
@@ -369,6 +414,7 @@ class NavidromeApi @Inject constructor(
     private fun parseTrack(item: JSONObject): NavidromeTrackDto {
         val duration = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it > 0 }
         val trackNumber = item.takeIf { it.has("track") }?.optInt("track")?.takeIf { it > 0 }
+        val bitRateKbps = item.takeIf { it.has("bitRate") }?.optInt("bitRate")?.takeIf { it > 0 }
         return NavidromeTrackDto(
             id = item.optString("id"),
             title = item.optString("title").ifBlank { "Unknown track" },
@@ -380,7 +426,10 @@ class NavidromeApi @Inject constructor(
             artistId = item.optString("artistId").ifBlank { null },
             trackNumber = trackNumber,
             durationSeconds = duration,
-            coverArtId = item.optString("coverArt").ifBlank { null }
+            coverArtId = item.optString("coverArt").ifBlank { null },
+            suffix = item.optString("suffix").ifBlank { null },
+            contentType = item.optString("contentType").ifBlank { null },
+            bitRateKbps = bitRateKbps
         )
     }
 
@@ -394,6 +443,27 @@ class NavidromeApi @Inject constructor(
                 name = item.optString("name").ifBlank { "Playlist" },
                 songCount = item.takeIf { it.has("songCount") }?.optInt("songCount")?.takeIf { it >= 0 },
                 durationSeconds = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it >= 0 }
+            )
+        }
+        return results
+    }
+
+    private fun parseRadios(items: JSONArray?): List<NavidromeRadioDto> {
+        if (items == null) return emptyList()
+        val results = mutableListOf<NavidromeRadioDto>()
+        repeat(items.length()) { index ->
+            val item = items.optJSONObject(index) ?: return@repeat
+            val streamUrl = item.optString("streamUrl")
+                .ifBlank { item.optString("url") }
+                .ifBlank { null }
+                ?: return@repeat
+            results += NavidromeRadioDto(
+                id = item.optString("id"),
+                name = item.optString("name").ifBlank { "Radio" },
+                streamUrl = streamUrl,
+                homePageUrl = item.optString("homePageUrl")
+                    .ifBlank { item.optString("homepageUrl") }
+                    .ifBlank { null }
             )
         }
         return results

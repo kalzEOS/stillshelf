@@ -294,6 +294,50 @@ class NavidromePlayerController @Inject constructor(
         ensureProgressUpdates()
     }
 
+    fun playTracksNext(tracks: List<NavidromeTrack>) {
+        val normalizedTracks = tracks.filter { it.id.isNotBlank() }
+        if (normalizedTracks.isEmpty()) return
+        if (queueTracks.isEmpty()) {
+            playTracks(normalizedTracks, startIndex = 0)
+            return
+        }
+        val currentIndex = mutableState.value.currentIndex
+            .takeIf { it in queueTracks.indices }
+            ?: 0
+        val insertIndex = (currentIndex + 1).coerceAtMost(queueTracks.size)
+        queueTracks = buildList {
+            addAll(queueTracks.take(insertIndex))
+            addAll(normalizedTracks)
+            addAll(queueTracks.drop(insertIndex))
+        }
+        player?.addMediaItems(insertIndex, normalizedTracks.map { track ->
+            MediaItem.Builder()
+                .setMediaId(track.id)
+                .setUri(track.streamUrl)
+                .build()
+        })
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+    }
+
+    fun appendTracksToQueue(tracks: List<NavidromeTrack>) {
+        val normalizedTracks = tracks.filter { it.id.isNotBlank() }
+        if (normalizedTracks.isEmpty()) return
+        if (queueTracks.isEmpty()) {
+            playTracks(normalizedTracks, startIndex = 0)
+            return
+        }
+        queueTracks = queueTracks + normalizedTracks
+        player?.addMediaItems(normalizedTracks.map { track ->
+            MediaItem.Builder()
+                .setMediaId(track.id)
+                .setUri(track.streamUrl)
+                .build()
+        })
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+    }
+
     fun togglePlayPause() {
         if (mutableState.value.isPlaying) {
             pause()

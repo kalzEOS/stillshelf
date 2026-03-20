@@ -140,14 +140,18 @@ object NavidromeRoute {
     const val SONGS = "navidrome/library/songs"
     const val FAVORITES = "navidrome/library/favorites"
     const val PLAYLISTS = "navidrome/library/playlists"
+    const val PLAYLIST_ID_ARG = "playlistId"
     const val SEARCH = "navidrome/search"
     const val SETTINGS = "navidrome/settings"
     const val SERVERS = "navidrome/settings/servers"
     const val CUSTOMIZE = "navidrome/customize"
     const val ARTIST_ID_ARG = "artistId"
     const val ALBUM_ID_ARG = "albumId"
+    const val PLAYLIST_PATTERN = "navidrome/playlist/{$PLAYLIST_ID_ARG}"
     const val ARTIST_PATTERN = "navidrome/artist/{$ARTIST_ID_ARG}"
     const val ALBUM_PATTERN = "navidrome/album/{$ALBUM_ID_ARG}"
+
+    fun playlist(playlistId: String): String = "navidrome/playlist/${Uri.encode(playlistId)}"
 
     fun artist(artistId: String): String = "navidrome/artist/${Uri.encode(artistId)}"
 

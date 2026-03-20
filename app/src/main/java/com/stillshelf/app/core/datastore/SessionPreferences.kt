@@ -41,6 +41,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeArtistLayoutModeKey = stringPreferencesKey("navidrome_artist_layout_mode")
     private val navidromeArtistSortKey = stringPreferencesKey("navidrome_artist_sort")
     private val navidromeAlbumLayoutModeKey = stringPreferencesKey("navidrome_album_layout_mode")
+    private val navidromePlaylistSortKey = stringPreferencesKey("navidrome_playlist_sort")
     private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
@@ -91,6 +92,7 @@ class SessionPreferences @Inject constructor(
     private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
     private val playbackCheckpointSnapshotKey = stringPreferencesKey("playback_checkpoint_snapshot")
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
+    private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
 
     val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
         SessionPreferenceState(
@@ -110,6 +112,7 @@ class SessionPreferences @Inject constructor(
             navidromeArtistLayoutMode = prefs[navidromeArtistLayoutModeKey],
             navidromeArtistSort = prefs[navidromeArtistSortKey],
             navidromeAlbumLayoutMode = prefs[navidromeAlbumLayoutModeKey],
+            navidromePlaylistSort = prefs[navidromePlaylistSortKey],
             navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
                 prefs[navidromeFavoriteTracksPayloadKey]
             ),
@@ -153,7 +156,8 @@ class SessionPreferences @Inject constructor(
             updateIncludePrereleases = prefs[updateIncludePrereleasesKey] ?: false,
             pendingUpdateApkPath = prefs[pendingUpdateApkPathKey],
             pendingUpdateVersionName = prefs[pendingUpdateVersionNameKey],
-            recentSearchTerms = parseStringArray(prefs[recentSearchTermsKey])
+            recentSearchTerms = parseStringArray(prefs[recentSearchTermsKey]),
+            navidromeRecentSearchTerms = parseStringArray(prefs[navidromeRecentSearchTermsKey])
         )
     }
 
@@ -380,6 +384,16 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(navidromeAlbumLayoutModeKey)
             } else {
                 prefs[navidromeAlbumLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromePlaylistSort(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromePlaylistSortKey)
+            } else {
+                prefs[navidromePlaylistSortKey] = mode
             }
         }
     }
@@ -971,6 +985,27 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun addNavidromeRecentSearchTerm(term: String, maxItems: Int = 10) {
+        val normalizedTerm = term.trim()
+        if (normalizedTerm.isBlank()) return
+        dataStore.edit { prefs ->
+            val updated = buildList {
+                add(normalizedTerm)
+                parseStringArray(prefs[navidromeRecentSearchTermsKey])
+                    .filterNot { it.equals(normalizedTerm, ignoreCase = true) }
+                    .take(maxItems.coerceAtLeast(1) - 1)
+                    .forEach(::add)
+            }
+            prefs[navidromeRecentSearchTermsKey] = encodeStringArray(updated)
+        }
+    }
+
+    suspend fun clearNavidromeRecentSearchTerms() {
+        dataStore.edit { prefs ->
+            prefs.remove(navidromeRecentSearchTermsKey)
+        }
+    }
+
     private fun parseCsv(csv: String?): Set<String> {
         if (csv.isNullOrBlank()) return emptySet()
         return csv.split(",")
@@ -1290,6 +1325,7 @@ data class SessionPreferenceState(
     val navidromeArtistLayoutMode: String? = null,
     val navidromeArtistSort: String? = null,
     val navidromeAlbumLayoutMode: String? = null,
+    val navidromePlaylistSort: String? = null,
     val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
@@ -1329,7 +1365,8 @@ data class SessionPreferenceState(
     val updateIncludePrereleases: Boolean = false,
     val pendingUpdateApkPath: String? = null,
     val pendingUpdateVersionName: String? = null,
-    val recentSearchTerms: List<String> = emptyList()
+    val recentSearchTerms: List<String> = emptyList(),
+    val navidromeRecentSearchTerms: List<String> = emptyList()
 )
 
 data class CachedHomeFeedPayload(

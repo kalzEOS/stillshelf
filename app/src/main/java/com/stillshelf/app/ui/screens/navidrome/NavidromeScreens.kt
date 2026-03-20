@@ -66,6 +66,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Dns
@@ -143,6 +144,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -178,6 +180,7 @@ import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlaylist
+import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeTrack
@@ -216,6 +219,38 @@ private data class NavidromeHomeDestination(
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
     val onClick: () -> Unit
 )
+
+private data class NavidromePlaylistSelectionRequest(
+    val label: String,
+    val trackIds: List<String>
+)
+
+private fun NavidromeTrack.toPlaylistSelectionRequest(): NavidromePlaylistSelectionRequest {
+    return NavidromePlaylistSelectionRequest(
+        label = title,
+        trackIds = listOf(id)
+    )
+}
+
+private fun NavidromeAlbumDetail.toPlaylistSelectionRequest(): NavidromePlaylistSelectionRequest? {
+    val albumTrackIds = tracks.map(NavidromeTrack::id).filter(String::isNotBlank).distinct()
+    if (albumTrackIds.isEmpty()) return null
+    val songLabel = if (albumTrackIds.size == 1) "song" else "songs"
+    return NavidromePlaylistSelectionRequest(
+        label = "${albumTrackIds.size} $songLabel from ${album.name}",
+        trackIds = albumTrackIds
+    )
+}
+
+private fun NavidromePlaylistDetail.toPlaylistSelectionRequest(): NavidromePlaylistSelectionRequest? {
+    val playlistTrackIds = tracks.map(NavidromeTrack::id).filter(String::isNotBlank).distinct()
+    if (playlistTrackIds.isEmpty()) return null
+    val songLabel = if (playlistTrackIds.size == 1) "song" else "songs"
+    return NavidromePlaylistSelectionRequest(
+        label = "${playlistTrackIds.size} $songLabel from ${playlist.name}",
+        trackIds = playlistTrackIds
+    )
+}
 
 enum class NavidromeAlbumsDisplayStyle(
     val label: String
@@ -487,6 +522,7 @@ fun NavidromeAppRoute(
     val appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val playerViewModel: NavidromePlayerViewModel = hiltViewModel()
+    val playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
     val showMiniPlayer = playerState.currentTrack != null
@@ -496,6 +532,7 @@ fun NavidromeAppRoute(
         currentRoute != NavidromeRoute.LOGIN
     val playerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showPlayerSheet by rememberSaveable { mutableStateOf(false) }
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     val view = LocalView.current
     val density = LocalDensity.current
     val systemInsets = ViewCompat.getRootWindowInsets(view)
@@ -530,6 +567,9 @@ fun NavidromeAppRoute(
                 isFavorite = playerState.currentTrack?.id in favoriteTrackIds,
                 onToggleFavorite = playerViewModel::toggleFavoriteTrack,
                 immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
+                onAddToPlaylist = { track ->
+                    pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                },
                 onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
                 onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
             )
@@ -576,6 +616,7 @@ fun NavidromeAppRoute(
                 NavidromeHomeRoute(
                     onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
                     onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) },
+                    onOpenPlaylist = { navController.navigate(NavidromeRoute.playlist(it)) },
                     onOpenArtists = { navController.navigate(NavidromeRoute.ARTISTS) },
                     onOpenAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
@@ -617,7 +658,9 @@ fun NavidromeAppRoute(
             composable(NavidromeRoute.SONGS) {
                 NavidromeSongsRoute(
                     onBack = { navController.popBackStack() },
-                    onHome = topHomeAction
+                    onHome = topHomeAction,
+                    onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
+                    onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
                 )
             }
             composable(NavidromeRoute.FAVORITES) {
@@ -682,7 +725,20 @@ fun NavidromeAppRoute(
             composable(NavidromeRoute.PLAYLISTS) {
                 NavidromePlaylistsRoute(
                     onBack = { navController.popBackStack() },
-                    onHome = topHomeAction
+                    onHome = topHomeAction,
+                    onOpenPlaylist = { navController.navigate(NavidromeRoute.playlist(it)) }
+                )
+            }
+            composable(
+                route = NavidromeRoute.PLAYLIST_PATTERN,
+                arguments = listOf(navArgument(NavidromeRoute.PLAYLIST_ID_ARG) { type = NavType.StringType })
+            ) {
+                NavidromePlaylistDetailRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction,
+                    onFinished = { navController.popBackStack() },
+                    onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
+                    onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
                 )
             }
             composable(
@@ -701,10 +757,16 @@ fun NavidromeAppRoute(
             ) {
                 NavidromeAlbumDetailRoute(
                     onBack = { navController.popBackStack() },
-                    onHome = topHomeAction
+                    onHome = topHomeAction,
+                    onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
                 )
             }
         }
+        NavidromePlaylistPickerHost(
+            pendingRequest = pendingPlaylistRequest,
+            onDismiss = { pendingPlaylistRequest = null },
+            viewModel = playlistPickerViewModel
+        )
         if (safeBottomInset > 0.dp) {
             Box(
                 modifier = Modifier
@@ -786,6 +848,7 @@ fun NavidromeAppRoute(
 private fun NavidromeHomeRoute(
     onOpenAlbum: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
+    onOpenPlaylist: (String) -> Unit,
     onOpenArtists: () -> Unit,
     onOpenAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
@@ -810,6 +873,28 @@ private fun NavidromeHomeRoute(
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    LaunchedEffect(
+        uiState.errorMessage,
+        uiState.recentAlbums,
+        uiState.artists,
+        uiState.playlists,
+        uiState.radios
+    ) {
+        val message = uiState.errorMessage ?: return@LaunchedEffect
+        val hasVisibleContent = uiState.recentAlbums.isNotEmpty() ||
+            uiState.artists.isNotEmpty() ||
+            uiState.playlists.isNotEmpty() ||
+            uiState.radios.isNotEmpty()
+        if (!hasVisibleContent) return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
     LaunchedEffect(settingsUiState.activeServerId, settingsUiState.activeLibraryId) {
         if (settingsUiState.activeServerId != null) {
             viewModel.refresh(forceRefresh = false)
@@ -832,6 +917,7 @@ private fun NavidromeHomeRoute(
         materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
         onOpenAlbum = onOpenAlbum,
         onOpenArtist = onOpenArtist,
+        onOpenPlaylist = onOpenPlaylist,
         onOpenArtists = onOpenArtists,
         onOpenAlbums = onOpenAlbums,
         onOpenRadios = onOpenRadios,
@@ -845,6 +931,8 @@ private fun NavidromeHomeRoute(
         onOpenServers = onOpenServers,
         onSelectLibrary = settingsViewModel::setActiveLibrary,
         onSwitchMode = onSwitchMode,
+        onRenamePlaylist = viewModel::renamePlaylist,
+        onDeletePlaylist = viewModel::deletePlaylist,
         onPlayPause = onPlayPause,
         onPlayTrack = playerViewModel::playTrack,
         onPlayAlbum = playerViewModel::playAlbum,
@@ -866,6 +954,7 @@ private fun NavidromeHomeScreen(
     materialDesignEnabled: Boolean,
     onOpenAlbum: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
+    onOpenPlaylist: (String) -> Unit,
     onOpenArtists: () -> Unit,
     onOpenAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
@@ -879,6 +968,8 @@ private fun NavidromeHomeScreen(
     onOpenServers: () -> Unit,
     onSelectLibrary: (String) -> Unit,
     onSwitchMode: () -> Unit,
+    onRenamePlaylist: (String, String) -> Unit,
+    onDeletePlaylist: (String, String) -> Unit,
     onPlayPause: () -> Unit,
     onPlayTrack: (NavidromeTrack) -> Unit,
     onPlayAlbum: (String, Boolean) -> Unit,
@@ -906,6 +997,9 @@ private fun NavidromeHomeScreen(
     var isLibraryMenuExpanded by remember { mutableStateOf(false) }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var randomAlbumsVersion by rememberSaveable { mutableIntStateOf(0) }
+    var renameTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
+    var deleteTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
+    var playlistNameInput by rememberSaveable { mutableStateOf("") }
     val randomAlbums = remember(randomAlbumsVersion, uiState.recentAlbums) {
         uiState.recentAlbums.shuffled().take(min(12, uiState.recentAlbums.size))
     }
@@ -1383,7 +1477,18 @@ private fun NavidromeHomeScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 items(uiState.playlists.take(12), key = { it.id }) { playlist ->
-                                    NavidromeHomePlaylistCard(playlist = playlist)
+                                    NavidromeHomePlaylistCard(
+                                        playlist = playlist,
+                                        posterWidth = homeShelfPosterWidth,
+                                        onClick = { onOpenPlaylist(playlist.id) },
+                                        onRename = {
+                                            playlistNameInput = playlist.name
+                                            renameTarget = playlist
+                                        },
+                                        onDelete = {
+                                            deleteTarget = playlist
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -1403,6 +1508,61 @@ private fun NavidromeHomeScreen(
             refreshing = uiState.isLoading,
             state = refreshState,
             modifier = Modifier.align(Alignment.TopCenter)
+        )
+    }
+
+    renameTarget?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = playlistNameInput,
+                    onValueChange = { playlistNameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renameTarget = null
+                        onRenamePlaylist(playlist.id, playlistNameInput)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete Playlist") },
+            text = { Text("Delete \"${playlist.name}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        onDeletePlaylist(playlist.id, playlist.name)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }
@@ -1624,6 +1784,7 @@ private fun NavidromeCustomizeRoute(
             }
         }
     }
+
 }
 
 @Composable
@@ -2060,14 +2221,527 @@ private fun NavidromeAlbumsRoute(
 private fun NavidromePlaylistsRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
-    viewModel: NavidromeBrowseViewModel = hiltViewModel()
+    onOpenPlaylist: (String) -> Unit,
+    viewModel: NavidromePlaylistsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    StandardTopScreen(title = "Playlists", onBack = onBack, onHome = onHome) {
-        items(uiState.playlists) { playlist ->
-            PlaylistRow(playlist)
+    val context = LocalContext.current
+    var createDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
+    var deleteTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+    var menuExpanded by remember { mutableStateOf(false) }
+    val playlists = remember(uiState.playlists, uiState.searchQuery, uiState.sortOption) {
+        val normalizedQuery = uiState.searchQuery.trim()
+        val filtered = uiState.playlists.filter { playlist ->
+            normalizedQuery.isBlank() || playlist.name.contains(normalizedQuery, ignoreCase = true)
+        }
+        when (uiState.sortOption) {
+            NavidromePlaylistSortOption.NAME -> filtered.sortedBy { it.name.lowercase(Locale.getDefault()) }
+            NavidromePlaylistSortOption.DURATION -> filtered.sortedWith(
+                compareByDescending<NavidromePlaylist> { it.durationSeconds ?: -1 }
+                    .thenBy { it.name.lowercase(Locale.getDefault()) }
+            )
         }
     }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    LaunchedEffect(uiState.errorMessage, uiState.playlists) {
+        val message = uiState.errorMessage ?: return@LaunchedEffect
+        if (uiState.playlists.isEmpty()) return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+
+    StandardTopScreen(
+        title = "Playlists",
+        onBack = onBack,
+        onHome = onHome,
+        topContent = {
+            OutlinedTextField(
+                value = uiState.searchQuery,
+                onValueChange = viewModel::onSearchQueryChange,
+                singleLine = true,
+                label = { Text("Search playlists") },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Search, contentDescription = null)
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        actions = {
+            Box {
+                RoundIconButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Playlist options",
+                    onClick = { menuExpanded = true }
+                )
+                AppDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    NavidromePlaylistSortOption.entries.forEach { sort ->
+                        AppDropdownMenuItem(
+                            text = { Text(sort.label) },
+                            leadingIcon = {
+                                if (uiState.sortOption == sort) {
+                                    Icon(Icons.Filled.Check, contentDescription = null)
+                                }
+                            },
+                            onClick = {
+                                viewModel.setSortOption(sort)
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                    HorizontalDivider()
+                    AppDropdownMenuItem(
+                        text = { Text("Refresh Playlists") },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.Refresh, contentDescription = null)
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            viewModel.refresh(forceRefresh = true)
+                        }
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            CircleActionButton(
+                icon = Icons.Outlined.Add,
+                contentDescription = "Create playlist",
+                onClick = {
+                    nameInput = ""
+                    createDialogVisible = true
+                }
+            )
+        }
+    ) {
+        if (uiState.isLoading) {
+            item { LoadingCard() }
+        } else if (playlists.isNotEmpty()) {
+            items(playlists, key = { it.id }) { playlist ->
+                var menuExpanded by remember { mutableStateOf(false) }
+                PlaylistRow(
+                    playlist = playlist,
+                    onClick = { onOpenPlaylist(playlist.id) },
+                    trailingContent = {
+                        Box {
+                            IconButton(onClick = { menuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreHoriz,
+                                    contentDescription = "Playlist actions"
+                                )
+                            }
+                            NavidromePlaylistManagementMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false },
+                                onRename = {
+                                    nameInput = playlist.name
+                                    renameTarget = playlist
+                                    menuExpanded = false
+                                },
+                                onDelete = {
+                                    deleteTarget = playlist
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                )
+            }
+        } else if (uiState.errorMessage != null) {
+            item { ErrorCard(uiState.errorMessage ?: "Unable to load playlists.") }
+        } else if (uiState.searchQuery.isNotBlank()) {
+            item { EmptyCard("No playlists match \"${uiState.searchQuery.trim()}\".") }
+        } else {
+            item { EmptyCard("No playlists yet. Create one to start saving songs.") }
+            item {
+                Button(onClick = {
+                    nameInput = ""
+                    createDialogVisible = true
+                }) {
+                    Text("Create Playlist")
+                }
+            }
+        }
+    }
+
+    if (createDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { createDialogVisible = false },
+            title = { Text("New Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        createDialogVisible = false
+                        viewModel.createPlaylist(nameInput)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { createDialogVisible = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    renameTarget?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renameTarget = null
+                        viewModel.renamePlaylist(playlist.id, nameInput)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete Playlist") },
+            text = { Text("Delete \"${playlist.name}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        viewModel.deletePlaylist(playlist.id, playlist.name)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun NavidromePlaylistDetailRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    onFinished: () -> Unit,
+    onOpenAlbum: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
+    viewModel: NavidromePlaylistDetailViewModel = hiltViewModel(),
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    var menuExpanded by remember { mutableStateOf(false) }
+    var renameDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var deleteDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var pendingTrackRemovalIndex by rememberSaveable { mutableStateOf<Int?>(null) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    LaunchedEffect(uiState.errorMessage, uiState.detail) {
+        val message = uiState.errorMessage ?: return@LaunchedEffect
+        if (uiState.detail == null) return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    LaunchedEffect(uiState.deleted) {
+        if (uiState.deleted) {
+            onFinished()
+        }
+    }
+
+    StandardTopScreen(
+        title = "Playlist",
+        onBack = onBack,
+        onHome = onHome,
+        actions = {
+            Box {
+                RoundIconButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Playlist options",
+                    onClick = { menuExpanded = true }
+                )
+                AppDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    AppDropdownMenuItem(
+                        text = { Text("Play Next") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Outlined.SkipNext, contentDescription = null)
+                        },
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true && playerState.queue.isNotEmpty(),
+                        onClick = {
+                            val detail = uiState.detail ?: return@AppDropdownMenuItem
+                            menuExpanded = false
+                            playerViewModel.playTracksNext(detail.tracks)
+                            Toast.makeText(context, "Playlist queued next", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("Add to Queue") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Outlined.QueueMusic, contentDescription = null)
+                        },
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true && playerState.queue.isNotEmpty(),
+                        onClick = {
+                            val detail = uiState.detail ?: return@AppDropdownMenuItem
+                            menuExpanded = false
+                            playerViewModel.addTracksToQueue(detail.tracks)
+                            Toast.makeText(context, "Playlist added to queue", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("Add to Playlist") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Outlined.Add, contentDescription = null)
+                        },
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true,
+                        onClick = {
+                            val request = uiState.detail?.toPlaylistSelectionRequest()
+                                ?: return@AppDropdownMenuItem
+                            menuExpanded = false
+                            pendingPlaylistRequest = request
+                        }
+                    )
+                    HorizontalDivider()
+                    AppDropdownMenuItem(
+                        text = { Text("Rename") },
+                        enabled = uiState.detail != null,
+                        onClick = {
+                            menuExpanded = false
+                            nameInput = uiState.detail?.playlist?.name.orEmpty()
+                            renameDialogVisible = true
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("Delete") },
+                        enabled = uiState.detail != null,
+                        onClick = {
+                            menuExpanded = false
+                            deleteDialogVisible = true
+                        }
+                    )
+                }
+            }
+        }
+    ) {
+        if (uiState.isLoading) {
+            item { LoadingCard() }
+        } else if (uiState.detail != null) {
+            val detail = uiState.detail!!
+            item {
+                PlaylistDetailHero(
+                    detail = detail,
+                    onPlay = { playerViewModel.playTracks(detail.tracks, 0) },
+                    onShuffle = {
+                        val shuffledTracks = detail.tracks.shuffled()
+                        if (shuffledTracks.isNotEmpty()) {
+                            playerViewModel.playTracks(shuffledTracks, 0)
+                        }
+                    }
+                )
+            }
+            if (detail.tracks.isEmpty()) {
+                item { EmptyCard("No songs yet. Add songs from the Songs, Album, Search, or Favorite Songs screens.") }
+            } else {
+                itemsIndexed(detail.tracks, key = { index, track -> "${track.id}:$index" }) { index, track ->
+                    TrackRow(
+                        track = track,
+                        isCurrent = playerState.currentTrack?.id == track.id,
+                        isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                        onClick = { playerViewModel.playTracks(detail.tracks, index) },
+                        trailingContent = {
+                            var rowMenuExpanded by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { rowMenuExpanded = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        contentDescription = "Playlist song options"
+                                    )
+                                }
+                                NavidromeTrackActionsMenu(
+                                    expanded = rowMenuExpanded,
+                                    onDismissRequest = { rowMenuExpanded = false },
+                                    onPlayTrack = {
+                                        rowMenuExpanded = false
+                                        playerViewModel.playTracks(detail.tracks, index)
+                                    },
+                                    playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                    onShowAlbum = track.albumId?.let { albumId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            onOpenAlbum(albumId)
+                                        }
+                                    },
+                                    onShowArtist = track.artistId?.let { artistId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            onOpenArtist(artistId)
+                                        }
+                                    },
+                                    extraActions = {
+                                        HorizontalDivider()
+                                        AppDropdownMenuItem(
+                                            text = { Text("Add to Playlist") },
+                                            onClick = {
+                                                rowMenuExpanded = false
+                                                pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                            }
+                                        )
+                                        AppDropdownMenuItem(
+                                            text = { Text("Remove from Playlist") },
+                                            onClick = {
+                                                rowMenuExpanded = false
+                                                pendingTrackRemovalIndex = index
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        } else {
+            item { ErrorCard(uiState.errorMessage ?: "Unable to load playlist.") }
+        }
+    }
+
+    if (renameDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { renameDialogVisible = false },
+            title = { Text("Rename Playlist") },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        renameDialogVisible = false
+                        viewModel.renamePlaylist(nameInput)
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameDialogVisible = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (deleteDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { deleteDialogVisible = false },
+            title = { Text("Delete Playlist") },
+            text = { Text("Delete \"${uiState.detail?.playlist?.name.orEmpty()}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteDialogVisible = false
+                        viewModel.deletePlaylist()
+                    },
+                    enabled = !uiState.isSubmitting
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteDialogVisible = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    pendingTrackRemovalIndex?.let { index ->
+        val track = uiState.detail?.tracks?.getOrNull(index)
+        if (track != null) {
+            AlertDialog(
+                onDismissRequest = { pendingTrackRemovalIndex = null },
+                title = { Text("Remove Song") },
+                text = { Text("Remove \"${track.title}\" from this playlist?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingTrackRemovalIndex = null
+                            viewModel.removeTrack(index, track.title)
+                        },
+                        enabled = !uiState.isSubmitting
+                    ) {
+                        Text("Remove")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingTrackRemovalIndex = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
+
+    NavidromePlaylistPickerHost(
+        pendingRequest = pendingPlaylistRequest,
+        onDismiss = { pendingPlaylistRequest = null },
+        viewModel = playlistPickerViewModel
+    )
 }
 
 @Composable
@@ -2107,6 +2781,7 @@ private fun NavidromeFavoriteSongsRoute(
     onHome: (() -> Unit)?,
     viewModel: NavidromeFavoriteSongsViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
@@ -2114,6 +2789,7 @@ private fun NavidromeFavoriteSongsRoute(
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     var menuExpanded by remember { mutableStateOf(false) }
     var pendingTrackRemoval by remember { mutableStateOf<NavidromeTrack?>(null) }
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     var showClearAllConfirmation by remember { mutableStateOf(false) }
     StandardTopScreen(
         title = "Favorite Songs",
@@ -2191,6 +2867,14 @@ private fun NavidromeFavoriteSongsRoute(
                                 extraActions = {
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
+                                        text = { Text("Add to Playlist") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                        }
+                                    )
+                                    HorizontalDivider()
+                                    AppDropdownMenuItem(
                                         text = { Text("Remove Favorite") },
                                         leadingIcon = {
                                             Icon(
@@ -2237,6 +2921,11 @@ private fun NavidromeFavoriteSongsRoute(
             }
         )
     }
+    NavidromePlaylistPickerHost(
+        pendingRequest = pendingPlaylistRequest,
+        onDismiss = { pendingPlaylistRequest = null },
+        viewModel = playlistPickerViewModel
+    )
     if (showClearAllConfirmation) {
         AlertDialog(
             onDismissRequest = { showClearAllConfirmation = false },
@@ -2265,11 +2954,15 @@ private fun NavidromeFavoriteSongsRoute(
 private fun NavidromeSongsRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
+    onOpenAlbum: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
     viewModel: NavidromeSongsViewModel = hiltViewModel(),
-    playerViewModel: NavidromePlayerViewModel = hiltViewModel()
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     StandardTopScreen(title = "Songs", onBack = onBack, onHome = onHome) {
         if (uiState.isLoading) {
             item { LoadingCard() }
@@ -2280,7 +2973,49 @@ private fun NavidromeSongsRoute(
                     track = track,
                     isCurrent = playerState.currentTrack?.id == track.id,
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
-                    onClick = { playerViewModel.playTracks(uiState.songs, index) }
+                    onClick = { playerViewModel.playTracks(uiState.songs, index) },
+                    trailingContent = {
+                        var rowMenuExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { rowMenuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreHoriz,
+                                    contentDescription = "Song options"
+                                )
+                            }
+                            NavidromeTrackActionsMenu(
+                                expanded = rowMenuExpanded,
+                                onDismissRequest = { rowMenuExpanded = false },
+                                onPlayTrack = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.playTracks(uiState.songs, index)
+                                },
+                                playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                onShowAlbum = track.albumId?.let { albumId ->
+                                    {
+                                        rowMenuExpanded = false
+                                        onOpenAlbum(albumId)
+                                    }
+                                },
+                                onShowArtist = track.artistId?.let { artistId ->
+                                    {
+                                        rowMenuExpanded = false
+                                        onOpenArtist(artistId)
+                                    }
+                                },
+                                extraActions = {
+                                    HorizontalDivider()
+                                    AppDropdownMenuItem(
+                                        text = { Text("Add to Playlist") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    }
                 )
             }
         } else if (uiState.errorMessage != null) {
@@ -2289,6 +3024,11 @@ private fun NavidromeSongsRoute(
             item { EmptyCard("No songs found.") }
         }
     }
+    NavidromePlaylistPickerHost(
+        pendingRequest = pendingPlaylistRequest,
+        onDismiss = { pendingPlaylistRequest = null },
+        viewModel = playlistPickerViewModel
+    )
 }
 
 @Composable
@@ -2297,10 +3037,23 @@ private fun NavidromeSearchRoute(
     onHome: (() -> Unit)?,
     onOpenAlbum: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
-    viewModel: NavidromeSearchViewModel = hiltViewModel()
+    viewModel: NavidromeSearchViewModel = hiltViewModel(),
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val query = uiState.query.trim()
+    val recentSearchTerms = uiState.recentSearchTerms
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    val noMatches = query.isNotBlank() &&
+        !uiState.isLoading &&
+        uiState.errorMessage.isNullOrBlank() &&
+        uiState.results.artists.isEmpty() &&
+        uiState.results.albums.isEmpty() &&
+        uiState.results.tracks.isEmpty()
     StandardTopScreen(
         title = "Search",
         onBack = onBack,
@@ -2318,36 +3071,219 @@ private fun NavidromeSearchRoute(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = {
                     focusManager.clearFocus()
+                    keyboardController?.hide()
                     viewModel.submitSearch()
                 })
             )
         }
     ) {
-        if (uiState.isLoading) {
-            item { LoadingCard() }
-        }
-        if (uiState.results.artists.isNotEmpty()) {
-            item { SectionTitle("Artists") }
-            items(uiState.results.artists) { artist ->
-                ArtistRow(artist = artist, onClick = { onOpenArtist(artist.id) })
+        if (query.isBlank()) {
+            if (recentSearchTerms.isNotEmpty()) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Recently searched",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = viewModel::clearRecentSearchTerms) {
+                            Text("Clear")
+                        }
+                    }
+                }
+                items(recentSearchTerms, key = { it.lowercase() }) { term ->
+                    SearchRecentRow(
+                        text = term,
+                        onClick = {
+                            viewModel.useRecentSearchTerm(term)
+                            keyboardController?.hide()
+                        }
+                    )
+                }
+            } else {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillParentMaxSize()
+                            .padding(vertical = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(52.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Search your music",
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Search by artist, album, or song",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
             }
-        }
-        if (uiState.results.albums.isNotEmpty()) {
-            item { SectionTitle("Albums") }
-            items(uiState.results.albums) { album ->
-                AlbumRow(album = album, onClick = { onOpenAlbum(album.id) })
+        } else {
+            if (uiState.isLoading) {
+                item { LoadingCard() }
             }
-        }
-        if (uiState.results.tracks.isNotEmpty()) {
-            item { SectionTitle("Songs") }
-            items(uiState.results.tracks) { track ->
-                TrackRow(track = track, onClick = {})
+            if (uiState.results.artists.isNotEmpty()) {
+                item { SectionTitle("Artists") }
+                items(uiState.results.artists) { artist ->
+                    ArtistRow(
+                        artist = artist,
+                        onClick = {
+                            viewModel.commitCurrentQuery()
+                            onOpenArtist(artist.id)
+                        }
+                    )
+                }
             }
-        }
-        if (uiState.errorMessage != null) {
-            item { ErrorCard(uiState.errorMessage ?: "Search failed.") }
+            if (uiState.results.albums.isNotEmpty()) {
+                item { SectionTitle("Albums") }
+                items(uiState.results.albums) { album ->
+                    AlbumRow(
+                        album = album,
+                        onClick = {
+                            viewModel.commitCurrentQuery()
+                            onOpenAlbum(album.id)
+                        }
+                    )
+                }
+            }
+            if (uiState.results.tracks.isNotEmpty()) {
+                item { SectionTitle("Songs") }
+                itemsIndexed(uiState.results.tracks, key = { _, track -> track.id }) { index, track ->
+                    TrackRow(
+                        track = track,
+                        isCurrent = playerState.currentTrack?.id == track.id,
+                        isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                        onClick = {
+                            viewModel.commitCurrentQuery()
+                            playerViewModel.playTracks(uiState.results.tracks, index)
+                        },
+                        trailingContent = {
+                            var rowMenuExpanded by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { rowMenuExpanded = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        contentDescription = "Song options"
+                                    )
+                                }
+                                NavidromeTrackActionsMenu(
+                                    expanded = rowMenuExpanded,
+                                    onDismissRequest = { rowMenuExpanded = false },
+                                    onPlayTrack = {
+                                        rowMenuExpanded = false
+                                        viewModel.commitCurrentQuery()
+                                        playerViewModel.playTracks(uiState.results.tracks, index)
+                                    },
+                                    playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                    onShowAlbum = track.albumId?.let { albumId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            viewModel.commitCurrentQuery()
+                                            onOpenAlbum(albumId)
+                                        }
+                                    },
+                                    onShowArtist = track.artistId?.let { artistId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            viewModel.commitCurrentQuery()
+                                            onOpenArtist(artistId)
+                                        }
+                                    },
+                                    extraActions = {
+                                        HorizontalDivider()
+                                        AppDropdownMenuItem(
+                                            text = { Text("Add to Playlist") },
+                                            onClick = {
+                                                rowMenuExpanded = false
+                                                pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                            }
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+            if (uiState.errorMessage != null) {
+                item { ErrorCard(uiState.errorMessage ?: "Search failed.") }
+            }
+            if (noMatches) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillParentMaxWidth()
+                            .padding(vertical = 36.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No matches",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
     }
+    NavidromePlaylistPickerHost(
+        pendingRequest = pendingPlaylistRequest,
+        onDismiss = { pendingPlaylistRequest = null },
+        viewModel = playlistPickerViewModel
+    )
+}
+
+@Composable
+private fun SearchRecentRow(
+    text: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 10.dp)
+        )
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 }
 
 @Composable
@@ -2470,10 +3406,13 @@ private fun NavidromeAlbumDetailRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     viewModel: NavidromeAlbumDetailViewModel = hiltViewModel(),
-    playerViewModel: NavidromePlayerViewModel = hiltViewModel()
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
+    onOpenArtist: ((String) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     StandardTopScreen(title = "Album", onBack = onBack, onHome = onHome) {
         if (uiState.isLoading) {
             item { LoadingCard() }
@@ -2486,6 +3425,9 @@ private fun NavidromeAlbumDetailRoute(
                     onShuffleAlbum = {
                         val shuffledTracks = detail.tracks.shuffled()
                         playerViewModel.playTracks(shuffledTracks, 0)
+                    },
+                    onAddToPlaylist = detail.toPlaylistSelectionRequest()?.let { request ->
+                        { pendingPlaylistRequest = request }
                     }
                 )
             }
@@ -2495,13 +3437,57 @@ private fun NavidromeAlbumDetailRoute(
                     track = track,
                     isCurrent = playerState.currentTrack?.id == track.id,
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
-                    onClick = { playerViewModel.playTracks(detail.tracks, index) }
+                    onClick = { playerViewModel.playTracks(detail.tracks, index) },
+                    trailingContent = {
+                        var rowMenuExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { rowMenuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreHoriz,
+                                    contentDescription = "Song options"
+                                )
+                            }
+                            NavidromeTrackActionsMenu(
+                                expanded = rowMenuExpanded,
+                                onDismissRequest = { rowMenuExpanded = false },
+                                onPlayTrack = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.playTracks(detail.tracks, index)
+                                },
+                                playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                onShowAlbum = null,
+                                onShowArtist = onOpenArtist?.let { openArtist ->
+                                    track.artistId?.let { artistId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            openArtist(artistId)
+                                        }
+                                    }
+                                },
+                                extraActions = {
+                                    HorizontalDivider()
+                                    AppDropdownMenuItem(
+                                        text = { Text("Add to Playlist") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    }
                 )
             }
         } else {
             item { ErrorCard(uiState.errorMessage ?: "Unable to load album.") }
         }
     }
+    NavidromePlaylistPickerHost(
+        pendingRequest = pendingPlaylistRequest,
+        onDismiss = { pendingPlaylistRequest = null },
+        viewModel = playlistPickerViewModel
+    )
 }
 
 @Composable
@@ -3636,6 +4622,183 @@ private fun NavidromeTrackActionsMenu(
 }
 
 @Composable
+private fun NavidromePlaylistPickerHost(
+    pendingRequest: NavidromePlaylistSelectionRequest?,
+    onDismiss: () -> Unit,
+    viewModel: NavidromePlaylistPickerViewModel
+) {
+    val request = pendingRequest ?: return
+    if (request.trackIds.isEmpty()) return
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(request) {
+        viewModel.loadPlaylists(forceRefresh = false, showLoader = true)
+    }
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+        onDismiss()
+    }
+
+    NavidromeAddToPlaylistSheet(
+        selectionLabel = request.label,
+        trackCount = request.trackIds.size,
+        uiState = uiState,
+        onDismiss = {
+            viewModel.clearMessages()
+            onDismiss()
+        },
+        onAddToExistingPlaylist = { playlistId ->
+            viewModel.addTracksToPlaylist(request.trackIds, playlistId)
+        },
+        onCreatePlaylist = { name ->
+            viewModel.createPlaylistAndAddTracks(request.trackIds, name)
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NavidromeAddToPlaylistSheet(
+    selectionLabel: String,
+    trackCount: Int,
+    uiState: NavidromePlaylistPickerUiState,
+    onDismiss: () -> Unit,
+    onAddToExistingPlaylist: (String) -> Unit,
+    onCreatePlaylist: (String) -> Unit
+) {
+    var showPlaylistInput by rememberSaveable { mutableStateOf(uiState.playlists.isEmpty()) }
+    var newPlaylistName by rememberSaveable { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val dismissSheet: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        onDismiss()
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = dismissSheet,
+        sheetState = sheetState,
+        dragHandle = null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(100))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                )
+            }
+            Text(
+                text = "Add to Playlist",
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = selectionLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (uiState.playlists.isNotEmpty()) {
+                GroupedSettingsCard {
+                    uiState.playlists.forEachIndexed { index, playlist ->
+                        NavidromeDialogActionRow(
+                            title = playlist.name,
+                            subtitle = formatPlaylistSummary(playlist),
+                            leadingContent = {
+                                NavidromePlaylistArtwork(
+                                    artworkUrls = playlist.artworkUrls,
+                                    songCount = playlist.songCount,
+                                    size = 48.dp,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                        ) {
+                            if (!uiState.isSubmitting) {
+                                onAddToExistingPlaylist(playlist.id)
+                            }
+                        }
+                        if (index != uiState.playlists.lastIndex) {
+                            DividerLine()
+                        }
+                    }
+                }
+            } else if (!showPlaylistInput && !uiState.isLoading) {
+                EmptyCard(
+                    if (trackCount == 1) {
+                        "No playlists yet. Create one to add this song."
+                    } else {
+                        "No playlists yet. Create one to add these songs."
+                    }
+                )
+            }
+            if (uiState.isLoading) {
+                LoadingCard()
+            }
+            OutlinedButton(
+                onClick = { showPlaylistInput = !showPlaylistInput },
+                enabled = !uiState.isSubmitting
+            ) {
+                Text(if (showPlaylistInput) "Hide New Playlist" else "New Playlist")
+            }
+            if (showPlaylistInput) {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    singleLine = true,
+                    label = { Text("Playlist name") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        val name = newPlaylistName.trim()
+                        if (name.isNotBlank()) {
+                            onCreatePlaylist(name)
+                            newPlaylistName = ""
+                        }
+                    },
+                    enabled = newPlaylistName.trim().isNotBlank() && !uiState.isSubmitting
+                ) {
+                    Text("Create and Add")
+                }
+            }
+            uiState.errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+    }
+}
+
+@Composable
 private fun NavidromeHomeArtistCard(
     artist: NavidromeArtist,
     onClick: () -> Unit
@@ -3660,39 +4823,137 @@ private fun NavidromeHomeArtistCard(
 
 @Composable
 private fun NavidromeHomePlaylistCard(
-    playlist: NavidromePlaylist
+    playlist: NavidromePlaylist,
+    posterWidth: Dp,
+    onClick: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .width(posterWidth)
+            .clickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        NavidromePlaylistArtwork(
+            artworkUrls = playlist.artworkUrls,
+            songCount = playlist.songCount,
+            size = posterWidth,
+            shape = RoundedCornerShape(18.dp)
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = playlist.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                modifier = Modifier.width(posterWidth),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = formatPlaylistSummary(playlist),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Box {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreHoriz,
+                            contentDescription = "Playlist actions",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    NavidromePlaylistManagementMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        onRename = {
+                            onRename()
+                            menuExpanded = false
+                        },
+                        onDelete = {
+                            onDelete()
+                            menuExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavidromePlaylistManagementMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
+) {
+    AppDropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest
+    ) {
+        AppDropdownMenuItem(
+            text = { Text("Rename") },
+            onClick = onRename
+        )
+        AppDropdownMenuItem(
+            text = { Text("Delete") },
+            onClick = onDelete
+        )
+    }
+}
+
+@Composable
+private fun NavidromeHomePlaylistShelfCard(
+    playlist: NavidromePlaylist,
+    cardWidth: Dp,
+    onClick: (() -> Unit)? = null
 ) {
     Card(
-        modifier = Modifier.width(168.dp),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        modifier = Modifier
+            .width(cardWidth)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.QueueMusic,
-                    contentDescription = null
+                NavidromePlaylistArtwork(
+                    artworkUrls = playlist.artworkUrls,
+                    songCount = playlist.songCount,
+                    size = cardWidth - 24.dp,
+                    shape = RoundedCornerShape(20.dp)
                 )
             }
             Text(
                 text = playlist.name,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = playlist.songCount?.let { "$it tracks" } ?: "Playlist",
+                text = formatPlaylistSummary(playlist),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -3773,40 +5034,10 @@ private fun PlaylistShelf(
         } else {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(playlists) { playlist ->
-                    Card(
-                        modifier = Modifier.width(168.dp),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.QueueMusic,
-                                    contentDescription = null
-                                )
-                            }
-                            Text(
-                                text = playlist.name,
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = playlist.songCount?.let { "$it tracks" } ?: "Playlist",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    NavidromeHomePlaylistShelfCard(
+                        playlist = playlist,
+                        cardWidth = 168.dp
+                    )
                 }
             }
         }
@@ -4075,34 +5306,44 @@ private fun ArtistGridCard(
 }
 
 @Composable
-private fun PlaylistRow(playlist: NavidromePlaylist) {
+private fun PlaylistRow(
+    playlist: NavidromePlaylist,
+    onClick: () -> Unit,
+    trailingContent: (@Composable () -> Unit)? = null
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.padding(horizontal = 2.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 2.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.QueueMusic,
-                    contentDescription = null
-                )
-            }
+            NavidromePlaylistArtwork(
+                artworkUrls = playlist.artworkUrls,
+                songCount = playlist.songCount,
+                size = 52.dp,
+                shape = RoundedCornerShape(14.dp)
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = playlist.name,
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = playlist.songCount?.let { "$it tracks" } ?: "Playlist",
+                    text = formatPlaylistSummary(playlist),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (trailingContent != null) {
+                trailingContent()
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -4385,20 +5626,34 @@ private fun GroupedSettingsCard(
 @Composable
 private fun NavidromeDialogActionRow(
     title: String,
+    subtitle: String? = null,
+    leadingContent: (@Composable () -> Unit)? = null,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f)
-        )
+        if (leadingContent != null) {
+            leadingContent()
+            Spacer(modifier = Modifier.width(12.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium
+            )
+            subtitle?.takeIf { it.isNotBlank() }?.let { metadata ->
+                Text(
+                    text = metadata,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -4599,7 +5854,8 @@ private fun CenteredDetailHero(
 private fun AlbumDetailHero(
     detail: NavidromeAlbumDetail,
     onPlayAlbum: () -> Unit,
-    onShuffleAlbum: () -> Unit
+    onShuffleAlbum: () -> Unit,
+    onAddToPlaylist: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -4644,6 +5900,70 @@ private fun AlbumDetailHero(
                 icon = Icons.Outlined.Shuffle,
                 label = "Shuffle",
                 onClick = onShuffleAlbum
+            )
+        }
+        if (onAddToPlaylist != null) {
+            OutlinedButton(
+                onClick = onAddToPlaylist,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QueueMusic,
+                    contentDescription = null
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Add Album to Playlist")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetailHero(
+    detail: NavidromePlaylistDetail,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        NavidromePlaylistArtwork(
+            artworkUrls = detail.playlist.artworkUrls,
+            songCount = detail.playlist.songCount ?: detail.tracks.size,
+            size = 188.dp,
+            shape = RoundedCornerShape(24.dp)
+        )
+        Text(
+            text = detail.playlist.name,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = formatPlaylistSummary(
+                detail.playlist.copy(songCount = detail.playlist.songCount ?: detail.tracks.size)
+            ),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            PillActionButton(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Outlined.PlayArrow,
+                label = "Play",
+                onClick = onPlay
+            )
+            PillActionButton(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Outlined.Shuffle,
+                label = "Shuffle",
+                onClick = onShuffle
             )
         }
     }
@@ -4783,6 +6103,7 @@ private fun NavidromeExpandedPlayerSheet(
     isFavorite: Boolean,
     onToggleFavorite: (NavidromeTrack) -> Boolean,
     immersiveEnabled: Boolean = false,
+    onAddToPlaylist: ((NavidromeTrack) -> Unit)? = null,
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
@@ -5179,6 +6500,21 @@ private fun NavidromeExpandedPlayerSheet(
                                     ).show()
                                 }
                             )
+                            onAddToPlaylist?.let { addToPlaylist ->
+                                AppDropdownMenuItem(
+                                    text = { Text("Add to Playlist") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.QueueMusic,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        isMenuExpanded = false
+                                        addToPlaylist(track)
+                                    }
+                                )
+                            }
                         }
                         onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
                             AppDropdownMenuItem(
@@ -5735,6 +7071,97 @@ private fun formatDuration(totalSeconds: Int): String {
 
 private fun formatDurationMillis(totalMs: Int): String {
     return formatDuration((totalMs.coerceAtLeast(0)) / 1000)
+}
+
+private fun formatPlaylistSummary(playlist: NavidromePlaylist): String {
+    val parts = buildList {
+        playlist.songCount?.let { count ->
+            add(if (count == 1) "1 song" else "$count songs")
+        } ?: add("Playlist")
+        playlist.durationSeconds?.takeIf { it > 0 }?.let { duration ->
+            add(formatDuration(duration))
+        }
+    }
+    return parts.joinToString(" • ")
+}
+
+@Composable
+private fun NavidromePlaylistArtwork(
+    artworkUrls: List<String>,
+    songCount: Int?,
+    size: Dp,
+    shape: Shape = RoundedCornerShape(18.dp)
+) {
+    val totalSongs = (songCount ?: artworkUrls.size).coerceAtLeast(0)
+    val slotCount = when (totalSongs) {
+        0 -> 0
+        1 -> 1
+        else -> 4
+    }
+    val tileGap = if (size >= 160.dp) 4.dp else 2.dp
+    val tileShape = if (size >= 160.dp) RoundedCornerShape(14.dp) else RoundedCornerShape(8.dp)
+    val tileSize = (size - (tileGap * 3)) / 2
+
+    when (slotCount) {
+        0 -> {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .clip(shape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QueueMusic,
+                    contentDescription = null,
+                    modifier = Modifier.size(if (size >= 160.dp) 54.dp else 24.dp)
+                )
+            }
+        }
+
+        1 -> {
+            AlbumArt(
+                url = artworkUrls.firstOrNull(),
+                width = size,
+                height = size,
+                shape = shape,
+                fallbackIcon = Icons.Outlined.MusicNote
+            )
+        }
+
+        else -> {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .clip(shape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(tileGap)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(tileGap)
+                ) {
+                    repeat(2) { rowIndex ->
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(tileGap)
+                        ) {
+                            repeat(2) { columnIndex ->
+                                val slotIndex = (rowIndex * 2) + columnIndex
+                                AlbumArt(
+                                    url = artworkUrls.getOrNull(slotIndex),
+                                    width = tileSize,
+                                    height = tileSize,
+                                    shape = tileShape,
+                                    fallbackIcon = Icons.Outlined.MusicNote
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun formatTrackTechnicalDetails(track: NavidromeTrack): String {

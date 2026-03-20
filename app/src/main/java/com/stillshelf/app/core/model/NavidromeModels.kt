@@ -59,7 +59,13 @@ data class NavidromePlaylist(
     val id: String,
     val name: String,
     val songCount: Int? = null,
-    val durationSeconds: Int? = null
+    val durationSeconds: Int? = null,
+    val artworkUrls: List<String> = emptyList()
+)
+
+data class NavidromePlaylistDetail(
+    val playlist: NavidromePlaylist,
+    val tracks: List<NavidromeTrack>
 )
 
 data class NavidromeRadio(

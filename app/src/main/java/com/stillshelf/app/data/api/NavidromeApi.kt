@@ -68,6 +68,11 @@ data class NavidromePlaylistDto(
     val durationSeconds: Int? = null
 )
 
+data class NavidromePlaylistDetailDto(
+    val playlist: NavidromePlaylistDto,
+    val tracks: List<NavidromeTrackDto>
+)
+
 data class NavidromeRadioDto(
     val id: String,
     val name: String,
@@ -195,6 +200,96 @@ class NavidromeApi @Inject constructor(
                 parsePlaylists(root.optJSONObject("playlists")?.optJSONArray("playlist"))
             }
         }
+
+    suspend fun getPlaylist(
+        auth: NavidromeAuth,
+        playlistId: String
+    ): Result<NavidromePlaylistDetailDto> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/getPlaylist.view",
+                    query = listOf("id" to playlistId)
+                )
+            )
+            val playlistNode = root.optJSONObject("playlist")
+                ?: throw IOException("Playlist response was empty.")
+            NavidromePlaylistDetailDto(
+                playlist = parsePlaylist(playlistNode),
+                tracks = parseTrackArray(
+                    playlistNode.optJSONArray("entry")
+                        ?: playlistNode.optJSONArray("song")
+                )
+            )
+        }
+    }
+
+    suspend fun createPlaylist(
+        auth: NavidromeAuth,
+        name: String
+    ): Result<NavidromePlaylistDto> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/createPlaylist.view",
+                    query = listOf("name" to name.trim())
+                )
+            )
+            root.optJSONObject("playlist")
+                ?.let(::parsePlaylist)
+                ?: NavidromePlaylistDto(
+                    id = "",
+                    name = name.trim().ifBlank { "Playlist" }
+                )
+        }
+    }
+
+    suspend fun updatePlaylist(
+        auth: NavidromeAuth,
+        playlistId: String,
+        name: String,
+        songIndicesToRemove: List<Int> = emptyList(),
+        songIdsToAdd: List<String> = emptyList()
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val query = buildList {
+                add("playlistId" to playlistId)
+                add("name" to name.trim())
+                songIndicesToRemove.forEach { index ->
+                    add("songIndexToRemove" to index.toString())
+                }
+                songIdsToAdd.forEach { trackId ->
+                    add("songIdToAdd" to trackId)
+                }
+            }
+            execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/updatePlaylist.view",
+                    query = query
+                )
+            )
+            Unit
+        }
+    }
+
+    suspend fun deletePlaylist(
+        auth: NavidromeAuth,
+        playlistId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/deletePlaylist.view",
+                    query = listOf("id" to playlistId)
+                )
+            )
+            Unit
+        }
+    }
 
     suspend fun getRadios(auth: NavidromeAuth): Result<List<NavidromeRadioDto>> =
         withContext(Dispatchers.IO) {
@@ -358,6 +453,14 @@ class NavidromeApi @Inject constructor(
         path: String,
         query: Map<String, String> = emptyMap()
     ): Request {
+        return buildRequest(auth, path, query.entries.map { it.toPair() })
+    }
+
+    private fun buildRequest(
+        auth: NavidromeAuth,
+        path: String,
+        query: List<Pair<String, String>>
+    ): Request {
         return Request.Builder()
             .url(buildUrl(auth, path, query))
             .get()
@@ -368,6 +471,14 @@ class NavidromeApi @Inject constructor(
         auth: NavidromeAuth,
         path: String,
         query: Map<String, String> = emptyMap()
+    ): HttpUrl {
+        return buildUrl(auth, path, query.entries.map { it.toPair() })
+    }
+
+    private fun buildUrl(
+        auth: NavidromeAuth,
+        path: String,
+        query: List<Pair<String, String>>
     ): HttpUrl {
         val base = auth.baseUrl.toHttpUrlOrNull()
             ?: throw IOException("Invalid Navidrome URL.")
@@ -507,17 +618,21 @@ class NavidromeApi @Inject constructor(
         )
     }
 
+    private fun parsePlaylist(item: JSONObject): NavidromePlaylistDto {
+        return NavidromePlaylistDto(
+            id = item.optString("id"),
+            name = item.optString("name").ifBlank { "Playlist" },
+            songCount = item.takeIf { it.has("songCount") }?.optInt("songCount")?.takeIf { it >= 0 },
+            durationSeconds = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it >= 0 }
+        )
+    }
+
     private fun parsePlaylists(items: JSONArray?): List<NavidromePlaylistDto> {
         if (items == null) return emptyList()
         val results = mutableListOf<NavidromePlaylistDto>()
         repeat(items.length()) { index ->
             val item = items.optJSONObject(index) ?: return@repeat
-            results += NavidromePlaylistDto(
-                id = item.optString("id"),
-                name = item.optString("name").ifBlank { "Playlist" },
-                songCount = item.takeIf { it.has("songCount") }?.optInt("songCount")?.takeIf { it >= 0 },
-                durationSeconds = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it >= 0 }
-            )
+            results += parsePlaylist(item)
         }
         return results
     }

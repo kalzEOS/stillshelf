@@ -16,6 +16,7 @@ import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeHome
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromePlaylist
+import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
 import com.stillshelf.app.core.model.NavidromeServer
@@ -33,6 +34,7 @@ import com.stillshelf.app.data.api.NavidromeAlbumDetailDto
 import com.stillshelf.app.data.api.NavidromeApi
 import com.stillshelf.app.data.api.NavidromeArtistDetailDto
 import com.stillshelf.app.data.api.NavidromeAuth
+import com.stillshelf.app.data.api.NavidromePlaylistDetailDto
 import com.stillshelf.app.data.api.NavidromeRadioDto
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -40,6 +42,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -73,6 +76,11 @@ enum class NavidromeAlbumSortOption(
         }
     }
 }
+
+data class NavidromePlaylistAddOutcome(
+    val addedCount: Int,
+    val duplicateCount: Int
+)
 
 @Singleton
 class NavidromeRepository @Inject constructor(
@@ -118,6 +126,7 @@ class NavidromeRepository @Inject constructor(
     private val songsCache = mutableMapOf<String, TimedCacheEntry<List<NavidromeTrack>>>()
     private val artistDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromeArtistDetail>>()
     private val albumDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromeAlbumDetail>>()
+    private val playlistDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromePlaylistDetail>>()
     private val searchCache = mutableMapOf<String, TimedCacheEntry<NavidromeSearchResults>>()
     private val mutableActiveConnectionStatus = MutableStateFlow<ActiveServerConnectionStatus?>(null)
     private val mutableEndpointHealth = MutableStateFlow<ActiveEndpointHealth?>(null)
@@ -663,17 +672,38 @@ class NavidromeRepository @Inject constructor(
         val sessionKey = cacheKey(auth, "persisted-home")
         if (!forceRefresh) {
             getFreshCache(homeCache, cacheKey, HOME_CACHE_MAX_AGE_MS)?.let { cached ->
-                return@withAuth AppResult.Success(cached)
+                val hydrated = hydrateHomePlaylists(auth, cached, forceRefreshArtwork = false)
+                if (hydrated != cached) {
+                    putCache(homeCache, cacheKey, hydrated)
+                    sessionPreferences.setCachedNavidromeHome(
+                        sessionKey = sessionKey,
+                        payload = serializeHome(hydrated),
+                        savedAtMs = System.currentTimeMillis()
+                    )
+                }
+                return@withAuth AppResult.Success(hydrated)
             }
             getFreshPersistedHomeSnapshot(sessionKey)?.let { cached ->
-                putCache(homeCache, cacheKey, cached)
-                return@withAuth AppResult.Success(cached)
+                val hydrated = hydrateHomePlaylists(auth, cached, forceRefreshArtwork = false)
+                putCache(homeCache, cacheKey, hydrated)
+                if (hydrated != cached) {
+                    sessionPreferences.setCachedNavidromeHome(
+                        sessionKey = sessionKey,
+                        payload = serializeHome(hydrated),
+                        savedAtMs = System.currentTimeMillis()
+                    )
+                }
+                return@withAuth AppResult.Success(hydrated)
             }
         }
         val staleCache = if (forceRefresh) {
             null
         } else {
-            getAnyCache(homeCache, cacheKey) ?: getAnyPersistedHomeSnapshot(sessionKey)
+            getAnyCache(homeCache, cacheKey)?.let {
+                hydrateHomePlaylists(auth, it, forceRefreshArtwork = false)
+            } ?: getAnyPersistedHomeSnapshot(sessionKey)?.let {
+                hydrateHomePlaylists(auth, it, forceRefreshArtwork = false)
+            }
         }
         coroutineScope {
             val recentAlbums = async { navidromeApi.getAlbumList(auth, type = "newest", size = 18) }
@@ -697,11 +727,16 @@ class NavidromeRepository @Inject constructor(
             val albums = albumResult.getOrThrow()
             val artistItems = artistResult.getOrThrow()
             val playlistItems = playlistResult.getOrThrow()
+            val hydratedPlaylists = hydratePlaylistArtwork(
+                auth = auth,
+                playlists = playlistItems.map { it.toModel() },
+                forceRefreshArtwork = true
+            )
 
             val home = NavidromeHome(
                 recentAlbums = albums.map { it.toModel(auth) },
                 artists = artistItems.map { it.toModel(auth) },
-                playlists = playlistItems.map { it.toModel() },
+                playlists = hydratedPlaylists,
                 radios = emptyList()
             )
             putCache(homeCache, cacheKey, home)
@@ -785,7 +820,11 @@ class NavidromeRepository @Inject constructor(
         val cacheKey = cacheKey(auth, "playlists")
         if (!forceRefresh) {
             getFreshCache(playlistsCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
-                return@withAuth AppResult.Success(cached)
+                val hydrated = hydratePlaylistArtwork(auth, cached, forceRefreshArtwork = false)
+                if (hydrated != cached) {
+                    putCache(playlistsCache, cacheKey, hydrated)
+                }
+                return@withAuth AppResult.Success(hydrated)
             }
         }
         val staleCache = if (forceRefresh) null else getAnyCache(playlistsCache, cacheKey)
@@ -794,9 +833,161 @@ class NavidromeRepository @Inject constructor(
             staleCache?.let { return@withAuth AppResult.Success(it) }
             throw result.exceptionOrNull() ?: IllegalStateException("Unable to load playlists.")
         }
-        val playlists = result.getOrThrow().map { it.toModel() }
+        val playlists = hydratePlaylistArtwork(
+            auth = auth,
+            playlists = result.getOrThrow().map { it.toModel() },
+            forceRefreshArtwork = true
+        )
         putCache(playlistsCache, cacheKey, playlists)
         AppResult.Success(playlists)
+    }
+
+    suspend fun fetchPlaylistDetail(
+        playlistId: String,
+        forceRefresh: Boolean = false
+    ): AppResult<NavidromePlaylistDetail> = withAuth { auth ->
+        val cacheKey = cacheKey(auth, "playlist:$playlistId")
+        if (!forceRefresh) {
+            getFreshCache(playlistDetailCache, cacheKey, DETAIL_CACHE_MAX_AGE_MS)?.let { cached ->
+                return@withAuth AppResult.Success(cached)
+            }
+        }
+        val staleCache = if (forceRefresh) null else getAnyCache(playlistDetailCache, cacheKey)
+        val result = navidromeApi.getPlaylist(auth, playlistId)
+        if (result.isFailure) {
+            staleCache?.let { return@withAuth AppResult.Success(it) }
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to load playlist.")
+        }
+        val detail = result.getOrThrow().toModel(auth)
+        putCache(playlistDetailCache, cacheKey, detail)
+        updatePlaylistSummaryCaches(auth, detail)
+        AppResult.Success(detail)
+    }
+
+    suspend fun createPlaylist(name: String): AppResult<NavidromePlaylist> = withAuth { auth ->
+        val normalizedName = name.trim()
+        if (normalizedName.isBlank()) {
+            return@withAuth AppResult.Error("Playlist name is required.")
+        }
+        val previousPlaylistIds = navidromeApi.getPlaylists(auth)
+            .getOrNull()
+            ?.mapNotNullTo(linkedSetOf()) { playlist ->
+                playlist.id.trim().takeIf { it.isNotBlank() }
+            }
+        val result = navidromeApi.createPlaylist(auth, normalizedName)
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to create playlist.")
+        }
+        val created = result.getOrThrow().toModel()
+        val resolved = if (created.id.isNotBlank()) {
+            created
+        } else {
+            resolveCreatedPlaylist(
+                auth = auth,
+                playlistName = normalizedName,
+                previousPlaylistIds = previousPlaylistIds
+            ) ?: return@withAuth AppResult.Error(
+                "Playlist was created, but the app could not confirm which playlist was new. Please refresh and try again."
+            )
+        }
+        invalidatePlaylistCaches(auth)
+        AppResult.Success(resolved)
+    }
+
+    suspend fun renamePlaylist(playlistId: String, name: String): AppResult<Unit> = withAuth { auth ->
+        val normalizedId = playlistId.trim()
+        val normalizedName = name.trim()
+        if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")
+        if (normalizedName.isBlank()) return@withAuth AppResult.Error("Playlist name is required.")
+        val result = navidromeApi.updatePlaylist(
+            auth = auth,
+            playlistId = normalizedId,
+            name = normalizedName
+        )
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to rename playlist.")
+        }
+        invalidatePlaylistCaches(auth, normalizedId)
+        AppResult.Success(Unit)
+    }
+
+    suspend fun addTracksToPlaylist(
+        playlistId: String,
+        trackIds: List<String>
+    ): AppResult<NavidromePlaylistAddOutcome> = withAuth { auth ->
+        val normalizedId = playlistId.trim()
+        val normalizedTrackIds = trackIds.map(String::trim).filter { it.isNotBlank() }.distinct()
+        if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")
+        if (normalizedTrackIds.isEmpty()) return@withAuth AppResult.Error("No songs selected.")
+        val detail = when (val result = fetchPlaylistDetail(normalizedId, forceRefresh = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return@withAuth result
+        }
+        val existingTrackIds = detail.tracks.map(NavidromeTrack::id).toHashSet()
+        val tracksToAdd = normalizedTrackIds.filterNot(existingTrackIds::contains)
+        val duplicateCount = normalizedTrackIds.size - tracksToAdd.size
+        if (tracksToAdd.isEmpty()) {
+            return@withAuth AppResult.Success(
+                NavidromePlaylistAddOutcome(
+                    addedCount = 0,
+                    duplicateCount = duplicateCount
+                )
+            )
+        }
+        val result = navidromeApi.updatePlaylist(
+            auth = auth,
+            playlistId = normalizedId,
+            name = detail.playlist.name,
+            songIdsToAdd = tracksToAdd
+        )
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to add songs to playlist.")
+        }
+        invalidatePlaylistCaches(auth, normalizedId)
+        AppResult.Success(
+            NavidromePlaylistAddOutcome(
+                addedCount = tracksToAdd.size,
+                duplicateCount = duplicateCount
+            )
+        )
+    }
+
+    suspend fun removeTrackFromPlaylist(
+        playlistId: String,
+        index: Int
+    ): AppResult<Unit> = withAuth { auth ->
+        val normalizedId = playlistId.trim()
+        if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")
+        if (index < 0) return@withAuth AppResult.Error("Invalid playlist item.")
+        val detail = when (val result = fetchPlaylistDetail(normalizedId, forceRefresh = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return@withAuth result
+        }
+        if (index !in detail.tracks.indices) {
+            return@withAuth AppResult.Error("Invalid playlist item.")
+        }
+        val result = navidromeApi.updatePlaylist(
+            auth = auth,
+            playlistId = normalizedId,
+            name = detail.playlist.name,
+            songIndicesToRemove = listOf(index)
+        )
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to remove song from playlist.")
+        }
+        invalidatePlaylistCaches(auth, normalizedId)
+        AppResult.Success(Unit)
+    }
+
+    suspend fun deletePlaylist(playlistId: String): AppResult<Unit> = withAuth { auth ->
+        val normalizedId = playlistId.trim()
+        if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")
+        val result = navidromeApi.deletePlaylist(auth, normalizedId)
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to delete playlist.")
+        }
+        invalidatePlaylistCaches(auth, normalizedId)
+        AppResult.Success(Unit)
     }
 
     suspend fun fetchRadios(forceRefresh: Boolean = false): AppResult<List<NavidromeRadio>> = withAuth { auth ->
@@ -963,8 +1154,12 @@ class NavidromeRepository @Inject constructor(
     }
 
     private fun cacheKey(auth: NavidromeAuth, suffix: String): String {
+        return "${cachePrefix(auth)}$suffix"
+    }
+
+    private fun cachePrefix(auth: NavidromeAuth): String {
         val libraryId = auth.musicFolderId?.trim()?.takeIf { it.isNotBlank() } ?: "_all"
-        return "${auth.serverId.lowercase()}|${libraryId.lowercase()}|$suffix"
+        return "${auth.serverId.lowercase()}|${libraryId.lowercase()}|"
     }
 
     private suspend fun ensureMigratedLegacySession() {
@@ -1222,8 +1417,75 @@ class NavidromeRepository @Inject constructor(
             songsCache.clear()
             artistDetailCache.clear()
             albumDetailCache.clear()
+            playlistDetailCache.clear()
             searchCache.clear()
         }
+    }
+
+    private suspend fun invalidatePlaylistCaches(
+        auth: NavidromeAuth,
+        playlistId: String? = null
+    ) {
+        val prefix = cachePrefix(auth)
+        cacheMutex.withLock {
+            homeCache.remove(cacheKey(auth, "home"))
+            playlistsCache.remove(cacheKey(auth, "playlists"))
+            if (playlistId != null) {
+                playlistDetailCache.remove(cacheKey(auth, "playlist:$playlistId"))
+            }
+            playlistDetailCache.keys.removeAll { key ->
+                key.startsWith(prefix) && key.substringAfterLast('|').startsWith("playlist:")
+            }
+        }
+        sessionPreferences.clearCachedNavidromeHome()
+    }
+
+    private suspend fun resolvePlaylistByName(
+        auth: NavidromeAuth,
+        playlistName: String
+    ): NavidromePlaylist? {
+        val result = navidromeApi.getPlaylists(auth)
+        if (result.isFailure) return null
+        return result.getOrThrow()
+            .map { it.toModel() }
+            .lastOrNull { it.name.equals(playlistName, ignoreCase = true) }
+    }
+
+    private suspend fun resolveCreatedPlaylist(
+        auth: NavidromeAuth,
+        playlistName: String,
+        previousPlaylistIds: Set<String>?
+    ): NavidromePlaylist? {
+        val result = navidromeApi.getPlaylists(auth)
+        if (result.isFailure) return null
+        val playlists = result.getOrThrow().map { it.toModel() }
+        if (!previousPlaylistIds.isNullOrEmpty()) {
+            val newPlaylists = playlists.filter { playlist ->
+                playlist.id.isNotBlank() && playlist.id !in previousPlaylistIds
+            }
+            newPlaylists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }?.let { return it }
+            if (newPlaylists.size == 1) return newPlaylists.single()
+        }
+        return playlists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }
+    }
+
+    private suspend fun fetchPlaylistName(
+        auth: NavidromeAuth,
+        playlistId: String
+    ): String? {
+        getAnyCache(playlistDetailCache, cacheKey(auth, "playlist:$playlistId"))
+            ?.playlist
+            ?.name
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        getAnyCache(playlistsCache, cacheKey(auth, "playlists"))
+            ?.firstOrNull { it.id == playlistId }
+            ?.name
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+        val result = navidromeApi.getPlaylist(auth, playlistId)
+        if (result.isFailure) return null
+        return result.getOrThrow().playlist.name
     }
 
     private suspend fun getFreshPersistedHomeSnapshot(sessionKey: String): NavidromeHome? {
@@ -1278,6 +1540,9 @@ class NavidromeRepository @Inject constructor(
                             .put("name", playlist.name)
                             .put("songCount", playlist.songCount)
                             .put("durationSeconds", playlist.durationSeconds)
+                            .put("artworkUrls", JSONArray().apply {
+                                playlist.artworkUrls.forEach { url -> put(url) }
+                            })
                     )
                 }
             })
@@ -1347,6 +1612,15 @@ class NavidromeRepository @Inject constructor(
                             },
                             durationSeconds = item.optInt("durationSeconds").takeIf {
                                 item.has("durationSeconds") && !item.isNull("durationSeconds")
+                            },
+                            artworkUrls = buildList {
+                                val artworkArray = item.optJSONArray("artworkUrls") ?: JSONArray()
+                                for (artworkIndex in 0 until artworkArray.length()) {
+                                    artworkArray.optString(artworkIndex)
+                                        .trim()
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let(::add)
+                                }
                             }
                         )
                     )
@@ -1457,5 +1731,106 @@ class NavidromeRepository @Inject constructor(
             album = album.toModel(auth),
             tracks = tracks.map { it.toModel(auth) }
         )
+    }
+
+    private fun NavidromePlaylistDetailDto.toModel(auth: NavidromeAuth): NavidromePlaylistDetail {
+        val tracksModel = tracks.map { it.toModel(auth) }
+        return NavidromePlaylistDetail(
+            playlist = playlist.toModel().copy(
+                artworkUrls = playlistArtworkUrls(tracksModel)
+            ),
+            tracks = tracksModel
+        )
+    }
+
+    private suspend fun hydratePlaylistArtwork(
+        auth: NavidromeAuth,
+        playlists: List<NavidromePlaylist>,
+        forceRefreshArtwork: Boolean
+    ): List<NavidromePlaylist> = coroutineScope {
+        playlists.map { playlist ->
+            async {
+                if (!playlist.needsArtworkHydration()) {
+                    playlist
+                } else {
+                    playlist.copy(
+                        artworkUrls = resolvePlaylistArtworkUrls(
+                            auth = auth,
+                            playlistId = playlist.id,
+                            forceRefresh = forceRefreshArtwork
+                        )
+                    )
+                }
+            }
+        }.awaitAll()
+    }
+
+    private suspend fun resolvePlaylistArtworkUrls(
+        auth: NavidromeAuth,
+        playlistId: String,
+        forceRefresh: Boolean
+    ): List<String> {
+        val cacheKey = cacheKey(auth, "playlist:$playlistId")
+        val cachedDetail = when {
+            forceRefresh -> null
+            else -> getFreshCache(playlistDetailCache, cacheKey, DETAIL_CACHE_MAX_AGE_MS)
+                ?: getAnyCache(playlistDetailCache, cacheKey)
+        }
+        if (cachedDetail != null) {
+            return playlistArtworkUrls(cachedDetail.tracks)
+        }
+        val detailResult = navidromeApi.getPlaylist(auth, playlistId)
+        if (detailResult.isFailure) return emptyList()
+        val detail = detailResult.getOrThrow().toModel(auth)
+        putCache(playlistDetailCache, cacheKey, detail)
+        return playlistArtworkUrls(detail.tracks)
+    }
+
+    private fun updatePlaylistSummaryCaches(
+        auth: NavidromeAuth,
+        detail: NavidromePlaylistDetail
+    ) {
+        val cacheKey = cacheKey(auth, "playlists")
+        val artworkUrls = playlistArtworkUrls(detail.tracks)
+        val current = playlistsCache[cacheKey] ?: return
+        val updatedPlaylists = current.value.map { playlist ->
+            if (playlist.id == detail.playlist.id) {
+                playlist.copy(
+                    songCount = detail.playlist.songCount ?: detail.tracks.size,
+                    durationSeconds = detail.playlist.durationSeconds,
+                    artworkUrls = artworkUrls
+                )
+            } else {
+                playlist
+            }
+        }
+        playlistsCache[cacheKey] = current.copy(value = updatedPlaylists)
+    }
+
+    private fun playlistArtworkUrls(tracks: List<NavidromeTrack>): List<String> {
+        return tracks.take(4).mapNotNull { track ->
+            track.coverUrl?.trim()?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    private fun NavidromePlaylist.needsArtworkHydration(): Boolean {
+        return (songCount ?: 0) > 0 && artworkUrls.isEmpty()
+    }
+
+    private suspend fun hydrateHomePlaylists(
+        auth: NavidromeAuth,
+        home: NavidromeHome,
+        forceRefreshArtwork: Boolean
+    ): NavidromeHome {
+        val hydratedPlaylists = hydratePlaylistArtwork(
+            auth = auth,
+            playlists = home.playlists,
+            forceRefreshArtwork = forceRefreshArtwork
+        )
+        return if (hydratedPlaylists == home.playlists) {
+            home
+        } else {
+            home.copy(playlists = hydratedPlaylists)
+        }
     }
 }

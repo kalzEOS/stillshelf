@@ -10,6 +10,7 @@ import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromePlaylist
+import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
 import com.stillshelf.app.core.model.NavidromeServer
@@ -257,7 +258,9 @@ data class NavidromeHomeUiState(
     val playlists: List<NavidromePlaylist> = emptyList(),
     val radios: List<NavidromeRadio> = emptyList(),
     val isLoading: Boolean = true,
-    val errorMessage: String? = null
+    val isSubmitting: Boolean = false,
+    val errorMessage: String? = null,
+    val actionMessage: String? = null
 )
 
 @HiltViewModel
@@ -298,6 +301,56 @@ class NavidromeHomeViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun renamePlaylist(playlistId: String, name: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.renamePlaylist(playlistId, name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Playlist updated"
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun deletePlaylist(playlistId: String, playlistName: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.deletePlaylist(playlistId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Deleted \"$playlistName\""
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun clearMessages() {
+        mutableUiState.update { it.copy(actionMessage = null, errorMessage = null) }
     }
 }
 
@@ -516,6 +569,31 @@ data class NavidromeBrowseUiState(
     val errorMessage: String? = null
 )
 
+enum class NavidromePlaylistSortOption(
+    val label: String
+) {
+    NAME("Name"),
+    DURATION("Duration")
+}
+
+data class NavidromePlaylistsUiState(
+    val playlists: List<NavidromePlaylist> = emptyList(),
+    val sortOption: NavidromePlaylistSortOption = NavidromePlaylistSortOption.NAME,
+    val searchQuery: String = "",
+    val isLoading: Boolean = true,
+    val isSubmitting: Boolean = false,
+    val errorMessage: String? = null,
+    val actionMessage: String? = null
+)
+
+data class NavidromePlaylistPickerUiState(
+    val playlists: List<NavidromePlaylist> = emptyList(),
+    val isLoading: Boolean = false,
+    val isSubmitting: Boolean = false,
+    val errorMessage: String? = null,
+    val actionMessage: String? = null
+)
+
 @HiltViewModel
 class NavidromeBrowseViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository
@@ -598,6 +676,278 @@ class NavidromeBrowseViewModel @Inject constructor(
     }
 }
 
+@HiltViewModel
+class NavidromePlaylistsViewModel @Inject constructor(
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(NavidromePlaylistsUiState())
+    val uiState: StateFlow<NavidromePlaylistsUiState> = mutableUiState.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            sessionPreferences.state.collect { state ->
+                mutableUiState.update {
+                    it.copy(
+                        sortOption = state.navidromePlaylistSort
+                            ?.let { raw -> enumValueOrNull<NavidromePlaylistSortOption>(raw) }
+                            ?: NavidromePlaylistSortOption.NAME
+                    )
+                }
+            }
+        }
+        refresh(forceRefresh = false)
+    }
+
+    fun refresh(forceRefresh: Boolean = true) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+            when (val result = navidromeRepository.fetchPlaylists(forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            playlists = result.value,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isLoading = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun setSortOption(value: NavidromePlaylistSortOption) {
+        if (mutableUiState.value.sortOption == value) return
+        mutableUiState.update { it.copy(sortOption = value) }
+        viewModelScope.launch {
+            sessionPreferences.setNavidromePlaylistSort(value.name)
+        }
+    }
+
+    fun onSearchQueryChange(value: String) {
+        mutableUiState.update { it.copy(searchQuery = value) }
+    }
+
+    fun createPlaylist(name: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.createPlaylist(name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Created \"${result.value.name}\""
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun renamePlaylist(playlistId: String, name: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.renamePlaylist(playlistId, name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Playlist updated"
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun deletePlaylist(playlistId: String, playlistName: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.deletePlaylist(playlistId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Deleted \"$playlistName\""
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun clearMessages() {
+        mutableUiState.update { it.copy(actionMessage = null, errorMessage = null) }
+    }
+}
+
+@HiltViewModel
+class NavidromePlaylistPickerViewModel @Inject constructor(
+    private val navidromeRepository: NavidromeRepository
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(NavidromePlaylistPickerUiState())
+    val uiState: StateFlow<NavidromePlaylistPickerUiState> = mutableUiState.asStateFlow()
+
+    fun loadPlaylists(forceRefresh: Boolean = false, showLoader: Boolean = true) {
+        viewModelScope.launch {
+            mutableUiState.update {
+                it.copy(
+                    isLoading = showLoader,
+                    errorMessage = null
+                )
+            }
+            when (val result = navidromeRepository.fetchPlaylists(forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            playlists = result.value,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun addTracksToPlaylist(trackIds: List<String>, playlistId: String) {
+        val normalizedTrackIds = trackIds
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+        if (normalizedTrackIds.isEmpty() || playlistId.isBlank()) return
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.addTracksToPlaylist(playlistId, normalizedTrackIds)) {
+                is AppResult.Success -> {
+                    val playlistName = uiState.value.playlists
+                        .firstOrNull { it.id == playlistId }
+                        ?.name
+                        ?: "playlist"
+                    val actionMessage = if (result.value.addedCount == 0) {
+                        if (result.value.duplicateCount == 1) {
+                            "This song is already in \"$playlistName\""
+                        } else {
+                            "All selected songs are already in \"$playlistName\""
+                        }
+                    } else if (result.value.duplicateCount > 0) {
+                        "Added ${result.value.addedCount} songs to \"$playlistName\". ${result.value.duplicateCount} already there"
+                    } else if (result.value.addedCount == 1) {
+                        "Added to \"$playlistName\""
+                    } else {
+                        "Added ${result.value.addedCount} songs to \"$playlistName\""
+                    }
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = actionMessage
+                        )
+                    }
+                    loadPlaylists(forceRefresh = true, showLoader = false)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun addTrackToPlaylist(trackId: String, playlistId: String) {
+        addTracksToPlaylist(trackIds = listOf(trackId), playlistId = playlistId)
+    }
+
+    fun createPlaylistAndAddTracks(trackIds: List<String>, name: String) {
+        val normalizedTrackIds = trackIds
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+        if (normalizedTrackIds.isEmpty()) return
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val createResult = navidromeRepository.createPlaylist(name)) {
+                is AppResult.Success -> {
+                    val created = createResult.value
+                    when (val addResult = navidromeRepository.addTracksToPlaylist(created.id, normalizedTrackIds)) {
+                        is AppResult.Success -> {
+                            val actionMessage = if (addResult.value.addedCount == 1) {
+                                "Created \"${created.name}\" and added song"
+                            } else {
+                                "Created \"${created.name}\" and added ${addResult.value.addedCount} songs"
+                            }
+                            mutableUiState.update {
+                                it.copy(
+                                    isSubmitting = false,
+                                    actionMessage = actionMessage
+                                )
+                            }
+                            loadPlaylists(forceRefresh = true, showLoader = false)
+                        }
+
+                        is AppResult.Error -> {
+                            mutableUiState.update {
+                                it.copy(isSubmitting = false, errorMessage = addResult.message)
+                            }
+                        }
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = createResult.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun createPlaylistAndAddTrack(trackId: String, name: String) {
+        createPlaylistAndAddTracks(trackIds = listOf(trackId), name = name)
+    }
+
+    fun clearMessages() {
+        mutableUiState.update { it.copy(actionMessage = null, errorMessage = null) }
+    }
+}
+
 private inline fun <reified T : Enum<T>> enumValueOrNull(raw: String): T? {
     return enumValues<T>().firstOrNull { it.name.equals(raw, ignoreCase = true) }
 }
@@ -609,6 +959,7 @@ data class NavidromeSearchUiState(
         albums = emptyList(),
         tracks = emptyList()
     ),
+    val recentSearchTerms: List<String> = emptyList(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null
 )
@@ -634,21 +985,91 @@ data class NavidromeFavoriteSongsUiState(
 
 @HiltViewModel
 class NavidromeSearchViewModel @Inject constructor(
-    private val navidromeRepository: NavidromeRepository
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(NavidromeSearchUiState())
     val uiState: StateFlow<NavidromeSearchUiState> = mutableUiState.asStateFlow()
+    private var searchJob: kotlinx.coroutines.Job? = null
+    private var searchRequestToken: Long = 0L
+
+    init {
+        viewModelScope.launch {
+            sessionPreferences.state
+                .map { it.navidromeRecentSearchTerms }
+                .distinctUntilChanged()
+                .collect { recentSearchTerms ->
+                    mutableUiState.update { it.copy(recentSearchTerms = recentSearchTerms) }
+                }
+        }
+    }
 
     fun onQueryChange(value: String) {
-        mutableUiState.update { it.copy(query = value) }
+        mutableUiState.update { it.copy(query = value, errorMessage = null) }
+        if (value.isBlank()) {
+            clearQuery()
+            return
+        }
+        search(value)
     }
 
     fun submitSearch() {
+        commitCurrentQuery()
         val query = mutableUiState.value.query.trim()
+        if (query.isBlank()) return
+        search(query, debounceMs = 0L)
+    }
+
+    fun clearQuery() {
+        searchJob?.cancel()
+        mutableUiState.update {
+            it.copy(
+                query = "",
+                results = NavidromeSearchResults(
+                    artists = emptyList(),
+                    albums = emptyList(),
+                    tracks = emptyList()
+                ),
+                isLoading = false,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun useRecentSearchTerm(term: String) {
+        val normalizedTerm = term.trim()
+        if (normalizedTerm.isBlank()) return
+        mutableUiState.update { it.copy(query = normalizedTerm, errorMessage = null) }
+        search(normalizedTerm, debounceMs = 0L)
+    }
+
+    fun commitCurrentQuery() {
+        val query = uiState.value.query.trim()
+        if (query.isBlank()) return
         viewModelScope.launch {
+            sessionPreferences.addNavidromeRecentSearchTerm(query)
+        }
+    }
+
+    fun clearRecentSearchTerms() {
+        viewModelScope.launch {
+            sessionPreferences.clearNavidromeRecentSearchTerms()
+        }
+    }
+
+    private fun search(query: String, debounceMs: Long = 220L) {
+        searchJob?.cancel()
+        val requestToken = nextSearchRequestToken()
+        val requestedQuery = query.trim()
+        if (requestedQuery.isBlank()) return
+        searchJob = viewModelScope.launch {
+            if (debounceMs > 0) kotlinx.coroutines.delay(debounceMs)
+            if (isStaleSearchRequest(requestToken, requestedQuery)) return@launch
+
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
-            when (val result = navidromeRepository.search(query)) {
+            when (val result = navidromeRepository.search(requestedQuery)) {
                 is AppResult.Success -> {
+                    if (isStaleSearchRequest(requestToken, requestedQuery)) return@launch
                     mutableUiState.update {
                         it.copy(
                             results = result.value,
@@ -659,8 +1080,14 @@ class NavidromeSearchViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    if (isStaleSearchRequest(requestToken, requestedQuery)) return@launch
                     mutableUiState.update {
                         it.copy(
+                            results = NavidromeSearchResults(
+                                artists = emptyList(),
+                                albums = emptyList(),
+                                tracks = emptyList()
+                            ),
                             isLoading = false,
                             errorMessage = result.message
                         )
@@ -668,6 +1095,17 @@ class NavidromeSearchViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun nextSearchRequestToken(): Long {
+        searchRequestToken += 1L
+        return searchRequestToken
+    }
+
+    private fun isStaleSearchRequest(requestToken: Long, expectedQuery: String? = null): Boolean {
+        if (requestToken != searchRequestToken) return true
+        val currentQuery = uiState.value.query.trim()
+        return expectedQuery != null && currentQuery != expectedQuery
     }
 }
 
@@ -1106,6 +1544,14 @@ class NavidromePlayerViewModel @Inject constructor(
         playerController.playTracks(listOf(track), startIndex = 0)
     }
 
+    fun playTracksNext(tracks: List<NavidromeTrack>) {
+        playerController.playTracksNext(tracks)
+    }
+
+    fun addTracksToQueue(tracks: List<NavidromeTrack>) {
+        playerController.appendTracksToQueue(tracks)
+    }
+
     fun playRadio(radio: NavidromeRadio) {
         playerController.playTracks(listOf(radio.toTrack()), startIndex = 0)
     }
@@ -1272,6 +1718,127 @@ class NavidromeAlbumDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+}
+
+data class NavidromePlaylistDetailUiState(
+    val detail: NavidromePlaylistDetail? = null,
+    val isLoading: Boolean = true,
+    val isSubmitting: Boolean = false,
+    val errorMessage: String? = null,
+    val actionMessage: String? = null,
+    val deleted: Boolean = false
+)
+
+@HiltViewModel
+class NavidromePlaylistDetailViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val navidromeRepository: NavidromeRepository
+) : ViewModel() {
+    private val playlistId: String =
+        savedStateHandle.get<String>(NavidromeRoute.PLAYLIST_ID_ARG).orEmpty()
+    private val mutableUiState = MutableStateFlow(NavidromePlaylistDetailUiState())
+    val uiState: StateFlow<NavidromePlaylistDetailUiState> = mutableUiState.asStateFlow()
+
+    init {
+        refresh(forceRefresh = false)
+    }
+
+    fun refresh(forceRefresh: Boolean = true) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+            when (val result = navidromeRepository.fetchPlaylistDetail(playlistId, forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            detail = result.value,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isLoading = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun renamePlaylist(name: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.renamePlaylist(playlistId, name)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Playlist updated"
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeTrack(index: Int, title: String) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.removeTrackFromPlaylist(playlistId, index)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Removed \"$title\""
+                        )
+                    }
+                    refresh(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun deletePlaylist() {
+        val playlistName = uiState.value.detail?.playlist?.name ?: "playlist"
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isSubmitting = true, errorMessage = null) }
+            when (val result = navidromeRepository.deletePlaylist(playlistId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSubmitting = false,
+                            actionMessage = "Deleted \"$playlistName\"",
+                            deleted = true
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun clearMessages() {
+        mutableUiState.update { it.copy(actionMessage = null, errorMessage = null) }
     }
 }
 

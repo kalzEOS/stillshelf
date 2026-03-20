@@ -1,9 +1,14 @@
 package com.stillshelf.app.ui.screens.navidrome
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -33,12 +38,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -50,11 +57,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.draw.blur
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Album
@@ -82,6 +91,8 @@ import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material3.Button
@@ -95,6 +106,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -102,6 +114,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -113,10 +126,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
@@ -130,12 +145,17 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
@@ -146,6 +166,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import coil.compose.AsyncImage
 import coil.imageLoader
@@ -154,6 +175,7 @@ import com.stillshelf.app.core.model.NavidromeAlbum
 import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
+import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlayerState
@@ -164,6 +186,7 @@ import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.navigation.NavidromeRoute
@@ -174,6 +197,7 @@ import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import kotlin.math.min
 import kotlin.math.roundToInt
+import java.net.URI
 import java.util.Locale
 import androidx.compose.material3.rememberModalBottomSheetState
 import kotlinx.coroutines.Dispatchers
@@ -207,56 +231,154 @@ private val NavidromeOverlayBottomContentPadding = 120.dp
 @Composable
 fun NavidromeLoginRoute(
     onSwitchMode: () -> Unit,
+    onLoginSuccess: () -> Unit,
     viewModel: NavidromeLoginViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
+    var showInsecureHttpWarning by remember { mutableStateOf(false) }
+    val trimmedServerName = uiState.serverName.trim()
+    val trimmedBaseUrl = uiState.baseUrl.trim()
+
+    LaunchedEffect(uiState.loginSucceeded) {
+        if (uiState.loginSucceeded) {
+            onLoginSuccess()
+            viewModel.clearLoginSucceeded()
+        }
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 22.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                ProfileGlyph()
-                EditButton(
-                    label = "Modes",
-                    onClick = onSwitchMode
-                )
-            }
-            Text(
-                text = "Connect Navidrome",
-                style = MaterialTheme.typography.displaySmall
-            )
-            Card(
-                shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
+                if (!uiState.showCredentialsStep) {
+                    Text(
+                        text = "Add Navidrome Server",
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+
+                    OutlinedTextField(
+                        value = uiState.serverName,
+                        onValueChange = viewModel::onServerNameChange,
+                        label = { Text("Server Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        isError = uiState.serverNameError != null,
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            capitalization = KeyboardCapitalization.Words
+                        )
+                    )
+                    uiState.serverNameError?.let { error ->
+                        Text(
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
                     OutlinedTextField(
                         value = uiState.baseUrl,
                         onValueChange = viewModel::onBaseUrlChange,
-                        label = { Text("Server URL") },
+                        label = { Text("Base URL") },
+                        modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            capitalization = KeyboardCapitalization.None,
+                            keyboardType = KeyboardType.Uri
+                        )
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = viewModel::onTestConnectionClick,
+                            enabled = uiState.baseUrl.isNotBlank() && !uiState.isTestingConnection,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (uiState.isTestingConnection) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .padding(vertical = 1.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Test Connection")
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                if (isHttpUrl(trimmedBaseUrl)) {
+                                    showInsecureHttpWarning = true
+                                } else {
+                                    viewModel.continueToCredentials()
+                                }
+                            },
+                            enabled = uiState.canContinue,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Continue")
+                        }
+                    }
+
+                    uiState.connectionMessage?.let { message ->
+                        Text(
+                            text = message,
+                            color = if (uiState.connectionSuccess == true) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+
+                    Button(
+                        onClick = onSwitchMode,
                         modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Back")
+                    }
+                } else {
+                    Text(
+                        text = "Sign In",
+                        style = MaterialTheme.typography.headlineMedium
+                    )
+                    Text(
+                        text = trimmedServerName.ifBlank { "Navidrome" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = trimmedBaseUrl,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedTextField(
                         value = uiState.username,
                         onValueChange = viewModel::onUsernameChange,
                         label = { Text("Username") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            capitalization = KeyboardCapitalization.None,
+                            keyboardType = KeyboardType.Ascii
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -264,6 +386,33 @@ fun NavidromeLoginRoute(
                         onValueChange = viewModel::onPasswordChange,
                         label = { Text("Password") },
                         singleLine = true,
+                        visualTransformation = if (passwordVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            autoCorrectEnabled = false,
+                            capitalization = KeyboardCapitalization.None,
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done
+                        ),
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) {
+                                        Icons.Outlined.VisibilityOff
+                                    } else {
+                                        Icons.Outlined.Visibility
+                                    },
+                                    contentDescription = if (passwordVisible) {
+                                        "Hide password"
+                                    } else {
+                                        "Show password"
+                                    }
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Button(
@@ -277,7 +426,7 @@ fun NavidromeLoginRoute(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("Connect")
+                            Text("Sign In")
                         }
                     }
                     uiState.errorMessage?.let { message ->
@@ -287,8 +436,42 @@ fun NavidromeLoginRoute(
                             color = MaterialTheme.colorScheme.error
                         )
                     }
+                    Button(
+                        onClick = viewModel::backToServerStep,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Back")
+                    }
                 }
             }
+        }
+
+        if (showInsecureHttpWarning) {
+            AlertDialog(
+                onDismissRequest = { showInsecureHttpWarning = false },
+                title = { Text("Use insecure HTTP?") },
+                text = {
+                    Text(
+                        "This server uses an unencrypted connection. " +
+                            "Your username, password, and playback data could be exposed on the network."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showInsecureHttpWarning = false
+                            viewModel.continueToCredentials()
+                        }
+                    ) {
+                        Text("Use HTTP")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showInsecureHttpWarning = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }
@@ -301,10 +484,16 @@ fun NavidromeAppRoute(
     val navController = rememberNavController()
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = currentBackStackEntry?.destination?.route
+    val appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val playerViewModel: NavidromePlayerViewModel = hiltViewModel()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
     val showMiniPlayer = playerState.currentTrack != null
+    val showBottomPlayerShell = showMiniPlayer &&
+        currentRoute != NavidromeRoute.SETTINGS &&
+        currentRoute != NavidromeRoute.SERVERS &&
+        currentRoute != NavidromeRoute.LOGIN
     val playerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showPlayerSheet by rememberSaveable { mutableStateOf(false) }
     val view = LocalView.current
@@ -325,6 +514,7 @@ fun NavidromeAppRoute(
         ModalBottomSheet(
             onDismissRequest = { showPlayerSheet = false },
             sheetState = playerSheetState,
+            dragHandle = null,
             containerColor = MaterialTheme.colorScheme.background
         ) {
             NavidromeExpandedPlayerSheet(
@@ -339,6 +529,7 @@ fun NavidromeAppRoute(
                 onSelectAudioOutput = playerViewModel::selectAudioOutputDevice,
                 isFavorite = playerState.currentTrack?.id in favoriteTrackIds,
                 onToggleFavorite = playerViewModel::toggleFavoriteTrack,
+                immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
                 onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
                 onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
             )
@@ -394,6 +585,7 @@ fun NavidromeAppRoute(
                     onOpenSearch = { navController.navigate(NavidromeRoute.SEARCH) },
                     onOpenSettings = { navController.navigate(NavidromeRoute.SETTINGS) },
                     onOpenCustomize = { navController.navigate(NavidromeRoute.CUSTOMIZE) },
+                    onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) },
                     onSwitchMode = onSwitchMode,
                     playerState = playerState,
                     onPlayPause = playerViewModel::togglePlayPause,
@@ -448,7 +640,23 @@ fun NavidromeAppRoute(
                 NavidromeSettingsRoute(
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction,
-                    onSwitchMode = onSwitchMode
+                    onSwitchMode = onSwitchMode,
+                    onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) }
+                )
+            }
+            composable(NavidromeRoute.SERVERS) {
+                NavidromeServersManagementRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction,
+                    onAddServer = { navController.navigate(NavidromeRoute.LOGIN) }
+                )
+            }
+            composable(NavidromeRoute.LOGIN) {
+                NavidromeLoginRoute(
+                    onSwitchMode = { navController.popBackStack() },
+                    onLoginSuccess = {
+                        navController.popBackStack()
+                    }
                 )
             }
             composable(NavidromeRoute.CUSTOMIZE) {
@@ -507,7 +715,7 @@ fun NavidromeAppRoute(
             )
         }
         AnimatedVisibility(
-            visible = showMiniPlayer,
+            visible = showBottomPlayerShell,
             modifier = Modifier.align(Alignment.BottomCenter),
             enter = slideInVertically(
                 initialOffsetY = { fullHeight -> fullHeight },
@@ -587,6 +795,7 @@ private fun NavidromeHomeRoute(
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
+    onOpenServers: () -> Unit,
     onSwitchMode: () -> Unit,
     playerState: NavidromePlayerState,
     onPlayPause: () -> Unit,
@@ -601,14 +810,24 @@ private fun NavidromeHomeRoute(
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(settingsUiState.activeServerId, settingsUiState.activeLibraryId) {
+        if (settingsUiState.activeServerId != null) {
+            viewModel.refresh(forceRefresh = false)
+        }
+    }
     NavidromeHomeScreen(
         uiState = uiState,
         customizeUiState = customizeUiState,
-        libraryTitle = settingsUiState.session?.username?.takeIf { it.isNotBlank() }?.let { "$it Music" }
+        libraryTitle = settingsUiState.availableLibraries
+            .firstOrNull { it.id == settingsUiState.activeLibraryId }
+            ?.name
+            ?: settingsUiState.session?.serverName?.takeIf { it.isNotBlank() }?.let { "$it Music" }
+            ?: settingsUiState.session?.username?.takeIf { it.isNotBlank() }?.let { "$it Music" }
             ?: "Navidrome Music",
-        serverLabel = settingsUiState.session?.baseUrl
-            ?.let(::formatNavidromeServerLabel)
-            ?: "Navidrome",
+        savedServers = settingsUiState.savedServers,
+        activeServerId = settingsUiState.activeServerId,
+        availableLibraries = settingsUiState.availableLibraries,
+        activeLibraryId = settingsUiState.activeLibraryId,
         playerState = playerState,
         materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
         onOpenAlbum = onOpenAlbum,
@@ -623,6 +842,8 @@ private fun NavidromeHomeRoute(
         onRefresh = viewModel::refresh,
         onOpenSettings = onOpenSettings,
         onOpenCustomize = onOpenCustomize,
+        onOpenServers = onOpenServers,
+        onSelectLibrary = settingsViewModel::setActiveLibrary,
         onSwitchMode = onSwitchMode,
         onPlayPause = onPlayPause,
         onPlayTrack = playerViewModel::playTrack,
@@ -637,7 +858,10 @@ private fun NavidromeHomeScreen(
     uiState: NavidromeHomeUiState,
     customizeUiState: NavidromeCustomizeUiState,
     libraryTitle: String,
-    serverLabel: String,
+    savedServers: List<com.stillshelf.app.ui.screens.SettingsServerOption>,
+    activeServerId: String?,
+    availableLibraries: List<NavidromeLibrary>,
+    activeLibraryId: String?,
     playerState: NavidromePlayerState,
     materialDesignEnabled: Boolean,
     onOpenAlbum: (String) -> Unit,
@@ -652,6 +876,8 @@ private fun NavidromeHomeScreen(
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
+    onOpenServers: () -> Unit,
+    onSelectLibrary: (String) -> Unit,
     onSwitchMode: () -> Unit,
     onPlayPause: () -> Unit,
     onPlayTrack: (NavidromeTrack) -> Unit,
@@ -667,8 +893,8 @@ private fun NavidromeHomeScreen(
             .padding(start = homeStartInset, end = homeEndInset)
     }
     val homeCarouselModifier = remember { Modifier.fillMaxWidth() }
-    val homeCarouselContentPadding = remember(homeStartInset) {
-        PaddingValues(start = homeStartInset, end = 0.dp)
+    val homeCarouselContentPadding = remember(homeStartInset, homeEndInset) {
+        PaddingValues(start = homeStartInset, end = homeEndInset)
     }
     val homeShelfPosterWidth = StandardGridCoverWidth
     val homeShelfPosterHeight = StandardGridCoverHeight
@@ -775,7 +1001,7 @@ private fun NavidromeHomeScreen(
                     BoxWithConstraints(
                         modifier = Modifier.weight(1f)
                     ) {
-                        val hasServerMenu = serverLabel.isNotBlank()
+                        val hasLibraryMenu = availableLibraries.isNotEmpty()
                         val libraryMenuWidth = NavidromeHomeTopBarLibrarySelectorPreferredWidth
                             .coerceAtMost(maxWidth)
                             .coerceAtLeast(NavidromeHomeTopBarLibrarySelectorMinWidth.coerceAtMost(maxWidth))
@@ -783,7 +1009,7 @@ private fun NavidromeHomeScreen(
                             modifier = Modifier
                                 .width(libraryMenuWidth)
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable(enabled = hasServerMenu) {
+                                .clickable(enabled = hasLibraryMenu) {
                                     isLibraryMenuExpanded = true
                                 }
                                 .padding(vertical = 2.dp, horizontal = 2.dp),
@@ -795,7 +1021,7 @@ private fun NavidromeHomeScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (hasServerMenu) {
+                            if (hasLibraryMenu) {
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Icon(
                                     imageVector = if (isLibraryMenuExpanded) {
@@ -803,40 +1029,41 @@ private fun NavidromeHomeScreen(
                                     } else {
                                         Icons.Outlined.KeyboardArrowDown
                                     },
-                                    contentDescription = "View music source",
+                                    contentDescription = "Switch library",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
                         AppDropdownMenu(
-                            expanded = isLibraryMenuExpanded && hasServerMenu,
+                            expanded = isLibraryMenuExpanded && hasLibraryMenu,
                             onDismissRequest = { isLibraryMenuExpanded = false },
                             modifier = Modifier.width(libraryMenuWidth)
                         ) {
-                            AppDropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = serverLabel,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Dns,
-                                        contentDescription = null
-                                    )
-                                },
-                                trailingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.Check,
-                                        contentDescription = "Active music source"
-                                    )
-                                },
-                                enabled = false,
-                                onClick = {}
-                            )
+                            availableLibraries.forEach { library ->
+                                val isActive = library.id == activeLibraryId
+                                AppDropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = library.name,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (isActive) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = "Active library"
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        isLibraryMenuExpanded = false
+                                        onSelectLibrary(library.id)
+                                    }
+                                )
+                            }
                         }
                     }
                     CircleActionButton(
@@ -887,10 +1114,41 @@ private fun NavidromeHomeScreen(
                                 enabled = false,
                                 onClick = {}
                             )
+                            savedServers.forEach { server ->
+                                AppDropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = server.name,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(imageVector = Icons.Outlined.Dns, contentDescription = null)
+                                    },
+                                    trailingIcon = if (server.id == activeServerId) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Filled.Check,
+                                                contentDescription = "Active server"
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        isMenuExpanded = false
+                                        onOpenServers()
+                                    }
+                                )
+                            }
+                            if (savedServers.isNotEmpty()) {
+                                HorizontalDivider()
+                            }
                             AppDropdownMenuItem(
                                 text = {
                                     Text(
-                                        text = serverLabel,
+                                        text = "Manage servers",
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -898,11 +1156,10 @@ private fun NavidromeHomeScreen(
                                 leadingIcon = {
                                     Icon(imageVector = Icons.Outlined.Dns, contentDescription = null)
                                 },
-                                trailingIcon = {
-                                    Icon(imageVector = Icons.Filled.Check, contentDescription = "Active server")
-                                },
-                                enabled = false,
-                                onClick = {}
+                                onClick = {
+                                    isMenuExpanded = false
+                                    onOpenServers()
+                                }
                             )
                         }
                     }
@@ -2252,6 +2509,7 @@ private fun NavidromeSettingsRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     onSwitchMode: () -> Unit,
+    onOpenServers: () -> Unit,
     viewModel: NavidromeSettingsViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
@@ -2265,23 +2523,16 @@ private fun NavidromeSettingsRoute(
     ) {
         item {
             GroupedSettingsCard {
-                SettingsValueRow(
-                    title = "Account",
-                    value = uiState.session?.username ?: "Navidrome"
-                )
-                DividerLine()
-                SettingsValueRow(
-                    title = "Server",
-                    value = uiState.session?.baseUrl ?: ""
-                )
-            }
-        }
-        item {
-            GroupedSettingsCard {
                 SettingsSwitchRow(
                     title = "Material Design",
                     checked = appearanceUiState.navidromeMaterialDesignEnabled,
                     onCheckedChange = appearanceViewModel::setNavidromeMaterialDesignEnabled
+                )
+                DividerLine()
+                SettingsSwitchRow(
+                    title = "Immersive Player",
+                    checked = appearanceUiState.navidromeImmersivePlayerEnabled,
+                    onCheckedChange = appearanceViewModel::setNavidromeImmersivePlayerEnabled
                 )
                 DividerLine()
                 ThemeSettingsRow(
@@ -2306,6 +2557,13 @@ private fun NavidromeSettingsRoute(
         item {
             GroupedSettingsCard {
                 SettingsRow(
+                    icon = Icons.Outlined.Dns,
+                    title = "Manage servers",
+                    subtitle = "Add, edit, remove, and route Navidrome servers.",
+                    onClick = onOpenServers
+                )
+                DividerLine()
+                SettingsRow(
                     icon = Icons.Outlined.SwapHoriz,
                     title = "Switch product mode",
                     subtitle = "Return to the backend chooser.",
@@ -2320,6 +2578,541 @@ private fun NavidromeSettingsRoute(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NavidromeServersManagementRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    onAddServer: () -> Unit,
+    viewModel: NavidromeSettingsViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var editingServer by remember { mutableStateOf<com.stillshelf.app.ui.screens.SettingsServerOption?>(null) }
+    var deletingServer by remember { mutableStateOf<com.stillshelf.app.ui.screens.SettingsServerOption?>(null) }
+    var editingName by rememberSaveable { mutableStateOf("") }
+    var editingUrl by rememberSaveable { mutableStateOf("") }
+    var editingError by rememberSaveable { mutableStateOf<String?>(null) }
+    var advancedUrlActionTarget by remember { mutableStateOf<String?>(null) }
+    var advancedUrlPickerTarget by remember { mutableStateOf<String?>(null) }
+    var advancedUrlDialogTarget by remember { mutableStateOf<String?>(null) }
+    var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
+    var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
+    val activeServerName = uiState.savedServers.firstOrNull { it.id == uiState.activeServerId }?.name
+        ?: uiState.session?.serverName
+        ?: "Navidrome"
+    val hasLocalServer = uiState.lanServerUrl.isNotBlank()
+    val hasRemoteServer = uiState.wanServerUrl.isNotBlank()
+    val hasRoutingPair = hasLocalServer && hasRemoteServer
+    val statusValue = remember(uiState.connectionStatusLabel, uiState.connectionLatencyMs) {
+        buildString {
+            append(uiState.connectionStatusLabel)
+            uiState.connectionLatencyMs?.takeIf { uiState.connectionStatusLabel == "Reachable" }?.let { latencyMs ->
+                append(" • ")
+                append("$latencyMs ms")
+            }
+        }
+    }
+    fun openUrl(url: String) {
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }
+    }
+
+    StandardTopScreen(
+        title = "Manage Servers",
+        onBack = onBack,
+        onHome = onHome,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+    ) {
+        item {
+            GroupedSettingsCard {
+                uiState.savedServers.forEachIndexed { index, server ->
+                    var rowMenuExpanded by remember(server.id) { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                editingServer = server
+                                editingName = server.name
+                                editingUrl = server.baseUrl
+                                editingError = null
+                            }
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Dns,
+                                contentDescription = null
+                            )
+                        }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 12.dp)
+                        ) {
+                            Text(
+                                text = server.name,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = server.host,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (server.id == uiState.activeServerId) {
+                            Text(
+                                text = "Active",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                        }
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            IconButton(onClick = { rowMenuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreHoriz,
+                                    contentDescription = "Server actions"
+                                )
+                            }
+                            AppDropdownMenu(
+                                expanded = rowMenuExpanded,
+                                onDismissRequest = { rowMenuExpanded = false }
+                            ) {
+                                if (server.id != uiState.activeServerId) {
+                                    AppDropdownMenuItem(
+                                        text = { Text("Set active") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            viewModel.setActiveServer(server.id)
+                                        }
+                                    )
+                                }
+                                AppDropdownMenuItem(
+                                    text = { Text("Delete") },
+                                    onClick = {
+                                        rowMenuExpanded = false
+                                        deletingServer = server
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    if (index < uiState.savedServers.lastIndex) {
+                        DividerLine()
+                    }
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = onAddServer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppScreenHorizontalPadding)
+            ) {
+                Text("Add Server")
+            }
+        }
+        if (uiState.activeServerId != null) {
+            item {
+                Text(
+                    text = "AUTOMATIC SERVER ROUTING",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+                )
+            }
+            item {
+                GroupedSettingsCard {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "For: $activeServerName",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Set the local and remote addresses for this server. The app can use the local one on home Wi-Fi and the remote one everywhere else.\n",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Tip: Set the server to \"Remote\" in the drop-down menu on the home screen for best results. Automatic Server Routing switches to the local address when you're on home Wi-Fi and falls back to the remote address if the local network is unavailable. If the selected server does not have a local address configured, this feature will have no effect.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!hasRoutingPair) {
+                            Text(
+                                text = "Add both local and remote addresses to enable this feature.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    DividerLine()
+                    SettingsSwitchRow(
+                        title = "Use Local Server at Home",
+                        checked = uiState.automaticServerSwitchingEnabled,
+                        enabled = hasRoutingPair || uiState.automaticServerSwitchingEnabled,
+                        onCheckedChange = viewModel::setAutomaticServerSwitchingEnabled
+                    )
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Connection",
+                        value = uiState.currentConnectionLabel.ifBlank { "Not configured" },
+                        trailingContentWidth = 168.dp,
+                        valueTextAlign = TextAlign.End,
+                        showChevronWhenValue = false,
+                        showChevronWhenUnselected = false,
+                        onClick = null
+                    )
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Status",
+                        value = statusValue,
+                        trailingContentWidth = 168.dp,
+                        valueTextAlign = TextAlign.End,
+                        showChevronWhenValue = false,
+                        showChevronWhenUnselected = false,
+                        onClick = null
+                    )
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Current endpoint",
+                        titleMaxLines = 2,
+                        value = formatServerAddressForDisplay(uiState.currentEndpointUrl),
+                        trailingContentWidth = 216.dp,
+                        valueTextAlign = TextAlign.End,
+                        forceTitleTwoLineHeight = true,
+                        showChevronWhenValue = false,
+                        showChevronWhenUnselected = false,
+                        onClick = null,
+                        trailingActionIcon = Icons.AutoMirrored.Outlined.OpenInNew,
+                        trailingActionContentDescription = "Open current endpoint",
+                        onTrailingActionClick = {
+                            if (uiState.currentEndpointUrl.isNotBlank()) {
+                                openUrl(uiState.currentEndpointUrl)
+                            }
+                        }
+                    )
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Local\nServer",
+                        value = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
+                            ?: "Not set",
+                        titleMaxLines = 2,
+                        trailingContentWidth = 216.dp,
+                        valueTextAlign = TextAlign.End,
+                        forceTitleTwoLineHeight = true,
+                        onClick = {
+                            advancedUrlActionTarget = "LOCAL"
+                            advancedUrlError = null
+                        },
+                        trailingActionIcon = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let { Icons.AutoMirrored.Outlined.OpenInNew },
+                        trailingActionContentDescription = "Open local server",
+                        onTrailingActionClick = uiState.lanServerUrl.takeIf { it.isNotBlank() }?.let {
+                            { openUrl(it) }
+                        }
+                    )
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Remote\nServer",
+                        value = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let(::formatServerAddressForDisplay)
+                            ?: "Not set",
+                        titleMaxLines = 2,
+                        trailingContentWidth = 216.dp,
+                        valueTextAlign = TextAlign.End,
+                        forceTitleTwoLineHeight = true,
+                        onClick = {
+                            advancedUrlActionTarget = "REMOTE"
+                            advancedUrlError = null
+                        },
+                        trailingActionIcon = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let { Icons.AutoMirrored.Outlined.OpenInNew },
+                        trailingActionContentDescription = "Open remote server",
+                        onTrailingActionClick = uiState.wanServerUrl.takeIf { it.isNotBlank() }?.let {
+                            { openUrl(it) }
+                        }
+                    )
+                }
+            }
+        }
+        uiState.errorMessage?.let { message ->
+            item {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+                )
+            }
+        }
+    }
+
+    editingServer?.let { server ->
+        AlertDialog(
+            onDismissRequest = {
+                editingServer = null
+                editingError = null
+            },
+            title = { Text("Edit Server") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = editingName,
+                        onValueChange = {
+                            editingName = it
+                            editingError = null
+                        },
+                        label = { Text("Server Name") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = editingUrl,
+                        onValueChange = {
+                            editingUrl = it.replace(" ", "")
+                            editingError = null
+                        },
+                        label = { Text("Base URL") },
+                        singleLine = true
+                    )
+                    editingError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (editingName.trim().length < 2) {
+                            editingError = "Server name must be at least 2 characters."
+                            return@TextButton
+                        }
+                        val trimmedUrl = editingUrl.trim()
+                        val validUrl = trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                            trimmedUrl.startsWith("http://", ignoreCase = true)
+                        if (!validUrl) {
+                            editingError = "Base URL must start with http:// or https://"
+                            return@TextButton
+                        }
+                        viewModel.updateServer(server.id, editingName.trim(), trimmedUrl)
+                        editingServer = null
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        editingServer = null
+                        editingError = null
+                    }
+                ) { Text("Cancel") }
+            }
+        )
+    }
+
+    deletingServer?.let { server ->
+        AlertDialog(
+            onDismissRequest = { deletingServer = null },
+            title = { Text("Delete Server?") },
+            text = { Text("Remove ${server.name} from this device?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteServer(server.id)
+                        deletingServer = null
+                    }
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingServer = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    advancedUrlActionTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = {
+                advancedUrlActionTarget = null
+                advancedUrlError = null
+            },
+            title = {
+                Text(if (target == "REMOTE") "Remote Server" else "Local Server")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Choose how to fill this address. Saved server choices copy the URL as plain text only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    NavidromeDialogActionRow(
+                        title = "Enter manually",
+                        onClick = {
+                            advancedUrlActionTarget = null
+                            advancedUrlDialogTarget = target
+                            advancedUrlDraft = if (target == "REMOTE") uiState.wanServerUrl else uiState.lanServerUrl
+                            advancedUrlError = null
+                        }
+                    )
+                    HorizontalDivider()
+                    NavidromeDialogActionRow(
+                        title = "Choose from saved servers",
+                        onClick = {
+                            advancedUrlActionTarget = null
+                            advancedUrlPickerTarget = target
+                        }
+                    )
+                    HorizontalDivider()
+                    NavidromeDialogActionRow(
+                        title = "Clear",
+                        onClick = {
+                            advancedUrlActionTarget = null
+                            advancedUrlError = null
+                            if (target == "REMOTE") {
+                                viewModel.updateWanServerUrl("")
+                            } else {
+                                viewModel.updateLanServerUrl("")
+                            }
+                        }
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        advancedUrlActionTarget = null
+                        advancedUrlError = null
+                    }
+                ) { Text("Close") }
+            }
+        )
+    }
+
+    advancedUrlPickerTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { advancedUrlPickerTarget = null },
+            title = {
+                Text(if (target == "REMOTE") "Choose Remote Server" else "Choose Local Server")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Selecting a saved server copies its address into this field. It does not create a link.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    uiState.savedServers.forEachIndexed { index, server ->
+                        if (index > 0) {
+                            HorizontalDivider()
+                        }
+                        NavidromeSettingsRow(
+                            title = server.name,
+                            value = server.host,
+                            showChevronWhenValue = false,
+                            onClick = {
+                                if (target == "REMOTE") {
+                                    viewModel.updateWanServerUrl(server.baseUrl)
+                                } else {
+                                    viewModel.updateLanServerUrl(server.baseUrl)
+                                }
+                                advancedUrlPickerTarget = null
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { advancedUrlPickerTarget = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    advancedUrlDialogTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = {
+                advancedUrlDialogTarget = null
+                advancedUrlError = null
+            },
+            title = {
+                Text(if (target == "REMOTE") "Remote Server" else "Local Server")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = advancedUrlDraft,
+                        onValueChange = {
+                            advancedUrlDraft = it.replace(" ", "")
+                            advancedUrlError = null
+                        },
+                        label = { Text(if (target == "REMOTE") "Remote Server" else "Local Server") },
+                        singleLine = true
+                    )
+                    advancedUrlError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmedUrl = advancedUrlDraft.trim()
+                        val validUrl = trimmedUrl.isBlank() ||
+                            trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                            trimmedUrl.startsWith("http://", ignoreCase = true)
+                        if (!validUrl) {
+                            advancedUrlError = "Server URL must start with http:// or https://"
+                            return@TextButton
+                        }
+                        if (target == "REMOTE") {
+                            viewModel.updateWanServerUrl(trimmedUrl)
+                        } else {
+                            viewModel.updateLanServerUrl(trimmedUrl)
+                        }
+                        advancedUrlDialogTarget = null
+                        advancedUrlError = null
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        advancedUrlDialogTarget = null
+                        advancedUrlError = null
+                    }
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -3503,6 +4296,81 @@ private fun SettingsRow(
 }
 
 @Composable
+private fun SettingsRow(
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+    icon: ImageVector? = null,
+    subtitle: String? = null,
+    titleMaxLines: Int = 1,
+    trailingContentWidth: Dp = 136.dp,
+    trailingActionIcon: ImageVector? = null,
+    trailingActionContentDescription: String? = null,
+    onTrailingActionClick: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        icon?.let { rowIcon ->
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(rowIcon, contentDescription = null)
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = titleMaxLines,
+                overflow = TextOverflow.Ellipsis
+            )
+            subtitle?.takeIf { it.isNotBlank() }?.let { rowSubtitle ->
+                Text(
+                    text = rowSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.widthIn(max = trailingContentWidth)
+        )
+        if (trailingActionIcon != null && onTrailingActionClick != null) {
+            IconButton(onClick = onTrailingActionClick) {
+                Icon(
+                    imageVector = trailingActionIcon,
+                    contentDescription = trailingActionContentDescription
+                )
+            }
+        } else {
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 private fun GroupedSettingsCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -3511,6 +4379,26 @@ private fun GroupedSettingsCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(content = content)
+    }
+}
+
+@Composable
+private fun NavidromeDialogActionRow(
+    title: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -3546,23 +4434,29 @@ private fun ThemeSettingsRow(
 private fun SettingsSwitchRow(
     title: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .then(if (enabled) Modifier.clickable { onCheckedChange(!checked) } else Modifier)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
         )
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange
+            onCheckedChange = if (enabled) onCheckedChange else null
         )
     }
 }
@@ -3572,24 +4466,100 @@ private fun SettingsValueRow(
     title: String,
     value: String
 ) {
+    NavidromeSettingsRow(
+        title = title,
+        value = value,
+        showChevronWhenValue = false,
+        showChevronWhenUnselected = false,
+        onClick = null
+    )
+}
+
+@Composable
+private fun NavidromeSettingsRow(
+    title: String,
+    value: String? = null,
+    selected: Boolean = false,
+    titleMaxLines: Int = 1,
+    showChevronWhenValue: Boolean = true,
+    showChevronWhenUnselected: Boolean = true,
+    onClick: (() -> Unit)? = null,
+    trailingContentWidth: Dp? = null,
+    valueTextAlign: TextAlign = TextAlign.Start,
+    trailingActionIcon: ImageVector? = null,
+    trailingActionContentDescription: String? = null,
+    onTrailingActionClick: (() -> Unit)? = null,
+    forceTitleTwoLineHeight: Boolean = false
+) {
+    val resolvedTrailingContentWidth = trailingContentWidth ?: when {
+        !value.isNullOrBlank() && trailingActionIcon != null -> 168.dp
+        !value.isNullOrBlank() && onClick != null -> 144.dp
+        !value.isNullOrBlank() -> 136.dp
+        else -> 24.dp
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+                .then(if (forceTitleTwoLineHeight) Modifier.heightIn(min = 44.dp) else Modifier),
+            maxLines = titleMaxLines,
             overflow = TextOverflow.Ellipsis
         )
+        Row(
+            modifier = Modifier.width(resolvedTrailingContentWidth),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (!value.isNullOrBlank()) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = valueTextAlign,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (showChevronWhenValue && onClick != null) {
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else if (trailingActionIcon != null && onTrailingActionClick != null) {
+                    Spacer(modifier = Modifier.width(24.dp))
+                }
+            } else if (selected) {
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+            } else if (showChevronWhenUnselected) {
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            if (trailingActionIcon != null && onTrailingActionClick != null) {
+                Icon(
+                    modifier = Modifier.clickable(onClick = onTrailingActionClick),
+                    imageVector = trailingActionIcon,
+                    contentDescription = trailingActionContentDescription,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -3812,12 +4782,35 @@ private fun NavidromeExpandedPlayerSheet(
     onSelectAudioOutput: (Int?) -> Unit,
     isFavorite: Boolean,
     onToggleFavorite: (NavidromeTrack) -> Boolean,
+    immersiveEnabled: Boolean = false,
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
     val track = state.currentTrack ?: return
     val isRadio = remember(track.id) { track.id.startsWith("radio:") }
     val context = LocalContext.current
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val statusBarTopInset = remember(view, density) {
+        with(density) {
+            (
+                ViewCompat.getRootWindowInsets(view)
+                    ?.getInsets(WindowInsetsCompat.Type.statusBars())
+                    ?.top
+                    ?: 0
+                ).toDp()
+        }
+    }
+    val navigationBottomInset = remember(view, density) {
+        with(density) {
+            (
+                ViewCompat.getRootWindowInsets(view)
+                    ?.getInsets(WindowInsetsCompat.Type.navigationBars())
+                    ?.bottom
+                    ?: 0
+                ).toDp()
+        }
+    }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var showTrackDetails by remember { mutableStateOf(false) }
     var showOutputSheet by remember { mutableStateOf(false) }
@@ -3842,6 +4835,109 @@ private fun NavidromeExpandedPlayerSheet(
     val outputIcon = remember(selectedOutput) {
         playerOutputToolIcon(selectedOutput?.typeLabel)
     }
+    val dominantCoverColor = rememberDominantNavidromeCoverColor(
+        coverUrl = track.coverUrl,
+        enabled = immersiveEnabled
+    )
+    val immersiveBackgroundModel = if (immersiveEnabled) {
+        rememberCoverImageModel(track.coverUrl, preferOriginalSize = true)
+    } else {
+        null
+    }
+    val immersiveBaseColor = remember(dominantCoverColor) {
+        dominantCoverColor?.let(::brightenAndSaturateNavidromeCardColor) ?: Color(0xFF26343B)
+    }
+    val playerBackgroundColor = if (immersiveEnabled) Color.Transparent else MaterialTheme.colorScheme.background
+    val coverShellColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.08f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val menuShellColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val primaryTextColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onBackground
+    val secondaryTextColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.78f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val progressActiveColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.95f)
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val progressTrackColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.24f)
+    } else {
+        MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+    }
+    val transportButtonColor = if (immersiveEnabled) {
+        lerp(immersiveBaseColor, Color.Black, 0.18f).copy(alpha = 0.96f)
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val transportButtonBorderColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.18f)
+    } else {
+        Color.Transparent
+    }
+    val toolButtonContainerColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val toolButtonContentColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+    val toolButtonBorderColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Transparent
+    }
+    val queueCardColor = if (immersiveEnabled) {
+        Color.Black.copy(alpha = 0.24f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val queueCardBorderColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Transparent
+    }
+    val currentColorScheme = MaterialTheme.colorScheme
+    val sheetWindow = remember(view) {
+        (view.parent as? DialogWindowProvider)?.window
+            ?: (view.context as? Activity)?.window
+    }
+    DisposableEffect(sheetWindow, view, immersiveEnabled, currentColorScheme.surface) {
+        val window = sheetWindow
+        if (window == null) {
+            onDispose { }
+        } else {
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            val previousStatusBarColor = window.statusBarColor
+            val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+            if (immersiveEnabled) {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                insetsController.isAppearanceLightStatusBars = false
+            }
+            onDispose {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = if (immersiveEnabled) {
+                    previousStatusBarColor
+                } else {
+                    currentColorScheme.surface.toArgb()
+                }
+                insetsController.isAppearanceLightStatusBars = if (immersiveEnabled) {
+                    previousLightStatusBars
+                } else {
+                    currentColorScheme.surface.luminance() > 0.5f
+                }
+            }
+        }
+    }
     val resolvedDurationMs = remember(state.durationMs, track.durationSeconds) {
         state.durationMs.takeIf { it > 0 } ?: ((track.durationSeconds ?: 0) * 1000)
     }
@@ -3858,28 +4954,111 @@ private fun NavidromeExpandedPlayerSheet(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight()
-            .background(MaterialTheme.colorScheme.background)
+            .background(playerBackgroundColor)
     ) {
-        val compactLayout = maxHeight < 760.dp
+        if (immersiveEnabled) {
+            AsyncImage(
+                model = immersiveBackgroundModel,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(alpha = 0.98f)
+                    .blur(32.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to immersiveBaseColor.copy(alpha = 0.34f),
+                                0.28f to immersiveBaseColor.copy(alpha = 0.26f),
+                                0.72f to immersiveBaseColor.copy(alpha = 0.18f),
+                                1.00f to immersiveBaseColor.copy(alpha = 0.28f)
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to Color.Black.copy(alpha = 0.68f),
+                                0.26f to Color.Black.copy(alpha = 0.56f),
+                                0.68f to Color.Black.copy(alpha = 0.62f),
+                                1.00f to Color.Black.copy(alpha = 0.76f)
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.10f))
+            )
+        }
+        val usableSheetHeight = (maxHeight - statusBarTopInset - navigationBottomInset).coerceAtLeast(0.dp)
+        val compactLayout = usableSheetHeight < 760.dp
+        val veryCompactLayout = usableSheetHeight < 720.dp
         val queueExpandedLayout = showQueue
-        val coverSize = when {
-            queueExpandedLayout && maxHeight < 680.dp -> 156.dp
-            queueExpandedLayout && maxHeight < 760.dp -> 176.dp
+        val targetCoverSize = when {
+            queueExpandedLayout && usableSheetHeight < 680.dp -> 156.dp
+            queueExpandedLayout && usableSheetHeight < 760.dp -> 176.dp
             queueExpandedLayout -> 196.dp
-            maxHeight < 680.dp -> 220.dp
-            maxHeight < 760.dp -> 242.dp
+            veryCompactLayout -> 200.dp
+            usableSheetHeight < 680.dp -> 220.dp
+            usableSheetHeight < 760.dp -> 242.dp
             else -> 280.dp
         }.coerceAtMost(maxWidth - 48.dp)
-        val outerSpacing = when {
+        val targetOuterSpacing = when {
             queueExpandedLayout -> 8.dp
+            veryCompactLayout -> 8.dp
             compactLayout -> 10.dp
             else -> 14.dp
         }
-        val titleSpacing = if (queueExpandedLayout || compactLayout) 3.dp else 5.dp
-        val topPadding = if (compactLayout) 8.dp else 12.dp
+        val targetTitleSpacing = when {
+            queueExpandedLayout || veryCompactLayout -> 2.dp
+            compactLayout -> 3.dp
+            else -> 5.dp
+        }
+        val handleTopPadding = (statusBarTopInset + 8.dp).coerceIn(24.dp, 44.dp)
+        val targetTopPadding = when {
+            veryCompactLayout -> 6.dp
+            compactLayout -> 8.dp
+            else -> 12.dp
+        }
+        val targetTransportButtonSize = when {
+            queueExpandedLayout || veryCompactLayout -> 80.dp
+            else -> 88.dp
+        }
+        val targetTransportIconSize = when {
+            queueExpandedLayout || veryCompactLayout -> 38.dp
+            else -> 42.dp
+        }
+        val targetSkipButtonSize = when {
+            queueExpandedLayout || veryCompactLayout -> 56.dp
+            else -> 64.dp
+        }
+        val targetSkipIconSize = when {
+            queueExpandedLayout || veryCompactLayout -> 32.dp
+            else -> 36.dp
+        }
+        val queueTransitionSpec = remember { tween<Dp>(durationMillis = 260) }
+        val coverSize by animateDpAsState(targetValue = targetCoverSize, animationSpec = queueTransitionSpec, label = "navidromePlayerCoverSize")
+        val outerSpacing by animateDpAsState(targetValue = targetOuterSpacing, animationSpec = queueTransitionSpec, label = "navidromePlayerOuterSpacing")
+        val titleSpacing by animateDpAsState(targetValue = targetTitleSpacing, animationSpec = queueTransitionSpec, label = "navidromePlayerTitleSpacing")
+        val topPadding by animateDpAsState(targetValue = targetTopPadding, animationSpec = queueTransitionSpec, label = "navidromePlayerTopPadding")
+        val transportButtonSize by animateDpAsState(targetValue = targetTransportButtonSize, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportButtonSize")
+        val transportIconSize by animateDpAsState(targetValue = targetTransportIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportIconSize")
+        val skipButtonSize by animateDpAsState(targetValue = targetSkipButtonSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipButtonSize")
+        val skipIconSize by animateDpAsState(targetValue = targetSkipIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipIconSize")
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .animateContentSize(animationSpec = tween(durationMillis = 260))
                 .navigationBarsPadding()
                 .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
                 .then(
@@ -3892,10 +5071,24 @@ private fun NavidromeExpandedPlayerSheet(
             verticalArrangement = Arrangement.spacedBy(outerSpacing),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(handleTopPadding))
+            Box(
+                modifier = Modifier
+                    .width(44.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(100))
+                    .background(
+                        if (immersiveEnabled) {
+                            Color.White.copy(alpha = 0.68f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                        }
+                    )
+            )
+            Spacer(modifier = Modifier.height(4.dp))
             Surface(
                 shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surface,
+                color = coverShellColor,
                 tonalElevation = 3.dp
             ) {
                 Box(modifier = Modifier.padding(10.dp)) {
@@ -3919,6 +5112,7 @@ private fun NavidromeExpandedPlayerSheet(
                         text = track.title,
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
+                        color = primaryTextColor,
                         textAlign = TextAlign.Center,
                         minLines = 2,
                         maxLines = 2,
@@ -3927,7 +5121,7 @@ private fun NavidromeExpandedPlayerSheet(
                     Text(
                         text = track.artistName,
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = secondaryTextColor,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -3935,7 +5129,7 @@ private fun NavidromeExpandedPlayerSheet(
                     Text(
                         text = track.albumName,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = secondaryTextColor,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -3950,7 +5144,7 @@ private fun NavidromeExpandedPlayerSheet(
                     Surface(
                         modifier = Modifier.clickable(onClick = { isMenuExpanded = true }),
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.surface,
+                        color = menuShellColor,
                         tonalElevation = 2.dp
                     ) {
                         Box(
@@ -3960,7 +5154,8 @@ private fun NavidromeExpandedPlayerSheet(
                             Icon(
                                 imageVector = Icons.Outlined.MoreHoriz,
                                 contentDescription = "Player options",
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(20.dp),
+                                tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -4034,8 +5229,8 @@ private fun NavidromeExpandedPlayerSheet(
                     } else {
                         0f
                     },
-                    activeColor = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+                    activeColor = progressActiveColor,
+                    trackColor = progressTrackColor,
                     onProgressChange = { newProgress ->
                         sliderPosition = resolvedDurationMs * newProgress.coerceIn(0f, 1f)
                     },
@@ -4056,13 +5251,13 @@ private fun NavidromeExpandedPlayerSheet(
                         text = formatDurationMillis(sliderPosition.roundToInt()),
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = secondaryTextColor
                     )
                     Text(
                         text = formatTrackTechnicalDetails(track),
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = secondaryTextColor,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -4071,7 +5266,7 @@ private fun NavidromeExpandedPlayerSheet(
                         text = formatDurationMillis(resolvedDurationMs),
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = secondaryTextColor,
                         textAlign = TextAlign.End
                     )
                 }
@@ -4083,18 +5278,20 @@ private fun NavidromeExpandedPlayerSheet(
             ) {
                 IconButton(
                     onClick = onPrevious,
-                    modifier = Modifier.size(if (queueExpandedLayout) 56.dp else 64.dp)
+                    modifier = Modifier.size(skipButtonSize)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.SkipPrevious,
                         contentDescription = "Previous",
-                        modifier = Modifier.size(if (queueExpandedLayout) 32.dp else 36.dp)
+                        modifier = Modifier.size(skipIconSize),
+                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
                     )
                 }
                 Surface(
-                    modifier = Modifier.size(if (queueExpandedLayout) 80.dp else 88.dp),
+                    modifier = Modifier.size(transportButtonSize),
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = transportButtonColor,
+                    border = BorderStroke(1.dp, transportButtonBorderColor),
                     tonalElevation = 4.dp
                 ) {
                     Box(
@@ -4112,32 +5309,39 @@ private fun NavidromeExpandedPlayerSheet(
                                 state.isPlaying -> "Pause"
                                 else -> "Play"
                             },
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(if (queueExpandedLayout) 38.dp else 42.dp)
+                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(transportIconSize)
                         )
                     }
                 }
                 IconButton(
                     onClick = onNext,
-                    modifier = Modifier.size(if (queueExpandedLayout) 56.dp else 64.dp)
+                    modifier = Modifier.size(skipButtonSize)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.SkipNext,
                         contentDescription = "Next",
-                        modifier = Modifier.size(if (queueExpandedLayout) 32.dp else 36.dp)
+                        modifier = Modifier.size(skipIconSize),
+                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
                     )
                 }
+            }
+            if (compactLayout && !queueExpandedLayout) {
+                Spacer(modifier = Modifier.height(if (veryCompactLayout) 8.dp else 20.dp))
             }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp),
+                    .padding(top = if (veryCompactLayout) 8.dp else 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 NavidromePlayerToolButton(
                     modifier = Modifier.weight(1f),
                     icon = outputIcon,
                     label = outputLabel,
+                    containerColor = toolButtonContainerColor,
+                    contentColor = toolButtonContentColor,
+                    borderColor = toolButtonBorderColor,
                     onClick = {
                         onRefreshAudioOutputs()
                         showOutputSheet = true
@@ -4147,6 +5351,9 @@ private fun NavidromeExpandedPlayerSheet(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Outlined.QueueMusic,
                     label = if (showQueue) "Hide Queue" else "Queue",
+                    containerColor = toolButtonContainerColor,
+                    contentColor = toolButtonContentColor,
+                    borderColor = toolButtonBorderColor,
                     onClick = { showQueue = !showQueue }
                 )
             }
@@ -4170,7 +5377,8 @@ private fun NavidromeExpandedPlayerSheet(
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(26.dp),
-                            color = MaterialTheme.colorScheme.surface,
+                            color = queueCardColor,
+                            border = BorderStroke(1.dp, queueCardBorderColor),
                             tonalElevation = 1.dp
                         ) {
                             Column(
@@ -4180,12 +5388,14 @@ private fun NavidromeExpandedPlayerSheet(
                                 Text(
                                     text = "Up Next",
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = primaryTextColor
                                 )
                                 queuedTracks.forEachIndexed { index, queuedTrack ->
                                     PlayerQueueRow(
                                         track = queuedTrack,
                                         isCurrent = index == state.currentIndex,
+                                        immersiveEnabled = immersiveEnabled,
                                         onClick = { onSelectTrack(index) }
                                     )
                                 }
@@ -4257,12 +5467,16 @@ private fun NavidromePlayerToolButton(
     modifier: Modifier = Modifier,
     icon: ImageVector,
     label: String,
+    containerColor: Color = MaterialTheme.colorScheme.surface,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    borderColor: Color = Color.Transparent,
     onClick: () -> Unit
 ) {
     Surface(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
+        color = containerColor,
+        border = BorderStroke(1.dp, borderColor),
         tonalElevation = 1.dp
     ) {
         Row(
@@ -4275,12 +5489,13 @@ private fun NavidromePlayerToolButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface
+                tint = contentColor
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleSmall,
+                color = contentColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -4451,8 +5666,20 @@ private fun PlayerStatPill(
 private fun PlayerQueueRow(
     track: NavidromeTrack,
     isCurrent: Boolean,
+    immersiveEnabled: Boolean = false,
     onClick: () -> Unit
 ) {
+    val currentBackgroundColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.10f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+    }
+    val primaryTextColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+    val secondaryTextColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.72f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -4460,7 +5687,7 @@ private fun PlayerQueueRow(
             .clickable(onClick = onClick)
             .background(
                 if (isCurrent) {
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+                    currentBackgroundColor
                 } else {
                     Color.Transparent
                 }
@@ -4474,6 +5701,7 @@ private fun PlayerQueueRow(
             Text(
                 text = track.title,
                 style = MaterialTheme.typography.titleSmall,
+                color = primaryTextColor,
                 fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -4481,7 +5709,7 @@ private fun PlayerQueueRow(
             Text(
                 text = track.artistName,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondaryTextColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -4489,7 +5717,11 @@ private fun PlayerQueueRow(
         Text(
             text = if (isCurrent) "Playing" else track.durationSeconds?.let(::formatDuration) ?: "--:--",
             style = MaterialTheme.typography.bodySmall,
-            color = if (isCurrent) Color(0xFFFF5A5F) else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (isCurrent) {
+                if (immersiveEnabled) Color.White else Color(0xFFFF5A5F)
+            } else {
+                secondaryTextColor
+            }
         )
     }
 }
@@ -4513,6 +5745,10 @@ private fun formatTrackTechnicalDetails(track: NavidromeTrack): String {
     return parts.joinToString(separator = " • ")
 }
 
+private fun isHttpUrl(baseUrl: String): Boolean {
+    return baseUrl.trim().startsWith("http://", ignoreCase = true)
+}
+
 private fun formatNavidromeServerLabel(baseUrl: String): String {
     val normalized = baseUrl.trim()
         .removePrefix("https://")
@@ -4522,6 +5758,26 @@ private fun formatNavidromeServerLabel(baseUrl: String): String {
         .removePrefix("www.")
         .ifBlank { "Navidrome" }
     return normalized
+}
+
+private fun formatServerAddressForDisplay(url: String): String {
+    val trimmed = url.trim().removeSuffix("/")
+    if (trimmed.isBlank()) return ""
+    val parsedUri = runCatching { URI(trimmed) }.getOrNull()
+    val host = parsedUri?.host.orEmpty()
+    val port = parsedUri?.port ?: -1
+    if (host.isBlank()) {
+        return trimmed.removePrefix("https://").removePrefix("http://")
+    }
+    return if (port > 0) "$host:$port" else host
+}
+
+private fun formatCompactServerAddress(url: String): String {
+    return url.trim()
+        .removePrefix("https://")
+        .removePrefix("http://")
+        .removePrefix("www.")
+        .removeSuffix("/")
 }
 
 @Composable

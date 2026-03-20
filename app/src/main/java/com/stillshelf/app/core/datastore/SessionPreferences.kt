@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.stillshelf.app.core.model.BackendProvider
+import com.stillshelf.app.core.model.NavidromeServer
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
@@ -27,6 +28,10 @@ class SessionPreferences @Inject constructor(
     private val activeServerIdKey = stringPreferencesKey("active_server_id")
     private val activeLibraryIdKey = stringPreferencesKey("active_library_id")
     private val selectedBackendKey = stringPreferencesKey("selected_backend")
+    private val navidromeServersPayloadKey = stringPreferencesKey("navidrome_servers_payload")
+    private val activeNavidromeServerIdKey = stringPreferencesKey("active_navidrome_server_id")
+    private val navidromeActiveLibraryIdsKey = stringPreferencesKey("navidrome_active_library_ids")
+    private val navidromeServerNameKey = stringPreferencesKey("navidrome_server_name")
     private val navidromeBaseUrlKey = stringPreferencesKey("navidrome_base_url")
     private val navidromeUsernameKey = stringPreferencesKey("navidrome_username")
     private val navidromeHiddenBrowseSectionsKey = stringPreferencesKey("navidrome_hidden_browse_sections")
@@ -39,6 +44,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
+    private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
     private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
     private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
     private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
@@ -91,6 +97,10 @@ class SessionPreferences @Inject constructor(
             activeServerId = prefs[activeServerIdKey],
             activeLibraryId = prefs[activeLibraryIdKey],
             selectedBackend = BackendProvider.fromStorageValue(prefs[selectedBackendKey]),
+            navidromeServers = parseNavidromeServers(prefs[navidromeServersPayloadKey]),
+            activeNavidromeServerId = prefs[activeNavidromeServerIdKey],
+            navidromeActiveLibraryIds = parseStringMap(prefs[navidromeActiveLibraryIdsKey]),
+            navidromeServerName = prefs[navidromeServerNameKey],
             navidromeBaseUrl = prefs[navidromeBaseUrlKey],
             navidromeUsername = prefs[navidromeUsernameKey],
             navidromeHiddenBrowseSectionIds = parseCsv(prefs[navidromeHiddenBrowseSectionsKey]),
@@ -105,6 +115,7 @@ class SessionPreferences @Inject constructor(
             ),
             navidromeThemeMode = prefs[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = prefs[navidromeMaterialDesignEnabledKey] ?: false,
+            navidromeImmersivePlayerEnabled = prefs[navidromeImmersivePlayerEnabledKey] ?: false,
             requiresLibrarySelection = prefs[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = prefs[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(prefs[hiddenBrowseSectionsKey]),
@@ -176,8 +187,64 @@ class SessionPreferences @Inject constructor(
         }
     }
 
-    suspend fun setNavidromeSession(baseUrl: String, username: String) {
+    suspend fun setNavidromeServers(servers: List<NavidromeServer>) {
         dataStore.edit { prefs ->
+            if (servers.isEmpty()) {
+                prefs.remove(navidromeServersPayloadKey)
+            } else {
+                prefs[navidromeServersPayloadKey] = encodeNavidromeServers(servers)
+            }
+        }
+    }
+
+    suspend fun setActiveNavidromeServerId(serverId: String?) {
+        dataStore.edit { prefs ->
+            if (serverId.isNullOrBlank()) {
+                prefs.remove(activeNavidromeServerIdKey)
+            } else {
+                prefs[activeNavidromeServerIdKey] = serverId.trim()
+            }
+        }
+    }
+
+    suspend fun setActiveNavidromeLibraryId(serverId: String, libraryId: String?) {
+        val normalizedServerId = serverId.trim()
+        if (normalizedServerId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseStringMap(prefs[navidromeActiveLibraryIdsKey]).toMutableMap()
+            val normalizedLibraryId = libraryId?.trim().orEmpty()
+            if (normalizedLibraryId.isBlank()) {
+                current.remove(normalizedServerId)
+            } else {
+                current[normalizedServerId] = normalizedLibraryId
+            }
+            if (current.isEmpty()) {
+                prefs.remove(navidromeActiveLibraryIdsKey)
+            } else {
+                prefs[navidromeActiveLibraryIdsKey] = encodeStringMap(current)
+            }
+        }
+    }
+
+    suspend fun removeActiveNavidromeLibraryId(serverId: String) {
+        val normalizedServerId = serverId.trim()
+        if (normalizedServerId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseStringMap(prefs[navidromeActiveLibraryIdsKey]).toMutableMap()
+            current.remove(normalizedServerId)
+            if (current.isEmpty()) {
+                prefs.remove(navidromeActiveLibraryIdsKey)
+            } else {
+                prefs[navidromeActiveLibraryIdsKey] = encodeStringMap(current)
+            }
+        }
+    }
+
+    suspend fun setNavidromeSession(serverName: String?, baseUrl: String, username: String) {
+        dataStore.edit { prefs ->
+            serverName?.trim()?.takeIf { it.isNotBlank() }?.let {
+                prefs[navidromeServerNameKey] = it
+            } ?: prefs.remove(navidromeServerNameKey)
             prefs[navidromeBaseUrlKey] = baseUrl.trim().removeSuffix("/")
             prefs[navidromeUsernameKey] = username.trim()
         }
@@ -185,6 +252,7 @@ class SessionPreferences @Inject constructor(
 
     suspend fun clearNavidromeSession() {
         dataStore.edit { prefs ->
+            prefs.remove(navidromeServerNameKey)
             prefs.remove(navidromeBaseUrlKey)
             prefs.remove(navidromeUsernameKey)
         }
@@ -398,6 +466,12 @@ class SessionPreferences @Inject constructor(
     suspend fun setNavidromeMaterialDesignEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[navidromeMaterialDesignEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setNavidromeImmersivePlayerEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[navidromeImmersivePlayerEnabledKey] = enabled
         }
     }
 
@@ -925,6 +999,49 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
+    private fun parseStringMap(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(raw)
+            buildMap {
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next().trim()
+                    val value = root.optString(key).trim()
+                    if (key.isNotBlank() && value.isNotBlank()) {
+                        put(key, value)
+                    }
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun parseNavidromeServers(raw: String?): List<NavidromeServer> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val source = JSONArray(raw)
+            buildList {
+                for (index in 0 until source.length()) {
+                    val item = source.optJSONObject(index) ?: continue
+                    val id = item.optString("id").trim()
+                    val name = item.optString("name").trim()
+                    val baseUrl = item.optString("baseUrl").trim().removeSuffix("/")
+                    val username = item.optString("username").trim()
+                    if (id.isBlank() || name.isBlank() || baseUrl.isBlank() || username.isBlank()) continue
+                    add(
+                        NavidromeServer(
+                            id = id,
+                            name = name,
+                            baseUrl = baseUrl,
+                            username = username,
+                            createdAt = item.optLong("createdAt").coerceAtLeast(0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun parseNavidromeFavoriteTracksBySession(
         raw: String?
     ): Map<String, List<NavidromeTrack>> {
@@ -968,6 +1085,28 @@ class SessionPreferences @Inject constructor(
                 }
             }
         }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeNavidromeServers(values: List<NavidromeServer>): String {
+        return JSONArray().apply {
+            values.forEach { server ->
+                val id = server.id.trim()
+                val name = server.name.trim()
+                val baseUrl = server.baseUrl.trim().removeSuffix("/")
+                val username = server.username.trim()
+                if (id.isBlank() || name.isBlank() || baseUrl.isBlank() || username.isBlank()) {
+                    return@forEach
+                }
+                put(
+                    JSONObject()
+                        .put("id", id)
+                        .put("name", name)
+                        .put("baseUrl", baseUrl)
+                        .put("username", username)
+                        .put("createdAt", server.createdAt.coerceAtLeast(0L))
+                )
+            }
+        }.toString()
     }
 
     private fun encodeNavidromeFavoriteTracksBySession(
@@ -1120,12 +1259,28 @@ class SessionPreferences @Inject constructor(
             }
         }.toString()
     }
+
+    private fun encodeStringMap(values: Map<String, String>): String {
+        val root = JSONObject()
+        values.forEach { (key, value) ->
+            val normalizedKey = key.trim()
+            val normalizedValue = value.trim()
+            if (normalizedKey.isNotBlank() && normalizedValue.isNotBlank()) {
+                root.put(normalizedKey, normalizedValue)
+            }
+        }
+        return root.toString()
+    }
 }
 
 data class SessionPreferenceState(
     val activeServerId: String?,
     val activeLibraryId: String?,
     val selectedBackend: BackendProvider? = null,
+    val navidromeServers: List<NavidromeServer> = emptyList(),
+    val activeNavidromeServerId: String? = null,
+    val navidromeActiveLibraryIds: Map<String, String> = emptyMap(),
+    val navidromeServerName: String? = null,
     val navidromeBaseUrl: String? = null,
     val navidromeUsername: String? = null,
     val navidromeHiddenBrowseSectionIds: Set<String> = emptySet(),
@@ -1138,6 +1293,7 @@ data class SessionPreferenceState(
     val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
+    val navidromeImmersivePlayerEnabled: Boolean = false,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),

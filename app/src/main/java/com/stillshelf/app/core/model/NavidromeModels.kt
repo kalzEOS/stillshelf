@@ -1,8 +1,23 @@
 package com.stillshelf.app.core.model
 
+data class NavidromeServer(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val username: String,
+    val createdAt: Long
+)
+
 data class NavidromeSession(
+    val serverId: String,
+    val serverName: String?,
     val baseUrl: String,
     val username: String
+)
+
+data class NavidromeLibrary(
+    val id: String,
+    val name: String
 )
 
 data class NavidromeArtist(

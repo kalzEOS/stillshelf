@@ -142,6 +142,7 @@ object NavidromeRoute {
     const val PLAYLISTS = "navidrome/library/playlists"
     const val SEARCH = "navidrome/search"
     const val SETTINGS = "navidrome/settings"
+    const val SERVERS = "navidrome/settings/servers"
     const val CUSTOMIZE = "navidrome/customize"
     const val ARTIST_ID_ARG = "artistId"
     const val ALBUM_ID_ARG = "albumId"

@@ -7,11 +7,16 @@ import com.stillshelf.app.core.model.NavidromeAlbum
 import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
+import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
+import com.stillshelf.app.core.model.NavidromeServer
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.core.model.EndpointReachabilityStatus
+import com.stillshelf.app.core.model.ServerConnectionMode
+import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
 import com.stillshelf.app.data.repo.NavidromeRepository
@@ -19,25 +24,37 @@ import com.stillshelf.app.playback.navidrome.NavidromePlayerController
 import com.stillshelf.app.ui.navigation.NavidromeRoute
 import com.stillshelf.app.ui.screens.ToggleSectionItem
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.ui.screens.SettingsServerOption
+import com.stillshelf.app.ui.screens.resolveCurrentConnectionLabel
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.net.URI
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class NavidromeLoginUiState(
+    val serverName: String = "",
     val baseUrl: String = "",
     val username: String = "",
     val password: String = "",
+    val serverNameError: String? = null,
+    val isTestingConnection: Boolean = false,
+    val connectionMessage: String? = null,
+    val connectionSuccess: Boolean? = null,
+    val showCredentialsStep: Boolean = false,
     val isLoading: Boolean = false,
+    val canContinue: Boolean = false,
     val canSubmit: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val loginSucceeded: Boolean = false
 )
 
 @HiltViewModel
@@ -47,11 +64,41 @@ class NavidromeLoginViewModel @Inject constructor(
     private val mutableUiState = MutableStateFlow(NavidromeLoginUiState())
     val uiState: StateFlow<NavidromeLoginUiState> = mutableUiState.asStateFlow()
 
-    fun onBaseUrlChange(value: String) {
+    fun onServerNameChange(value: String) {
+        val serverNameError = validateServerName(value)
         mutableUiState.update { state ->
             state.copy(
-                baseUrl = value,
-                canSubmit = canSubmit(value, state.username, state.password)
+                serverName = value,
+                serverNameError = serverNameError,
+                canContinue = canContinue(
+                    name = value,
+                    baseUrl = state.baseUrl,
+                    serverNameError = serverNameError
+                ),
+                errorMessage = null,
+                connectionMessage = null,
+                connectionSuccess = null
+            )
+        }
+    }
+
+    fun onBaseUrlChange(value: String) {
+        val normalizedValue = value.replace(" ", "")
+        val currentServerName = uiState.value.serverName
+        val serverNameError = validateServerName(currentServerName)
+        mutableUiState.update { state ->
+            state.copy(
+                baseUrl = normalizedValue,
+                serverNameError = serverNameError,
+                canContinue = canContinue(
+                    name = currentServerName,
+                    baseUrl = normalizedValue,
+                    serverNameError = serverNameError
+                ),
+                canSubmit = canSubmit(normalizedValue, state.username, state.password),
+                errorMessage = null,
+                connectionMessage = null,
+                connectionSuccess = null
             )
         }
     }
@@ -60,7 +107,8 @@ class NavidromeLoginViewModel @Inject constructor(
         mutableUiState.update { state ->
             state.copy(
                 username = value,
-                canSubmit = canSubmit(state.baseUrl, value, state.password)
+                canSubmit = canSubmit(state.baseUrl, value, state.password),
+                errorMessage = null
             )
         }
     }
@@ -69,7 +117,71 @@ class NavidromeLoginViewModel @Inject constructor(
         mutableUiState.update { state ->
             state.copy(
                 password = value,
-                canSubmit = canSubmit(state.baseUrl, state.username, value)
+                canSubmit = canSubmit(state.baseUrl, state.username, value),
+                errorMessage = null
+            )
+        }
+    }
+
+    fun onTestConnectionClick() {
+        val baseUrl = uiState.value.baseUrl.trim()
+        if (baseUrl.isBlank() || uiState.value.isTestingConnection) return
+        viewModelScope.launch {
+            mutableUiState.update {
+                it.copy(
+                    isTestingConnection = true,
+                    connectionMessage = null,
+                    connectionSuccess = null,
+                    errorMessage = null
+                )
+            }
+            when (val result = navidromeRepository.testServerConnection(baseUrl)) {
+                is AppResult.Success -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isTestingConnection = false,
+                            connectionMessage = result.value,
+                            connectionSuccess = true
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isTestingConnection = false,
+                            connectionMessage = result.message,
+                            connectionSuccess = false
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun continueToCredentials() {
+        val currentState = mutableUiState.value
+        val serverNameError = validateServerName(currentState.serverName)
+        if (!canContinue(currentState.serverName, currentState.baseUrl, serverNameError)) {
+            mutableUiState.update {
+                it.copy(serverNameError = serverNameError)
+            }
+            return
+        }
+        mutableUiState.update {
+            it.copy(
+                serverNameError = serverNameError,
+                showCredentialsStep = true,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun backToServerStep() {
+        mutableUiState.update {
+            it.copy(
+                showCredentialsStep = false,
+                errorMessage = null
             )
         }
     }
@@ -81,6 +193,7 @@ class NavidromeLoginViewModel @Inject constructor(
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
             when (
                 val result = navidromeRepository.login(
+                    serverName = currentState.serverName,
                     baseUrl = currentState.baseUrl,
                     username = currentState.username,
                     password = currentState.password
@@ -88,7 +201,11 @@ class NavidromeLoginViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     mutableUiState.update {
-                        it.copy(isLoading = false, errorMessage = null)
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = null,
+                            loginSucceeded = true
+                        )
                     }
                 }
 
@@ -108,8 +225,29 @@ class NavidromeLoginViewModel @Inject constructor(
         mutableUiState.update { it.copy(errorMessage = null) }
     }
 
+    fun clearLoginSucceeded() {
+        mutableUiState.update { it.copy(loginSucceeded = false) }
+    }
+
+    private fun canContinue(name: String, baseUrl: String, serverNameError: String?): Boolean {
+        return name.isNotBlank() && baseUrl.isNotBlank() && serverNameError == null
+    }
+
     private fun canSubmit(baseUrl: String, username: String, password: String): Boolean {
         return baseUrl.isNotBlank() && username.isNotBlank() && password.isNotBlank()
+    }
+
+    private fun validateServerName(name: String): String? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return "Server name is required."
+        if (trimmed.length < 2) return "Server name must be at least 2 characters."
+        val hasInvalidChar = trimmed.any { char ->
+            !char.isLetterOrDigit() && char !in setOf(' ', '.', '-', '_', '\'')
+        }
+        if (hasInvalidChar) {
+            return "Use letters, numbers, spaces, or . - _ ' only."
+        }
+        return null
     }
 }
 
@@ -664,19 +802,273 @@ class NavidromeFavoriteSongsViewModel @Inject constructor(
 
 @HiltViewModel
 class NavidromeSettingsViewModel @Inject constructor(
-    private val navidromeRepository: NavidromeRepository
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
-    val uiState: StateFlow<NavidromeSettingsUiState> = navidromeRepository.observeSession()
-        .map { NavidromeSettingsUiState(session = it) }
+    private val mutableErrorMessage = MutableStateFlow<String?>(null)
+    private val mutableBusyState = MutableStateFlow(false)
+    private val mutableLibraries = MutableStateFlow<List<NavidromeLibrary>>(emptyList())
+
+    val uiState: StateFlow<NavidromeSettingsUiState> = combine(
+        combine(
+            navidromeRepository.observeSession(),
+            navidromeRepository.observeServers(),
+            sessionPreferences.state,
+            navidromeRepository.observeActiveConnectionStatus(),
+            navidromeRepository.observeEndpointHealth()
+        ) { session, servers, preferences, connectionStatus, endpointHealth ->
+            Quintuple(session, servers, preferences, connectionStatus, endpointHealth)
+        },
+        mutableLibraries,
+        mutableErrorMessage,
+        mutableBusyState
+    ) { upstream, libraries, errorMessage, isBusy ->
+        val session = upstream.session
+        val servers = upstream.servers
+        val preferences = upstream.preferences
+        val connectionStatus = upstream.connectionStatus
+        val endpointHealth = upstream.endpointHealth
+        val activeServerId = preferences.activeNavidromeServerId ?: servers.firstOrNull()?.id
+        val activeServer = servers.firstOrNull { it.id == activeServerId }
+        val activeLibraryId = activeServer?.id?.let(preferences.navidromeActiveLibraryIds::get)
+        val switchingConfig = activeServer?.id?.let(preferences.serverEndpointSwitchingConfigs::get)
+            ?: ServerEndpointSwitchingConfig()
+        val effectiveBaseUrl = connectionStatus?.effectiveBaseUrl ?: activeServer?.baseUrl
+        val connectionStatusLabel = when (endpointHealth?.reachabilityStatus) {
+            EndpointReachabilityStatus.Reachable -> "Reachable"
+            EndpointReachabilityStatus.Unavailable -> "Unavailable"
+            EndpointReachabilityStatus.Checking, null -> "Checking"
+        }
+        NavidromeSettingsUiState(
+            session = session,
+            savedServers = servers.map { server ->
+                SettingsServerOption(
+                    id = server.id,
+                    name = server.name,
+                    baseUrl = server.baseUrl,
+                    host = parseHost(server.baseUrl)
+                )
+            },
+            activeServerId = activeServerId,
+            availableLibraries = libraries,
+            activeLibraryId = activeLibraryId,
+            automaticServerSwitchingEnabled = switchingConfig.enabled,
+            lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
+            wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
+            currentConnectionLabel = resolveCurrentConnectionLabel(
+                serverPresent = activeServer != null,
+                switchingIsActive = connectionStatus?.switchingEnabled == true,
+                currentRoute = connectionStatus?.route,
+                effectiveBaseUrl = effectiveBaseUrl,
+                localBaseUrl = switchingConfig.lanBaseUrl,
+                remoteBaseUrl = switchingConfig.wanBaseUrl
+            ),
+            currentEndpointUrl = endpointHealth?.endpointUrl ?: effectiveBaseUrl.orEmpty(),
+            connectionStatusLabel = if (activeServer == null) "Not configured" else connectionStatusLabel,
+            connectionLatencyMs = endpointHealth?.latencyMs,
+            isBusy = isBusy,
+            errorMessage = errorMessage
+        )
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = NavidromeSettingsUiState()
         )
 
+    init {
+        refreshConnectionStatus()
+        viewModelScope.launch {
+            navidromeRepository.observeSession()
+                .map { it?.serverId }
+                .distinctUntilChanged()
+                .collect { serverId ->
+                    mutableLibraries.value = emptyList()
+                    if (serverId != null) {
+                        refreshLibraries(forceRefresh = false)
+                    }
+                }
+        }
+    }
+
     fun signOut() {
         viewModelScope.launch {
+            mutableBusyState.value = true
             navidromeRepository.signOut()
+            mutableLibraries.value = emptyList()
+            mutableBusyState.value = false
+        }
+    }
+
+    fun setActiveServer(serverId: String) {
+        if (mutableBusyState.value) return
+        viewModelScope.launch {
+            mutableBusyState.value = true
+            when (val result = navidromeRepository.setActiveServer(serverId)) {
+                is AppResult.Success -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = null
+                    refreshConnectionStatus()
+                    refreshLibraries(forceRefresh = false)
+                }
+
+                is AppResult.Error -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun updateServer(serverId: String, name: String, baseUrl: String) {
+        if (mutableBusyState.value) return
+        viewModelScope.launch {
+            mutableBusyState.value = true
+            when (val result = navidromeRepository.updateServer(serverId, name, baseUrl)) {
+                is AppResult.Success -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = null
+                    refreshConnectionStatus()
+                    refreshLibraries(forceRefresh = true)
+                }
+
+                is AppResult.Error -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun deleteServer(serverId: String) {
+        if (mutableBusyState.value) return
+        viewModelScope.launch {
+            mutableBusyState.value = true
+            when (val result = navidromeRepository.deleteServer(serverId)) {
+                is AppResult.Success -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = null
+                    refreshConnectionStatus()
+                    refreshLibraries(forceRefresh = false)
+                }
+
+                is AppResult.Error -> {
+                    mutableBusyState.value = false
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun setAutomaticServerSwitchingEnabled(enabled: Boolean) {
+        val state = uiState.value
+        val serverId = state.activeServerId ?: return
+        viewModelScope.launch {
+            when (
+                val result = navidromeRepository.updateServerEndpointSwitchingConfig(
+                    serverId = serverId,
+                    config = ServerEndpointSwitchingConfig(
+                        enabled = enabled,
+                        lanBaseUrl = state.lanServerUrl.ifBlank { null },
+                        wanBaseUrl = state.wanServerUrl.ifBlank { null }
+                    )
+                )
+            ) {
+                is AppResult.Success -> {
+                    mutableErrorMessage.value = null
+                    refreshConnectionStatus()
+                }
+
+                is AppResult.Error -> {
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun updateLanServerUrl(baseUrl: String) {
+        updateAdvancedServerUrl(target = ServerConnectionMode.Local, baseUrl = baseUrl)
+    }
+
+    fun updateWanServerUrl(baseUrl: String) {
+        updateAdvancedServerUrl(target = ServerConnectionMode.Remote, baseUrl = baseUrl)
+    }
+
+    fun clearError() {
+        mutableErrorMessage.value = null
+    }
+
+    fun setActiveLibrary(libraryId: String) {
+        viewModelScope.launch {
+            when (val result = navidromeRepository.setActiveLibrary(libraryId)) {
+                is AppResult.Success -> {
+                    mutableErrorMessage.value = null
+                }
+
+                is AppResult.Error -> {
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun refreshConnectionStatus() {
+        viewModelScope.launch {
+            when (val result = navidromeRepository.refreshActiveConnectionStatus()) {
+                is AppResult.Success -> {
+                    mutableErrorMessage.value = null
+                }
+
+                is AppResult.Error -> {
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun refreshLibraries(forceRefresh: Boolean = true) {
+        viewModelScope.launch {
+            when (val result = navidromeRepository.fetchLibraries(forceRefresh = forceRefresh)) {
+                is AppResult.Success -> {
+                    mutableLibraries.value = result.value
+                    mutableErrorMessage.value = null
+                }
+
+                is AppResult.Error -> {
+                    mutableLibraries.value = emptyList()
+                    mutableErrorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    private fun updateAdvancedServerUrl(target: ServerConnectionMode, baseUrl: String) {
+        val state = uiState.value
+        val serverId = state.activeServerId ?: return
+        val config = ServerEndpointSwitchingConfig(
+            enabled = state.automaticServerSwitchingEnabled,
+            lanBaseUrl = if (target == ServerConnectionMode.Local) {
+                baseUrl.ifBlank { null }
+            } else {
+                state.lanServerUrl.ifBlank { null }
+            },
+            wanBaseUrl = if (target == ServerConnectionMode.Remote) {
+                baseUrl.ifBlank { null }
+            } else {
+                state.wanServerUrl.ifBlank { null }
+            }
+        )
+        viewModelScope.launch {
+            when (val result = navidromeRepository.updateServerEndpointSwitchingConfig(serverId, config)) {
+                is AppResult.Success -> {
+                    mutableErrorMessage.value = null
+                    refreshConnectionStatus()
+                }
+
+                is AppResult.Error -> {
+                    mutableErrorMessage.value = result.message
+                }
+            }
         }
     }
 }
@@ -884,7 +1276,41 @@ class NavidromeAlbumDetailViewModel @Inject constructor(
 }
 
 data class NavidromeSettingsUiState(
-    val session: com.stillshelf.app.core.model.NavidromeSession? = null
+    val session: com.stillshelf.app.core.model.NavidromeSession? = null,
+    val savedServers: List<SettingsServerOption> = emptyList(),
+    val activeServerId: String? = null,
+    val availableLibraries: List<NavidromeLibrary> = emptyList(),
+    val activeLibraryId: String? = null,
+    val automaticServerSwitchingEnabled: Boolean = false,
+    val lanServerUrl: String = "",
+    val wanServerUrl: String = "",
+    val currentConnectionLabel: String = "",
+    val currentEndpointUrl: String = "",
+    val connectionStatusLabel: String = "Checking",
+    val connectionLatencyMs: Long? = null,
+    val isBusy: Boolean = false,
+    val errorMessage: String? = null
+)
+
+private fun parseHost(baseUrl: String): String {
+    return runCatching {
+        URI(baseUrl).host?.takeIf { it.isNotBlank() }
+    }.getOrNull() ?: baseUrl
+}
+
+private data class Quadruple<A, B, C, D>(
+    val session: A,
+    val servers: B,
+    val preferences: C,
+    val connectionStatus: D
+)
+
+private data class Quintuple<A, B, C, D, E>(
+    val session: A,
+    val servers: B,
+    val preferences: C,
+    val connectionStatus: D,
+    val endpointHealth: E
 )
 
 private fun NavidromeRadio.toTrack(): NavidromeTrack {

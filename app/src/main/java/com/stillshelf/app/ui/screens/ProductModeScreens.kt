@@ -74,26 +74,26 @@ fun BackendSelectionScreen(
         BackendSelectionCardState(
             provider = BackendProvider.AUDIOBOOKSHELF,
             eyebrow = if (hasAudiobookshelfSession) {
-                "Resume existing library"
+                "Audiobooks"
             } else {
-                "Current product mode"
+                "Audiobooks"
             },
             title = "Audiobookshelf",
-            description = "Long-form listening with libraries, chapters, bookmarks, sleep timer, and resume-first playback.",
+            description = "Listen to audiobooks with libraries, chapters, bookmarks, sleep timer, and resume support.",
             detail = if (hasAudiobookshelfSession) {
-                "Your active ABS session is still available on this branch."
+                "Your existing Audiobookshelf library and login are ready to use."
             } else {
-                "Uses the existing StillShelf login and library flow unchanged."
+                "Sign in to your Audiobookshelf server and keep the familiar StillShelf audiobook experience."
             },
             icon = Icons.Outlined.AutoStories,
             gradient = listOf(Color(0xFF1F2430), Color(0xFF3D4557))
         ),
         BackendSelectionCardState(
             provider = BackendProvider.NAVIDROME,
-            eyebrow = "Music mode",
+            eyebrow = "Music",
             title = "Navidrome",
-            description = "Music-first shell with artists, albums, playlists, queue behavior, and a separate listening flow.",
-            detail = "Connect directly to your Navidrome server and browse your real music library inside StillShelf.",
+            description = "Browse and play music with artists, albums, songs, playlists, radios, favorites, and queue support.",
+            detail = "Connect to your Navidrome server and listen to your music library inside StillShelf.",
             icon = Icons.Outlined.LibraryMusic,
             gradient = listOf(Color(0xFF0F5132), Color(0xFF198754))
         )
@@ -114,26 +114,12 @@ fun BackendSelectionScreen(
             .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        AssistChip(
-            onClick = {},
-            enabled = false,
-            label = { Text("One app shell, two product modes") },
-            colors = AssistChipDefaults.assistChipColors(
-                disabledContainerColor = MaterialTheme.colorScheme.surface,
-                disabledLabelColor = MaterialTheme.colorScheme.onSurface
-            )
-        )
-
         Text(
-            text = "Choose the backend this install should open into.",
-            style = MaterialTheme.typography.displaySmall
-        )
-        Text(
-            text = "Audiobookshelf stays intact. Navidrome gets its own prototype shell instead of being forced through the audiobook model.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = "Choose what you want to open",
+            style = MaterialTheme.typography.displaySmall,
+            fontWeight = FontWeight.SemiBold
         )
 
         cards.forEach { card ->
@@ -426,12 +412,12 @@ private fun BackendSelectionCard(
             modifier = Modifier
                 .clip(RoundedCornerShape(28.dp))
                 .background(brush = Brush.linearGradient(state.gradient))
-                .padding(20.dp)
+                .padding(18.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(44.dp)
                         .clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.14f)),
                     contentAlignment = Alignment.Center

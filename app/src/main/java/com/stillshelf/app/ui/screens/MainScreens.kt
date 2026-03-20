@@ -768,6 +768,28 @@ fun HomeScreen(
                                     )
                                 }
                             }
+                            if (menuUiState.servers.isNotEmpty()) {
+                                HorizontalDivider()
+                            }
+                            AppDropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Manage Servers",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Dns,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    isMenuExpanded = false
+                                    onNavigateToRoute(MainRoute.SERVERS)
+                                }
+                            )
                         }
                     }
                 }
@@ -5813,16 +5835,8 @@ fun ServersManagementScreen(
     var advancedUrlDialogTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
     var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
-    val sectionCardColor = if (routingUiState.materialDesignEnabled) {
-        MaterialTheme.colorScheme.surfaceContainerHigh
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-    val sectionCardBorder = if (routingUiState.materialDesignEnabled) {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
-    } else {
-        null
-    }
+    val sectionCardColor = MaterialTheme.colorScheme.surface
+    val sectionCardBorder: BorderStroke? = null
     val openUrl: (String) -> Unit = { url ->
         val normalizedUrl = url.trim()
         if (normalizedUrl.isNotBlank()) {
@@ -5846,7 +5860,7 @@ fun ServersManagementScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             BackTitle(
-                title = "Servers",
+                title = "Manage Servers",
                 onBackClick = onBackClick,
                 onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
@@ -5854,7 +5868,7 @@ fun ServersManagementScreen(
         }
 
         Card(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),
             border = sectionCardBorder
         ) {
@@ -5873,7 +5887,7 @@ fun ServersManagementScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.Person,
+                            imageVector = Icons.Outlined.Dns,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -5890,9 +5904,14 @@ fun ServersManagementScreen(
                             )
                         }
                         if (server.id == uiState.activeServerId) {
-                            Icon(imageVector = Icons.Filled.Check, contentDescription = "Active")
+                            Text(
+                                text = "Active",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 10.dp)
+                            )
                         }
-                        Box {
+                        Box(contentAlignment = Alignment.TopEnd) {
                             IconButton(onClick = { expandedServerMenuId = server.id }) {
                                 Icon(
                                     imageVector = Icons.Outlined.MoreHoriz,
@@ -5927,15 +5946,15 @@ fun ServersManagementScreen(
                     }
                 }
 
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
-                Text(
-                    text = "Add Server",
-                    style = MaterialTheme.typography.titleMedium,
+                Button(
+                    onClick = onAddServerClick,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(onClick = onAddServerClick)
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                )
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    shape = RoundedCornerShape(999.dp)
+                ) {
+                    Text("Add Server")
+                }
             }
         }
 

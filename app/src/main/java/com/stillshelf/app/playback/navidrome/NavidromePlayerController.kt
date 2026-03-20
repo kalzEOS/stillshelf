@@ -1,12 +1,21 @@
 package com.stillshelf.app.playback.navidrome
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -16,10 +25,15 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import coil.imageLoader
+import coil.request.ImageRequest
+import com.stillshelf.app.MainActivity
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.playback.notification.PlaybackActionReceiver
+import com.stillshelf.app.playback.service.PlaybackServiceController
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,6 +57,12 @@ class NavidromePlayerController @Inject constructor(
 ) {
     private companion object {
         const val MAX_RECENT_TRACKS = 7
+        const val CHANNEL_ID = "stillshelf_playback_v4"
+        const val NOTIFICATION_ID = 1101
+        const val ACTION_PLAY_PAUSE = "com.stillshelf.app.navidrome.playback.action.PLAY_PAUSE"
+        const val ACTION_PREVIOUS = "com.stillshelf.app.navidrome.playback.action.PREVIOUS"
+        const val ACTION_NEXT = "com.stillshelf.app.navidrome.playback.action.NEXT"
+        const val PAUSED_PLAYER_RELEASE_DELAY_MS = 8 * 60 * 1000L
     }
 
     private enum class OutputRefreshReason {
@@ -50,6 +70,20 @@ class NavidromePlayerController @Inject constructor(
         DeviceAdded,
         DeviceRemoved
     }
+
+    private data class NotificationSignature(
+        val trackId: String,
+        val title: String,
+        val artist: String,
+        val album: String,
+        val isPlaying: Boolean,
+        val hasArtwork: Boolean
+    )
+
+    private data class MediaArtworkPayload(
+        val trackId: String,
+        val bitmap: Bitmap?
+    )
 
     private data class OutputRouteCandidate(
         val routeKey: String,
@@ -69,6 +103,7 @@ class NavidromePlayerController @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var progressJob: Job? = null
+    private var pausedReleaseJob: Job? = null
     private var queueTracks: List<NavidromeTrack> = emptyList()
     private var recentTracks: List<NavidromeTrack> = emptyList()
     private var lastRecordedTrackId: String? = null
@@ -79,6 +114,11 @@ class NavidromePlayerController @Inject constructor(
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
+    private var artworkBitmap: Bitmap? = null
+    private var artworkTrackId: String? = null
+    private var artworkJob: Job? = null
+    private var lastNotificationSignature: NotificationSignature? = null
 
     private val playbackAudioAttributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
@@ -131,11 +171,8 @@ class NavidromePlayerController @Inject constructor(
         override fun onStop(owner: LifecycleOwner) {
             appInForeground = false
             stopProgressUpdates()
-            if (shouldSuspendForBackground()) {
-                suspendForBackground()
-            } else {
-                persistPlaybackSnapshot()
-            }
+            persistPlaybackSnapshot()
+            ensurePausedPlayerReleasePolicy()
         }
     }
 
@@ -143,6 +180,17 @@ class NavidromePlayerController @Inject constructor(
         appInForeground = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        mediaSession.setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+        mediaSession.setCallback(object : MediaSessionCompat.Callback() {
+            override fun onPlay() = play()
+            override fun onPause() = pause()
+            override fun onSkipToPrevious() = playPrevious()
+            override fun onSkipToNext() = playNext()
+        })
+        mediaSession.isActive = false
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         restorePlaybackSnapshot()
         ensureProgressUpdates()
@@ -247,22 +295,44 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun togglePlayPause() {
+        if (mutableState.value.isPlaying) {
+            pause()
+        } else {
+            play()
+        }
+    }
+
+    fun play() {
         if (queueTracks.isEmpty()) return
         val currentTrack = queueTracks.getOrNull(mutableState.value.currentIndex)
+        val activePlayer = player
         if (currentTrack != null && currentTrack.isRadioTrack()) {
-            restartOrStopRadio(currentTrack)
+            if (activePlayer?.isPlaying == true) return
+            resumeFromSnapshot(playWhenReady = true)
             return
         }
-        val activePlayer = player
         if (activePlayer == null) {
             resumeFromSnapshot(playWhenReady = true)
             return
         }
-        if (activePlayer.isPlaying) {
-            activePlayer.pause()
-        } else {
-            activePlayer.play()
+        if (activePlayer.isPlaying) return
+        activePlayer.play()
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
+    }
+
+    fun pause() {
+        if (queueTracks.isEmpty()) return
+        val currentTrack = queueTracks.getOrNull(mutableState.value.currentIndex)
+        val activePlayer = player ?: return
+        if (currentTrack != null && currentTrack.isRadioTrack()) {
+            if (!activePlayer.isPlaying) return
+            restartOrStopRadio(currentTrack)
+            return
         }
+        if (!activePlayer.isPlaying && activePlayer.playbackState != Player.STATE_BUFFERING) return
+        activePlayer.pause()
         updateStateFromPlayer()
         persistPlaybackSnapshot()
         ensureProgressUpdates()
@@ -317,6 +387,7 @@ class NavidromePlayerController @Inject constructor(
         lastRecordedTrackId = null
         releasePlayer(clearQueue = true)
         stopProgressUpdates()
+        clearPlaybackSurface()
         scope.launch(Dispatchers.IO) {
             sessionPreferences.clearCachedNavidromePlayback()
         }
@@ -325,6 +396,14 @@ class NavidromePlayerController @Inject constructor(
             outputDevices = mutableState.value.outputDevices,
             selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId
         )
+    }
+
+    fun handleExternalPlaybackAction(action: String) {
+        when (action) {
+            ACTION_PLAY_PAUSE -> togglePlayPause()
+            ACTION_PREVIOUS -> playPrevious()
+            ACTION_NEXT -> playNext()
+        }
     }
 
     fun seekTo(positionMs: Int) {
@@ -385,23 +464,6 @@ class NavidromePlayerController @Inject constructor(
             state.positionMs.coerceAtLeast(0)
         }
         startPlaybackAt(index = index, positionMs = positionMs, playWhenReady = playWhenReady)
-    }
-
-    private fun shouldSuspendForBackground(): Boolean {
-        val activePlayer = player ?: return queueTracks.isNotEmpty() && !mutableState.value.isPlaying
-        return queueTracks.isNotEmpty() &&
-            !activePlayer.isPlaying &&
-            activePlayer.playbackState != Player.STATE_BUFFERING
-    }
-
-    private fun suspendForBackground() {
-        updateStateFromPlayer()
-        persistPlaybackSnapshot()
-        releasePlayer(clearQueue = false)
-        mutableState.value = mutableState.value.copy(
-            isPlaying = false,
-            isLoading = false
-        )
     }
 
     private fun releasePlayer(clearQueue: Boolean) {
@@ -484,7 +546,7 @@ class NavidromePlayerController @Inject constructor(
 
     private fun startProgressUpdates() {
         if (progressJob?.isActive == true) return
-        progressJob = scope.launch {
+            progressJob = scope.launch {
             while (isActive) {
                 if (queueTracks.isNotEmpty()) {
                     updateStateFromPlayer()
@@ -499,6 +561,45 @@ class NavidromePlayerController @Inject constructor(
         progressJob = null
     }
 
+    private fun cancelPausedPlayerRelease() {
+        pausedReleaseJob?.cancel()
+        pausedReleaseJob = null
+    }
+
+    private fun ensurePausedPlayerReleasePolicy() {
+        val currentTrack = mutableState.value.currentTrack
+        val activePlayer = player
+        val shouldScheduleRelease = currentTrack != null &&
+            !currentTrack.isRadioTrack() &&
+            activePlayer != null &&
+            !activePlayer.isPlaying &&
+            activePlayer.playbackState != Player.STATE_BUFFERING
+        if (!shouldScheduleRelease) {
+            cancelPausedPlayerRelease()
+            return
+        }
+        if (pausedReleaseJob?.isActive == true) return
+        pausedReleaseJob = scope.launch {
+            delay(PAUSED_PLAYER_RELEASE_DELAY_MS.toLong())
+            val playerToRelease = player
+            val state = mutableState.value
+            val trackToRelease = state.currentTrack
+            val stillPaused = playerToRelease != null &&
+                trackToRelease != null &&
+                !trackToRelease.isRadioTrack() &&
+                !playerToRelease.isPlaying &&
+                playerToRelease.playbackState != Player.STATE_BUFFERING
+            if (!stillPaused) return@launch
+            persistPlaybackSnapshot()
+            releasePlayer(clearQueue = false)
+            mutableState.value = mutableState.value.copy(
+                isPlaying = false,
+                isLoading = false
+            )
+            updatePlaybackSurface()
+        }
+    }
+
     private fun ensureProgressUpdates() {
         val activePlayer = player
         val shouldRun = appInForeground &&
@@ -510,6 +611,7 @@ class NavidromePlayerController @Inject constructor(
         } else {
             stopProgressUpdates()
         }
+        ensurePausedPlayerReleasePolicy()
     }
 
     private fun updateStateFromPlayer() {
@@ -523,6 +625,7 @@ class NavidromePlayerController @Inject constructor(
                 outputDevices = mutableState.value.outputDevices,
                 selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId
             )
+            updatePlaybackSurface()
             ensureProgressUpdates()
             return
         }
@@ -563,6 +666,7 @@ class NavidromePlayerController @Inject constructor(
                 null
             }
         )
+        updatePlaybackSurface()
         ensureProgressUpdates()
     }
 
@@ -616,6 +720,184 @@ class NavidromePlayerController @Inject constructor(
 
     private fun NavidromeTrack?.isRadioTrack(): Boolean {
         return this?.id?.startsWith("radio:") == true
+    }
+
+    private fun updatePlaybackSurface() {
+        val state = mutableState.value
+        val currentTrack = state.currentTrack
+        val keepMediaSessionActive = currentTrack != null
+        val playbackState = PlaybackStateCompat.Builder()
+            .setActions(
+                PlaybackStateCompat.ACTION_PLAY or
+                    PlaybackStateCompat.ACTION_PAUSE or
+                    PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+            )
+            .setState(
+                when {
+                    currentTrack == null -> PlaybackStateCompat.STATE_NONE
+                    state.isLoading -> PlaybackStateCompat.STATE_BUFFERING
+                    state.isPlaying -> PlaybackStateCompat.STATE_PLAYING
+                    else -> PlaybackStateCompat.STATE_PAUSED
+                },
+                state.positionMs.toLong(),
+                if (state.isPlaying) 1f else 0f
+            )
+            .build()
+        mediaSession.setPlaybackState(playbackState)
+        mediaSession.isActive = keepMediaSessionActive
+
+        if (currentTrack == null) {
+            clearPlaybackSurface()
+            return
+        }
+
+        maybeLoadArtwork(currentTrack)
+        mediaSession.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTrack.title)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentTrack.artistName)
+                .putString(
+                    MediaMetadataCompat.METADATA_KEY_ALBUM,
+                    if (currentTrack.isRadioTrack()) "Internet Radio" else currentTrack.albumName
+                )
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, state.durationMs.toLong())
+                .apply {
+                    artworkBitmap?.let { bitmap ->
+                        putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+                        putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
+                        putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
+                    }
+                }
+                .build()
+        )
+
+        showPlaybackNotification(state, currentTrack)
+    }
+
+    private fun clearPlaybackSurface() {
+        cancelPausedPlayerRelease()
+        artworkJob?.cancel()
+        artworkJob = null
+        artworkBitmap = null
+        artworkTrackId = null
+        lastNotificationSignature = null
+        mediaSession.setMetadata(null)
+        mediaSession.isActive = false
+        PlaybackServiceController.stop(appContext)
+        NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+    }
+
+    private fun showPlaybackNotification(
+        state: NavidromePlayerState,
+        track: NavidromeTrack
+    ) {
+        val notificationSignature = NotificationSignature(
+            trackId = track.id,
+            title = track.title,
+            artist = track.artistName,
+            album = if (track.isRadioTrack()) "Internet Radio" else track.albumName,
+            isPlaying = state.isPlaying,
+            hasArtwork = artworkBitmap != null
+        )
+        if (notificationSignature == lastNotificationSignature) return
+
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            31,
+            Intent(appContext, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val previousIntent = PendingIntent.getBroadcast(
+            appContext,
+            32,
+            Intent(appContext, PlaybackActionReceiver::class.java).apply { action = ACTION_PREVIOUS },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val playPauseIntent = PendingIntent.getBroadcast(
+            appContext,
+            33,
+            Intent(appContext, PlaybackActionReceiver::class.java).apply { action = ACTION_PLAY_PAUSE },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val nextIntent = PendingIntent.getBroadcast(
+            appContext,
+            34,
+            Intent(appContext, PlaybackActionReceiver::class.java).apply { action = ACTION_NEXT },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(
+                if (state.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+            )
+            .setContentTitle(track.title)
+            .setContentText(track.artistName)
+            .setSubText(if (track.isRadioTrack()) "Internet Radio" else track.albumName)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(contentIntent)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setOngoing(state.isPlaying || state.isLoading)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setLargeIcon(artworkBitmap)
+            .addAction(android.R.drawable.ic_media_previous, "Previous", previousIntent)
+            .addAction(
+                if (state.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (state.isPlaying) "Pause" else "Play",
+                playPauseIntent
+            )
+            .addAction(android.R.drawable.ic_media_next, "Next", nextIntent)
+            .setStyle(
+                androidx.media.app.NotificationCompat.MediaStyle()
+                    .setMediaSession(mediaSession.sessionToken)
+                    .setShowActionsInCompactView(0, 1, 2)
+            )
+            .build()
+
+        runCatching {
+            PlaybackServiceController.startOrUpdate(appContext, notification)
+        }.onSuccess {
+            lastNotificationSignature = notificationSignature
+        }
+    }
+
+    private fun maybeLoadArtwork(track: NavidromeTrack) {
+        val coverUrl = track.coverUrl.orEmpty()
+        if (coverUrl.isBlank()) {
+            artworkJob?.cancel()
+            artworkJob = null
+            artworkTrackId = track.id
+            artworkBitmap = null
+            return
+        }
+        if (artworkTrackId == track.id && artworkBitmap != null) return
+        if (artworkJob?.isActive == true && artworkTrackId == track.id) return
+
+        artworkTrackId = track.id
+        artworkJob?.cancel()
+        artworkJob = scope.launch(Dispatchers.IO) {
+            val payload = runCatching {
+                val request = ImageRequest.Builder(appContext)
+                    .data(coverUrl)
+                    .allowHardware(false)
+                    .build()
+                MediaArtworkPayload(
+                    trackId = track.id,
+                    bitmap = appContext.imageLoader.execute(request).drawable?.toBitmap()
+                )
+            }.getOrDefault(MediaArtworkPayload(track.id, null))
+            scope.launch(Dispatchers.Main.immediate) {
+                if (artworkTrackId != payload.trackId) return@launch
+                artworkBitmap = payload.bitmap
+                updatePlaybackSurface()
+            }
+        }
     }
 
     private fun NavidromeTrack.toJson(): JSONObject {

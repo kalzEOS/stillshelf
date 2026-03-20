@@ -90,7 +90,13 @@ fun RootNavGraph(
             }
             composable(GraphRoute.NAVIDROME_AUTH) {
                 NavidromeLoginRoute(
-                    onSwitchMode = rootViewModel::clearSelectedBackend
+                    onSwitchMode = rootViewModel::clearSelectedBackend,
+                    onLoginSuccess = {
+                        navController.navigate(GraphRoute.NAVIDROME) {
+                            popUpTo(GraphRoute.NAVIDROME_AUTH) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
                 )
             }
             authNavGraph(

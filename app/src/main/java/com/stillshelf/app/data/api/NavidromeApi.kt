@@ -13,9 +13,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class NavidromeAuth(
+    val serverId: String = "",
+    val musicFolderId: String? = null,
     val baseUrl: String,
+    val canonicalBaseUrl: String = baseUrl,
     val username: String,
     val encPassword: String
+)
+
+data class NavidromeMusicFolderDto(
+    val id: String,
+    val name: String
 )
 
 data class NavidromeArtistDto(
@@ -87,6 +95,23 @@ data class NavidromeSearchDto(
 class NavidromeApi @Inject constructor(
     private val okHttpClient: OkHttpClient
 ) {
+    suspend fun testServerConnection(baseUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = normalizeBaseUrl(baseUrl).toHttpUrlOrNull()
+                ?: throw IOException("Invalid Navidrome URL.")
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (response.code >= 500) {
+                    throw IOException("Navidrome server test failed with HTTP ${response.code}.")
+                }
+            }
+            Unit
+        }
+    }
+
     suspend fun ping(
         baseUrl: String,
         username: String,
@@ -103,11 +128,40 @@ class NavidromeApi @Inject constructor(
         }
     }
 
+    suspend fun ping(auth: NavidromeAuth): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            execute(buildRequest(auth, "rest/ping.view"))
+            Unit
+        }
+    }
+
+    suspend fun measurePing(auth: NavidromeAuth): Result<Long> = withContext(Dispatchers.IO) {
+        runCatching {
+            val startedAtMs = System.currentTimeMillis()
+            execute(buildRequest(auth, "rest/ping.view"))
+            (System.currentTimeMillis() - startedAtMs).coerceAtLeast(1L)
+        }
+    }
+
     suspend fun getArtists(auth: NavidromeAuth): Result<List<NavidromeArtistDto>> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val root = execute(buildRequest(auth, "rest/getArtists.view"))
+                val root = execute(
+                    buildRequest(
+                        auth,
+                        "rest/getArtists.view",
+                        queryWithMusicFolder(auth)
+                    )
+                )
                 parseArtists(root)
+            }
+        }
+
+    suspend fun getMusicFolders(auth: NavidromeAuth): Result<List<NavidromeMusicFolderDto>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = execute(buildRequest(auth, "rest/getMusicFolders.view"))
+                parseMusicFolders(root.optJSONObject("musicFolders")?.optJSONArray("musicFolder"))
             }
         }
 
@@ -121,7 +175,8 @@ class NavidromeApi @Inject constructor(
                 buildRequest(
                     auth = auth,
                     path = "rest/getAlbumList2.view",
-                    query = mapOf(
+                    query = queryWithMusicFolder(
+                        auth,
                         "type" to type,
                         "size" to size.coerceIn(1, 100).toString()
                     )
@@ -206,7 +261,8 @@ class NavidromeApi @Inject constructor(
                 buildRequest(
                     auth = auth,
                     path = "rest/search3.view",
-                    query = mapOf(
+                    query = queryWithMusicFolder(
+                        auth,
                         "query" to query,
                         "artistCount" to artistCount.coerceIn(1, 25).toString(),
                         "albumCount" to albumCount.coerceIn(1, 50).toString(),
@@ -234,7 +290,8 @@ class NavidromeApi @Inject constructor(
                 buildRequest(
                     auth = auth,
                     path = "rest/search3.view",
-                    query = mapOf(
+                    query = queryWithMusicFolder(
+                        auth,
                         "query" to query,
                         "songCount" to songCount.coerceIn(1, 500).toString(),
                         "songOffset" to songOffset.coerceAtLeast(0).toString(),
@@ -362,6 +419,23 @@ class NavidromeApi @Inject constructor(
         )
     }
 
+    private fun parseMusicFolders(items: JSONArray?): List<NavidromeMusicFolderDto> {
+        if (items == null) return emptyList()
+        val results = mutableListOf<NavidromeMusicFolderDto>()
+        repeat(items.length()) { index ->
+            val item = items.optJSONObject(index) ?: return@repeat
+            val id = item.optString("id").trim()
+            val name = item.optString("name").trim()
+            if (id.isNotBlank()) {
+                results += NavidromeMusicFolderDto(
+                    id = id,
+                    name = name.ifBlank { "Library" }
+                )
+            }
+        }
+        return results
+    }
+
     private fun parseAlbumArray(items: JSONArray?): List<NavidromeAlbumDto> {
         if (items == null) return emptyList()
         val results = mutableListOf<NavidromeAlbumDto>()
@@ -472,5 +546,17 @@ class NavidromeApi @Inject constructor(
     private companion object {
         const val API_VERSION = "1.16.1"
         const val CLIENT_NAME = "stillshelf"
+    }
+
+    private fun queryWithMusicFolder(
+        auth: NavidromeAuth,
+        vararg pairs: Pair<String, String>
+    ): Map<String, String> {
+        val query = linkedMapOf<String, String>()
+        pairs.forEach { (key, value) ->
+            query[key] = value
+        }
+        auth.musicFolderId?.trim()?.takeIf { it.isNotBlank() }?.let { query["musicFolderId"] = it }
+        return query
     }
 }

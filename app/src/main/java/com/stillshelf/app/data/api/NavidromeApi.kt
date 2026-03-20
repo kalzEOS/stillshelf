@@ -26,6 +26,13 @@ data class NavidromeMusicFolderDto(
     val name: String
 )
 
+data class NavidromeScanStatusDto(
+    val scanning: Boolean,
+    val scannedCount: Int? = null,
+    val folderCount: Int? = null,
+    val lastScanLabel: String? = null
+)
+
 data class NavidromeArtistDto(
     val id: String,
     val name: String,
@@ -169,6 +176,34 @@ class NavidromeApi @Inject constructor(
                 parseMusicFolders(root.optJSONObject("musicFolders")?.optJSONArray("musicFolder"))
             }
         }
+
+    suspend fun getScanStatus(auth: NavidromeAuth): Result<NavidromeScanStatusDto> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = execute(buildRequest(auth, "rest/getScanStatus.view"))
+                parseScanStatus(root.optJSONObject("scanStatus"))
+            }
+        }
+
+    suspend fun startScan(
+        auth: NavidromeAuth,
+        fullScan: Boolean = false
+    ): Result<NavidromeScanStatusDto> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/startScan.view",
+                    query = if (fullScan) {
+                        listOf("fullScan" to "true")
+                    } else {
+                        emptyList()
+                    }
+                )
+            )
+            parseScanStatus(root.optJSONObject("scanStatus"))
+        }
+    }
 
     suspend fun getAlbumList(
         auth: NavidromeAuth,
@@ -624,6 +659,23 @@ class NavidromeApi @Inject constructor(
             name = item.optString("name").ifBlank { "Playlist" },
             songCount = item.takeIf { it.has("songCount") }?.optInt("songCount")?.takeIf { it >= 0 },
             durationSeconds = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it >= 0 }
+        )
+    }
+
+    private fun parseScanStatus(item: JSONObject?): NavidromeScanStatusDto {
+        if (item == null) {
+            return NavidromeScanStatusDto(scanning = false)
+        }
+        return NavidromeScanStatusDto(
+            scanning = item.optString("scanning").toBooleanStrictOrNull()
+                ?: item.optBoolean("scanning", false),
+            scannedCount = item.optString("count")
+                .toIntOrNull()
+                ?: item.takeIf { it.has("count") }?.optInt("count")?.takeIf { it >= 0 },
+            folderCount = item.optString("folderCount")
+                .toIntOrNull()
+                ?: item.takeIf { it.has("folderCount") }?.optInt("folderCount")?.takeIf { it >= 0 },
+            lastScanLabel = item.optString("lastScan").trim().ifBlank { null }
         )
     }
 

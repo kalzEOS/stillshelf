@@ -4717,6 +4717,7 @@ fun SettingsScreen(
     onManageServers: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -4755,7 +4756,8 @@ fun SettingsScreen(
     ) {
         BackTitle(
             title = "Settings",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
 
         Text(

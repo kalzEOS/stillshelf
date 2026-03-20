@@ -8,12 +8,15 @@ import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeLibrary
+import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
 import com.stillshelf.app.core.model.NavidromeServer
+import com.stillshelf.app.core.model.NavidromeServerScanProgress
+import com.stillshelf.app.core.model.NavidromeServerScanStatus
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.EndpointReachabilityStatus
 import com.stillshelf.app.core.model.ServerConnectionMode
@@ -39,6 +42,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 data class NavidromeLoginUiState(
@@ -860,23 +864,14 @@ class NavidromePlaylistPickerViewModel @Inject constructor(
                         .firstOrNull { it.id == playlistId }
                         ?.name
                         ?: "playlist"
-                    val actionMessage = if (result.value.addedCount == 0) {
-                        if (result.value.duplicateCount == 1) {
-                            "This song is already in \"$playlistName\""
-                        } else {
-                            "All selected songs are already in \"$playlistName\""
-                        }
-                    } else if (result.value.duplicateCount > 0) {
-                        "Added ${result.value.addedCount} songs to \"$playlistName\". ${result.value.duplicateCount} already there"
-                    } else if (result.value.addedCount == 1) {
-                        "Added to \"$playlistName\""
-                    } else {
-                        "Added ${result.value.addedCount} songs to \"$playlistName\""
-                    }
                     mutableUiState.update {
                         it.copy(
                             isSubmitting = false,
-                            actionMessage = actionMessage
+                            actionMessage = buildNavidromePlaylistAddMessage(
+                                playlistName = playlistName,
+                                addedCount = result.value.addedCount,
+                                duplicateCount = result.value.duplicateCount
+                            )
                         )
                     }
                     loadPlaylists(forceRefresh = true, showLoader = false)
@@ -945,6 +940,26 @@ class NavidromePlaylistPickerViewModel @Inject constructor(
 
     fun clearMessages() {
         mutableUiState.update { it.copy(actionMessage = null, errorMessage = null) }
+    }
+}
+
+internal fun buildNavidromePlaylistAddMessage(
+    playlistName: String,
+    addedCount: Int,
+    duplicateCount: Int
+): String {
+    return if (addedCount == 0) {
+        if (duplicateCount == 1) {
+            "This song is already in \"$playlistName\""
+        } else {
+            "All selected songs are already in \"$playlistName\""
+        }
+    } else if (duplicateCount > 0) {
+        "Added $addedCount songs to \"$playlistName\". $duplicateCount already there"
+    } else if (addedCount == 1) {
+        "Added to \"$playlistName\""
+    } else {
+        "Added $addedCount songs to \"$playlistName\""
     }
 }
 
@@ -1243,9 +1258,7 @@ class NavidromeSettingsViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
-    private val mutableErrorMessage = MutableStateFlow<String?>(null)
-    private val mutableBusyState = MutableStateFlow(false)
-    private val mutableLibraries = MutableStateFlow<List<NavidromeLibrary>>(emptyList())
+    private val mutableLocalState = MutableStateFlow(NavidromeSettingsLocalState())
 
     val uiState: StateFlow<NavidromeSettingsUiState> = combine(
         combine(
@@ -1257,10 +1270,8 @@ class NavidromeSettingsViewModel @Inject constructor(
         ) { session, servers, preferences, connectionStatus, endpointHealth ->
             Quintuple(session, servers, preferences, connectionStatus, endpointHealth)
         },
-        mutableLibraries,
-        mutableErrorMessage,
-        mutableBusyState
-    ) { upstream, libraries, errorMessage, isBusy ->
+        mutableLocalState
+    ) { upstream, localState ->
         val session = upstream.session
         val servers = upstream.servers
         val preferences = upstream.preferences
@@ -1288,7 +1299,7 @@ class NavidromeSettingsViewModel @Inject constructor(
                 )
             },
             activeServerId = activeServerId,
-            availableLibraries = libraries,
+            availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
             automaticServerSwitchingEnabled = switchingConfig.enabled,
             lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
@@ -1304,8 +1315,13 @@ class NavidromeSettingsViewModel @Inject constructor(
             currentEndpointUrl = endpointHealth?.endpointUrl ?: effectiveBaseUrl.orEmpty(),
             connectionStatusLabel = if (activeServer == null) "Not configured" else connectionStatusLabel,
             connectionLatencyMs = endpointHealth?.latencyMs,
-            isBusy = isBusy,
-            errorMessage = errorMessage
+            lastLibrarySyncAtMs = preferences.lastLibrarySyncAtMs,
+            isBusy = localState.isBusy,
+            resyncProgress = localState.resyncProgress,
+            serverScanProgress = localState.serverScanProgress,
+            showServerScanProgressDialog = localState.showServerScanProgressDialog,
+            syncToastMessage = localState.syncToastMessage,
+            errorMessage = localState.errorMessage
         )
     }
         .stateIn(
@@ -1321,7 +1337,7 @@ class NavidromeSettingsViewModel @Inject constructor(
                 .map { it?.serverId }
                 .distinctUntilChanged()
                 .collect { serverId ->
-                    mutableLibraries.value = emptyList()
+                    mutableLocalState.update { it.copy(libraries = emptyList()) }
                     if (serverId != null) {
                         refreshLibraries(forceRefresh = false)
                     }
@@ -1331,68 +1347,234 @@ class NavidromeSettingsViewModel @Inject constructor(
 
     fun signOut() {
         viewModelScope.launch {
-            mutableBusyState.value = true
+            mutableLocalState.update { it.copy(isBusy = true) }
             navidromeRepository.signOut()
-            mutableLibraries.value = emptyList()
-            mutableBusyState.value = false
+            mutableLocalState.update {
+                it.copy(
+                    isBusy = false,
+                    libraries = emptyList()
+                )
+            }
         }
     }
 
-    fun setActiveServer(serverId: String) {
-        if (mutableBusyState.value) return
+    fun onResyncLibraryClick() {
+        if (mutableLocalState.value.isBusy) return
         viewModelScope.launch {
-            mutableBusyState.value = true
+            mutableLocalState.update {
+                it.copy(
+                    isBusy = true,
+                    syncToastMessage = null,
+                    resyncProgress = NavidromeLibraryResyncProgress(
+                        title = "Preparing resync",
+                        detail = "Refreshing Navidrome data from the server.",
+                        completedSteps = 0,
+                        totalSteps = 5
+                    )
+                )
+            }
+            when (
+                val result = navidromeRepository.resyncLibrary { progress ->
+                    mutableLocalState.update { state -> state.copy(resyncProgress = progress) }
+                }
+            ) {
+                is AppResult.Success -> {
+                    val syncedAtMs = System.currentTimeMillis()
+                    sessionPreferences.setLastLibrarySyncAtMs(syncedAtMs)
+                    mutableLocalState.update {
+                        it.copy(
+                            libraries = result.value,
+                            errorMessage = null,
+                            syncToastMessage = "Library resynced",
+                            isBusy = false,
+                            resyncProgress = null
+                        )
+                    }
+                    refreshConnectionStatus()
+                }
+
+                is AppResult.Error -> {
+                    mutableLocalState.update {
+                        it.copy(
+                            errorMessage = result.message,
+                            syncToastMessage = "Resync failed",
+                            isBusy = false,
+                            resyncProgress = null
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun onTriggerServerScanClick() {
+        if (mutableLocalState.value.isBusy || mutableLocalState.value.serverScanProgress?.isRunning == true) return
+        viewModelScope.launch {
+            mutableLocalState.update {
+                it.copy(
+                    isBusy = true,
+                    syncToastMessage = null,
+                    serverScanProgress = NavidromeServerScanProgress(
+                        title = "Starting server scan",
+                        detail = "Asking Navidrome to scan the server library.",
+                        isRunning = true
+                    ),
+                    showServerScanProgressDialog = true
+                )
+            }
+            when (val startResult = navidromeRepository.triggerServerScan(fullScan = false)) {
+                is AppResult.Success -> {
+                    var status = startResult.value
+                    mutableLocalState.update {
+                        it.copy(
+                            isBusy = false,
+                            serverScanProgress = status.toProgress(detail = buildServerScanDetail(status))
+                        )
+                    }
+                    var pollCount = 0
+                    while (status.scanning && pollCount < SERVER_SCAN_MAX_POLLS) {
+                        delay(SERVER_SCAN_POLL_DELAY_MS)
+                        when (val statusResult = navidromeRepository.fetchServerScanStatus()) {
+                            is AppResult.Success -> {
+                                status = statusResult.value
+                                mutableLocalState.update {
+                                    it.copy(
+                                        serverScanProgress = status.toProgress(
+                                            detail = buildServerScanDetail(status)
+                                        )
+                                    )
+                                }
+                            }
+
+                            is AppResult.Error -> {
+                                mutableLocalState.update {
+                                    it.copy(
+                                        errorMessage = statusResult.message,
+                                        syncToastMessage = "Unable to track server scan",
+                                        serverScanProgress = NavidromeServerScanProgress(
+                                            title = "Server scan started",
+                                            detail = "Navidrome started scanning, but the app could not keep tracking the status.",
+                                            status = status,
+                                            isRunning = false
+                                        ),
+                                        isBusy = false
+                                    )
+                                }
+                                return@launch
+                            }
+                        }
+                        pollCount += 1
+                    }
+                    if (status.scanning) {
+                        mutableLocalState.update {
+                            it.copy(
+                                serverScanProgress = NavidromeServerScanProgress(
+                                    title = "Server scan still running",
+                                    detail = "Navidrome is still scanning. You can close this window and resync the app library after the scan finishes.",
+                                    status = status,
+                                    isRunning = false
+                                ),
+                                syncToastMessage = "Server scan is still running"
+                            )
+                        }
+                    } else {
+                        mutableLocalState.update {
+                            it.copy(
+                                serverScanProgress = NavidromeServerScanProgress(
+                                    title = "Server scan finished",
+                                    detail = "Navidrome finished scanning. Use Resync Library to pull the fresh changes into the app.",
+                                    status = status,
+                                    isRunning = false
+                                ),
+                                syncToastMessage = "Server scan finished"
+                            )
+                        }
+                    }
+                    mutableLocalState.update { it.copy(errorMessage = null, isBusy = false) }
+                    refreshConnectionStatus()
+                }
+
+                is AppResult.Error -> {
+                    mutableLocalState.update {
+                        it.copy(
+                            errorMessage = startResult.message,
+                            syncToastMessage = "Server scan failed",
+                            serverScanProgress = null,
+                            showServerScanProgressDialog = false,
+                            isBusy = false
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissServerScanProgress() {
+        mutableLocalState.update { state ->
+            if (state.serverScanProgress?.isRunning == true) {
+                state.copy(showServerScanProgressDialog = false)
+            } else {
+                state.copy(
+                    showServerScanProgressDialog = false,
+                    serverScanProgress = null
+                )
+            }
+        }
+    }
+
+    fun consumeSyncToastMessage() {
+        mutableLocalState.update { it.copy(syncToastMessage = null) }
+    }
+
+    fun setActiveServer(serverId: String) {
+        if (mutableLocalState.value.isBusy) return
+        viewModelScope.launch {
+            mutableLocalState.update { it.copy(isBusy = true) }
             when (val result = navidromeRepository.setActiveServer(serverId)) {
                 is AppResult.Success -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = null) }
                     refreshConnectionStatus()
                     refreshLibraries(forceRefresh = false)
                 }
 
                 is AppResult.Error -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = result.message) }
                 }
             }
         }
     }
 
     fun updateServer(serverId: String, name: String, baseUrl: String) {
-        if (mutableBusyState.value) return
+        if (mutableLocalState.value.isBusy) return
         viewModelScope.launch {
-            mutableBusyState.value = true
+            mutableLocalState.update { it.copy(isBusy = true) }
             when (val result = navidromeRepository.updateServer(serverId, name, baseUrl)) {
                 is AppResult.Success -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = null) }
                     refreshConnectionStatus()
                     refreshLibraries(forceRefresh = true)
                 }
 
                 is AppResult.Error -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = result.message) }
                 }
             }
         }
     }
 
     fun deleteServer(serverId: String) {
-        if (mutableBusyState.value) return
+        if (mutableLocalState.value.isBusy) return
         viewModelScope.launch {
-            mutableBusyState.value = true
+            mutableLocalState.update { it.copy(isBusy = true) }
             when (val result = navidromeRepository.deleteServer(serverId)) {
                 is AppResult.Success -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = null) }
                     refreshConnectionStatus()
                     refreshLibraries(forceRefresh = false)
                 }
 
                 is AppResult.Error -> {
-                    mutableBusyState.value = false
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = result.message) }
                 }
             }
         }
@@ -1413,12 +1595,12 @@ class NavidromeSettingsViewModel @Inject constructor(
                 )
             ) {
                 is AppResult.Success -> {
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(errorMessage = null) }
                     refreshConnectionStatus()
                 }
 
                 is AppResult.Error -> {
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(errorMessage = result.message) }
                 }
             }
         }
@@ -1433,18 +1615,18 @@ class NavidromeSettingsViewModel @Inject constructor(
     }
 
     fun clearError() {
-        mutableErrorMessage.value = null
+        mutableLocalState.update { it.copy(errorMessage = null) }
     }
 
     fun setActiveLibrary(libraryId: String) {
         viewModelScope.launch {
             when (val result = navidromeRepository.setActiveLibrary(libraryId)) {
                 is AppResult.Success -> {
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(errorMessage = null) }
                 }
 
                 is AppResult.Error -> {
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(errorMessage = result.message) }
                 }
             }
         }
@@ -1454,11 +1636,11 @@ class NavidromeSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = navidromeRepository.refreshActiveConnectionStatus()) {
                 is AppResult.Success -> {
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(errorMessage = null) }
                 }
 
                 is AppResult.Error -> {
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(errorMessage = result.message) }
                 }
             }
         }
@@ -1468,13 +1650,21 @@ class NavidromeSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = navidromeRepository.fetchLibraries(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
-                    mutableLibraries.value = result.value
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update {
+                        it.copy(
+                            libraries = result.value,
+                            errorMessage = null
+                        )
+                    }
                 }
 
                 is AppResult.Error -> {
-                    mutableLibraries.value = emptyList()
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update {
+                        it.copy(
+                            libraries = emptyList(),
+                            errorMessage = result.message
+                        )
+                    }
                 }
             }
         }
@@ -1499,12 +1689,12 @@ class NavidromeSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = navidromeRepository.updateServerEndpointSwitchingConfig(serverId, config)) {
                 is AppResult.Success -> {
-                    mutableErrorMessage.value = null
+                    mutableLocalState.update { it.copy(errorMessage = null) }
                     refreshConnectionStatus()
                 }
 
                 is AppResult.Error -> {
-                    mutableErrorMessage.value = result.message
+                    mutableLocalState.update { it.copy(errorMessage = result.message) }
                 }
             }
         }
@@ -1855,9 +2045,41 @@ data class NavidromeSettingsUiState(
     val currentEndpointUrl: String = "",
     val connectionStatusLabel: String = "Checking",
     val connectionLatencyMs: Long? = null,
+    val lastLibrarySyncAtMs: Long? = null,
     val isBusy: Boolean = false,
+    val resyncProgress: NavidromeLibraryResyncProgress? = null,
+    val serverScanProgress: NavidromeServerScanProgress? = null,
+    val showServerScanProgressDialog: Boolean = false,
+    val syncToastMessage: String? = null,
     val errorMessage: String? = null
 )
+
+private fun NavidromeServerScanStatus.toProgress(detail: String): NavidromeServerScanProgress {
+    return NavidromeServerScanProgress(
+        title = if (scanning) "Server scan in progress" else "Server scan finished",
+        detail = detail,
+        status = this,
+        isRunning = scanning
+    )
+}
+
+private fun buildServerScanDetail(status: NavidromeServerScanStatus): String {
+    if (!status.scanning) {
+        return "Navidrome is not currently scanning."
+    }
+    val progressBits = buildList {
+        status.scannedCount?.let { add("$it scanned") }
+        status.folderCount?.let { add("$it folders") }
+    }
+    return if (progressBits.isEmpty()) {
+        "Navidrome is scanning the server library."
+    } else {
+        "Navidrome is scanning the server library. ${progressBits.joinToString(" • ")}"
+    }
+}
+
+private const val SERVER_SCAN_POLL_DELAY_MS = 1_500L
+private const val SERVER_SCAN_MAX_POLLS = 120
 
 private fun parseHost(baseUrl: String): String {
     return runCatching {
@@ -1878,6 +2100,16 @@ private data class Quintuple<A, B, C, D, E>(
     val preferences: C,
     val connectionStatus: D,
     val endpointHealth: E
+)
+
+private data class NavidromeSettingsLocalState(
+    val libraries: List<NavidromeLibrary> = emptyList(),
+    val errorMessage: String? = null,
+    val isBusy: Boolean = false,
+    val syncToastMessage: String? = null,
+    val resyncProgress: NavidromeLibraryResyncProgress? = null,
+    val serverScanProgress: NavidromeServerScanProgress? = null,
+    val showServerScanProgressDialog: Boolean = false
 )
 
 private fun NavidromeRadio.toTrack(): NavidromeTrack {

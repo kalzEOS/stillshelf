@@ -20,6 +20,27 @@ data class NavidromeLibrary(
     val name: String
 )
 
+data class NavidromeLibraryResyncProgress(
+    val title: String,
+    val detail: String,
+    val completedSteps: Int,
+    val totalSteps: Int
+)
+
+data class NavidromeServerScanStatus(
+    val scanning: Boolean,
+    val scannedCount: Int? = null,
+    val folderCount: Int? = null,
+    val lastScanLabel: String? = null
+)
+
+data class NavidromeServerScanProgress(
+    val title: String,
+    val detail: String,
+    val status: NavidromeServerScanStatus? = null,
+    val isRunning: Boolean = true
+)
+
 data class NavidromeArtist(
     val id: String,
     val name: String,

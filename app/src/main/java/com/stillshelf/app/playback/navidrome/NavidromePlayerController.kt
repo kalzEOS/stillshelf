@@ -63,6 +63,10 @@ class NavidromePlayerController @Inject constructor(
         const val ACTION_PREVIOUS = "com.stillshelf.app.navidrome.playback.action.PREVIOUS"
         const val ACTION_NEXT = "com.stillshelf.app.navidrome.playback.action.NEXT"
         const val PAUSED_PLAYER_RELEASE_DELAY_MS = 8 * 60 * 1000L
+        const val OUTPUT_SWITCH_RESTORE_DELAY_MS = 220L
+        const val SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS = 450L
+        const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
+        const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
     }
 
     private enum class OutputRefreshReason {
@@ -104,6 +108,7 @@ class NavidromePlayerController @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var progressJob: Job? = null
     private var pausedReleaseJob: Job? = null
+    private var outputRecoveryJob: Job? = null
     private var queueTracks: List<NavidromeTrack> = emptyList()
     private var recentTracks: List<NavidromeTrack> = emptyList()
     private var lastRecordedTrackId: String? = null
@@ -231,27 +236,15 @@ class NavidromePlayerController @Inject constructor(
             refreshAudioOutputs()
             return true
         }
-        if (deviceId == null) {
-            applySystemDefaultOutputRouting(activePlayer)
-        } else {
-            applySystemDefaultOutputRouting(activePlayer)
-            val speakerTarget = isSpeakerOutputDevice(deviceId)
-            var applied = if (speakerTarget) {
-                applyOutputViaAudioManagerFallback(deviceId)
-            } else {
-                applyPreferredOutputForDisplayedId(activePlayer, deviceId)
-            }
-            if (!applied) {
-                applied = if (speakerTarget) {
-                    applyPreferredOutputForDisplayedId(activePlayer, deviceId)
-                } else {
-                    applyOutputViaAudioManagerFallback(deviceId)
-                }
-            }
-            if (!applied) {
-                refreshAudioOutputs()
-                return false
-            }
+        val speakerTarget = deviceId?.let(::isSpeakerOutputDevice) == true
+        val applied = performMutedOutputSwitch(
+            player = activePlayer,
+            block = { applyTargetedOutputRouting(activePlayer, deviceId) },
+            toSpeakerRoute = speakerTarget
+        )
+        if (!applied) {
+            refreshAudioOutputs()
+            return false
         }
         refreshAudioOutputs()
         return true
@@ -514,6 +507,7 @@ class NavidromePlayerController @Inject constructor(
         val activePlayer = player
         if (activePlayer != null) {
             stopProgressUpdates()
+            cancelOutputRecovery()
             runCatching { activePlayer.removeListener(playerListener) }
             runCatching { activePlayer.release() }
             player = null
@@ -1268,6 +1262,110 @@ class NavidromePlayerController @Inject constructor(
                 true
             }.getOrDefault(false)
         }
+    }
+
+    private fun applyTargetedOutputRouting(player: ExoPlayer, deviceId: Int?): Boolean {
+        if (deviceId == null) {
+            return applySystemDefaultOutputRouting(player)
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
+        return if (speakerTarget) {
+            prepareForSpeakerPreferredRouting(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        } else {
+            clearSpeakerRouteOverride(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        }
+    }
+
+    private fun performMutedOutputSwitch(player: ExoPlayer, block: () -> Boolean, toSpeakerRoute: Boolean): Boolean {
+        cancelOutputRecovery()
+        val originalVolume = player.volume
+        val shouldResumePlayback = player.isPlaying || player.playWhenReady
+        if (shouldResumePlayback) {
+            runCatching { player.pause() }
+        }
+        runCatching { player.volume = 0f }
+        val applied = block()
+        scheduleOutputSwitchRecovery(player, originalVolume, shouldResumePlayback, toSpeakerRoute)
+        return applied
+    }
+
+    private fun scheduleOutputSwitchRecovery(
+        player: ExoPlayer,
+        volume: Float,
+        shouldResumePlayback: Boolean,
+        toSpeakerRoute: Boolean
+    ) {
+        outputRecoveryJob = scope.launch {
+            delay(if (toSpeakerRoute) SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS else OUTPUT_SWITCH_RESTORE_DELAY_MS)
+            if (this@NavidromePlayerController.player !== player) {
+                outputRecoveryJob = null
+                return@launch
+            }
+            if (shouldResumePlayback) {
+                runCatching { player.play() }
+            }
+            if (toSpeakerRoute) {
+                val targetVolume = volume.coerceAtLeast(0f)
+                repeat(SPEAKER_OUTPUT_VOLUME_RAMP_STEPS) { step ->
+                    if (this@NavidromePlayerController.player !== player) {
+                        outputRecoveryJob = null
+                        return@launch
+                    }
+                    val progress = (step + 1).toFloat() / SPEAKER_OUTPUT_VOLUME_RAMP_STEPS.toFloat()
+                    runCatching { player.volume = targetVolume * progress }
+                    if (step < SPEAKER_OUTPUT_VOLUME_RAMP_STEPS - 1) {
+                        delay(SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS)
+                    }
+                }
+            } else {
+                runCatching { player.volume = volume }
+            }
+            outputRecoveryJob = null
+        }
+    }
+
+    private fun cancelOutputRecovery() {
+        outputRecoveryJob?.cancel()
+        outputRecoveryJob = null
+    }
+
+    private fun clearPreferredOutputOverride(player: ExoPlayer): Boolean {
+        return runCatching {
+            player.setPreferredAudioDevice(null)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearCommunicationRouteOverride(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return runCatching {
+            audioManager.clearCommunicationDevice()
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearSpeakerRouteOverride(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputOverride(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
+    }
+
+    private fun prepareForSpeakerPreferredRouting(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputOverride(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
     }
 
     private fun applyOutputViaAudioManagerFallback(displayedDeviceId: Int): Boolean {

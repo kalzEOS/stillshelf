@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
@@ -21,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -53,6 +55,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -122,6 +126,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -178,11 +183,14 @@ import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeLibrary
+import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeRadio
+import com.stillshelf.app.core.model.NavidromeServerScanProgress
+import com.stillshelf.app.core.model.NavidromeServerScanStatus
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
@@ -204,6 +212,8 @@ import java.net.URI
 import java.util.Locale
 import androidx.compose.material3.rememberModalBottomSheetState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -3501,6 +3511,32 @@ private fun NavidromeSettingsRoute(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var signOutDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var resyncDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var serverScanDialogVisible by rememberSaveable { mutableStateOf(false) }
+    val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+    val lastSyncedValue = uiState.lastLibrarySyncAtMs
+        ?.let { timestamp -> "Last synced ${formatNavidromeLastSyncedTimestamp(timestamp)}" }
+    val activeServerName = uiState.savedServers.firstOrNull { it.id == uiState.activeServerId }?.name
+        ?: uiState.session?.serverName
+        ?: "Navidrome"
+
+    LaunchedEffect(uiState.syncToastMessage) {
+        val toastMessage = uiState.syncToastMessage ?: return@LaunchedEffect
+        Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+        viewModel.consumeSyncToastMessage()
+    }
+
     StandardTopScreen(
         title = "Settings",
         onBack = onBack,
@@ -3508,7 +3544,18 @@ private fun NavidromeSettingsRoute(
         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
     ) {
         item {
-            GroupedSettingsCard {
+            Text(
+                text = "APPEARANCE",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
                 SettingsSwitchRow(
                     title = "Material Design",
                     checked = appearanceUiState.navidromeMaterialDesignEnabled,
@@ -3541,28 +3588,143 @@ private fun NavidromeSettingsRoute(
             }
         }
         item {
-            GroupedSettingsCard {
-                SettingsRow(
-                    icon = Icons.Outlined.Dns,
-                    title = "Manage servers",
-                    subtitle = "Add, edit, remove, and route Navidrome servers.",
+            Text(
+                text = "SESSION",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Manage Servers",
                     onClick = onOpenServers
                 )
                 DividerLine()
-                SettingsRow(
-                    icon = Icons.Outlined.SwapHoriz,
-                    title = "Switch product mode",
-                    subtitle = "Return to the backend chooser.",
+                NavidromeSyncStatusRow(
+                    title = "Resync Library",
+                    subtitle = lastSyncedValue,
+                    onClick = { resyncDialogVisible = true }
+                )
+                DividerLine()
+                NavidromeSyncStatusRow(
+                    title = "Trigger Server Scan",
+                    subtitle = "Ask Navidrome to scan for new or changed files.",
+                    onClick = { serverScanDialogVisible = true }
+                )
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Switch Product Mode",
                     onClick = onSwitchMode
                 )
                 DividerLine()
-                SettingsRow(
-                    icon = Icons.Outlined.Settings,
-                    title = "Sign out of Navidrome",
-                    subtitle = "Clear this music session on the device.",
-                    onClick = viewModel::signOut
+                NavidromeSettingsRow(
+                    title = "Sign Out",
+                    onClick = { signOutDialogVisible = true }
                 )
             }
+        }
+
+        if (resyncDialogVisible) {
+            item {
+                AlertDialog(
+                    onDismissRequest = { resyncDialogVisible = false },
+                    title = { Text("Resync library?") },
+                    text = {
+                        Text(
+                            "This refreshes the app's Navidrome library data from the server. It does not trigger a server-side filesystem scan."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                resyncDialogVisible = false
+                                viewModel.onResyncLibraryClick()
+                            }
+                        ) {
+                            Text("Resync")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { resyncDialogVisible = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+        }
+
+        if (serverScanDialogVisible) {
+            item {
+                AlertDialog(
+                    onDismissRequest = { serverScanDialogVisible = false },
+                    title = { Text("Trigger server scan?") },
+                    text = {
+                        Text(
+                            "This asks Navidrome to scan its server library for new or changed music files. It does not refresh the app library by itself."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                serverScanDialogVisible = false
+                                viewModel.onTriggerServerScanClick()
+                            }
+                        ) {
+                            Text("Scan")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { serverScanDialogVisible = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+        }
+
+        if (signOutDialogVisible) {
+            item {
+                AlertDialog(
+                    onDismissRequest = { signOutDialogVisible = false },
+                    title = { Text("Sign out of server?") },
+                    text = {
+                        Text("You will be signed out from $activeServerName.")
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                signOutDialogVisible = false
+                                viewModel.signOut()
+                            }
+                        ) {
+                            Text("Sign Out")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { signOutDialogVisible = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    uiState.resyncProgress?.let { progress ->
+        NavidromeResyncProgressDialog(progress = progress)
+    }
+
+    if (uiState.showServerScanProgressDialog) {
+        uiState.serverScanProgress?.let { progress ->
+        NavidromeServerScanDialog(
+            progress = progress,
+            onDismiss = viewModel::dismissServerScanProgress
+        )
         }
     }
 }
@@ -5467,19 +5629,36 @@ private fun TrackRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            if (trailingContent != null) {
-                trailingContent()
-            } else if (isCurrent) {
-                Text(
-                    text = if (isPlaying) "Playing" else "Paused",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFFF5A5F)
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Outlined.PlayArrow,
-                    contentDescription = null
-                )
+            when {
+                trailingContent != null && isCurrent -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isPlaying) "Playing" else "Paused",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFF5A5F)
+                        )
+                        trailingContent()
+                    }
+                }
+                trailingContent != null -> {
+                    trailingContent()
+                }
+                isCurrent -> {
+                    Text(
+                        text = if (isPlaying) "Playing" else "Paused",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFF5A5F)
+                    )
+                }
+                else -> {
+                    Icon(
+                        imageVector = Icons.Outlined.PlayArrow,
+                        contentDescription = null
+                    )
+                }
             }
         }
         DividerLine()
@@ -5613,11 +5792,14 @@ private fun SettingsRow(
 
 @Composable
 private fun GroupedSettingsCard(
+    containerColor: Color = MaterialTheme.colorScheme.surface,
+    border: BorderStroke? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = border
     ) {
         Column(content = content)
     }
@@ -5714,6 +5896,131 @@ private fun SettingsSwitchRow(
             onCheckedChange = if (enabled) onCheckedChange else null
         )
     }
+}
+
+@Composable
+private fun NavidromeSyncStatusRow(
+    title: String,
+    subtitle: String?,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        subtitle?.takeIf { it.isNotBlank() }?.let { value ->
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavidromeResyncProgressDialog(
+    progress: NavidromeLibraryResyncProgress
+) {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Resyncing library") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = progress.title,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = progress.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Text(
+                    text = "Step ${(progress.completedSteps + 1).coerceAtMost(progress.totalSteps)} of ${progress.totalSteps}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
+private fun NavidromeServerScanDialog(
+    progress: NavidromeServerScanProgress,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(progress.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (progress.isRunning) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        Text(
+                            text = progress.detail,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    Text(
+                        text = progress.detail,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                progress.status?.let { status ->
+                    Text(
+                        text = status.toDisplayText(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (progress.isRunning) "Hide" else "Close")
+            }
+        }
+    )
+}
+
+private fun NavidromeServerScanStatus.toDisplayText(): String {
+    return buildList {
+        if (scanning) {
+            add("Scanning")
+        } else {
+            add("Idle")
+        }
+        scannedCount?.let { add("$it scanned") }
+        folderCount?.let { add("$it folders") }
+        lastScanLabel?.takeIf { it.isNotBlank() }?.let { add("Last scan $it") }
+    }.joinToString(" • ")
 }
 
 @Composable
@@ -5816,6 +6123,11 @@ private fun NavidromeSettingsRow(
             }
         }
     }
+}
+
+private fun formatNavidromeLastSyncedTimestamp(timestampMs: Long): String {
+    val formatter = java.text.SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+    return formatter.format(java.util.Date(timestampMs))
 }
 
 @Composable
@@ -6088,7 +6400,7 @@ private fun NavidromeMiniPlayerBar(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun NavidromeExpandedPlayerSheet(
     state: NavidromePlayerState,
@@ -6136,7 +6448,11 @@ private fun NavidromeExpandedPlayerSheet(
     var showTrackDetails by remember { mutableStateOf(false) }
     var showOutputSheet by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
+    var renderQueue by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val contentScrollState = rememberScrollState()
+    var queueScrollAnimationJob by remember { mutableStateOf<Job?>(null) }
+    val queueBringIntoViewRequester = remember { BringIntoViewRequester() }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val queuedTracks = remember(state.queue, track) {
         state.queue.ifEmpty { listOf(track) }
@@ -6262,6 +6578,12 @@ private fun NavidromeExpandedPlayerSheet(
     val resolvedDurationMs = remember(state.durationMs, track.durationSeconds) {
         state.durationMs.takeIf { it > 0 } ?: ((track.durationSeconds ?: 0) * 1000)
     }
+    LaunchedEffect(showQueue, renderQueue) {
+        if (showQueue && renderQueue) {
+            delay(16)
+            queueBringIntoViewRequester.bringIntoView()
+        }
+    }
     var sliderPosition by remember(state.positionMs, resolvedDurationMs) {
         mutableStateOf(
             if (resolvedDurationMs > 0) {
@@ -6382,13 +6704,7 @@ private fun NavidromeExpandedPlayerSheet(
                 .animateContentSize(animationSpec = tween(durationMillis = 260))
                 .navigationBarsPadding()
                 .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
-                .then(
-                    if (queueExpandedLayout) {
-                        Modifier.verticalScroll(contentScrollState)
-                    } else {
-                        Modifier
-                    }
-                ),
+                .verticalScroll(contentScrollState, enabled = queueExpandedLayout),
             verticalArrangement = Arrangement.spacedBy(outerSpacing),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -6690,13 +7006,32 @@ private fun NavidromeExpandedPlayerSheet(
                     containerColor = toolButtonContainerColor,
                     contentColor = toolButtonContentColor,
                     borderColor = toolButtonBorderColor,
-                    onClick = { showQueue = !showQueue }
+                    onClick = {
+                        queueScrollAnimationJob?.cancel()
+                        if (showQueue) {
+                            showQueue = false
+                            queueScrollAnimationJob = scope.launch {
+                                contentScrollState.animateScrollTo(
+                                    value = 0,
+                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                )
+                                delay(220)
+                                renderQueue = false
+                                queueScrollAnimationJob = null
+                            }
+                        } else {
+                            renderQueue = true
+                            showQueue = true
+                        }
+                    }
                 )
             }
             Spacer(modifier = Modifier.height(4.dp))
-            if (showQueue) {
+            if (renderQueue) {
                 Box(
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewRequester(queueBringIntoViewRequester)
                 ) {
                     androidx.compose.animation.AnimatedVisibility(
                         modifier = Modifier.fillMaxWidth(),

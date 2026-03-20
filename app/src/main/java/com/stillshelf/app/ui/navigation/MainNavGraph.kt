@@ -290,6 +290,7 @@ private fun MainTabsNavHost(
         composable(MainTab.Settings.route) {
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true
@@ -305,6 +306,7 @@ private fun MainTabsNavHost(
         composable(MainRoute.SETTINGS) {
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true

@@ -15,11 +15,13 @@ import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeHome
 import com.stillshelf.app.core.model.NavidromeLibrary
+import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
 import com.stillshelf.app.core.model.NavidromeServer
+import com.stillshelf.app.core.model.NavidromeServerScanStatus
 import com.stillshelf.app.core.model.NavidromeSession
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.ServerConnectionMode
@@ -536,6 +538,81 @@ class NavidromeRepository @Inject constructor(
         sessionPreferences.setActiveNavidromeLibraryId(activeServer.id, libraryId)
         clearCaches()
         return AppResult.Success(Unit)
+    }
+
+    suspend fun resyncLibrary(
+        onProgress: suspend (NavidromeLibraryResyncProgress) -> Unit
+    ): AppResult<List<NavidromeLibrary>> = withAuth {
+        val steps = listOf(
+            "Refreshing libraries" to "Loading available Navidrome libraries.",
+            "Refreshing home" to "Updating recent albums, artists, and playlists.",
+            "Refreshing albums" to "Loading album data from the server.",
+            "Refreshing artists" to "Loading artist data from the server.",
+            "Refreshing songs" to "Refreshing the full song list."
+        )
+
+        suspend fun publishStep(index: Int) {
+            val (title, detail) = steps[index]
+            onProgress(
+                NavidromeLibraryResyncProgress(
+                    title = title,
+                    detail = detail,
+                    completedSteps = index,
+                    totalSteps = steps.size
+                )
+            )
+        }
+
+        publishStep(0)
+        val libraries = when (val result = fetchLibraries(forceRefresh = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return@withAuth result
+        }
+
+        publishStep(1)
+        when (val result = fetchHome(forceRefresh = true)) {
+            is AppResult.Success -> Unit
+            is AppResult.Error -> return@withAuth result
+        }
+
+        publishStep(2)
+        when (val result = fetchAlbums(
+            sort = NavidromeAlbumSortOption.RECENT,
+            forceRefresh = true
+        )) {
+            is AppResult.Success -> Unit
+            is AppResult.Error -> return@withAuth result
+        }
+
+        publishStep(3)
+        when (val result = fetchArtists(forceRefresh = true)) {
+            is AppResult.Success -> Unit
+            is AppResult.Error -> return@withAuth result
+        }
+
+        publishStep(4)
+        when (val result = fetchSongs(forceRefresh = true)) {
+            is AppResult.Success -> Unit
+            is AppResult.Error -> return@withAuth result
+        }
+
+        AppResult.Success(libraries)
+    }
+
+    suspend fun fetchServerScanStatus(): AppResult<NavidromeServerScanStatus> = withAuth { auth ->
+        val result = navidromeApi.getScanStatus(auth)
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to check scan status.")
+        }
+        AppResult.Success(result.getOrThrow().toModel())
+    }
+
+    suspend fun triggerServerScan(fullScan: Boolean = false): AppResult<NavidromeServerScanStatus> = withAuth { auth ->
+        val result = navidromeApi.startScan(auth, fullScan = fullScan)
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to start server scan.")
+        }
+        AppResult.Success(result.getOrThrow().toModel())
     }
 
     private suspend fun startObservingActiveConnectionRouting() {
@@ -1458,15 +1535,11 @@ class NavidromeRepository @Inject constructor(
     ): NavidromePlaylist? {
         val result = navidromeApi.getPlaylists(auth)
         if (result.isFailure) return null
-        val playlists = result.getOrThrow().map { it.toModel() }
-        if (!previousPlaylistIds.isNullOrEmpty()) {
-            val newPlaylists = playlists.filter { playlist ->
-                playlist.id.isNotBlank() && playlist.id !in previousPlaylistIds
-            }
-            newPlaylists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }?.let { return it }
-            if (newPlaylists.size == 1) return newPlaylists.single()
-        }
-        return playlists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }
+        return resolveCreatedPlaylistCandidate(
+            playlists = result.getOrThrow().map { it.toModel() },
+            playlistName = playlistName,
+            previousPlaylistIds = previousPlaylistIds
+        )
     }
 
     private suspend fun fetchPlaylistName(
@@ -1710,6 +1783,15 @@ class NavidromeRepository @Inject constructor(
         )
     }
 
+    private fun com.stillshelf.app.data.api.NavidromeScanStatusDto.toModel(): NavidromeServerScanStatus {
+        return NavidromeServerScanStatus(
+            scanning = scanning,
+            scannedCount = scannedCount,
+            folderCount = folderCount,
+            lastScanLabel = lastScanLabel
+        )
+    }
+
     private fun NavidromeRadioDto.toModel(): NavidromeRadio {
         return NavidromeRadio(
             id = id,
@@ -1833,4 +1915,19 @@ class NavidromeRepository @Inject constructor(
             home.copy(playlists = hydratedPlaylists)
         }
     }
+}
+
+internal fun resolveCreatedPlaylistCandidate(
+    playlists: List<NavidromePlaylist>,
+    playlistName: String,
+    previousPlaylistIds: Set<String>?
+): NavidromePlaylist? {
+    if (!previousPlaylistIds.isNullOrEmpty()) {
+        val newPlaylists = playlists.filter { playlist ->
+            playlist.id.isNotBlank() && playlist.id !in previousPlaylistIds
+        }
+        newPlaylists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }?.let { return it }
+        if (newPlaylists.size == 1) return newPlaylists.single()
+    }
+    return playlists.lastOrNull { it.name.equals(playlistName, ignoreCase = true) }
 }

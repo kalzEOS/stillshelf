@@ -1013,14 +1013,19 @@ class NavidromePlayerController @Inject constructor(
             val displayedId = output.id ?: return@firstOrNull false
             outputRouteKeyByDisplayedId[displayedId]?.startsWith("bt:") == true
         }?.id
-        val shouldAutoSwitchToBluetooth = reason == OutputRefreshReason.DeviceAdded &&
-            bluetoothOutputId != null &&
-            bluetoothOutputId !in lastKnownOutputDeviceIds
+        val wiredAutoOutputId = available.firstOrNull { output ->
+            val displayedId = output.id ?: return@firstOrNull false
+            isAutoPreferredWiredRoute(outputRouteKeyByDisplayedId[displayedId]) &&
+                displayedId !in lastKnownOutputDeviceIds
+        }?.id
         val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
             available.any { it.id == preferredId }
         }
         preferredOutputDeviceId = when {
-            shouldAutoSwitchToBluetooth -> bluetoothOutputId
+            reason == OutputRefreshReason.DeviceAdded && wiredAutoOutputId != null -> wiredAutoOutputId
+            reason == OutputRefreshReason.DeviceAdded &&
+                bluetoothOutputId != null &&
+                bluetoothOutputId !in lastKnownOutputDeviceIds -> bluetoothOutputId
             validPreferredId != null -> validPreferredId
             else -> available.firstOrNull()?.id
         }
@@ -1402,5 +1407,12 @@ class NavidromePlayerController @Inject constructor(
             audioManager.isSpeakerphoneOn = false
         }
         return false
+    }
+}
+
+internal fun isAutoPreferredWiredRoute(routeKey: String?): Boolean {
+    return when (routeKey) {
+        "wired", "usb", "hdmi", "dock", "line" -> true
+        else -> false
     }
 }

@@ -640,6 +640,14 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    fun playCurrent() {
+        resume()
+    }
+
+    fun pauseCurrent() {
+        pause()
+    }
+
     fun seekBy(deltaMs: Long) {
         val player = mediaPlayer ?: return
         val duration = resolveDisplayedDurationMs(player)
@@ -827,6 +835,53 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    fun cyclePlaybackSpeed(
+        steps: List<Float> = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.7f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextIndex = normalizedSteps.indexOfFirst { step -> step > (currentSpeed + 0.01f) }
+            .takeIf { it >= 0 }
+            ?: 0
+        val nextSpeed = normalizedSteps[nextIndex]
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
+    }
+
+    fun increasePlaybackSpeed(
+        steps: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.7f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextSpeed = normalizedSteps.firstOrNull { it > (currentSpeed + 0.01f) }
+            ?: normalizedSteps.last()
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
+    }
+
+    fun decreasePlaybackSpeed(
+        steps: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.7f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextSpeed = normalizedSteps.lastOrNull { it < (currentSpeed - 0.01f) }
+            ?: normalizedSteps.first()
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
+    }
+
     fun setSoftToneLevel(level: Float) {
         val clamped = level.coerceIn(0f, 1f)
         currentSoftToneLevel = clamped
@@ -879,6 +934,84 @@ class PlaybackController @Inject constructor(
 
     fun clearSleepTimer() {
         cancelSleepTimer(updateUi = true)
+    }
+
+    suspend fun cycleCarSleepTimer(): String {
+        val state = uiState.value
+        val currentMode = state.sleepTimerMode
+        val remainingMinutes = (((state.sleepTimerRemainingMs ?: 0L) + 59_999L) / 60_000L).toInt()
+        return when {
+            currentMode == SleepTimerMode.Off -> {
+                startSleepTimerMinutes(15)
+                "Sleep timer 15m"
+            }
+            currentMode == SleepTimerMode.Duration && remainingMinutes <= 15 -> {
+                startSleepTimerMinutes(30)
+                "Sleep timer 30m"
+            }
+            currentMode == SleepTimerMode.Duration -> {
+                if (startSleepTimerEndOfChapter()) {
+                    "Sleep timer end of chapter"
+                } else {
+                    clearSleepTimer()
+                    "Sleep timer off"
+                }
+            }
+            currentMode == SleepTimerMode.EndOfChapter -> {
+                clearSleepTimer()
+                "Sleep timer off"
+            }
+            else -> {
+                clearSleepTimer()
+                "Sleep timer off"
+            }
+        }
+    }
+
+    fun addBookmarkAtCurrentPosition(title: String? = null) {
+        val bookId = currentBookId ?: uiState.value.book?.id ?: return
+        val timeSeconds = uiState.value.positionMs.coerceAtLeast(0L) / 1000.0
+        scope.launch {
+            when (
+                val result = sessionRepository.createBookmark(
+                    bookId = bookId,
+                    timeSeconds = timeSeconds,
+                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                )
+            ) {
+                is AppResult.Success -> updateUiState { it.copy(errorMessage = null) }
+                is AppResult.Error -> updateUiState { it.copy(errorMessage = result.message) }
+            }
+        }
+    }
+
+    fun jumpToNextChapter() {
+        scope.launch {
+            val bookId = currentBookId ?: uiState.value.book?.id ?: return@launch
+            val chapterStartsMs = resolveChapterStartsMs(bookId)
+            if (chapterStartsMs.isEmpty()) return@launch
+            val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val nextChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex + 1) ?: return@launch
+            seekToPosition(targetMs = nextChapterStartMs, forceSync = true)
+        }
+    }
+
+    fun jumpToPreviousChapter() {
+        scope.launch {
+            val bookId = currentBookId ?: uiState.value.book?.id ?: return@launch
+            val chapterStartsMs = resolveChapterStartsMs(bookId)
+            if (chapterStartsMs.isEmpty()) return@launch
+            val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val currentChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex)?.coerceAtLeast(0L) ?: 0L
+            if (currentPositionMs > currentChapterStartMs + 1_000L) {
+                seekToPosition(targetMs = currentChapterStartMs, forceSync = true)
+                return@launch
+            }
+            val previousChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex - 1) ?: return@launch
+            seekToPosition(targetMs = previousChapterStartMs, forceSync = true)
+        }
     }
 
     fun extendSleepTimerOneMinute() {

@@ -24,6 +24,9 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Player.REPEAT_MODE_ALL
+import androidx.media3.common.Player.REPEAT_MODE_OFF
+import androidx.media3.common.Player.REPEAT_MODE_ONE
 import androidx.media3.exoplayer.ExoPlayer
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -114,6 +117,7 @@ class NavidromePlayerController @Inject constructor(
     private var queueTracks: List<NavidromeTrack> = emptyList()
     private var recentTracks: List<NavidromeTrack> = emptyList()
     private var lastRecordedTrackId: String? = null
+    private var repeatMode: Int = REPEAT_MODE_OFF
     private var appInForeground = false
     private var preferredOutputDeviceId: Int? = null
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
@@ -218,6 +222,7 @@ class NavidromePlayerController @Inject constructor(
         if (existing != null) return existing
         return createPlayer().also { created ->
             player = created
+            created.repeatMode = repeatMode
             applyPreferredOutputDevice(created)
         }
     }
@@ -420,6 +425,29 @@ class NavidromePlayerController @Inject constructor(
         persistPlaybackSnapshot()
         ensureProgressUpdates()
     }
+
+    fun shuffleQueue() {
+        if (queueTracks.isEmpty()) return
+        val currentIndex = mutableState.value.currentIndex.takeIf { it in queueTracks.indices } ?: 0
+        val currentTrack = queueTracks[currentIndex]
+        val remaining = queueTracks
+            .filterIndexed { index, _ -> index != currentIndex }
+            .shuffled()
+        playTracks(listOf(currentTrack) + remaining, startIndex = 0)
+    }
+
+    fun cycleRepeatMode(): Int {
+        repeatMode = when (repeatMode) {
+            REPEAT_MODE_OFF -> REPEAT_MODE_ALL
+            REPEAT_MODE_ALL -> REPEAT_MODE_ONE
+            else -> REPEAT_MODE_OFF
+        }
+        player?.repeatMode = repeatMode
+        updatePlaybackSurface()
+        return repeatMode
+    }
+
+    fun currentRepeatMode(): Int = repeatMode
 
     fun stop() {
         queueTracks = emptyList()
@@ -673,8 +701,11 @@ class NavidromePlayerController @Inject constructor(
             ensureProgressUpdates()
             return
         }
+        val previousState = mutableState.value
+        val fallbackIndex = previousState.currentIndex.takeIf { it in queueTracks.indices } ?: 0
         val currentIndex = activePlayer.currentMediaItemIndex
             .takeIf { it in queueTracks.indices }
+            ?: fallbackIndex.takeIf { queueTracks.isNotEmpty() }
             ?: -1
         val currentTrack = queueTracks.getOrNull(currentIndex)
         if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
@@ -693,19 +724,19 @@ class NavidromePlayerController @Inject constructor(
         val durationMs = resolvePlayerDurationMs(currentTrack)
         val positionMs = resolvePlayerPositionMs(durationMs)
 
-        mutableState.value = mutableState.value.copy(
+        mutableState.value = previousState.copy(
             queue = queueTracks,
             currentIndex = currentIndex,
             currentTrack = currentTrack,
             recentTracks = recentTracks,
-            outputDevices = mutableState.value.outputDevices,
-            selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId,
+            outputDevices = previousState.outputDevices,
+            selectedOutputDeviceId = previousState.selectedOutputDeviceId,
             isPlaying = activePlayer.isPlaying,
-            isLoading = currentTrack != null && playbackState == Player.STATE_BUFFERING,
+            isLoading = queueTracks.isNotEmpty() && playbackState == Player.STATE_BUFFERING,
             positionMs = positionMs,
             durationMs = durationMs,
             errorMessage = if (playbackState == Player.STATE_IDLE) {
-                mutableState.value.errorMessage
+                previousState.errorMessage
             } else {
                 null
             }

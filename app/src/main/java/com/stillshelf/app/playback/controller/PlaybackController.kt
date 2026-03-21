@@ -648,6 +648,46 @@ class PlaybackController @Inject constructor(
         pause()
     }
 
+    fun stop() {
+        val hadBook = uiState.value.book != null
+        if (hadBook) {
+            updateCachedFromUiState()
+        }
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        syncQueueJob?.cancel()
+        syncQueueJob = null
+        pendingSyncRequests.clear()
+        releasePlayer(syncProgressBeforeRelease = true)
+        currentBookId = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
+        attemptedAutoAdvanceTargetsMs.clear()
+        previousRestartState = null
+        playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
+        suppressNextAutoAdvanceOnCompletion = false
+        cancelSleepTimer(updateUi = false)
+        updateUiState { state ->
+            state.copy(
+                isLoading = false,
+                book = null,
+                isPlaying = false,
+                positionMs = 0L,
+                durationMs = 0L,
+                errorMessage = null,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false
+            )
+        }
+    }
+
     fun seekBy(deltaMs: Long) {
         val player = mediaPlayer ?: return
         val duration = resolveDisplayedDurationMs(player)

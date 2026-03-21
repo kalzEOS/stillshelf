@@ -80,6 +80,7 @@ data class BookSummary(
     val genres: List<String> = emptyList(),
     val publishedYear: String? = null,
     val addedAtMs: Long? = null,
+    val authorIds: List<String> = emptyList(),
     val progressPercent: Double? = null,
     val currentTimeSeconds: Double? = null,
     val isFinished: Boolean = false

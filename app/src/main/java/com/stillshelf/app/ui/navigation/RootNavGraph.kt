@@ -7,6 +7,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
@@ -83,6 +84,9 @@ fun RootNavGraph(
             }
         ) {
             composable(GraphRoute.BACKEND_SELECTOR) {
+                LaunchedEffect(Unit) {
+                    rootViewModel.stopPlaybackForBackendSelection()
+                }
                 BackendSelectionScreen(
                     hasAudiobookshelfSession = uiState.hasActiveServer,
                     onBackendSelected = rootViewModel::selectBackend

@@ -256,7 +256,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                             score = score,
                             sortTitle = author.name.lowercase(),
                             item = buildBrowsableItem(
-                                mediaId = MEDIA_ID_ABS_AUTHOR_PREFIX + author.name,
+                                mediaId = MEDIA_ID_ABS_AUTHOR_PREFIX + author.id,
                                 title = author.name,
                                 subtitle = "Author",
                                 iconUri = author.imageUrl
@@ -363,10 +363,8 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
 
         if ((bestTrack?.second ?: -1) >= (bestBook?.second ?: -1) && bestTrack != null) {
             carSelectedBackendOverride = BackendProvider.NAVIDROME
-            when (val songsResult = navidromeRepository.fetchSongs(forceRefresh = false)) {
-                is AppResult.Success -> playNavTrackFromQueue(songsResult.value, bestTrack.first.id)
-                is AppResult.Error -> Unit
-            }
+            navidromePlayerController.playTracks(listOf(bestTrack.first), startIndex = 0)
+            publishCurrentSessionSnapshot()
             return
         }
 
@@ -446,7 +444,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return when (val result = sessionRepository.fetchHomeFeed(continueLimit = 24, recentlyAddedLimit = 1)) {
             is AppResult.Success -> {
                 val items = result.value.continueListening
-                    .take(MAX_BROWSE_BOOKS)
                     .map(::buildAbsContinueBookItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -467,7 +464,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return when (val result = sessionRepository.fetchHomeFeed(continueLimit = 1, recentlyAddedLimit = 48)) {
             is AppResult.Success -> {
                 val items = result.value.recentlyAdded
-                    .take(MAX_BROWSE_BOOKS)
                     .map(::buildAbsBookItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -485,13 +481,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
     }
 
     private suspend fun buildAbsAuthorItems(): MutableList<MediaBrowserCompat.MediaItem> {
-        return when (
-            val result = sessionRepository.fetchAuthorsForActiveLibrary(
-                limit = MAX_BROWSE_AUTHORS,
-                page = 0,
-                forceRefresh = false
-            )
-        ) {
+        return when (val result = fetchAllAbsAuthors()) {
             is AppResult.Success -> {
                 val items = result.value
                     .sortedBy { it.name.lowercase() }
@@ -511,18 +501,28 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         }
     }
 
-    private suspend fun buildAbsAuthorBookItems(authorName: String): MutableList<MediaBrowserCompat.MediaItem> {
+    private suspend fun buildAbsAuthorBookItems(authorId: String): MutableList<MediaBrowserCompat.MediaItem> {
+        val authorName = when (val authorsResult = fetchAllAbsAuthors()) {
+            is AppResult.Success -> authorsResult.value.firstOrNull { it.id == authorId }?.name
+            is AppResult.Error -> null
+        }
         return when (val result = sessionRepository.fetchAllBooksForActiveLibrary(forceRefresh = false)) {
             is AppResult.Success -> {
                 val items = result.value
-                    .filter { it.authorName.equals(authorName, ignoreCase = true) }
+                    .filter { book ->
+                        book.authorIds.contains(authorId) ||
+                            (
+                                book.authorIds.isEmpty() &&
+                                    authorName != null &&
+                                    book.authorName.equals(authorName, ignoreCase = true)
+                                )
+                    }
                     .sortedBy { it.title.lowercase() }
-                    .take(MAX_BROWSE_BOOKS)
                     .map(::buildAbsBookItem)
                     .toMutableList()
                 if (items.isEmpty()) {
                     items += buildMessageItem(
-                        mediaId = "message:abs_author_books_empty:$authorName",
+                        mediaId = "message:abs_author_books_empty:$authorId",
                         title = "No books found for this author."
                     )
                 }
@@ -530,7 +530,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
             }
             is AppResult.Error -> mutableListOf(
                 buildMessageItem(
-                    mediaId = "message:abs_author_books_error:$authorName",
+                    mediaId = "message:abs_author_books_error:$authorId",
                     title = result.message
                 )
             )
@@ -542,7 +542,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
             is AppResult.Success -> {
                 val items = result.value
                     .sortedBy { it.title.lowercase() }
-                    .take(MAX_BROWSE_BOOKS)
                     .map(::buildAbsBookItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -588,7 +587,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return when (val result = navidromeRepository.fetchArtists(forceRefresh = false)) {
             is AppResult.Success -> {
                 val items = result.value
-                    .take(MAX_BROWSE_ARTISTS)
                     .map(::buildNavArtistItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -619,7 +617,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                     )
                 )
                 items += result.value.albums
-                    .take(MAX_BROWSE_ALBUMS)
                     .map(::buildNavAlbumItem)
                 if (items.size == 2) {
                     items += buildMessageItem(
@@ -647,7 +644,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         ) {
             is AppResult.Success -> {
                 val items = result.value
-                    .take(MAX_BROWSE_ALBUMS)
                     .map(::buildNavAlbumItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -704,7 +700,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return when (val result = navidromeRepository.fetchSongs(forceRefresh = false)) {
             is AppResult.Success -> {
                 val items = result.value
-                    .take(MAX_BROWSE_SONGS)
                     .map { track ->
                         buildPlayableItem(
                             mediaId = encodeNavSongsTrackMediaId(track.id),
@@ -732,7 +727,6 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return when (val result = navidromeRepository.fetchPlaylists(forceRefresh = false)) {
             is AppResult.Success -> {
                 val items = result.value
-                    .take(MAX_BROWSE_PLAYLISTS)
                     .map(::buildNavPlaylistItem)
                     .toMutableList()
                 if (items.isEmpty()) {
@@ -1241,11 +1235,35 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
 
     private fun buildAbsAuthorItem(author: NamedEntitySummary): MediaBrowserCompat.MediaItem {
         return buildBrowsableItem(
-            mediaId = MEDIA_ID_ABS_AUTHOR_PREFIX + author.name,
+            mediaId = MEDIA_ID_ABS_AUTHOR_PREFIX + author.id,
             title = author.name,
             subtitle = author.subtitle,
             iconUri = author.imageUrl
         )
+    }
+
+    private suspend fun fetchAllAbsAuthors(): AppResult<List<NamedEntitySummary>> {
+        val authors = mutableListOf<NamedEntitySummary>()
+        var page = 0
+        while (true) {
+            when (
+                val result = sessionRepository.fetchAuthorsForActiveLibrary(
+                    limit = ABS_BROWSE_PAGE_SIZE,
+                    page = page,
+                    forceRefresh = false
+                )
+            ) {
+                is AppResult.Success -> {
+                    val batch = result.value
+                    if (batch.isEmpty()) break
+                    authors += batch
+                    if (batch.size < ABS_BROWSE_PAGE_SIZE) break
+                    page += 1
+                }
+                is AppResult.Error -> return result
+            }
+        }
+        return AppResult.Success(authors.distinctBy { it.id })
     }
 
     private fun buildAbsCustomActions(state: PlaybackUiState): List<PlaybackStateCompat.CustomAction> {
@@ -1550,12 +1568,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
     }
 
     private companion object {
-        private const val MAX_BROWSE_BOOKS = 100
-        private const val MAX_BROWSE_AUTHORS = 150
-        private const val MAX_BROWSE_ARTISTS = 100
-        private const val MAX_BROWSE_ALBUMS = 100
-        private const val MAX_BROWSE_SONGS = 250
-        private const val MAX_BROWSE_PLAYLISTS = 100
+        private const val ABS_BROWSE_PAGE_SIZE = 200
 
         private const val MEDIA_ID_ROOT = "root"
         private const val MEDIA_ID_ABS_ROOT = "abs_root"

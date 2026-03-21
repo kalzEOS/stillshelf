@@ -6,6 +6,7 @@ import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.navidrome.NavidromePlayerController
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -21,6 +22,7 @@ class RootViewModel @Inject constructor(
     sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
+    private val playbackController: PlaybackController,
     private val navidromePlayerController: NavidromePlayerController
 ) : ViewModel() {
 
@@ -75,14 +77,25 @@ class RootViewModel @Inject constructor(
             if (provider != BackendProvider.NAVIDROME) {
                 navidromePlayerController.stop()
             }
+            if (provider != BackendProvider.AUDIOBOOKSHELF) {
+                playbackController.stop()
+            }
             sessionPreferences.setSelectedBackend(provider)
         }
     }
 
     fun clearSelectedBackend() {
         viewModelScope.launch {
+            playbackController.stop()
             navidromePlayerController.stop()
             sessionPreferences.setSelectedBackend(null)
+        }
+    }
+
+    fun stopPlaybackForBackendSelection() {
+        viewModelScope.launch {
+            playbackController.stop()
+            navidromePlayerController.stop()
         }
     }
 

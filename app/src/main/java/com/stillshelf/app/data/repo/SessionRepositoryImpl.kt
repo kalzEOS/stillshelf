@@ -4155,6 +4155,7 @@ class SessionRepositoryImpl @Inject constructor(
             genres = genresJson.toJsonStringList(),
             publishedYear = publishedYear,
             addedAtMs = addedAtMs,
+            authorIds = emptyList(),
             progressPercent = progressPercent,
             currentTimeSeconds = currentTimeSeconds,
             isFinished = isFinished
@@ -4689,6 +4690,7 @@ class SessionRepositoryImpl @Inject constructor(
             genres = genres,
             publishedYear = publishedYear,
             addedAtMs = addedAtMs,
+            authorIds = authorIds,
             progressPercent = progressPercent,
             currentTimeSeconds = currentTimeSeconds,
             isFinished = isFinished

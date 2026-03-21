@@ -136,6 +136,7 @@ object NavidromeRoute {
     const val LIBRARY = "navidrome/library"
     const val ARTISTS = "navidrome/library/artists"
     const val ALBUMS = "navidrome/library/albums"
+    const val NEWEST_ALBUMS = "navidrome/library/albums/newest"
     const val RADIOS = "navidrome/library/radios"
     const val SONGS = "navidrome/library/songs"
     const val FAVORITES = "navidrome/library/favorites"

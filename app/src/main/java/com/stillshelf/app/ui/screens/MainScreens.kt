@@ -5837,6 +5837,7 @@ fun ServersManagementScreen(
     var advancedUrlDialogTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
     var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
+    val screenContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
     val sectionCardColor = MaterialTheme.colorScheme.surface
     val sectionCardBorder: BorderStroke? = null
     val openUrl: (String) -> Unit = { url ->
@@ -5852,6 +5853,7 @@ fun ServersManagementScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(screenContainerColor)
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
             .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
@@ -5885,18 +5887,25 @@ fun ServersManagementScreen(
                                 editingUrl = server.baseUrl
                                 editingError = null
                             }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Dns,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Dns,
+                                contentDescription = null
+                            )
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(start = 10.dp)
+                                .padding(start = 12.dp)
                         ) {
                             Text(text = server.name, style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -5910,7 +5919,7 @@ fun ServersManagementScreen(
                                 text = "Active",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(end = 10.dp)
+                                modifier = Modifier.padding(end = 8.dp)
                             )
                         }
                         Box(contentAlignment = Alignment.TopEnd) {
@@ -5944,20 +5953,18 @@ fun ServersManagementScreen(
                         }
                     }
                     if (index < uiState.servers.lastIndex) {
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     }
                 }
-
-                Button(
-                    onClick = onAddServerClick,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    shape = RoundedCornerShape(999.dp)
-                ) {
-                    Text("Add Server")
-                }
             }
+        }
+
+        Button(
+            onClick = onAddServerClick,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Text("Add Server")
         }
 
         AutomaticServerRoutingSection(

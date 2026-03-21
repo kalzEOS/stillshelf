@@ -41,6 +41,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeArtistLayoutModeKey = stringPreferencesKey("navidrome_artist_layout_mode")
     private val navidromeArtistSortKey = stringPreferencesKey("navidrome_artist_sort")
     private val navidromeAlbumLayoutModeKey = stringPreferencesKey("navidrome_album_layout_mode")
+    private val navidromeSongSortKey = stringPreferencesKey("navidrome_song_sort")
     private val navidromePlaylistSortKey = stringPreferencesKey("navidrome_playlist_sort")
     private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
@@ -112,6 +113,7 @@ class SessionPreferences @Inject constructor(
             navidromeArtistLayoutMode = prefs[navidromeArtistLayoutModeKey],
             navidromeArtistSort = prefs[navidromeArtistSortKey],
             navidromeAlbumLayoutMode = prefs[navidromeAlbumLayoutModeKey],
+            navidromeSongSort = prefs[navidromeSongSortKey],
             navidromePlaylistSort = prefs[navidromePlaylistSortKey],
             navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
                 prefs[navidromeFavoriteTracksPayloadKey]
@@ -384,6 +386,16 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(navidromeAlbumLayoutModeKey)
             } else {
                 prefs[navidromeAlbumLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromeSongSort(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeSongSortKey)
+            } else {
+                prefs[navidromeSongSortKey] = mode
             }
         }
     }
@@ -1325,6 +1337,7 @@ data class SessionPreferenceState(
     val navidromeArtistLayoutMode: String? = null,
     val navidromeArtistSort: String? = null,
     val navidromeAlbumLayoutMode: String? = null,
+    val navidromeSongSort: String? = null,
     val navidromePlaylistSort: String? = null,
     val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
     val navidromeThemeMode: String = "follow_system",

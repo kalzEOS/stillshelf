@@ -12,27 +12,27 @@ class PlaybackBackgroundPolicyTest {
         assertFalse(
             shouldKeepPlaybackSessionActive(
                 book = null,
-                isPlaying = true
+                hasActivePlayer = true
             )
         )
     }
 
     @Test
-    fun shouldKeepPlaybackSessionActive_requiresActivePlayback() {
+    fun shouldKeepPlaybackSessionActive_requiresActivePlayer() {
         assertFalse(
             shouldKeepPlaybackSessionActive(
                 book = sampleBook(),
-                isPlaying = false
+                hasActivePlayer = false
             )
         )
     }
 
     @Test
-    fun shouldKeepPlaybackSessionActive_allowsForegroundSessionOnlyDuringPlayback() {
+    fun shouldKeepPlaybackSessionActive_allowsForegroundSessionWhilePlayerExists() {
         assertTrue(
             shouldKeepPlaybackSessionActive(
                 book = sampleBook(),
-                isPlaying = true
+                hasActivePlayer = true
             )
         )
     }

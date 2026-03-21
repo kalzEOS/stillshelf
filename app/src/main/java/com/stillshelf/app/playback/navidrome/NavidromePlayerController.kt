@@ -32,6 +32,7 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
 import com.stillshelf.app.playback.service.PlaybackServiceController
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -53,7 +54,8 @@ import org.json.JSONObject
 @Singleton
 class NavidromePlayerController @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val downloadManager: NavidromeDownloadManager
 ) {
     private companion object {
         const val MAX_RECENT_TRACKS = 7
@@ -273,7 +275,7 @@ class NavidromePlayerController @Inject constructor(
             tracks.map { track ->
                 MediaItem.Builder()
                     .setMediaId(track.id)
-                    .setUri(track.streamUrl)
+                    .setUri(resolvePlaybackUri(track))
                     .build()
             },
             index,
@@ -306,7 +308,7 @@ class NavidromePlayerController @Inject constructor(
         player?.addMediaItems(insertIndex, normalizedTracks.map { track ->
             MediaItem.Builder()
                 .setMediaId(track.id)
-                .setUri(track.streamUrl)
+                .setUri(resolvePlaybackUri(track))
                 .build()
         })
         updateStateFromPlayer()
@@ -324,7 +326,7 @@ class NavidromePlayerController @Inject constructor(
         player?.addMediaItems(normalizedTracks.map { track ->
             MediaItem.Builder()
                 .setMediaId(track.id)
-                .setUri(track.streamUrl)
+                .setUri(resolvePlaybackUri(track))
                 .build()
         })
         updateStateFromPlayer()
@@ -464,7 +466,7 @@ class NavidromePlayerController @Inject constructor(
             queueTracks.map { track ->
                 MediaItem.Builder()
                     .setMediaId(track.id)
-                    .setUri(track.streamUrl)
+                    .setUri(resolvePlaybackUri(track))
                     .build()
             },
             safeIndex,
@@ -489,6 +491,10 @@ class NavidromePlayerController @Inject constructor(
         persistPlaybackSnapshot()
         updateStateFromPlayer()
         ensureProgressUpdates()
+    }
+
+    private fun resolvePlaybackUri(track: NavidromeTrack): String {
+        return downloadManager.localPlaybackUri(track) ?: track.streamUrl
     }
 
     private fun resumeFromSnapshot(playWhenReady: Boolean) {
@@ -880,7 +886,7 @@ class NavidromePlayerController @Inject constructor(
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
             .setSilent(true)
-            .setOngoing(state.isPlaying || state.isLoading)
+            .setOngoing(true)
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setLargeIcon(artworkBitmap)

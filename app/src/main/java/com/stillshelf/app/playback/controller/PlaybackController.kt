@@ -99,11 +99,11 @@ data class PlaybackUiState(
     val errorMessage: String? = null
 )
 
-// Battery-first policy: only keep the playback session/service alive while audio is actively playing.
+// Keep paused playback reachable for a limited time, then tear it down to bound battery cost.
 internal fun shouldKeepPlaybackSessionActive(
     book: BookSummary?,
-    isPlaying: Boolean
-): Boolean = book != null && isPlaying
+    hasActivePlayer: Boolean
+): Boolean = book != null && hasActivePlayer
 
 @Singleton
 class PlaybackController @Inject constructor(
@@ -116,6 +116,7 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val PAUSED_PLAYER_RELEASE_DELAY_MS = 8 * 60 * 1000L
         private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
@@ -138,6 +139,7 @@ class PlaybackController @Inject constructor(
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
+    private var pausedReleaseJob: Job? = null
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -1005,7 +1007,12 @@ class PlaybackController @Inject constructor(
     }
 
     private fun resume() {
-        val player = mediaPlayer ?: return
+        val player = mediaPlayer
+        if (player == null) {
+            val book = uiState.value.book ?: return
+            playBook(book.id, uiState.value.positionMs)
+            return
+        }
         clearDucking(player)
         wasPausedForTransientAudioFocusLoss = false
         val focusResult = requestAudioFocusForPlayback()
@@ -1188,6 +1195,36 @@ class PlaybackController @Inject constructor(
             allowBackgroundRetry = false
         )
         updateUiState { it.copy(isPlaying = false) }
+    }
+
+    private fun cancelPausedPlayerRelease() {
+        pausedReleaseJob?.cancel()
+        pausedReleaseJob = null
+    }
+
+    private fun ensurePausedPlayerReleasePolicy() {
+        val state = uiState.value
+        val player = mediaPlayer
+        val shouldScheduleRelease = state.book != null &&
+            player != null &&
+            !state.isPlaying &&
+            !state.isLoading
+        if (!shouldScheduleRelease) {
+            cancelPausedPlayerRelease()
+            return
+        }
+        if (pausedReleaseJob?.isActive == true) return
+        pausedReleaseJob = scope.launch {
+            delay(PAUSED_PLAYER_RELEASE_DELAY_MS)
+            val latestState = uiState.value
+            val latestPlayer = mediaPlayer
+            val stillPaused = latestState.book != null &&
+                latestPlayer != null &&
+                !latestState.isPlaying &&
+                !latestState.isLoading
+            if (!stillPaused) return@launch
+            releasePlayer(syncProgressBeforeRelease = true)
+        }
     }
 
     private fun configurePlayerAudioAttributes(player: MediaPlayer) {
@@ -1433,6 +1470,7 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        cancelPausedPlayerRelease()
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -1952,6 +1990,7 @@ class PlaybackController @Inject constructor(
     private inline fun updateUiState(transform: (PlaybackUiState) -> PlaybackUiState) {
         mutableUiState.update(transform)
         updatePlaybackSurface()
+        ensurePausedPlayerReleasePolicy()
     }
 
     private fun startSleepTimer(
@@ -2466,7 +2505,7 @@ class PlaybackController @Inject constructor(
         val state = uiState.value
         val keepPlaybackSessionActive = shouldKeepPlaybackSessionActive(
             book = state.book,
-            isPlaying = state.isPlaying
+            hasActivePlayer = mediaPlayer != null
         )
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(

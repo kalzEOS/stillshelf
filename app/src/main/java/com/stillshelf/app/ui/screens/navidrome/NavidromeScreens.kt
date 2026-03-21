@@ -55,8 +55,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -74,6 +72,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
@@ -533,8 +532,11 @@ fun NavidromeAppRoute(
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val playerViewModel: NavidromePlayerViewModel = hiltViewModel()
     val playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
+    val downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val showMiniPlayer = playerState.currentTrack != null
     val showBottomPlayerShell = showMiniPlayer &&
         currentRoute != NavidromeRoute.SETTINGS &&
@@ -554,6 +556,11 @@ fun NavidromeAppRoute(
             popUpTo(NavidromeRoute.HOME) { inclusive = false }
             launchSingleTop = true
         }
+    }
+    LaunchedEffect(downloadUiState.actionMessage, downloadUiState.errorMessage) {
+        val message = downloadUiState.actionMessage ?: downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
     }
     val topHomeAction: (() -> Unit)? = if (showMiniPlayer) null else { { navigateHome() } }
 
@@ -575,7 +582,14 @@ fun NavidromeAppRoute(
                 onRefreshAudioOutputs = playerViewModel::refreshAudioOutputs,
                 onSelectAudioOutput = playerViewModel::selectAudioOutputDevice,
                 isFavorite = playerState.currentTrack?.id in favoriteTrackIds,
+                isDownloaded = playerState.currentTrack?.id in downloadUiState.downloadedTrackIds,
+                downloadProgressPercent = playerState.currentTrack
+                    ?.id
+                    ?.let(downloadUiState.trackProgressById::get),
+                downloadedTrackIds = downloadUiState.downloadedTrackIds,
+                trackProgressById = downloadUiState.trackProgressById,
                 onToggleFavorite = playerViewModel::toggleFavoriteTrack,
+                onToggleDownload = { track -> downloadsViewModel.toggleTrackDownload(track) },
                 immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
                 onAddToPlaylist = { track ->
                     pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -629,6 +643,7 @@ fun NavidromeAppRoute(
                     onOpenPlaylist = { navController.navigate(NavidromeRoute.playlist(it)) },
                     onOpenArtists = { navController.navigate(NavidromeRoute.ARTISTS) },
                     onOpenAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
+                    onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
                     onOpenFavorites = { navController.navigate(NavidromeRoute.FAVORITES) },
@@ -652,7 +667,7 @@ fun NavidromeAppRoute(
                     onOpenArtists = { navController.navigate(NavidromeRoute.ARTISTS) },
                     onOpenAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
-                    onOpenNewestAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
+                    onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
                     onOpenFavoriteSongs = { navController.navigate(NavidromeRoute.FAVORITES) },
                     onOpenPlaylists = { navController.navigate(NavidromeRoute.PLAYLISTS) },
@@ -727,6 +742,15 @@ fun NavidromeAppRoute(
             }
             composable(NavidromeRoute.ALBUMS) {
                 NavidromeAlbumsRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction,
+                    onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) }
+                )
+            }
+            composable(NavidromeRoute.NEWEST_ALBUMS) {
+                NavidromeAlbumsRoute(
+                    title = "Newest Albums",
+                    lockedSort = NavidromeAlbumSortOption.RECENT,
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction,
                     onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) }
@@ -861,6 +885,7 @@ private fun NavidromeHomeRoute(
     onOpenPlaylist: (String) -> Unit,
     onOpenArtists: () -> Unit,
     onOpenAlbums: () -> Unit,
+    onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
     onOpenSongs: () -> Unit,
     onOpenFavorites: () -> Unit,
@@ -875,6 +900,7 @@ private fun NavidromeHomeRoute(
     onOpenPlayer: () -> Unit,
     viewModel: NavidromeHomeViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel(),
     customizeViewModel: NavidromeCustomizeViewModel = hiltViewModel(),
     settingsViewModel: NavidromeSettingsViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
@@ -883,11 +909,17 @@ private fun NavidromeHomeRoute(
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         viewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.actionMessage, downloadUiState.errorMessage) {
+        val message = downloadUiState.actionMessage ?: downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
     }
     LaunchedEffect(
         uiState.errorMessage,
@@ -924,12 +956,14 @@ private fun NavidromeHomeRoute(
         availableLibraries = settingsUiState.availableLibraries,
         activeLibraryId = settingsUiState.activeLibraryId,
         playerState = playerState,
+        downloadUiState = downloadUiState,
         materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
         onOpenAlbum = onOpenAlbum,
         onOpenArtist = onOpenArtist,
         onOpenPlaylist = onOpenPlaylist,
         onOpenArtists = onOpenArtists,
         onOpenAlbums = onOpenAlbums,
+        onOpenNewestAlbums = onOpenNewestAlbums,
         onOpenRadios = onOpenRadios,
         onOpenSongs = onOpenSongs,
         onOpenFavorites = onOpenFavorites,
@@ -946,6 +980,7 @@ private fun NavidromeHomeRoute(
         onPlayPause = onPlayPause,
         onPlayTrack = playerViewModel::playTrack,
         onPlayAlbum = playerViewModel::playAlbum,
+        onToggleAlbumDownload = downloadsViewModel::toggleAlbumDownload,
         onOpenPlayer = onOpenPlayer
     )
 }
@@ -961,12 +996,14 @@ private fun NavidromeHomeScreen(
     availableLibraries: List<NavidromeLibrary>,
     activeLibraryId: String?,
     playerState: NavidromePlayerState,
+    downloadUiState: NavidromeDownloadsUiState,
     materialDesignEnabled: Boolean,
     onOpenAlbum: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenArtists: () -> Unit,
     onOpenAlbums: () -> Unit,
+    onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
     onOpenSongs: () -> Unit,
     onOpenFavorites: () -> Unit,
@@ -983,6 +1020,7 @@ private fun NavidromeHomeScreen(
     onPlayPause: () -> Unit,
     onPlayTrack: (NavidromeTrack) -> Unit,
     onPlayAlbum: (String, Boolean) -> Unit,
+    onToggleAlbumDownload: (NavidromeAlbum) -> Unit,
     onOpenPlayer: () -> Unit
 ) {
     val homeStartInset = AppScreenHorizontalPadding
@@ -1044,7 +1082,7 @@ private fun NavidromeHomeScreen(
                 id = NavidromeListSectionIds.NEWEST_ALBUMS,
                 label = "Newest Albums",
                 icon = Icons.Outlined.Album,
-                onClick = onOpenAlbums
+                onClick = onOpenNewestAlbums
             ),
             NavidromeListSectionIds.SONGS to NavidromeHomeDestination(
                 id = NavidromeListSectionIds.SONGS,
@@ -1360,7 +1398,10 @@ private fun NavidromeHomeScreen(
                                         contentPadding = homeCarouselContentPadding,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        items(playerState.recentTracks.take(7), key = { it.id }) { track ->
+                                        itemsIndexed(
+                                            items = playerState.recentTracks.take(7),
+                                            key = { index, track -> "${track.id}:$index" }
+                                        ) { _, track ->
                                             NavidromeContinueListeningCard(
                                                 track = track,
                                                 isCurrent = playerState.currentTrack?.id == track.id,
@@ -1410,9 +1451,14 @@ private fun NavidromeHomeScreen(
                                         album = album,
                                         posterWidth = homeShelfPosterWidth,
                                         posterHeight = homeShelfPosterHeight,
+                                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                            ?.let { it >= album.songCount && album.songCount > 0 }
+                                            ?: false,
+                                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                                         onClick = { onOpenAlbum(album.id) },
                                         onPlayAlbum = { onPlayAlbum(album.id, false) },
                                         onShuffleAlbum = { onPlayAlbum(album.id, true) },
+                                        onToggleDownload = { onToggleAlbumDownload(album) },
                                         onOpenAlbum = { onOpenAlbum(album.id) },
                                         onOpenArtist = { album.artistId?.let(onOpenArtist) }
                                     )
@@ -1439,9 +1485,14 @@ private fun NavidromeHomeScreen(
                                         album = album,
                                         posterWidth = homeShelfPosterWidth,
                                         posterHeight = homeShelfPosterHeight,
+                                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                            ?.let { it >= album.songCount && album.songCount > 0 }
+                                            ?: false,
+                                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                                         onClick = { onOpenAlbum(album.id) },
                                         onPlayAlbum = { onPlayAlbum(album.id, false) },
                                         onShuffleAlbum = { onPlayAlbum(album.id, true) },
+                                        onToggleDownload = { onToggleAlbumDownload(album) },
                                         onOpenAlbum = { onOpenAlbum(album.id) },
                                         onOpenArtist = { album.artistId?.let(onOpenArtist) }
                                     )
@@ -1914,12 +1965,15 @@ private fun NavidromeArtistsRoute(
     onHome: (() -> Unit)?,
     onOpenArtist: (String) -> Unit,
     viewModel: NavidromeBrowseViewModel = hiltViewModel(),
-    artistsViewModel: NavidromeArtistsViewModel = hiltViewModel()
+    artistsViewModel: NavidromeArtistsViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val layoutMode by artistsViewModel.layoutMode.collectAsStateWithLifecycle()
     val sortOption by artistsViewModel.sortOption.collectAsStateWithLifecycle()
     val searchQuery by artistsViewModel.searchQuery.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     val showSearchField = searchExpanded || searchQuery.isNotBlank()
@@ -1941,6 +1995,16 @@ private fun NavidromeArtistsRoute(
         }
     }
 
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
     Column(modifier = Modifier.fillMaxSize()) {
         DetailHeader(
             title = "Artists",
@@ -2025,21 +2089,12 @@ private fun NavidromeArtistsRoute(
                 }
             }
         )
-        AnimatedVisibility(visible = showSearchField) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = artistsViewModel::onSearchQueryChange,
-                label = { Text("Search artists") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 8.dp),
-                singleLine = true,
-                leadingIcon = {
-                    Icon(Icons.Outlined.Search, contentDescription = null)
-                }
-            )
-        }
+        NavidromeExpandableSearchField(
+            visible = showSearchField,
+            query = searchQuery,
+            label = "Search artists",
+            onQueryChange = artistsViewModel::onSearchQueryChange
+        )
         if (uiState.isLoading) {
             LoadingCard()
         } else if (!uiState.errorMessage.isNullOrBlank()) {
@@ -2089,6 +2144,10 @@ private fun NavidromeArtistsRoute(
                     val artist = displayedArtists[index]
                     ArtistGridCard(
                         artist = artist,
+                        isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
+                            ?.let { it >= artist.albumCount && artist.albumCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
                         onClick = { onOpenArtist(artist.id) }
                     )
                 }
@@ -2105,7 +2164,14 @@ private fun NavidromeArtistsRoute(
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 items(displayedArtists) { artist ->
-                    ArtistRow(artist = artist, onClick = { onOpenArtist(artist.id) })
+                    ArtistRow(
+                        artist = artist,
+                        isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
+                            ?.let { it >= artist.albumCount && artist.albumCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
+                        onClick = { onOpenArtist(artist.id) }
+                    )
                 }
             }
         }
@@ -2114,79 +2180,123 @@ private fun NavidromeArtistsRoute(
 
 @Composable
 private fun NavidromeAlbumsRoute(
+    title: String = "Albums",
+    lockedSort: NavidromeAlbumSortOption? = null,
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     onOpenAlbum: (String) -> Unit,
     viewModel: NavidromeBrowseViewModel = hiltViewModel(),
-    albumsViewModel: NavidromeAlbumsViewModel = hiltViewModel()
+    albumsViewModel: NavidromeAlbumsViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val displayStyle by albumsViewModel.layoutMode.collectAsStateWithLifecycle()
+    val searchQuery by albumsViewModel.searchQuery.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val showSearchField = searchExpanded || searchQuery.isNotBlank()
+    val displayedAlbums = remember(uiState.albums, uiState.albumSort, searchQuery) {
+        val normalizedQuery = searchQuery.trim()
+        uiState.albums.filter { album ->
+            normalizedQuery.isBlank() ||
+                album.name.contains(normalizedQuery, ignoreCase = true) ||
+                album.artistName.contains(normalizedQuery, ignoreCase = true)
+        }
+    }
+
+    LaunchedEffect(lockedSort) {
+        if (lockedSort != null && uiState.albumSort != lockedSort) {
+            viewModel.setAlbumSort(lockedSort)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         DetailHeader(
-            title = "Albums",
+            title = title,
             onBack = onBack,
             onHome = onHome,
             actions = {
-                Box {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     RoundIconButton(
-                        icon = Icons.Outlined.MoreHoriz,
-                        contentDescription = "Album options",
-                        onClick = { menuExpanded = true }
+                        icon = Icons.Outlined.Search,
+                        contentDescription = if (showSearchField) "Hide album search" else "Show album search",
+                        onClick = { searchExpanded = !showSearchField }
                     )
-                    AppDropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        AppDropdownMenuItem(
-                                text = { Text("Grid view") },
-                                leadingIcon = {
-                                    if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
-                                        Icon(Icons.Filled.Check, contentDescription = null)
-                                    }
-                                },
-                            onClick = {
-                                albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.GRID)
-                                menuExpanded = false
-                            }
+                    Box {
+                        RoundIconButton(
+                            icon = Icons.Outlined.MoreHoriz,
+                            contentDescription = "Album options",
+                            onClick = { menuExpanded = true }
                         )
-                        AppDropdownMenuItem(
-                                text = { Text("List view") },
-                                leadingIcon = {
-                                    if (displayStyle == NavidromeAlbumsDisplayStyle.LIST) {
-                                        Icon(Icons.Filled.Check, contentDescription = null)
-                                    }
-                                },
-                            onClick = {
-                                albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.LIST)
-                                menuExpanded = false
-                            }
-                        )
-                        DividerLine()
-                        NavidromeAlbumSortOption.entries.forEach { sort ->
+                        AppDropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
                             AppDropdownMenuItem(
-                                text = { Text("Sort: ${sort.label}") },
-                                leadingIcon = {
-                                    if (uiState.albumSort == sort) {
-                                        Icon(Icons.Filled.Check, contentDescription = null)
-                                    }
-                                },
+                                    text = { Text("Grid view") },
+                                    leadingIcon = {
+                                        if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
+                                            Icon(Icons.Filled.Check, contentDescription = null)
+                                        }
+                                    },
                                 onClick = {
-                                    viewModel.setAlbumSort(sort)
+                                    albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.GRID)
                                     menuExpanded = false
                                 }
                             )
+                            AppDropdownMenuItem(
+                                    text = { Text("List view") },
+                                    leadingIcon = {
+                                        if (displayStyle == NavidromeAlbumsDisplayStyle.LIST) {
+                                            Icon(Icons.Filled.Check, contentDescription = null)
+                                        }
+                                    },
+                                onClick = {
+                                    albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.LIST)
+                                    menuExpanded = false
+                                }
+                            )
+                            if (lockedSort == null) {
+                                DividerLine()
+                                NavidromeAlbumSortOption.entries.forEach { sort ->
+                                    AppDropdownMenuItem(
+                                        text = { Text("Sort: ${sort.label}") },
+                                        leadingIcon = {
+                                            if (uiState.albumSort == sort) {
+                                                Icon(Icons.Filled.Check, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            viewModel.setAlbumSort(sort)
+                                            menuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         )
+        NavidromeExpandableSearchField(
+            visible = showSearchField,
+            query = searchQuery,
+            label = "Search albums",
+            onQueryChange = albumsViewModel::onSearchQueryChange
+        )
         if (uiState.isLoading) {
             LoadingCard()
         } else if (!uiState.errorMessage.isNullOrBlank()) {
             ErrorCard(uiState.errorMessage ?: "Unable to load albums.")
+        } else if (displayedAlbums.isEmpty()) {
+            EmptyCard(
+                if (searchQuery.isBlank()) {
+                    "No albums found."
+                } else {
+                    "No albums match \"${searchQuery.trim()}\"."
+                }
+            )
         } else if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
@@ -2199,10 +2309,14 @@ private fun NavidromeAlbumsRoute(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                items(uiState.albums.size) { index ->
-                    val album = uiState.albums[index]
+                items(displayedAlbums.size) { index ->
+                    val album = displayedAlbums[index]
                     AlbumGridCard(
                         album = album,
+                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                            ?.let { it >= album.songCount && album.songCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                         onClick = { onOpenAlbum(album.id) }
                     )
                 }
@@ -2218,8 +2332,15 @@ private fun NavidromeAlbumsRoute(
                 ),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                items(uiState.albums) { album ->
-                    AlbumRow(album = album, onClick = { onOpenAlbum(album.id) })
+                items(displayedAlbums) { album ->
+                    AlbumRow(
+                        album = album,
+                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                            ?.let { it >= album.songCount && album.songCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                        onClick = { onOpenAlbum(album.id) }
+                    )
                     DividerLine()
                 }
             }
@@ -2523,16 +2644,27 @@ private fun NavidromePlaylistDetailRoute(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     AppDropdownMenuItem(
-                        text = { Text("Play Next") },
+                        text = { Text("Play") },
                         leadingIcon = {
-                            Icon(imageVector = Icons.Outlined.SkipNext, contentDescription = null)
+                            Icon(imageVector = Icons.Outlined.PlayArrow, contentDescription = null)
                         },
-                        enabled = uiState.detail?.tracks?.isNotEmpty() == true && playerState.queue.isNotEmpty(),
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true,
                         onClick = {
                             val detail = uiState.detail ?: return@AppDropdownMenuItem
                             menuExpanded = false
-                            playerViewModel.playTracksNext(detail.tracks)
-                            Toast.makeText(context, "Playlist queued next", Toast.LENGTH_SHORT).show()
+                            playerViewModel.playTracks(detail.tracks, 0)
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("Shuffle") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Outlined.Shuffle, contentDescription = null)
+                        },
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true,
+                        onClick = {
+                            val detail = uiState.detail ?: return@AppDropdownMenuItem
+                            menuExpanded = false
+                            playerViewModel.playTracks(detail.tracks.shuffled(), 0)
                         }
                     )
                     AppDropdownMenuItem(
@@ -2540,25 +2672,12 @@ private fun NavidromePlaylistDetailRoute(
                         leadingIcon = {
                             Icon(imageVector = Icons.Outlined.QueueMusic, contentDescription = null)
                         },
-                        enabled = uiState.detail?.tracks?.isNotEmpty() == true && playerState.queue.isNotEmpty(),
+                        enabled = uiState.detail?.tracks?.isNotEmpty() == true,
                         onClick = {
                             val detail = uiState.detail ?: return@AppDropdownMenuItem
                             menuExpanded = false
                             playerViewModel.addTracksToQueue(detail.tracks)
                             Toast.makeText(context, "Playlist added to queue", Toast.LENGTH_SHORT).show()
-                        }
-                    )
-                    AppDropdownMenuItem(
-                        text = { Text("Add to Playlist") },
-                        leadingIcon = {
-                            Icon(imageVector = Icons.Outlined.Add, contentDescription = null)
-                        },
-                        enabled = uiState.detail?.tracks?.isNotEmpty() == true,
-                        onClick = {
-                            val request = uiState.detail?.toPlaylistSelectionRequest()
-                                ?: return@AppDropdownMenuItem
-                            menuExpanded = false
-                            pendingPlaylistRequest = request
                         }
                     )
                     HorizontalDivider()
@@ -2641,6 +2760,12 @@ private fun NavidromePlaylistDetailRoute(
                                         HorizontalDivider()
                                         AppDropdownMenuItem(
                                             text = { Text("Add to Playlist") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.QueueMusic,
+                                                    contentDescription = null
+                                                )
+                                            },
                                             onClick = {
                                                 rowMenuExpanded = false
                                                 pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -2792,15 +2917,23 @@ private fun NavidromeFavoriteSongsRoute(
     viewModel: NavidromeFavoriteSongsViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
     playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel(),
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
     var pendingTrackRemoval by remember { mutableStateOf<NavidromeTrack?>(null) }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     var showClearAllConfirmation by remember { mutableStateOf(false) }
+    LaunchedEffect(downloadUiState.actionMessage, downloadUiState.errorMessage) {
+        val message = downloadUiState.actionMessage ?: downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
     StandardTopScreen(
         title = "Favorite Songs",
         onBack = onBack,
@@ -2840,6 +2973,8 @@ private fun NavidromeFavoriteSongsRoute(
                     track = track,
                     isCurrent = playerState.currentTrack?.id == track.id,
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                    isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                    downloadProgressPercent = downloadUiState.trackProgressById[track.id],
                     onClick = { playerViewModel.playTracks(uiState.songs, index) },
                     trailingContent = {
                         var rowMenuExpanded by remember { mutableStateOf(false) }
@@ -2877,7 +3012,35 @@ private fun NavidromeFavoriteSongsRoute(
                                 extraActions = {
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (downloadUiState.downloadedTrackIds.contains(track.id)) {
+                                                    "Remove Download"
+                                                } else {
+                                                    "Download"
+                                                }
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Download,
+                                                contentDescription = null
+                                            )
+                                        },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            downloadsViewModel.toggleTrackDownload(track)
+                                        }
+                                    )
+                                    HorizontalDivider()
+                                    AppDropdownMenuItem(
                                         text = { Text("Add to Playlist") },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.QueueMusic,
+                                                contentDescription = null
+                                            )
+                                        },
                                         onClick = {
                                             rowMenuExpanded = false
                                             pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -2968,22 +3131,112 @@ private fun NavidromeSongsRoute(
     onOpenArtist: (String) -> Unit,
     viewModel: NavidromeSongsViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
-    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
-    StandardTopScreen(title = "Songs", onBack = onBack, onHome = onHome) {
+    var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val showSearchField = searchExpanded || uiState.searchQuery.isNotBlank()
+    val displayedSongs = remember(uiState.songs, uiState.sortOption, uiState.searchQuery) {
+        val normalizedQuery = uiState.searchQuery.trim()
+        val filtered = uiState.songs.filter { track ->
+            normalizedQuery.isBlank() ||
+                track.title.contains(normalizedQuery, ignoreCase = true) ||
+                track.artistName.contains(normalizedQuery, ignoreCase = true) ||
+                track.albumName.contains(normalizedQuery, ignoreCase = true)
+        }
+        when (uiState.sortOption) {
+            NavidromeSongSortOption.TITLE_ASC -> filtered.sortedBy { it.title.lowercase(Locale.getDefault()) }
+            NavidromeSongSortOption.TITLE_DESC -> filtered.sortedByDescending { it.title.lowercase(Locale.getDefault()) }
+            NavidromeSongSortOption.ARTIST -> filtered.sortedWith(
+                compareBy<NavidromeTrack> { it.artistName.lowercase(Locale.getDefault()) }
+                    .thenBy { it.albumName.lowercase(Locale.getDefault()) }
+                    .thenBy { it.trackNumber ?: Int.MAX_VALUE }
+                    .thenBy { it.title.lowercase(Locale.getDefault()) }
+            )
+            NavidromeSongSortOption.ALBUM -> filtered.sortedWith(
+                compareBy<NavidromeTrack> { it.albumName.lowercase(Locale.getDefault()) }
+                    .thenBy { it.trackNumber ?: Int.MAX_VALUE }
+                    .thenBy { it.title.lowercase(Locale.getDefault()) }
+            )
+        }
+    }
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    StandardTopScreen(
+        title = "Songs",
+        onBack = onBack,
+        onHome = onHome,
+        actions = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RoundIconButton(
+                    icon = Icons.Outlined.Search,
+                    contentDescription = if (showSearchField) "Hide song search" else "Show song search",
+                    onClick = { searchExpanded = !showSearchField }
+                )
+                Box {
+                    RoundIconButton(
+                        icon = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Song options",
+                        onClick = { menuExpanded = true }
+                    )
+                    AppDropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        NavidromeSongSortOption.entries.forEach { sort ->
+                            AppDropdownMenuItem(
+                                text = { Text("Sort: ${sort.label}") },
+                                trailingIcon = {
+                                    if (uiState.sortOption == sort) {
+                                        Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.setSortOption(sort)
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        topContent = {
+            NavidromeExpandableSearchField(
+                visible = showSearchField,
+                query = uiState.searchQuery,
+                label = "Search songs",
+                onQueryChange = viewModel::onSearchQueryChange,
+                modifier = Modifier.padding(horizontal = 0.dp)
+            )
+        }
+    ) {
         if (uiState.isLoading) {
             item { LoadingCard() }
-        } else if (uiState.songs.isNotEmpty()) {
-            items(uiState.songs.size) { index ->
-                val track = uiState.songs[index]
+        } else if (displayedSongs.isNotEmpty()) {
+            items(displayedSongs.size) { index ->
+                val track = displayedSongs[index]
                 TrackRow(
                     track = track,
                     isCurrent = playerState.currentTrack?.id == track.id,
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
-                    onClick = { playerViewModel.playTracks(uiState.songs, index) },
+                    isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                    downloadProgressPercent = downloadUiState.trackProgressById[track.id],
+                    onClick = { playerViewModel.playTracks(displayedSongs, index) },
                     trailingContent = {
                         var rowMenuExpanded by remember { mutableStateOf(false) }
                         Box {
@@ -2998,9 +3251,14 @@ private fun NavidromeSongsRoute(
                                 onDismissRequest = { rowMenuExpanded = false },
                                 onPlayTrack = {
                                     rowMenuExpanded = false
-                                    playerViewModel.playTracks(uiState.songs, index)
+                                    playerViewModel.playTracks(displayedSongs, index)
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                                onToggleDownload = {
+                                    rowMenuExpanded = false
+                                    downloadsViewModel.toggleTrackDownload(track)
+                                },
                                 onShowAlbum = track.albumId?.let { albumId ->
                                     {
                                         rowMenuExpanded = false
@@ -3017,6 +3275,12 @@ private fun NavidromeSongsRoute(
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
                                         text = { Text("Add to Playlist") },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.QueueMusic,
+                                                contentDescription = null
+                                            )
+                                        },
                                         onClick = {
                                             rowMenuExpanded = false
                                             pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -3031,7 +3295,15 @@ private fun NavidromeSongsRoute(
         } else if (uiState.errorMessage != null) {
             item { ErrorCard(uiState.errorMessage ?: "Unable to load songs.") }
         } else {
-            item { EmptyCard("No songs found.") }
+            item {
+                EmptyCard(
+                    if (uiState.searchQuery.isBlank()) {
+                        "No songs found."
+                    } else {
+                        "No songs match \"${uiState.searchQuery.trim()}\"."
+                    }
+                )
+            }
         }
     }
     NavidromePlaylistPickerHost(
@@ -3049,12 +3321,15 @@ private fun NavidromeSearchRoute(
     onOpenArtist: (String) -> Unit,
     viewModel: NavidromeSearchViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
-    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
+    playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val context = LocalContext.current
     val query = uiState.query.trim()
     val recentSearchTerms = uiState.recentSearchTerms
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
@@ -3064,6 +3339,16 @@ private fun NavidromeSearchRoute(
         uiState.results.artists.isEmpty() &&
         uiState.results.albums.isEmpty() &&
         uiState.results.tracks.isEmpty()
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
     StandardTopScreen(
         title = "Search",
         onBack = onBack,
@@ -3152,6 +3437,10 @@ private fun NavidromeSearchRoute(
                 items(uiState.results.artists) { artist ->
                     ArtistRow(
                         artist = artist,
+                        isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
+                            ?.let { it >= artist.albumCount && artist.albumCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
                         onClick = {
                             viewModel.commitCurrentQuery()
                             onOpenArtist(artist.id)
@@ -3164,6 +3453,10 @@ private fun NavidromeSearchRoute(
                 items(uiState.results.albums) { album ->
                     AlbumRow(
                         album = album,
+                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                            ?.let { it >= album.songCount && album.songCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                         onClick = {
                             viewModel.commitCurrentQuery()
                             onOpenAlbum(album.id)
@@ -3178,6 +3471,8 @@ private fun NavidromeSearchRoute(
                         track = track,
                         isCurrent = playerState.currentTrack?.id == track.id,
                         isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                        isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                        downloadProgressPercent = downloadUiState.trackProgressById[track.id],
                         onClick = {
                             viewModel.commitCurrentQuery()
                             playerViewModel.playTracks(uiState.results.tracks, index)
@@ -3200,6 +3495,11 @@ private fun NavidromeSearchRoute(
                                         playerViewModel.playTracks(uiState.results.tracks, index)
                                     },
                                     playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                    isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                                    onToggleDownload = {
+                                        rowMenuExpanded = false
+                                        downloadsViewModel.toggleTrackDownload(track)
+                                    },
                                     onShowAlbum = track.albumId?.let { albumId ->
                                         {
                                             rowMenuExpanded = false
@@ -3218,6 +3518,12 @@ private fun NavidromeSearchRoute(
                                         HorizontalDivider()
                                         AppDropdownMenuItem(
                                             text = { Text("Add to Playlist") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.QueueMusic,
+                                                    contentDescription = null
+                                                )
+                                            },
                                             onClick = {
                                                 rowMenuExpanded = false
                                                 pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -3303,12 +3609,25 @@ private fun NavidromeArtistDetailRoute(
     onOpenAlbum: (String) -> Unit,
     viewModel: NavidromeArtistDetailViewModel = hiltViewModel(),
     albumsViewModel: NavidromeAlbumsViewModel = hiltViewModel(),
-    playerViewModel: NavidromePlayerViewModel = hiltViewModel()
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val displayStyle by albumsViewModel.layoutMode.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
     Column(modifier = Modifier.fillMaxSize()) {
         DetailHeader(
             title = "Artist",
@@ -3349,6 +3668,34 @@ private fun NavidromeArtistDetailRoute(
                                 menuExpanded = false
                             }
                         )
+                        uiState.detail?.let { detail ->
+                            HorizontalDivider()
+                            AppDropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (
+                                            downloadUiState.fullyDownloadedAlbumCountByArtistId[detail.artist.id]
+                                                ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
+                                                ?: false
+                                        ) {
+                                            "Remove Artist Downloads"
+                                        } else {
+                                            "Download Artist"
+                                        }
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Download,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    downloadsViewModel.toggleArtistDownload(detail.artist, detail.albums)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -3372,7 +3719,11 @@ private fun NavidromeArtistDetailRoute(
                         title = detail.artist.name,
                         subtitle = "${detail.artist.albumCount} albums",
                         imageUrl = detail.artist.imageUrl ?: detail.artist.coverUrl,
-                        circular = true
+                        circular = true,
+                        showDownloadedIndicator = downloadUiState.fullyDownloadedAlbumCountByArtistId[detail.artist.id]
+                            ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
+                            ?: false,
+                        downloadProgressPercent = downloadUiState.artistProgressById[detail.artist.id]
                     )
                 }
                 item { SectionTitle("Albums") }
@@ -3390,6 +3741,10 @@ private fun NavidromeArtistDetailRoute(
                                 AlbumGridCard(
                                     album = album,
                                     isCurrent = playerState.currentTrack?.albumId == album.id,
+                                    isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                        ?.let { it >= album.songCount && album.songCount > 0 }
+                                        ?: false,
+                                    downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                                     onClick = { onOpenAlbum(album.id) }
                                 )
                             }
@@ -3400,6 +3755,10 @@ private fun NavidromeArtistDetailRoute(
                         AlbumRow(
                             album = album,
                             isCurrent = playerState.currentTrack?.albumId == album.id,
+                            isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                ?.let { it >= album.songCount && album.songCount > 0 }
+                                ?: false,
+                            downloadProgressPercent = downloadUiState.albumProgressById[album.id],
                             onClick = { onOpenAlbum(album.id) }
                         )
                     }
@@ -3418,11 +3777,24 @@ private fun NavidromeAlbumDetailRoute(
     viewModel: NavidromeAlbumDetailViewModel = hiltViewModel(),
     playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
     playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel(),
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel(),
     onOpenArtist: ((String) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
     StandardTopScreen(title = "Album", onBack = onBack, onHome = onHome) {
         if (uiState.isLoading) {
             item { LoadingCard() }
@@ -3438,6 +3810,13 @@ private fun NavidromeAlbumDetailRoute(
                     },
                     onAddToPlaylist = detail.toPlaylistSelectionRequest()?.let { request ->
                         { pendingPlaylistRequest = request }
+                    },
+                    isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[detail.album.id]
+                        ?.let { it >= detail.album.songCount && detail.album.songCount > 0 }
+                        ?: false,
+                    downloadProgressPercent = downloadUiState.albumProgressById[detail.album.id],
+                    onToggleDownload = {
+                        downloadsViewModel.toggleAlbumDownload(detail.album, detail.tracks)
                     }
                 )
             }
@@ -3447,6 +3826,8 @@ private fun NavidromeAlbumDetailRoute(
                     track = track,
                     isCurrent = playerState.currentTrack?.id == track.id,
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                    isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                    downloadProgressPercent = downloadUiState.trackProgressById[track.id],
                     onClick = { playerViewModel.playTracks(detail.tracks, index) },
                     trailingContent = {
                         var rowMenuExpanded by remember { mutableStateOf(false) }
@@ -3465,6 +3846,11 @@ private fun NavidromeAlbumDetailRoute(
                                     playerViewModel.playTracks(detail.tracks, index)
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                                onToggleDownload = {
+                                    rowMenuExpanded = false
+                                    downloadsViewModel.toggleTrackDownload(track, detail.album.songCount)
+                                },
                                 onShowAlbum = null,
                                 onShowArtist = onOpenArtist?.let { openArtist ->
                                     track.artistId?.let { artistId ->
@@ -3478,6 +3864,12 @@ private fun NavidromeAlbumDetailRoute(
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
                                         text = { Text("Add to Playlist") },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Outlined.QueueMusic,
+                                                contentDescription = null
+                                            )
+                                        },
                                         onClick = {
                                             rowMenuExpanded = false
                                             pendingPlaylistRequest = track.toPlaylistSelectionRequest()
@@ -4294,6 +4686,31 @@ private fun StandardTopScreen(
 }
 
 @Composable
+private fun NavidromeExpandableSearchField(
+    visible: Boolean,
+    query: String,
+    label: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(visible = visible) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            label = { Text(label) },
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(top = 8.dp),
+            singleLine = true,
+            leadingIcon = {
+                Icon(Icons.Outlined.Search, contentDescription = null)
+            }
+        )
+    }
+}
+
+@Composable
 private fun TopLevelHeader(
     title: String,
     onProfileClick: () -> Unit,
@@ -4597,9 +5014,12 @@ private fun NavidromeHomeAlbumCard(
     album: NavidromeAlbum,
     posterWidth: Dp,
     posterHeight: Dp,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit,
     onPlayAlbum: () -> Unit,
     onShuffleAlbum: () -> Unit,
+    onToggleDownload: () -> Unit,
     onOpenAlbum: () -> Unit,
     onOpenArtist: (() -> Unit)?
 ) {
@@ -4610,7 +5030,12 @@ private fun NavidromeHomeAlbumCard(
             .width(posterWidth)
             .clickable(onClick = onClick)
     ) {
-        AlbumArt(url = album.coverUrl, size = posterWidth)
+        AlbumArt(
+            url = album.coverUrl,
+            size = posterWidth,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
+        )
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 text = album.name,
@@ -4652,6 +5077,11 @@ private fun NavidromeHomeAlbumCard(
                             onShuffleAlbum()
                             menuExpanded = false
                         },
+                        isDownloaded = isDownloaded,
+                        onToggleDownload = {
+                            onToggleDownload()
+                            menuExpanded = false
+                        },
                         onShowAlbum = {
                             onOpenAlbum()
                             menuExpanded = false
@@ -4675,6 +5105,8 @@ private fun NavidromeAlbumActionsMenu(
     onDismissRequest: () -> Unit,
     onPlayAlbum: (() -> Unit)? = null,
     onShuffleAlbum: (() -> Unit)? = null,
+    isDownloaded: Boolean = false,
+    onToggleDownload: (() -> Unit)? = null,
     onShowAlbum: () -> Unit,
     onShowArtist: (() -> Unit)?
 ) {
@@ -4709,6 +5141,21 @@ private fun NavidromeAlbumActionsMenu(
         if (onPlayAlbum != null || onShuffleAlbum != null) {
             HorizontalDivider()
         }
+        onToggleDownload?.let { action ->
+            AppDropdownMenuItem(
+                text = {
+                    Text(if (isDownloaded) "Remove Download" else "Download")
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = null
+                    )
+                },
+                onClick = action
+            )
+            HorizontalDivider()
+        }
         AppDropdownMenuItem(
             text = { Text("Show Album") },
             leadingIcon = {
@@ -4739,6 +5186,8 @@ private fun NavidromeTrackActionsMenu(
     onDismissRequest: () -> Unit,
     onPlayTrack: () -> Unit,
     playLabel: String,
+    isDownloaded: Boolean = false,
+    onToggleDownload: (() -> Unit)? = null,
     onShowAlbum: (() -> Unit)?,
     onShowArtist: (() -> Unit)?,
     extraActions: (@Composable ColumnScope.() -> Unit)? = null
@@ -4757,6 +5206,18 @@ private fun NavidromeTrackActionsMenu(
             },
             onClick = onPlayTrack
         )
+        if (onToggleDownload != null) {
+            AppDropdownMenuItem(
+                text = { Text(if (isDownloaded) "Remove Download" else "Download") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = null
+                    )
+                },
+                onClick = onToggleDownload
+            )
+        }
         AppDropdownMenuItem(
             text = { Text("Show Album") },
             leadingIcon = {
@@ -5249,6 +5710,8 @@ private fun SectionTitle(
 private fun AlbumGridCard(
     album: NavidromeAlbum,
     isCurrent: Boolean = false,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -5257,7 +5720,12 @@ private fun AlbumGridCard(
             .clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        AlbumArt(url = album.coverUrl, size = 168.dp)
+        AlbumArt(
+            url = album.coverUrl,
+            size = 168.dp,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
+        )
         Text(
             text = album.name,
             style = MaterialTheme.typography.titleSmall,
@@ -5278,6 +5746,8 @@ private fun AlbumGridCard(
 @Composable
 private fun AlbumCard(
     album: NavidromeAlbum,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -5286,7 +5756,12 @@ private fun AlbumCard(
             .clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        AlbumArt(url = album.coverUrl, size = 122.dp)
+        AlbumArt(
+            url = album.coverUrl,
+            size = 122.dp,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
+        )
         Text(
             text = album.name,
             style = MaterialTheme.typography.titleSmall,
@@ -5339,6 +5814,8 @@ private fun LibraryMenuRow(
 private fun AlbumRow(
     album: NavidromeAlbum,
     isCurrent: Boolean = false,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -5360,7 +5837,12 @@ private fun AlbumRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumArt(url = album.coverUrl, size = 58.dp)
+            AlbumArt(
+                url = album.coverUrl,
+                size = 58.dp,
+                showDownloadedIndicator = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = album.name,
@@ -5394,6 +5876,8 @@ private fun AlbumRow(
 @Composable
 private fun ArtistRow(
     artist: NavidromeArtist,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -5406,7 +5890,12 @@ private fun ArtistRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ArtistArt(url = artist.imageUrl ?: artist.coverUrl, size = 54.dp)
+            ArtistArt(
+                url = artist.imageUrl ?: artist.coverUrl,
+                size = 54.dp,
+                showDownloadedIndicator = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = artist.name,
@@ -5431,6 +5920,8 @@ private fun ArtistRow(
 @Composable
 private fun ArtistGridCard(
     artist: NavidromeArtist,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -5442,7 +5933,9 @@ private fun ArtistGridCard(
     ) {
         ArtistArt(
             url = artist.imageUrl ?: artist.coverUrl,
-            size = 132.dp
+            size = 132.dp,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
         )
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -5592,6 +6085,8 @@ private fun TrackRow(
     track: NavidromeTrack,
     isCurrent: Boolean = false,
     isPlaying: Boolean = false,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     onClick: () -> Unit,
     trailingContent: (@Composable () -> Unit)? = null
 ) {
@@ -5614,7 +6109,12 @@ private fun TrackRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumArt(url = track.coverUrl, size = 44.dp)
+            AlbumArt(
+                url = track.coverUrl,
+                size = 44.dp,
+                showDownloadedIndicator = isDownloaded,
+                downloadProgressPercent = downloadProgressPercent
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = track.title,
@@ -6135,7 +6635,9 @@ private fun CenteredDetailHero(
     title: String,
     subtitle: String,
     imageUrl: String?,
-    circular: Boolean
+    circular: Boolean,
+    showDownloadedIndicator: Boolean = false,
+    downloadProgressPercent: Int? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -6143,9 +6645,19 @@ private fun CenteredDetailHero(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         if (circular) {
-            ArtistArt(url = imageUrl, size = 118.dp)
+            ArtistArt(
+                url = imageUrl,
+                size = 118.dp,
+                showDownloadedIndicator = showDownloadedIndicator,
+                downloadProgressPercent = downloadProgressPercent
+            )
         } else {
-            AlbumArt(url = imageUrl, size = 160.dp)
+            AlbumArt(
+                url = imageUrl,
+                size = 160.dp,
+                showDownloadedIndicator = showDownloadedIndicator,
+                downloadProgressPercent = downloadProgressPercent
+            )
         }
         Text(
             text = title,
@@ -6167,14 +6679,22 @@ private fun AlbumDetailHero(
     detail: NavidromeAlbumDetail,
     onPlayAlbum: () -> Unit,
     onShuffleAlbum: () -> Unit,
-    onAddToPlaylist: (() -> Unit)? = null
+    onAddToPlaylist: (() -> Unit)? = null,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
+    onToggleDownload: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        AlbumArt(url = detail.album.coverUrl, size = 188.dp)
+        AlbumArt(
+            url = detail.album.coverUrl,
+            size = 188.dp,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
+        )
         Text(
             text = detail.album.name,
             style = MaterialTheme.typography.headlineMedium,
@@ -6225,6 +6745,19 @@ private fun AlbumDetailHero(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Add Album to Playlist")
+            }
+        }
+        if (onToggleDownload != null) {
+            OutlinedButton(
+                onClick = onToggleDownload,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Download,
+                    contentDescription = null
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (isDownloaded) "Remove Album Download" else "Download Album")
             }
         }
     }
@@ -6413,7 +6946,12 @@ private fun NavidromeExpandedPlayerSheet(
     onRefreshAudioOutputs: () -> Unit,
     onSelectAudioOutput: (Int?) -> Unit,
     isFavorite: Boolean,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
+    downloadedTrackIds: Set<String> = emptySet(),
+    trackProgressById: Map<String, Int> = emptyMap(),
     onToggleFavorite: (NavidromeTrack) -> Boolean,
+    onToggleDownload: ((NavidromeTrack) -> Unit)? = null,
     immersiveEnabled: Boolean = false,
     onAddToPlaylist: ((NavidromeTrack) -> Unit)? = null,
     onOpenAlbum: ((String) -> Unit)? = null,
@@ -6452,7 +6990,6 @@ private fun NavidromeExpandedPlayerSheet(
     val scope = rememberCoroutineScope()
     val contentScrollState = rememberScrollState()
     var queueScrollAnimationJob by remember { mutableStateOf<Job?>(null) }
-    val queueBringIntoViewRequester = remember { BringIntoViewRequester() }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val queuedTracks = remember(state.queue, track) {
         state.queue.ifEmpty { listOf(track) }
@@ -6577,12 +7114,6 @@ private fun NavidromeExpandedPlayerSheet(
     }
     val resolvedDurationMs = remember(state.durationMs, track.durationSeconds) {
         state.durationMs.takeIf { it > 0 } ?: ((track.durationSeconds ?: 0) * 1000)
-    }
-    LaunchedEffect(showQueue, renderQueue) {
-        if (showQueue && renderQueue) {
-            delay(16)
-            queueBringIntoViewRequester.bringIntoView()
-        }
     }
     var sliderPosition by remember(state.positionMs, resolvedDurationMs) {
         mutableStateOf(
@@ -6733,6 +7264,8 @@ private fun NavidromeExpandedPlayerSheet(
                         url = track.coverUrl,
                         width = coverSize,
                         height = coverSize,
+                        showDownloadedIndicator = isDownloaded,
+                        downloadProgressPercent = downloadProgressPercent,
                         fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
                     )
                 }
@@ -6828,6 +7361,29 @@ private fun NavidromeExpandedPlayerSheet(
                                     onClick = {
                                         isMenuExpanded = false
                                         addToPlaylist(track)
+                                    }
+                                )
+                            }
+                            onToggleDownload?.let { toggleDownload ->
+                                AppDropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (isDownloaded) {
+                                                "Remove Download"
+                                            } else {
+                                                "Download"
+                                            }
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Download,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        isMenuExpanded = false
+                                        toggleDownload(track)
                                     }
                                 )
                             }
@@ -7022,6 +7578,14 @@ private fun NavidromeExpandedPlayerSheet(
                         } else {
                             renderQueue = true
                             showQueue = true
+                            queueScrollAnimationJob = scope.launch {
+                                delay(32)
+                                contentScrollState.animateScrollTo(
+                                    value = contentScrollState.maxValue,
+                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                )
+                                queueScrollAnimationJob = null
+                            }
                         }
                     }
                 )
@@ -7029,9 +7593,7 @@ private fun NavidromeExpandedPlayerSheet(
             Spacer(modifier = Modifier.height(4.dp))
             if (renderQueue) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .bringIntoViewRequester(queueBringIntoViewRequester)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     androidx.compose.animation.AnimatedVisibility(
                         modifier = Modifier.fillMaxWidth(),
@@ -7066,6 +7628,8 @@ private fun NavidromeExpandedPlayerSheet(
                                     PlayerQueueRow(
                                         track = queuedTrack,
                                         isCurrent = index == state.currentIndex,
+                                        isDownloaded = queuedTrack.id in downloadedTrackIds,
+                                        downloadProgressPercent = trackProgressById[queuedTrack.id],
                                         immersiveEnabled = immersiveEnabled,
                                         onClick = { onSelectTrack(index) }
                                     )
@@ -7337,6 +7901,8 @@ private fun PlayerStatPill(
 private fun PlayerQueueRow(
     track: NavidromeTrack,
     isCurrent: Boolean,
+    isDownloaded: Boolean = false,
+    downloadProgressPercent: Int? = null,
     immersiveEnabled: Boolean = false,
     onClick: () -> Unit
 ) {
@@ -7367,7 +7933,12 @@ private fun PlayerQueueRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AlbumArt(url = track.coverUrl, size = 44.dp)
+        AlbumArt(
+            url = track.coverUrl,
+            size = 44.dp,
+            showDownloadedIndicator = isDownloaded,
+            downloadProgressPercent = downloadProgressPercent
+        )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = track.title,
@@ -7720,12 +8291,16 @@ private fun ProfileGlyph() {
 @Composable
 private fun AlbumArt(
     url: String?,
-    size: androidx.compose.ui.unit.Dp
+    size: androidx.compose.ui.unit.Dp,
+    showDownloadedIndicator: Boolean = false,
+    downloadProgressPercent: Int? = null
 ) {
     AlbumArt(
         url = url,
         width = size,
-        height = size
+        height = size,
+        showDownloadedIndicator = showDownloadedIndicator,
+        downloadProgressPercent = downloadProgressPercent
     )
 }
 
@@ -7736,34 +8311,46 @@ private fun AlbumArt(
     height: androidx.compose.ui.unit.Dp,
     shape: Shape = RoundedCornerShape(18.dp),
     contentScale: ContentScale = ContentScale.Crop,
-    fallbackIcon: ImageVector = Icons.Outlined.Album
+    fallbackIcon: ImageVector = Icons.Outlined.Album,
+    showDownloadedIndicator: Boolean = false,
+    downloadProgressPercent: Int? = null
 ) {
-    if (url.isNullOrBlank()) {
-        val fallbackIconSize = if (width >= 160.dp || height >= 160.dp) 92.dp else 28.dp
-        Box(
-            modifier = Modifier
-                .width(width)
-                .height(height)
-                .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = fallbackIcon,
+    Box(
+        modifier = Modifier
+            .width(width)
+            .height(height)
+    ) {
+        if (url.isNullOrBlank()) {
+            val fallbackIconSize = if (width >= 160.dp || height >= 160.dp) 92.dp else 28.dp
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(shape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = fallbackIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(fallbackIconSize),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            AsyncImage(
+                model = url,
                 contentDescription = null,
-                modifier = Modifier.size(fallbackIconSize),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(shape),
+                contentScale = contentScale
             )
         }
-    } else {
-        AsyncImage(
-            model = url,
-            contentDescription = null,
-            modifier = Modifier
-                .width(width)
-                .height(height)
-                .clip(shape),
-            contentScale = contentScale
+        NavidromeDownloadBadge(
+            visible = showDownloadedIndicator || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
+            isCompleted = showDownloadedIndicator && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
+            progressPercent = downloadProgressPercent,
+            modifier = Modifier.align(Alignment.TopEnd)
         )
     }
 }
@@ -7771,27 +8358,83 @@ private fun AlbumArt(
 @Composable
 private fun ArtistArt(
     url: String?,
-    size: androidx.compose.ui.unit.Dp
+    size: androidx.compose.ui.unit.Dp,
+    showDownloadedIndicator: Boolean = false,
+    downloadProgressPercent: Int? = null
 ) {
-    if (url.isNullOrBlank()) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Outlined.Person, contentDescription = null)
+    Box(modifier = Modifier.size(size)) {
+        if (url.isNullOrBlank()) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Outlined.Person, contentDescription = null)
+            }
+        } else {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(CircleShape),
+                contentScale = ContentScale.Crop
+            )
         }
-    } else {
-        AsyncImage(
-            model = url,
-            contentDescription = null,
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape),
-            contentScale = ContentScale.Crop
+        NavidromeDownloadBadge(
+            visible = showDownloadedIndicator || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
+            isCompleted = showDownloadedIndicator && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
+            progressPercent = downloadProgressPercent,
+            modifier = Modifier.align(Alignment.TopEnd)
         )
+    }
+}
+
+@Composable
+private fun NavidromeDownloadBadge(
+    visible: Boolean,
+    isCompleted: Boolean,
+    progressPercent: Int?,
+    modifier: Modifier = Modifier
+) {
+    if (!visible) return
+    val progress = progressPercent?.coerceIn(0, 99)
+    val showProgress = progress != null
+    val badgeSize = if (showProgress) 30.dp else 18.dp
+    Box(
+        modifier = modifier
+            .padding(4.dp)
+            .size(badgeSize)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (showProgress) {
+            CircularProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.4.dp,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "$progress%",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 8.sp
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        } else if (isCompleted) {
+            Icon(
+                imageVector = Icons.Outlined.Download,
+                contentDescription = "Downloaded",
+                modifier = Modifier.size(10.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
 

@@ -1095,12 +1095,30 @@ class NavidromeRepository @Inject constructor(
             }
         }
         val staleCache = if (forceRefresh) null else getAnyCache(songsCache, cacheKey)
-        val result = navidromeApi.getSongs(auth)
-        if (result.isFailure) {
-            staleCache?.let { return@withAuth AppResult.Success(it) }
-            throw result.exceptionOrNull() ?: IllegalStateException("Unable to load songs.")
+        val pageSize = 500
+        val fetchedTracks = mutableListOf<com.stillshelf.app.data.api.NavidromeTrackDto>()
+        val seenTrackIds = linkedSetOf<String>()
+        var offset = 0
+        while (true) {
+            val result = navidromeApi.getSongs(
+                auth = auth,
+                songCount = pageSize,
+                songOffset = offset
+            )
+            if (result.isFailure) {
+                staleCache?.let { return@withAuth AppResult.Success(it) }
+                throw result.exceptionOrNull() ?: IllegalStateException("Unable to load songs.")
+            }
+            val page = result.getOrThrow()
+            page.forEach { track ->
+                if (seenTrackIds.add(track.id)) {
+                    fetchedTracks += track
+                }
+            }
+            if (page.size < pageSize) break
+            offset += pageSize
         }
-        val songs = result.getOrThrow()
+        val songs = fetchedTracks
             .map { it.toModel(auth) }
             .sortedWith(
                 compareBy<NavidromeTrack> { it.artistName.lowercase() }

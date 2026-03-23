@@ -140,6 +140,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -161,6 +163,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -3917,12 +3920,11 @@ private fun NavidromeSettingsRoute(
     } else {
         null
     }
-    val lastSyncedValue = uiState.lastLibrarySyncAtMs
-        ?.let { timestamp -> "Last synced ${formatNavidromeLastSyncedTimestamp(timestamp)}" }
     val activeServerName = uiState.savedServers.firstOrNull { it.id == uiState.activeServerId }?.name
         ?: uiState.session?.serverName
         ?: "Navidrome"
-
+    val lastSyncedValue = uiState.lastLibrarySyncAtMs
+        ?.let { timestamp -> "Last synced ${formatNavidromeLastSyncedTimestamp(timestamp)}" }
     LaunchedEffect(uiState.syncToastMessage) {
         val toastMessage = uiState.syncToastMessage ?: return@LaunchedEffect
         Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
@@ -3933,8 +3935,38 @@ private fun NavidromeSettingsRoute(
         title = "Settings",
         onBack = onBack,
         onHome = onHome,
-        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+        containerColor = MaterialTheme.colorScheme.background
     ) {
+        item {
+            Text(
+                text = "PRODUCT MODE",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Selected backend",
+                    value = "Navidrome",
+                    showChevronWhenValue = false,
+                    showChevronWhenUnselected = false,
+                    onClick = null
+                )
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Switch Product Mode",
+                    value = "Return to backend selector",
+                    onClick = onSwitchMode,
+                    trailingContentWidth = 168.dp,
+                    valueTextAlign = TextAlign.End
+                )
+            }
+        }
         item {
             Text(
                 text = "APPEARANCE",
@@ -4007,11 +4039,6 @@ private fun NavidromeSettingsRoute(
                     title = "Trigger Server Scan",
                     subtitle = "Ask Navidrome to scan for new or changed files.",
                     onClick = { serverScanDialogVisible = true }
-                )
-                DividerLine()
-                NavidromeSettingsRow(
-                    title = "Switch Product Mode",
-                    onClick = onSwitchMode
                 )
                 DividerLine()
                 NavidromeSettingsRow(
@@ -6990,6 +7017,13 @@ private fun NavidromeExpandedPlayerSheet(
     val scope = rememberCoroutineScope()
     val contentScrollState = rememberScrollState()
     var queueScrollAnimationJob by remember { mutableStateOf<Job?>(null) }
+    var scrollContainerTopOffsetPx by remember { mutableIntStateOf(0) }
+    var queueCardTopOffsetPx by remember { mutableIntStateOf(0) }
+    val queueOpenTopInsetPx = remember(statusBarTopInset, density) {
+        with(density) {
+            (statusBarTopInset + 12.dp).roundToPx()
+        }
+    }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val queuedTracks = remember(state.queue, track) {
         state.queue.ifEmpty { listOf(track) }
@@ -7091,12 +7125,17 @@ private fun NavidromeExpandedPlayerSheet(
         } else {
             val insetsController = WindowCompat.getInsetsController(window, view)
             val previousStatusBarColor = window.statusBarColor
+            val previousNavigationBarColor = window.navigationBarColor
             val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+            val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
             if (immersiveEnabled) {
                 @Suppress("DEPRECATION")
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
                 insetsController.isAppearanceLightStatusBars = false
             }
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = currentColorScheme.surface.toArgb()
+            insetsController.isAppearanceLightNavigationBars = currentColorScheme.surface.luminance() > 0.5f
             onDispose {
                 @Suppress("DEPRECATION")
                 window.statusBarColor = if (immersiveEnabled) {
@@ -7109,6 +7148,9 @@ private fun NavidromeExpandedPlayerSheet(
                 } else {
                     currentColorScheme.surface.luminance() > 0.5f
                 }
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = previousNavigationBarColor
+                insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
             }
         }
     }
@@ -7220,6 +7262,24 @@ private fun NavidromeExpandedPlayerSheet(
             queueExpandedLayout || veryCompactLayout -> 32.dp
             else -> 36.dp
         }
+        val lowerSectionLayoutT = ((usableSheetHeight - 620.dp) / 180.dp).coerceIn(0f, 1f)
+        val lowerSectionBudget = (usableSheetHeight - targetCoverSize - 300.dp).coerceAtLeast(0.dp)
+        val targetTransportSectionTopGap = if (queueExpandedLayout) {
+            12.dp
+        } else {
+            minOf(
+                lerp(start = 22.dp, stop = 92.dp, fraction = lowerSectionLayoutT),
+                lowerSectionBudget * 0.72f
+            )
+        }
+        val targetToolRowTopGap = if (queueExpandedLayout) {
+            10.dp
+        } else {
+            minOf(
+                lerp(start = 12.dp, stop = 28.dp, fraction = lowerSectionLayoutT),
+                lowerSectionBudget * 0.24f
+            )
+        }
         val queueTransitionSpec = remember { tween<Dp>(durationMillis = 260) }
         val coverSize by animateDpAsState(targetValue = targetCoverSize, animationSpec = queueTransitionSpec, label = "navidromePlayerCoverSize")
         val outerSpacing by animateDpAsState(targetValue = targetOuterSpacing, animationSpec = queueTransitionSpec, label = "navidromePlayerOuterSpacing")
@@ -7229,16 +7289,177 @@ private fun NavidromeExpandedPlayerSheet(
         val transportIconSize by animateDpAsState(targetValue = targetTransportIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportIconSize")
         val skipButtonSize by animateDpAsState(targetValue = targetSkipButtonSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipButtonSize")
         val skipIconSize by animateDpAsState(targetValue = targetSkipIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipIconSize")
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .animateContentSize(animationSpec = tween(durationMillis = 260))
-                .navigationBarsPadding()
-                .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
-                .verticalScroll(contentScrollState, enabled = queueExpandedLayout),
-            verticalArrangement = Arrangement.spacedBy(outerSpacing),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+        val transportSectionTopGap by animateDpAsState(targetValue = targetTransportSectionTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportSectionTopGap")
+        val toolRowTopGap by animateDpAsState(targetValue = targetToolRowTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerToolRowTopGap")
+        val progressSection: @Composable () -> Unit = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                NavidromePlayerProgressBar(
+                    progress = if (resolvedDurationMs > 0) {
+                        (sliderPosition / resolvedDurationMs.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    },
+                    activeColor = progressActiveColor,
+                    trackColor = progressTrackColor,
+                    onProgressChange = { newProgress ->
+                        sliderPosition = resolvedDurationMs * newProgress.coerceIn(0f, 1f)
+                    },
+                    onProgressChangeFinished = { finalProgress ->
+                        val finalPosition = (resolvedDurationMs * finalProgress.coerceIn(0f, 1f)).roundToInt()
+                        sliderPosition = finalPosition.toFloat()
+                        onSeekTo(finalPosition)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = formatDurationMillis(sliderPosition.roundToInt()),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor
+                    )
+                    Text(
+                        text = formatTrackTechnicalDetails(track),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = formatDurationMillis(resolvedDurationMs),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor,
+                        textAlign = TextAlign.End
+                    )
+                }
+            }
+        }
+        val transportRow: @Composable () -> Unit = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onPrevious,
+                    modifier = Modifier.size(skipButtonSize)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SkipPrevious,
+                        contentDescription = "Previous",
+                        modifier = Modifier.size(skipIconSize),
+                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Surface(
+                    modifier = Modifier.size(transportButtonSize),
+                    shape = CircleShape,
+                    color = transportButtonColor,
+                    border = BorderStroke(1.dp, transportButtonBorderColor),
+                    tonalElevation = 4.dp
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().clickable(onClick = onPlayPause),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = when {
+                                isRadio && state.isPlaying -> Icons.Outlined.Stop
+                                state.isPlaying -> Icons.Outlined.Pause
+                                else -> Icons.Outlined.PlayArrow
+                            },
+                            contentDescription = when {
+                                isRadio && state.isPlaying -> "Stop"
+                                state.isPlaying -> "Pause"
+                                else -> "Play"
+                            },
+                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(transportIconSize)
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onNext,
+                    modifier = Modifier.size(skipButtonSize)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SkipNext,
+                        contentDescription = "Next",
+                        modifier = Modifier.size(skipIconSize),
+                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+        val toolRow: @Composable () -> Unit = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                NavidromePlayerToolButton(
+                    modifier = Modifier.weight(1f),
+                    icon = outputIcon,
+                    label = outputLabel,
+                    containerColor = toolButtonContainerColor,
+                    contentColor = toolButtonContentColor,
+                    borderColor = toolButtonBorderColor,
+                    onClick = {
+                        onRefreshAudioOutputs()
+                        showOutputSheet = true
+                    }
+                )
+                NavidromePlayerToolButton(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Outlined.QueueMusic,
+                    label = if (showQueue) "Hide Queue" else "Queue",
+                    containerColor = toolButtonContainerColor,
+                    contentColor = toolButtonContentColor,
+                    borderColor = toolButtonBorderColor,
+                    onClick = {
+                        queueScrollAnimationJob?.cancel()
+                        if (showQueue) {
+                            showQueue = false
+                            queueScrollAnimationJob = scope.launch {
+                                contentScrollState.animateScrollTo(
+                                    value = 0,
+                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                )
+                                delay(220)
+                                renderQueue = false
+                                queueScrollAnimationJob = null
+                            }
+                        } else {
+                            renderQueue = true
+                            showQueue = true
+                            queueScrollAnimationJob = scope.launch {
+                                repeat(12) {
+                                    if (queueCardTopOffsetPx > 0 && scrollContainerTopOffsetPx > 0) return@repeat
+                                    delay(16)
+                                }
+                                contentScrollState.animateScrollTo(
+                                    value = (queueCardTopOffsetPx - scrollContainerTopOffsetPx - queueOpenTopInsetPx)
+                                        .coerceIn(0, contentScrollState.maxValue),
+                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                )
+                                queueScrollAnimationJob = null
+                            }
+                        }
+                    }
+                )
+            }
+        }
+        val topContent: @Composable () -> Unit = {
             Spacer(modifier = Modifier.height(handleTopPadding))
             Box(
                 modifier = Modifier
@@ -7427,218 +7648,121 @@ private fun NavidromeExpandedPlayerSheet(
                     }
                 }
             }
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                NavidromePlayerProgressBar(
-                    progress = if (resolvedDurationMs > 0) {
-                        (sliderPosition / resolvedDurationMs.toFloat()).coerceIn(0f, 1f)
-                    } else {
-                        0f
-                    },
-                    activeColor = progressActiveColor,
-                    trackColor = progressTrackColor,
-                    onProgressChange = { newProgress ->
-                        sliderPosition = resolvedDurationMs * newProgress.coerceIn(0f, 1f)
-                    },
-                    onProgressChangeFinished = { finalProgress ->
-                        val finalPosition = (resolvedDurationMs * finalProgress.coerceIn(0f, 1f)).roundToInt()
-                        sliderPosition = finalPosition.toFloat()
-                        onSeekTo(finalPosition)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = formatDurationMillis(sliderPosition.roundToInt()),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = secondaryTextColor
-                    )
-                    Text(
-                        text = formatTrackTechnicalDetails(track),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = secondaryTextColor,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = formatDurationMillis(resolvedDurationMs),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = secondaryTextColor,
-                        textAlign = TextAlign.End
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onPrevious,
-                    modifier = Modifier.size(skipButtonSize)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.SkipPrevious,
-                        contentDescription = "Previous",
-                        modifier = Modifier.size(skipIconSize),
-                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                Surface(
-                    modifier = Modifier.size(transportButtonSize),
-                    shape = CircleShape,
-                    color = transportButtonColor,
-                    border = BorderStroke(1.dp, transportButtonBorderColor),
-                    tonalElevation = 4.dp
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().clickable(onClick = onPlayPause),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = when {
-                                isRadio && state.isPlaying -> Icons.Outlined.Stop
-                                state.isPlaying -> Icons.Outlined.Pause
-                                else -> Icons.Outlined.PlayArrow
-                            },
-                            contentDescription = when {
-                                isRadio && state.isPlaying -> "Stop"
-                                state.isPlaying -> "Pause"
-                                else -> "Play"
-                            },
-                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(transportIconSize)
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = onNext,
-                    modifier = Modifier.size(skipButtonSize)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.SkipNext,
-                        contentDescription = "Next",
-                        modifier = Modifier.size(skipIconSize),
-                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            if (compactLayout && !queueExpandedLayout) {
-                Spacer(modifier = Modifier.height(if (veryCompactLayout) 8.dp else 20.dp))
-            }
-            Row(
+            progressSection()
+        }
+        val queueCardContent: @Composable () -> Unit = {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = if (veryCompactLayout) 8.dp else 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    .onGloballyPositioned { coordinates ->
+                        queueCardTopOffsetPx = coordinates.positionInRoot().y.roundToInt()
+                    }
             ) {
-                NavidromePlayerToolButton(
-                    modifier = Modifier.weight(1f),
-                    icon = outputIcon,
-                    label = outputLabel,
-                    containerColor = toolButtonContainerColor,
-                    contentColor = toolButtonContentColor,
-                    borderColor = toolButtonBorderColor,
-                    onClick = {
-                        onRefreshAudioOutputs()
-                        showOutputSheet = true
-                    }
-                )
-                NavidromePlayerToolButton(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Outlined.QueueMusic,
-                    label = if (showQueue) "Hide Queue" else "Queue",
-                    containerColor = toolButtonContainerColor,
-                    contentColor = toolButtonContentColor,
-                    borderColor = toolButtonBorderColor,
-                    onClick = {
-                        queueScrollAnimationJob?.cancel()
-                        if (showQueue) {
-                            showQueue = false
-                            queueScrollAnimationJob = scope.launch {
-                                contentScrollState.animateScrollTo(
-                                    value = 0,
-                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                                )
-                                delay(220)
-                                renderQueue = false
-                                queueScrollAnimationJob = null
-                            }
-                        } else {
-                            renderQueue = true
-                            showQueue = true
-                            queueScrollAnimationJob = scope.launch {
-                                delay(32)
-                                contentScrollState.animateScrollTo(
-                                    value = contentScrollState.maxValue,
-                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                                )
-                                queueScrollAnimationJob = null
-                            }
-                        }
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            if (renderQueue) {
-                Box(
-                    modifier = Modifier.fillMaxWidth()
+                androidx.compose.animation.AnimatedVisibility(
+                    modifier = Modifier.fillMaxWidth(),
+                    visible = showQueue,
+                    enter = slideInVertically(
+                        initialOffsetY = { it / 4 },
+                        animationSpec = tween(durationMillis = 220)
+                    ),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it / 4 },
+                        animationSpec = tween(durationMillis = 180)
+                    )
                 ) {
-                    androidx.compose.animation.AnimatedVisibility(
+                    Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        visible = showQueue,
-                        enter = slideInVertically(
-                            initialOffsetY = { it / 4 },
-                            animationSpec = tween(durationMillis = 220)
-                        ),
-                        exit = slideOutVertically(
-                            targetOffsetY = { it / 4 },
-                            animationSpec = tween(durationMillis = 180)
-                        )
+                        shape = RoundedCornerShape(26.dp),
+                        color = queueCardColor,
+                        border = BorderStroke(1.dp, queueCardBorderColor),
+                        tonalElevation = 1.dp
                     ) {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(26.dp),
-                            color = queueCardColor,
-                            border = BorderStroke(1.dp, queueCardBorderColor),
-                            tonalElevation = 1.dp
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text(
-                                    text = "Up Next",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = primaryTextColor
+                            Text(
+                                text = "Up Next",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = primaryTextColor
+                            )
+                            queuedTracks.forEachIndexed { index, queuedTrack ->
+                                PlayerQueueRow(
+                                    track = queuedTrack,
+                                    isCurrent = index == state.currentIndex,
+                                    isDownloaded = queuedTrack.id in downloadedTrackIds,
+                                    downloadProgressPercent = trackProgressById[queuedTrack.id],
+                                    immersiveEnabled = immersiveEnabled,
+                                    onClick = { onSelectTrack(index) }
                                 )
-                                queuedTracks.forEachIndexed { index, queuedTrack ->
-                                    PlayerQueueRow(
-                                        track = queuedTrack,
-                                        isCurrent = index == state.currentIndex,
-                                        isDownloaded = queuedTrack.id in downloadedTrackIds,
-                                        downloadProgressPercent = trackProgressById[queuedTrack.id],
-                                        immersiveEnabled = immersiveEnabled,
-                                        onClick = { onSelectTrack(index) }
-                                    )
-                                }
                             }
                         }
                     }
                 }
             }
+        }
+        val hiddenPlayerContent: @Composable () -> Unit = {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .animateContentSize(animationSpec = tween(durationMillis = 260))
+                    .navigationBarsPadding()
+                    .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                topContent()
+                Spacer(modifier = Modifier.weight(1f))
+                transportRow()
+                Spacer(
+                    modifier = Modifier.weight(
+                        if (compactLayout) 0.7f else 0.9f,
+                        fill = true
+                    )
+                )
+                toolRow()
+            }
+        }
+        if (renderQueue) {
+            if (showQueue) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .animateContentSize(animationSpec = tween(durationMillis = 260))
+                        .navigationBarsPadding()
+                        .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
+                        .onGloballyPositioned { coordinates ->
+                            scrollContainerTopOffsetPx = coordinates.positionInRoot().y.roundToInt()
+                        }
+                        .verticalScroll(contentScrollState, enabled = true),
+                    verticalArrangement = Arrangement.spacedBy(outerSpacing),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    topContent()
+                    Spacer(modifier = Modifier.height(transportSectionTopGap))
+                    transportRow()
+                    Spacer(modifier = Modifier.height(toolRowTopGap))
+                    toolRow()
+                    Spacer(modifier = Modifier.height(4.dp))
+                    queueCardContent()
+                }
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    hiddenPlayerContent()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 72.dp + toolRowTopGap)
+                    ) {
+                        queueCardContent()
+                    }
+                }
+            }
+        } else {
+            hiddenPlayerContent()
         }
     }
     if (showOutputSheet) {

@@ -855,7 +855,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun setPlaybackSpeed(speed: Float) {
-        val clampedSpeed = speed.coerceIn(0.7f, 2.0f)
+        val clampedSpeed = speed.coerceIn(0.5f, 2.0f)
         currentPlaybackSpeed = clampedSpeed
         val wasPlaying = uiState.value.isPlaying
         mediaPlayer?.let { player ->
@@ -876,10 +876,10 @@ class PlaybackController @Inject constructor(
     }
 
     fun cyclePlaybackSpeed(
-        steps: List<Float> = listOf(1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+        steps: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.2f, 1.3f, 1.5f, 2.0f)
     ): Float {
         val normalizedSteps = steps
-            .map { it.coerceIn(0.7f, 2.0f) }
+            .map { it.coerceIn(0.5f, 2.0f) }
             .distinct()
             .sorted()
         if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
@@ -893,10 +893,10 @@ class PlaybackController @Inject constructor(
     }
 
     fun increasePlaybackSpeed(
-        steps: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+        steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
         val normalizedSteps = steps
-            .map { it.coerceIn(0.7f, 2.0f) }
+            .map { it.coerceIn(0.5f, 2.0f) }
             .distinct()
             .sorted()
         if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
@@ -908,10 +908,10 @@ class PlaybackController @Inject constructor(
     }
 
     fun decreasePlaybackSpeed(
-        steps: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+        steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
         val normalizedSteps = steps
-            .map { it.coerceIn(0.7f, 2.0f) }
+            .map { it.coerceIn(0.5f, 2.0f) }
             .distinct()
             .sorted()
         if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed

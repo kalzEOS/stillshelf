@@ -11,6 +11,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.utils.MediaConstants
 import com.stillshelf.app.MainActivity
+import com.stillshelf.app.R
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.datastore.SessionPreferenceState
 import com.stillshelf.app.core.model.BackendProvider
@@ -47,7 +48,30 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         val playbackState: PlaybackStateCompat,
         val queue: List<MediaSessionCompat.QueueItem>? = null,
         val queueTitle: CharSequence? = null,
-        val activeQueueItemId: Long = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+        val activeQueueItemId: Long = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong(),
+        val includeActiveQueueItemId: Boolean = true
+    )
+
+    private data class CarMetadataSignature(
+        val mediaId: String?,
+        val title: String?,
+        val artist: String?,
+        val album: String?,
+        val artUri: String?,
+        val durationMs: Long
+    )
+
+    private data class CarQueueSignature(
+        val queueTitle: String?,
+        val itemKeys: List<String>
+    )
+
+    private data class CarPlaybackSignature(
+        val state: Int,
+        val positionMs: Long,
+        val playbackSpeed: Float,
+        val actions: Long,
+        val customActionKeys: List<String>
     )
 
     private data class SearchBrowseCandidate(
@@ -76,6 +100,10 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
     private var latestSelectedBackend: BackendProvider? = null
     @Volatile
     private var carSelectedBackendOverride: BackendProvider? = null
+    private var lastPublishedMetadataSignature: CarMetadataSignature? = null
+    private var lastPublishedQueueSignature: CarQueueSignature? = null
+    private var lastPublishedActiveQueueItemId: Long = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+    private var lastPublishedPlaybackSignature: CarPlaybackSignature? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -810,11 +838,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                     navState = navState
                 )
             }.collect { snapshot ->
-                mediaSession.setMetadata(snapshot.metadata)
-                mediaSession.setPlaybackState(snapshot.playbackState)
-                mediaSession.setQueue(snapshot.queue)
-                mediaSession.setQueueTitle(snapshot.queueTitle)
-                mediaSession.isActive = snapshot.metadata != null
+                applySessionSnapshot(snapshot)
             }
         }
     }
@@ -910,17 +934,13 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                             state = active.state,
                             preferences = preferences
                         ),
-                        activeQueueItemId = active.state.currentIndex
-                            .takeIf { it in active.state.queue.indices }
-                            ?.toLong()
-                            ?: MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+                        activeQueueItemId = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong(),
+                        includeActiveQueueItemId = false
                     ),
                     queue = queue,
                     queueTitle = if (queue.isEmpty()) null else "Up Next",
-                    activeQueueItemId = active.state.currentIndex
-                        .takeIf { it in active.state.queue.indices }
-                        ?.toLong()
-                        ?: MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+                    activeQueueItemId = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong(),
+                    includeActiveQueueItemId = false
                 )
             }
         }
@@ -931,12 +951,15 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         positionMs: Long,
         actions: Long,
         customActions: List<PlaybackStateCompat.CustomAction> = emptyList(),
-        activeQueueItemId: Long = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+        activeQueueItemId: Long = MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong(),
+        includeActiveQueueItemId: Boolean = true
     ): PlaybackStateCompat {
         val builder = PlaybackStateCompat.Builder()
             .setActions(actions)
             .setState(state, positionMs, 1f)
-            .setActiveQueueItemId(activeQueueItemId)
+        if (includeActiveQueueItemId) {
+            builder.setActiveQueueItemId(activeQueueItemId)
+        }
         customActions.forEach(builder::addCustomAction)
         return builder.build()
     }
@@ -1049,13 +1072,9 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
 
     private suspend fun handleCustomAction(action: String) {
         when (action) {
-            CUSTOM_ACTION_ABS_SPEED_DOWN -> {
+            CUSTOM_ACTION_ABS_SPEED_CYCLE -> {
                 carSelectedBackendOverride = BackendProvider.AUDIOBOOKSHELF
-                playbackController.decreasePlaybackSpeed()
-            }
-            CUSTOM_ACTION_ABS_SPEED_UP -> {
-                carSelectedBackendOverride = BackendProvider.AUDIOBOOKSHELF
-                playbackController.increasePlaybackSpeed()
+                playbackController.cyclePlaybackSpeed()
             }
             CUSTOM_ACTION_NAV_SHUFFLE -> {
                 carSelectedBackendOverride = BackendProvider.NAVIDROME
@@ -1157,11 +1176,97 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
             absState = playbackController.uiState.value,
             navState = navidromePlayerController.state.value
         )
-        mediaSession.setMetadata(snapshot.metadata)
-        mediaSession.setPlaybackState(snapshot.playbackState)
-        mediaSession.setQueue(snapshot.queue)
-        mediaSession.setQueueTitle(snapshot.queueTitle)
+        applySessionSnapshot(snapshot)
+    }
+
+    private fun applySessionSnapshot(snapshot: CarSessionSnapshot) {
+        val metadataSignature = snapshot.metadata.toSignature()
+        if (metadataSignature != lastPublishedMetadataSignature) {
+            mediaSession.setMetadata(snapshot.metadata)
+            lastPublishedMetadataSignature = metadataSignature
+        }
+
+        val queueSignature = snapshot.toQueueSignature()
+        if (queueSignature != lastPublishedQueueSignature) {
+            mediaSession.setQueue(snapshot.queue)
+            mediaSession.setQueueTitle(snapshot.queueTitle)
+            lastPublishedQueueSignature = queueSignature
+        }
+
+        val targetActiveQueueItemId = if (snapshot.includeActiveQueueItemId) {
+            snapshot.activeQueueItemId
+        } else {
+            MediaSessionCompat.QueueItem.UNKNOWN_ID.toLong()
+        }
+        val activeQueueItemChanged = targetActiveQueueItemId != lastPublishedActiveQueueItemId
+        lastPublishedActiveQueueItemId = targetActiveQueueItemId
+        val playbackSignature = snapshot.playbackState.toSignature(
+            ignorePosition = !snapshot.includeActiveQueueItemId
+        )
+        if (playbackSignature != lastPublishedPlaybackSignature || activeQueueItemChanged) {
+            mediaSession.setPlaybackState(
+                snapshot.playbackState.copyForCarSession(
+                    includeActiveQueueItemId = activeQueueItemChanged,
+                    activeQueueItemId = targetActiveQueueItemId
+                )
+            )
+            lastPublishedPlaybackSignature = playbackSignature
+        }
         mediaSession.isActive = snapshot.metadata != null
+    }
+
+    private fun MediaMetadataCompat?.toSignature(): CarMetadataSignature? {
+        if (this == null) return null
+        return CarMetadataSignature(
+            mediaId = getString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID),
+            title = getString(MediaMetadataCompat.METADATA_KEY_TITLE),
+            artist = getString(MediaMetadataCompat.METADATA_KEY_ARTIST),
+            album = getString(MediaMetadataCompat.METADATA_KEY_ALBUM),
+            artUri = getString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI),
+            durationMs = getLong(MediaMetadataCompat.METADATA_KEY_DURATION)
+        )
+    }
+
+    private fun PlaybackStateCompat.toSignature(ignorePosition: Boolean = false): CarPlaybackSignature {
+        val customActionKeys = customActions.orEmpty().map { action ->
+            "${action.action}:${action.name}:${action.icon}"
+        }
+        return CarPlaybackSignature(
+            state = state,
+            positionMs = if (ignorePosition) 0L else position,
+            playbackSpeed = playbackSpeed,
+            actions = actions,
+            customActionKeys = customActionKeys
+        )
+    }
+
+    private fun PlaybackStateCompat.copyForCarSession(
+        includeActiveQueueItemId: Boolean,
+        activeQueueItemId: Long
+    ): PlaybackStateCompat {
+        val builder = PlaybackStateCompat.Builder()
+            .setActions(actions)
+            .setState(state, position, playbackSpeed)
+            .setBufferedPosition(bufferedPosition)
+        if (errorMessage != null) {
+            builder.setErrorMessage(errorCode, errorMessage)
+        }
+        if (includeActiveQueueItemId) {
+            builder.setActiveQueueItemId(activeQueueItemId)
+        }
+        customActions.orEmpty().forEach(builder::addCustomAction)
+        extras?.let(builder::setExtras)
+        return builder.build()
+    }
+
+    private fun CarSessionSnapshot.toQueueSignature(): CarQueueSignature? {
+        val queueItems = queue ?: return null
+        return CarQueueSignature(
+            queueTitle = queueTitle?.toString(),
+            itemKeys = queueItems.map { item ->
+                "${item.queueId}:${item.description.mediaId}:${item.description.title}:${item.description.subtitle}"
+            }
+        )
     }
 
     private suspend fun playNavArtist(artistId: String, shuffle: Boolean) {
@@ -1267,17 +1372,11 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
     }
 
     private fun buildAbsCustomActions(state: PlaybackUiState): List<PlaybackStateCompat.CustomAction> {
-        val currentLabel = speedStateLabel(state.playbackSpeed)
         return listOf(
             buildCustomAction(
-                action = CUSTOM_ACTION_ABS_SPEED_DOWN,
-                title = "Slower · $currentLabel",
-                iconResId = android.R.drawable.ic_media_rew
-            ),
-            buildCustomAction(
-                action = CUSTOM_ACTION_ABS_SPEED_UP,
-                title = "Faster · $currentLabel",
-                iconResId = android.R.drawable.ic_media_ff
+                action = CUSTOM_ACTION_ABS_SPEED_CYCLE,
+                title = "Change Playback Speed",
+                iconResId = speedActionIconResId(state.playbackSpeed)
             )
         )
     }
@@ -1336,21 +1435,15 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         }
     }
 
-    private fun formatPlaybackSpeed(speed: Float): String {
-        val rounded = ((speed * 100).toInt() / 100f)
-        return if (rounded % 1f == 0f) {
-            "${rounded.toInt()}x"
-        } else {
-            "${rounded}x"
-        }
-    }
-
-    private fun speedStateLabel(speed: Float): String {
-        val formatted = formatPlaybackSpeed(speed)
-        return if (kotlin.math.abs(speed - 1.0f) < 0.01f) {
-            "Normal $formatted"
-        } else {
-            formatted
+    private fun speedActionIconResId(speed: Float): Int {
+        return when (speed) {
+            in 0.5f..0.7f -> R.drawable.ic_play_speed_0_5x
+            in 0.71f..0.85f -> R.drawable.ic_play_speed_0_75x
+            in 0.86f..1.1f -> R.drawable.ic_play_speed_1_0x
+            in 1.11f..1.25f -> R.drawable.ic_play_speed_1_2x
+            in 1.26f..1.39f -> R.drawable.ic_play_speed_1_3x
+            in 1.4f..1.7f -> R.drawable.ic_play_speed_1_5x
+            else -> R.drawable.ic_play_speed_2_0x
         }
     }
 
@@ -1605,8 +1698,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                 PlaybackStateCompat.ACTION_SKIP_TO_NEXT
 
-        private const val CUSTOM_ACTION_ABS_SPEED_DOWN = "car_abs_speed_down"
-        private const val CUSTOM_ACTION_ABS_SPEED_UP = "car_abs_speed_up"
+        private const val CUSTOM_ACTION_ABS_SPEED_CYCLE = "car_abs_speed_cycle"
         private const val CUSTOM_ACTION_NAV_SHUFFLE = "car_nav_shuffle"
         private const val CUSTOM_ACTION_NAV_FAVORITE = "car_nav_favorite"
 

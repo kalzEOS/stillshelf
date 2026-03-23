@@ -1130,6 +1130,29 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(songs)
     }
 
+    suspend fun refreshPlayableTracks(tracks: List<NavidromeTrack>): AppResult<List<NavidromeTrack>> = withAuth { auth ->
+        AppResult.Success(
+            tracks.map { track ->
+                if (track.id.startsWith("radio:")) {
+                    track
+                } else {
+                    track.copy(streamUrl = navidromeApi.streamUrl(auth, track.id))
+                }
+            }
+        )
+    }
+
+    suspend fun currentPlaybackSessionKey(): String? {
+        ensureMigratedLegacySession()
+        val state = sessionPreferences.state.first()
+        val activeServer = resolveActiveServer(state) ?: return null
+        val libraryId = state.navidromeActiveLibraryIds[activeServer.id]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: "_all"
+        return "${activeServer.id.lowercase()}|${libraryId.lowercase()}"
+    }
+
     suspend fun fetchArtistDetail(
         artistId: String,
         forceRefresh: Boolean = false

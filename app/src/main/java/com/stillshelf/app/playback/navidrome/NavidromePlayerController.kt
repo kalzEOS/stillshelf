@@ -35,6 +35,7 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.data.repo.NavidromeRepository
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
 import com.stillshelf.app.playback.service.PlaybackServiceController
@@ -58,7 +59,8 @@ import org.json.JSONObject
 class NavidromePlayerController @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val sessionPreferences: SessionPreferences,
-    private val downloadManager: NavidromeDownloadManager
+    private val downloadManager: NavidromeDownloadManager,
+    private val navidromeRepository: NavidromeRepository
 ) {
     private companion object {
         const val MAX_RECENT_TRACKS = 7
@@ -120,9 +122,12 @@ class NavidromePlayerController @Inject constructor(
     private var repeatMode: Int = REPEAT_MODE_OFF
     private var appInForeground = false
     private var preferredOutputDeviceId: Int? = null
+    private var hasExplicitOutputSelection = false
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
+    private val forcedRemoteTrackIds = mutableSetOf<String>()
+    private var playbackRecoveryTrackId: String? = null
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
@@ -157,6 +162,7 @@ class NavidromePlayerController @Inject constructor(
                 isPlaying = false,
                 errorMessage = error.message ?: "Playback failed for this track."
             )
+            recoverPlaybackAfterError(error)
         }
     }
 
@@ -233,17 +239,31 @@ class NavidromePlayerController @Inject constructor(
 
     fun selectAudioOutputDevice(deviceId: Int?): Boolean {
         val available = queryOutputDevices()
-        if (available.none { output -> output.id == deviceId }) {
+        if (deviceId != null && available.none { output -> output.id == deviceId }) {
             refreshAudioOutputs()
             return false
         }
         preferredOutputDeviceId = deviceId
+        hasExplicitOutputSelection = deviceId != null
         val activePlayer = player
         if (activePlayer == null) {
             refreshAudioOutputs()
             return true
         }
-        val speakerTarget = deviceId?.let(::isSpeakerOutputDevice) == true
+        if (deviceId == null) {
+            val applied = performMutedOutputSwitch(
+                player = activePlayer,
+                block = { applySystemDefaultOutputRouting(activePlayer) },
+                toSpeakerRoute = false
+            )
+            if (!applied) {
+                refreshAudioOutputs()
+                return false
+            }
+            refreshAudioOutputs()
+            return true
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
         val applied = performMutedOutputSwitch(
             player = activePlayer,
             block = { applyTargetedOutputRouting(activePlayer, deviceId) },
@@ -263,6 +283,7 @@ class NavidromePlayerController @Inject constructor(
     ) {
         if (tracks.isEmpty()) return
         val index = startIndex.coerceIn(0, tracks.lastIndex)
+        playbackRecoveryTrackId = null
         queueTracks = tracks
         mutableState.value = mutableState.value.copy(
             queue = tracks,
@@ -452,6 +473,8 @@ class NavidromePlayerController @Inject constructor(
     fun stop() {
         queueTracks = emptyList()
         lastRecordedTrackId = null
+        forcedRemoteTrackIds.clear()
+        playbackRecoveryTrackId = null
         releasePlayer(clearQueue = true)
         stopProgressUpdates()
         clearPlaybackSurface()
@@ -484,10 +507,18 @@ class NavidromePlayerController @Inject constructor(
         persistPlaybackSnapshot()
     }
 
-    private fun startPlaybackAt(index: Int, positionMs: Int, playWhenReady: Boolean) {
+    private fun startPlaybackAt(
+        index: Int,
+        positionMs: Int,
+        playWhenReady: Boolean,
+        resetRecoveryState: Boolean = true
+    ) {
         if (queueTracks.isEmpty()) return
         val safeIndex = index.coerceIn(0, queueTracks.lastIndex)
         val safePositionMs = positionMs.coerceAtLeast(0)
+        if (resetRecoveryState) {
+            playbackRecoveryTrackId = null
+        }
         releasePlayer(clearQueue = false)
         val activePlayer = getOrCreatePlayer()
         activePlayer.setMediaItems(
@@ -521,8 +552,62 @@ class NavidromePlayerController @Inject constructor(
         ensureProgressUpdates()
     }
 
+    private fun recoverPlaybackAfterError(error: androidx.media3.common.PlaybackException) {
+        val failedTrack = mutableState.value.currentTrack ?: return
+        val failedTrackId = failedTrack.id
+        if (failedTrackId.isBlank() || playbackRecoveryTrackId == failedTrackId || queueTracks.isEmpty()) {
+            return
+        }
+        playbackRecoveryTrackId = failedTrackId
+        val retryIndex = mutableState.value.currentIndex.takeIf { it in queueTracks.indices } ?: 0
+        val retryPositionMs = mutableState.value.positionMs.coerceAtLeast(0)
+        val bypassBrokenLocalCopy = failedTrackId !in forcedRemoteTrackIds &&
+            downloadManager.localPlaybackUri(failedTrack) != null
+        scope.launch(Dispatchers.IO) {
+            val refreshedQueue = when (val result = navidromeRepository.refreshPlayableTracks(queueTracks)) {
+                is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                is com.stillshelf.app.core.util.AppResult.Error -> null
+            }
+            scope.launch(Dispatchers.Main.immediate) {
+                if (mutableState.value.currentTrack?.id != failedTrackId) {
+                    playbackRecoveryTrackId = null
+                    return@launch
+                }
+                if (bypassBrokenLocalCopy) {
+                    forcedRemoteTrackIds += failedTrackId
+                }
+                if (refreshedQueue.isNullOrEmpty()) {
+                    scope.launch(Dispatchers.IO) {
+                        sessionPreferences.clearCachedNavidromePlayback()
+                    }
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = error.message ?: "Playback failed for this track."
+                    )
+                    playbackRecoveryTrackId = null
+                    return@launch
+                }
+                queueTracks = refreshedQueue
+                recentTracks = recentTracks.map { recent ->
+                    refreshedQueue.firstOrNull { it.id == recent.id } ?: recent
+                }
+                val restartedIndex = retryIndex.coerceIn(0, refreshedQueue.lastIndex)
+                startPlaybackAt(
+                    index = restartedIndex,
+                    positionMs = retryPositionMs,
+                    playWhenReady = true,
+                    resetRecoveryState = false
+                )
+            }
+        }
+    }
+
     private fun resolvePlaybackUri(track: NavidromeTrack): String {
-        return downloadManager.localPlaybackUri(track) ?: track.streamUrl
+        val localUri = if (track.id in forcedRemoteTrackIds) {
+            null
+        } else {
+            downloadManager.localPlaybackUri(track)
+        }
+        return localUri ?: track.streamUrl
     }
 
     private fun resumeFromSnapshot(playWhenReady: Boolean) {
@@ -581,7 +666,9 @@ class NavidromePlayerController @Inject constructor(
             )
             .toString()
         scope.launch(Dispatchers.IO) {
+            val sessionKey = navidromeRepository.currentPlaybackSessionKey()
             sessionPreferences.setCachedNavidromePlayback(
+                sessionKey = sessionKey,
                 payload = payload,
                 savedAtMs = System.currentTimeMillis()
             )
@@ -590,20 +677,49 @@ class NavidromePlayerController @Inject constructor(
 
     private fun restorePlaybackSnapshot() {
         scope.launch(Dispatchers.IO) {
-            val snapshot = sessionPreferences.getCachedNavidromePlayback()
-                ?.payload
-                ?.let(::parsePlaybackSnapshot)
+            val cachedSnapshot = sessionPreferences.getCachedNavidromePlayback()
                 ?: return@launch
+            val currentSessionKey = navidromeRepository.currentPlaybackSessionKey()
+            if (
+                cachedSnapshot.sessionKey != null &&
+                currentSessionKey != null &&
+                cachedSnapshot.sessionKey != currentSessionKey
+            ) {
+                sessionPreferences.clearCachedNavidromePlayback()
+                return@launch
+            }
+            val snapshot = cachedSnapshot.payload
+                .let(::parsePlaybackSnapshot)
+                ?: return@launch
+            val refreshedQueue = when (val result = navidromeRepository.refreshPlayableTracks(snapshot.queue)) {
+                is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                is com.stillshelf.app.core.util.AppResult.Error -> {
+                    if (snapshot.queue.any { it.streamUrl.isBlank() && !it.isRadioTrack() }) {
+                        sessionPreferences.clearCachedNavidromePlayback()
+                        return@launch
+                    }
+                    snapshot.queue
+                }
+            }
+            val refreshedRecent = when (val result = navidromeRepository.refreshPlayableTracks(snapshot.recentTracks)) {
+                is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                is com.stillshelf.app.core.util.AppResult.Error -> snapshot.recentTracks
+            }
+            if (refreshedQueue.isEmpty()) {
+                sessionPreferences.clearCachedNavidromePlayback()
+                return@launch
+            }
             scope.launch(Dispatchers.Main.immediate) {
-                queueTracks = snapshot.queue
-                recentTracks = snapshot.recentTracks
-                val currentTrack = snapshot.queue.getOrNull(snapshot.currentIndex)
+                queueTracks = refreshedQueue
+                recentTracks = refreshedRecent
+                val restoredIndex = snapshot.currentIndex.coerceIn(0, refreshedQueue.lastIndex)
+                val currentTrack = refreshedQueue.getOrNull(restoredIndex)
                 lastRecordedTrackId = currentTrack?.id
                 mutableState.value = mutableState.value.copy(
-                    queue = snapshot.queue,
-                    currentIndex = snapshot.currentIndex,
+                    queue = refreshedQueue,
+                    currentIndex = restoredIndex,
                     currentTrack = currentTrack,
-                    recentTracks = snapshot.recentTracks,
+                    recentTracks = refreshedRecent,
                     isPlaying = false,
                     isLoading = false,
                     positionMs = if (currentTrack.isRadioTrack()) 0 else snapshot.positionMs,
@@ -741,6 +857,9 @@ class NavidromePlayerController @Inject constructor(
                 null
             }
         )
+        if ((activePlayer.isPlaying || playbackState == Player.STATE_READY) && currentTrack?.id == playbackRecoveryTrackId) {
+            playbackRecoveryTrackId = null
+        }
         updatePlaybackSurface()
         ensureProgressUpdates()
     }
@@ -987,7 +1106,6 @@ class NavidromePlayerController @Inject constructor(
                 trackNumber?.let { put("trackNumber", it) }
                 durationSeconds?.let { put("durationSeconds", it) }
                 coverUrl?.let { put("coverUrl", it) }
-                put("streamUrl", streamUrl)
                 formatLabel?.let { put("formatLabel", it) }
                 bitRateKbps?.let { put("bitRateKbps", it) }
             }
@@ -1016,7 +1134,7 @@ class NavidromePlayerController @Inject constructor(
                 val item = optJSONObject(index) ?: return@repeat
                 val id = item.optString("id").trim()
                 val streamUrl = item.optString("streamUrl").trim()
-                if (id.isBlank() || streamUrl.isBlank()) return@repeat
+                if (id.isBlank()) return@repeat
                 add(
                     NavidromeTrack(
                         id = id,
@@ -1044,6 +1162,10 @@ class NavidromePlayerController @Inject constructor(
             val displayedId = output.id ?: return@firstOrNull false
             outputRouteKeyByDisplayedId[displayedId]?.startsWith("bt:") == true
         }?.id
+        val wiredOutputId = available.firstOrNull { output ->
+            val displayedId = output.id ?: return@firstOrNull false
+            isAutoPreferredWiredRoute(outputRouteKeyByDisplayedId[displayedId])
+        }?.id
         val wiredAutoOutputId = available.firstOrNull { output ->
             val displayedId = output.id ?: return@firstOrNull false
             isAutoPreferredWiredRoute(outputRouteKeyByDisplayedId[displayedId]) &&
@@ -1052,18 +1174,28 @@ class NavidromePlayerController @Inject constructor(
         val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
             available.any { it.id == preferredId }
         }
+        val shouldFollowSystemRoute = !hasExplicitOutputSelection || validPreferredId == null
         preferredOutputDeviceId = when {
+            hasExplicitOutputSelection && validPreferredId != null -> validPreferredId
+            else -> null
+        }
+        val displayedSelectionId = when {
+            preferredOutputDeviceId != null -> preferredOutputDeviceId
             reason == OutputRefreshReason.DeviceAdded && wiredAutoOutputId != null -> wiredAutoOutputId
-            reason == OutputRefreshReason.DeviceAdded &&
-                bluetoothOutputId != null &&
-                bluetoothOutputId !in lastKnownOutputDeviceIds -> bluetoothOutputId
-            validPreferredId != null -> validPreferredId
+            shouldFollowSystemRoute && wiredOutputId != null -> wiredOutputId
+            bluetoothOutputId != null && bluetoothOutputId in availableIds -> bluetoothOutputId
             else -> available.firstOrNull()?.id
         }
-        player?.let(::applyPreferredOutputDevice)
+        player?.let { activePlayer ->
+            if (shouldFollowSystemRoute) {
+                applySystemDefaultOutputRouting(activePlayer)
+            } else {
+                applyPreferredOutputDevice(activePlayer)
+            }
+        }
         mutableState.value = mutableState.value.copy(
             outputDevices = available,
-            selectedOutputDeviceId = preferredOutputDeviceId
+            selectedOutputDeviceId = displayedSelectionId
         )
         lastKnownOutputDeviceIds = availableIds
     }

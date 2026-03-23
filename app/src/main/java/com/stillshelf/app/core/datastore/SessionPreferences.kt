@@ -50,6 +50,7 @@ class SessionPreferences @Inject constructor(
     private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
     private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
     private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
+    private val cachedNavidromePlaybackSessionKey = stringPreferencesKey("cached_navidrome_playback_session_key")
     private val cachedNavidromePlaybackPayloadKey = stringPreferencesKey("cached_navidrome_playback_payload")
     private val cachedNavidromePlaybackSavedAtKey = longPreferencesKey("cached_navidrome_playback_saved_at")
     private val requiresLibrarySelectionKey = booleanPreferencesKey("requires_library_selection")
@@ -300,14 +301,21 @@ class SessionPreferences @Inject constructor(
         val prefs = dataStore.data.first()
         val payload = prefs[cachedNavidromePlaybackPayloadKey] ?: return null
         val savedAtMs = prefs[cachedNavidromePlaybackSavedAtKey] ?: 0L
+        val sessionKey = prefs[cachedNavidromePlaybackSessionKey]
         return CachedNavidromePlaybackSnapshot(
+            sessionKey = sessionKey,
             payload = payload,
             savedAtMs = savedAtMs
         )
     }
 
-    suspend fun setCachedNavidromePlayback(payload: String, savedAtMs: Long) {
+    suspend fun setCachedNavidromePlayback(sessionKey: String?, payload: String, savedAtMs: Long) {
         dataStore.edit { prefs ->
+            if (sessionKey.isNullOrBlank()) {
+                prefs.remove(cachedNavidromePlaybackSessionKey)
+            } else {
+                prefs[cachedNavidromePlaybackSessionKey] = sessionKey
+            }
             prefs[cachedNavidromePlaybackPayloadKey] = payload
             prefs[cachedNavidromePlaybackSavedAtKey] = savedAtMs
         }
@@ -315,6 +323,7 @@ class SessionPreferences @Inject constructor(
 
     suspend fun clearCachedNavidromePlayback() {
         dataStore.edit { prefs ->
+            prefs.remove(cachedNavidromePlaybackSessionKey)
             prefs.remove(cachedNavidromePlaybackPayloadKey)
             prefs.remove(cachedNavidromePlaybackSavedAtKey)
         }
@@ -1395,6 +1404,7 @@ data class CachedNavidromeHomePayload(
 )
 
 data class CachedNavidromePlaybackSnapshot(
+    val sessionKey: String?,
     val payload: String,
     val savedAtMs: Long
 )

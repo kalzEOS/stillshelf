@@ -680,8 +680,11 @@ class NavidromePlayerController @Inject constructor(
             val cachedSnapshot = sessionPreferences.getCachedNavidromePlayback()
                 ?: return@launch
             val currentSessionKey = navidromeRepository.currentPlaybackSessionKey()
+            if (cachedSnapshot.sessionKey.isNullOrBlank()) {
+                sessionPreferences.clearCachedNavidromePlayback()
+                return@launch
+            }
             if (
-                cachedSnapshot.sessionKey != null &&
                 currentSessionKey != null &&
                 cachedSnapshot.sessionKey != currentSessionKey
             ) {

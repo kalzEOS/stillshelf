@@ -5380,6 +5380,7 @@ private fun SettingsRow(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
                 .weight(1f)
+                .widthIn(min = 150.dp)
                 .padding(end = 12.dp)
                 .then(
                     if (forceTitleTwoLineHeight) Modifier.heightIn(min = 44.dp) else Modifier
@@ -5388,9 +5389,9 @@ private fun SettingsRow(
             overflow = TextOverflow.Ellipsis
         )
         Row(
-            modifier = Modifier.width(resolvedTrailingContentWidth),
+            modifier = Modifier.widthIn(max = resolvedTrailingContentWidth),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
         ) {
             if (!value.isNullOrBlank()) {
                 Text(

@@ -1,5 +1,15 @@
 package com.stillshelf.app.core.model
 
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+val navidromeEqualizerBandFrequenciesHz = listOf(32, 64, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
+const val NAVIDROME_EQUALIZER_MIN_DB = -6f
+const val NAVIDROME_EQUALIZER_MAX_DB = 6f
+const val NAVIDROME_EQUALIZER_STEP_DB = 1f
+
+fun flatNavidromeEqualizerBandLevels(): List<Float> = List(navidromeEqualizerBandFrequenciesHz.size) { 0f }
+
 data class NavidromeServer(
     val id: String,
     val name: String,
@@ -124,6 +134,27 @@ data class NavidromeOutputDevice(
     val name: String,
     val typeLabel: String
 )
+
+data class NavidromeEqualizerProfile(
+    val id: String,
+    val name: String,
+    val bandLevelsDb: List<Float> = flatNavidromeEqualizerBandLevels()
+) {
+    fun normalizedBandLevelsDb(): List<Float> {
+        return navidromeEqualizerBandFrequenciesHz.indices.map { index ->
+            val rawLevel = bandLevelsDb.getOrNull(index)
+            if (rawLevel == null || !rawLevel.isFinite()) {
+                0f
+            } else {
+                rawLevel
+                    .coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB)
+                    .let { level -> (level / NAVIDROME_EQUALIZER_STEP_DB).roundToInt().toFloat() * NAVIDROME_EQUALIZER_STEP_DB }
+            }
+        }
+    }
+
+    fun isFlat(): Boolean = normalizedBandLevelsDb().all { abs(it) < 0.001f }
+}
 
 data class NavidromePlayerState(
     val currentTrack: NavidromeTrack? = null,

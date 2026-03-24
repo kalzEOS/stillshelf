@@ -321,7 +321,8 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.ABOUT) {
             AboutScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
         composable(

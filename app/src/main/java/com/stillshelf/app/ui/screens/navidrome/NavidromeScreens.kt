@@ -16,9 +16,11 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -44,6 +46,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -87,6 +90,7 @@ import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SettingsVoice
@@ -134,9 +138,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
@@ -173,6 +179,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
+import com.stillshelf.app.core.model.navidromeEqualizerBandFrequenciesHz
+import kotlin.math.abs
 import androidx.navigation.navArgument
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.ViewCompat
@@ -544,6 +555,7 @@ fun NavidromeAppRoute(
     val showMiniPlayer = playerState.currentTrack != null
     val showBottomPlayerShell = showMiniPlayer &&
         currentRoute != NavidromeRoute.SETTINGS &&
+        currentRoute != NavidromeRoute.EQUALIZER &&
         currentRoute != NavidromeRoute.SERVERS &&
         currentRoute != NavidromeRoute.LOGIN
     val playerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -566,7 +578,7 @@ fun NavidromeAppRoute(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         downloadsViewModel.clearMessages()
     }
-    val topHomeAction: (() -> Unit)? = if (showMiniPlayer) null else { { navigateHome() } }
+    val topHomeAction: (() -> Unit)? = if (currentRoute == NavidromeRoute.HOME) null else { { navigateHome() } }
 
     if (showPlayerSheet && playerState.currentTrack != null) {
         ModalBottomSheet(
@@ -713,7 +725,14 @@ fun NavidromeAppRoute(
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction,
                     onSwitchMode = onSwitchMode,
+                    onOpenEqualizer = { navController.navigate(NavidromeRoute.EQUALIZER) },
                     onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) }
+                )
+            }
+            composable(NavidromeRoute.EQUALIZER) {
+                NavidromeEqualizerRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction
                 )
             }
             composable(NavidromeRoute.SERVERS) {
@@ -3927,11 +3946,14 @@ private fun NavidromeSettingsRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     onSwitchMode: () -> Unit,
+    onOpenEqualizer: () -> Unit,
     onOpenServers: () -> Unit,
     viewModel: NavidromeSettingsViewModel = hiltViewModel(),
+    equalizerViewModel: NavidromeEqualizerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val equalizerUiState by equalizerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var signOutDialogVisible by rememberSaveable { mutableStateOf(false) }
@@ -4033,6 +4055,31 @@ private fun NavidromeSettingsRoute(
                     title = "Dark Theme",
                     selected = appearanceUiState.navidromeThemeMode == AppThemeMode.Dark,
                     onClick = { appearanceViewModel.setNavidromeThemeMode(AppThemeMode.Dark) }
+                )
+            }
+        }
+        item {
+            Text(
+                text = "PLAYBACK",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Equalizer",
+                    value = if (equalizerUiState.isEnabled) {
+                        equalizerUiState.activeProfileName
+                    } else {
+                        "Off"
+                    },
+                    valueTextAlign = TextAlign.End,
+                    onClick = onOpenEqualizer
                 )
             }
         }
@@ -4170,6 +4217,616 @@ private fun NavidromeSettingsRoute(
             onDismiss = viewModel::dismissServerScanProgress
         )
         }
+    }
+}
+
+@Composable
+private fun NavidromeEqualizerRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    viewModel: NavidromeEqualizerViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+    var activeMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var editorMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var showNameDialog by rememberSaveable { mutableStateOf(false) }
+    var nameDraft by rememberSaveable(uiState.editorProfile.id) { mutableStateOf(uiState.editorProfile.name) }
+
+    StandardTopScreen(
+        title = "Equalizer",
+        onBack = onBack,
+        onHome = onHome,
+        containerColor = MaterialTheme.colorScheme.background
+    ) {
+        item {
+            Text(
+                text = "PLAYBACK",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                SettingsSwitchRow(
+                    title = "Enable Equalizer",
+                    checked = uiState.isEnabled,
+                    onCheckedChange = viewModel::setEnabled
+                )
+                DividerLine()
+                Box {
+                    NavidromeSettingsRow(
+                        title = "Active Equalizer",
+                        value = uiState.activeProfileName,
+                        valueTextAlign = TextAlign.End,
+                        onClick = { activeMenuExpanded = true }
+                    )
+                    AppDropdownMenu(
+                        expanded = activeMenuExpanded,
+                        onDismissRequest = { activeMenuExpanded = false }
+                    ) {
+                        AppDropdownMenuItem(
+                            text = { Text("Off") },
+                            trailingIcon = {
+                                if (uiState.activeProfileId == null) {
+                                    Icon(Icons.Filled.Check, contentDescription = null)
+                                }
+                            },
+                            onClick = {
+                                activeMenuExpanded = false
+                                viewModel.setActiveProfile(null)
+                            }
+                        )
+                        uiState.profiles.forEach { profile ->
+                            AppDropdownMenuItem(
+                                text = { Text(profile.name) },
+                                trailingIcon = {
+                                    if (uiState.activeProfileId == profile.id) {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    activeMenuExpanded = false
+                                    viewModel.setActiveProfile(profile.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Text(
+                text = "EQUALIZER EDITOR",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                Box {
+                    NavidromeSettingsRow(
+                        title = "Equalizer",
+                        value = uiState.editorProfile.name,
+                        valueTextAlign = TextAlign.End,
+                        onClick = { editorMenuExpanded = true }
+                    )
+                    AppDropdownMenu(
+                        expanded = editorMenuExpanded,
+                        onDismissRequest = { editorMenuExpanded = false }
+                    ) {
+                        uiState.profiles.forEach { profile ->
+                            AppDropdownMenuItem(
+                                text = { Text(profile.name) },
+                                trailingIcon = {
+                                    if (uiState.isEditorPersisted && uiState.editorProfile.id == profile.id) {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    editorMenuExpanded = false
+                                    viewModel.selectEditorProfile(profile.id)
+                                }
+                            )
+                        }
+                        if (uiState.profiles.isNotEmpty()) {
+                            HorizontalDivider()
+                        }
+                        AppDropdownMenuItem(
+                            text = { Text("Create new Equalizer") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Add,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                editorMenuExpanded = false
+                                viewModel.createNewProfile()
+                            }
+                        )
+                    }
+                }
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Name",
+                    value = uiState.editorProfile.name,
+                    valueTextAlign = TextAlign.End,
+                    onClick = {
+                        nameDraft = uiState.editorProfile.name
+                        showNameDialog = true
+                    }
+                )
+                DividerLine()
+                NavidromeEqualizerChart(
+                    bandLevelsDb = uiState.editorProfile.normalizedBandLevelsDb(),
+                    onBandLevelChange = viewModel::updateBandLevel,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)
+                )
+                DividerLine()
+                NavidromeEqualizerActionRow(
+                    title = "Save",
+                    enabled = uiState.canSave,
+                    tint = MaterialTheme.colorScheme.primary,
+                    onClick = viewModel::saveEditor
+                )
+                DividerLine()
+                NavidromeEqualizerActionRow(
+                    title = "Delete",
+                    enabled = uiState.canDelete,
+                    tint = MaterialTheme.colorScheme.error,
+                    onClick = viewModel::deleteEditor
+                )
+            }
+        }
+    }
+
+    if (showNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showNameDialog = false },
+            title = { Text("Equalizer name") },
+            text = {
+                OutlinedTextField(
+                    value = nameDraft,
+                    onValueChange = { nameDraft = it.take(40) },
+                    singleLine = true,
+                    label = { Text("Name") }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.updateEditorName(nameDraft.trim())
+                        showNameDialog = false
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun NavidromeEqualizerActionRow(
+    title: String,
+    tint: Color,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+        )
+    }
+}
+
+@Composable
+private fun NavidromeEqualizerChart(
+    bandLevelsDb: List<Float>,
+    onBandLevelChange: (Int, Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val normalizedLevels = navidromeEqualizerBandFrequenciesHz.indices.map { index ->
+        bandLevelsDb.getOrNull(index)?.coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB) ?: 0f
+    }
+    val accentColor = MaterialTheme.colorScheme.primary
+    val trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f)
+    val guideColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+    val zeroGuideColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+    val stepDotColor = accentColor.copy(alpha = 0.99f)
+    val zeroStepDotColor = accentColor.copy(alpha = 0.95f)
+    val chartHeight = 220.dp
+    val chartVerticalInset = 10.dp
+    val totalChartHeight = chartHeight + (chartVerticalInset * 2)
+    val bandSpacing = 2.dp
+    val controlButtonSize = 25.dp
+    val controlSectionGap = 6.dp
+    val chartLabelValues = remember {
+        listOf(6f, 4f, 2f, 0f, -2f, -4f, -6f)
+    }
+    val chartGridValues = remember {
+        (NAVIDROME_EQUALIZER_MAX_DB.toInt() downTo NAVIDROME_EQUALIZER_MIN_DB.toInt()).map(Int::toFloat)
+    }
+    val density = LocalDensity.current
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Column {
+            Spacer(modifier = Modifier.height(controlButtonSize + controlSectionGap))
+            BoxWithConstraints(
+                modifier = Modifier
+                    .width(40.dp)
+                    .requiredHeight(totalChartHeight)
+            ) {
+                val chartHeightPx = with(density) { chartHeight.toPx() }
+                chartLabelValues.forEach { db ->
+                    val labelOffset = with(density) {
+                        (chartVerticalInset + levelToChartY(db, chartHeightPx).toDp() - 10.dp)
+                            .coerceIn(0.dp, totalChartHeight - 20.dp)
+                    }
+                    Text(
+                        text = if (db > 0) "${db.toInt()} dB" else if (db == 0f) "0 dB" else "${db.toInt()} dB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (db == 0f) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (db == 0f) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(y = labelOffset)
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(bandSpacing)
+            ) {
+                normalizedLevels.forEachIndexed { index, levelDb ->
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        NavidromeEqualizerStepButton(
+                            icon = Icons.Outlined.Add,
+                            contentDescription = "Increase ${formatNavidromeEqualizerFrequencyLabel(navidromeEqualizerBandFrequenciesHz[index])}",
+                            enabled = levelDb < NAVIDROME_EQUALIZER_MAX_DB,
+                            size = controlButtonSize,
+                            onClick = {
+                                onBandLevelChange(
+                                    index,
+                                    snapNavidromeEqualizerLevel(levelDb + NAVIDROME_EQUALIZER_STEP_DB)
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(controlSectionGap))
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .requiredHeight(totalChartHeight)
+            ) {
+                Canvas(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .padding(vertical = chartVerticalInset)
+                ) {
+                    val bandCount = navidromeEqualizerBandFrequenciesHz.size
+                    val bandSpacingPx = bandSpacing.toPx()
+                    val bandWidthPx = ((size.width - (bandSpacingPx * (bandCount - 1))) / bandCount)
+                        .coerceAtLeast(0f)
+                    chartGridValues.forEach { levelValue ->
+                        val y = levelToChartY(levelValue, size.height)
+                        val isZeroLine = abs(levelValue) < 0.001f
+                        val isLabeledLine = levelValue.toInt() % 2 == 0
+                        drawLine(
+                            color = when {
+                                isZeroLine -> zeroGuideColor
+                                isLabeledLine -> guideColor.copy(alpha = 0.82f)
+                                else -> guideColor.copy(alpha = 0.38f)
+                            },
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = when {
+                                isZeroLine -> 1.8.dp.toPx()
+                                isLabeledLine -> 1.1.dp.toPx()
+                                else -> 0.8.dp.toPx()
+                            }
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .padding(vertical = chartVerticalInset),
+                    horizontalArrangement = Arrangement.spacedBy(bandSpacing)
+                ) {
+                    normalizedLevels.forEachIndexed { index, levelDb ->
+                        NavidromeEqualizerBandSlider(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            levelDb = levelDb,
+                            accentColor = accentColor,
+                            trackColor = trackColor,
+                            stepDotColor = stepDotColor,
+                            zeroStepDotColor = zeroStepDotColor,
+                            onLevelChange = { onBandLevelChange(index, it) }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(controlSectionGap))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(bandSpacing)
+            ) {
+                normalizedLevels.forEachIndexed { index, levelDb ->
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        NavidromeEqualizerStepButton(
+                            icon = Icons.Outlined.Remove,
+                            contentDescription = "Decrease ${formatNavidromeEqualizerFrequencyLabel(navidromeEqualizerBandFrequenciesHz[index])}",
+                            enabled = levelDb > NAVIDROME_EQUALIZER_MIN_DB,
+                            size = controlButtonSize,
+                            onClick = {
+                                onBandLevelChange(
+                                    index,
+                                    snapNavidromeEqualizerLevel(levelDb - NAVIDROME_EQUALIZER_STEP_DB)
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(bandSpacing)
+            ) {
+                navidromeEqualizerBandFrequenciesHz.forEach { frequency ->
+                    Text(
+                        text = formatNavidromeEqualizerFrequencyLabel(frequency),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavidromeEqualizerBandSlider(
+    levelDb: Float,
+    accentColor: Color,
+    trackColor: Color,
+    stepDotColor: Color,
+    zeroStepDotColor: Color,
+    onLevelChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hapticFeedback = LocalHapticFeedback.current
+    val knobBorderColor = accentColor.copy(alpha = 0.99f)
+    val knobFillColor = MaterialTheme.colorScheme.surface
+    var lastStepIndex by remember { mutableIntStateOf(navidromeEqualizerStepIndex(levelDb)) }
+    var isPressed by remember { mutableStateOf(false) }
+    val knobRadius by animateDpAsState(
+        targetValue = if (isPressed) 13.dp else 12.dp,
+        animationSpec = tween(durationMillis = 120),
+        label = "navidromeEqKnobRadius"
+    )
+
+    LaunchedEffect(levelDb) {
+        lastStepIndex = navidromeEqualizerStepIndex(levelDb)
+    }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .pointerInput(Unit) {
+                fun updateFromY(y: Float) {
+                    val heightPx = size.height.toFloat().takeIf { it > 0f } ?: return
+                    val ratio = 1f - (y / heightPx).coerceIn(0f, 1f)
+                    val snappedLevel = snapNavidromeEqualizerLevel(
+                        NAVIDROME_EQUALIZER_MIN_DB +
+                            ((NAVIDROME_EQUALIZER_MAX_DB - NAVIDROME_EQUALIZER_MIN_DB) * ratio)
+                    )
+                    val stepIndex = navidromeEqualizerStepIndex(snappedLevel)
+                    if (stepIndex != lastStepIndex) {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        lastStepIndex = stepIndex
+                    }
+                    onLevelChange(snappedLevel)
+                }
+                detectTapGestures(
+                    onPress = { offset ->
+                        isPressed = true
+                        updateFromY(offset.y)
+                        tryAwaitRelease()
+                        isPressed = false
+                    },
+                    onTap = { offset ->
+                        updateFromY(offset.y)
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                fun updateFromY(y: Float) {
+                    val heightPx = size.height.toFloat().takeIf { it > 0f } ?: return
+                    val ratio = 1f - (y / heightPx).coerceIn(0f, 1f)
+                    val snappedLevel = snapNavidromeEqualizerLevel(
+                        NAVIDROME_EQUALIZER_MIN_DB +
+                            ((NAVIDROME_EQUALIZER_MAX_DB - NAVIDROME_EQUALIZER_MIN_DB) * ratio)
+                    )
+                    val stepIndex = navidromeEqualizerStepIndex(snappedLevel)
+                    if (stepIndex != lastStepIndex) {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        lastStepIndex = stepIndex
+                    }
+                    onLevelChange(snappedLevel)
+                }
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        isPressed = true
+                        updateFromY(offset.y)
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        updateFromY(change.position.y)
+                    },
+                    onDragEnd = { isPressed = false },
+                    onDragCancel = { isPressed = false }
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val centerX = size.width / 2f
+            val trackStrokeWidth = 5.dp.toPx()
+            val activeTrackStrokeWidth = 6.5.dp.toPx()
+            val zeroY = levelToChartY(0f, size.height)
+            val markerY = levelToChartY(levelDb, size.height)
+            val knobRadiusPx = knobRadius.toPx()
+            drawLine(
+                color = trackColor,
+                start = Offset(centerX, 0f),
+                end = Offset(centerX, size.height),
+                strokeWidth = trackStrokeWidth,
+                cap = StrokeCap.Round
+            )
+            for (step in NAVIDROME_EQUALIZER_MAX_DB.toInt() downTo NAVIDROME_EQUALIZER_MIN_DB.toInt()) {
+                val y = levelToChartY(step.toFloat(), size.height)
+                drawCircle(
+                    color = if (step == 0) zeroStepDotColor else stepDotColor,
+                    radius = if (step == 0) 2.8.dp.toPx() else 2.35.dp.toPx(),
+                    center = Offset(centerX, y)
+                )
+            }
+            drawLine(
+                color = accentColor,
+                start = Offset(centerX, zeroY),
+                end = Offset(centerX, markerY),
+                strokeWidth = activeTrackStrokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawCircle(
+                color = knobFillColor,
+                radius = knobRadiusPx,
+                center = Offset(centerX, markerY)
+            )
+            drawCircle(
+                color = knobBorderColor,
+                radius = knobRadiusPx,
+                center = Offset(centerX, markerY),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx())
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavidromeEqualizerStepButton(
+    icon: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    size: Dp,
+    onClick: () -> Unit
+) {
+    val hapticFeedback = LocalHapticFeedback.current
+    val containerColor = MaterialTheme.colorScheme.tertiaryContainer
+    val borderColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.32f)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(containerColor)
+            .border(width = 1.dp, color = borderColor, shape = CircleShape)
+            .clickable(enabled = enabled) {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (enabled) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.45f),
+            modifier = Modifier.size(12.dp)
+        )
+    }
+}
+
+private fun levelToChartY(levelDb: Float, heightPx: Float): Float {
+    val clamped = levelDb.coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB)
+    val ratio = (NAVIDROME_EQUALIZER_MAX_DB - clamped) /
+        (NAVIDROME_EQUALIZER_MAX_DB - NAVIDROME_EQUALIZER_MIN_DB)
+    return heightPx * ratio
+}
+
+private fun snapNavidromeEqualizerLevel(levelDb: Float): Float {
+    return ((levelDb.coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB)) / NAVIDROME_EQUALIZER_STEP_DB)
+        .roundToInt()
+        .toFloat() * NAVIDROME_EQUALIZER_STEP_DB
+}
+
+private fun navidromeEqualizerStepIndex(levelDb: Float): Int {
+    return ((snapNavidromeEqualizerLevel(levelDb) - NAVIDROME_EQUALIZER_MIN_DB) / NAVIDROME_EQUALIZER_STEP_DB)
+        .roundToInt()
+}
+
+private fun formatNavidromeEqualizerFrequencyLabel(frequencyHz: Int): String {
+    return if (frequencyHz >= 1_000) {
+        val wholeK = frequencyHz / 1_000
+        if (frequencyHz % 1_000 == 0) {
+            "${wholeK}k"
+        } else {
+            "${frequencyHz / 1000f}k"
+        }
+    } else {
+        frequencyHz.toString()
     }
 }
 

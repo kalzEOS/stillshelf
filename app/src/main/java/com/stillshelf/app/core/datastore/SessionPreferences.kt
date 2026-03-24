@@ -9,8 +9,12 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.stillshelf.app.core.model.BackendProvider
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NavidromeServer
+import com.stillshelf.app.core.model.NavidromeEqualizerProfile
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +48,9 @@ class SessionPreferences @Inject constructor(
     private val navidromeSongSortKey = stringPreferencesKey("navidrome_song_sort")
     private val navidromePlaylistSortKey = stringPreferencesKey("navidrome_playlist_sort")
     private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
+    private val navidromeEqualizerEnabledKey = booleanPreferencesKey("navidrome_equalizer_enabled")
+    private val navidromeEqualizerActiveProfileIdKey = stringPreferencesKey("navidrome_equalizer_active_profile_id")
+    private val navidromeEqualizerProfilesKey = stringPreferencesKey("navidrome_equalizer_profiles")
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
     private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
@@ -118,6 +125,11 @@ class SessionPreferences @Inject constructor(
             navidromePlaylistSort = prefs[navidromePlaylistSortKey],
             navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
                 prefs[navidromeFavoriteTracksPayloadKey]
+            ),
+            navidromeEqualizerEnabled = prefs[navidromeEqualizerEnabledKey] ?: false,
+            navidromeEqualizerActiveProfileId = prefs[navidromeEqualizerActiveProfileIdKey],
+            navidromeEqualizerProfiles = parseNavidromeEqualizerProfiles(
+                prefs[navidromeEqualizerProfilesKey]
             ),
             navidromeThemeMode = prefs[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = prefs[navidromeMaterialDesignEnabledKey] ?: false,
@@ -507,6 +519,37 @@ class SessionPreferences @Inject constructor(
     suspend fun setNavidromeImmersivePlayerEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[navidromeImmersivePlayerEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setNavidromeEqualizerEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[navidromeEqualizerEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setNavidromeEqualizerActiveProfileId(profileId: String?) {
+        dataStore.edit { prefs ->
+            if (profileId.isNullOrBlank()) {
+                prefs.remove(navidromeEqualizerActiveProfileIdKey)
+            } else {
+                prefs[navidromeEqualizerActiveProfileIdKey] = profileId.trim()
+            }
+        }
+    }
+
+    suspend fun setNavidromeEqualizerProfiles(profiles: List<NavidromeEqualizerProfile>) {
+        dataStore.edit { prefs ->
+            if (profiles.isEmpty()) {
+                prefs.remove(navidromeEqualizerProfilesKey)
+            } else {
+                prefs[navidromeEqualizerProfilesKey] = encodeNavidromeEqualizerProfiles(profiles)
+            }
+
+            val activeId = prefs[navidromeEqualizerActiveProfileIdKey]
+            if (!activeId.isNullOrBlank() && profiles.none { it.id == activeId }) {
+                prefs.remove(navidromeEqualizerActiveProfileIdKey)
+            }
         }
     }
 
@@ -1232,6 +1275,45 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyMap())
     }
 
+    private fun parseNavidromeEqualizerProfiles(raw: String?): List<NavidromeEqualizerProfile> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val node = array.optJSONObject(index) ?: continue
+                    val id = node.optString("id").trim()
+                    val name = node.optString("name").trim()
+                    if (id.isBlank() || name.isBlank()) continue
+                    val rawLevels = node.optJSONArray("bandLevelsDb")
+                    val levels = buildList {
+                        val defaultLevels = flatNavidromeEqualizerBandLevels()
+                        defaultLevels.indices.forEach { bandIndex ->
+                            val parsedLevel = when (val rawLevel = rawLevels?.opt(bandIndex)) {
+                                is Number -> rawLevel.toFloat()
+                                is String -> rawLevel.toFloatOrNull()
+                                else -> null
+                            }
+                            add(
+                                parsedLevel
+                                    ?.takeIf { it.isFinite() }
+                                    ?.coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB)
+                                    ?: defaultLevels[bandIndex]
+                            )
+                        }
+                    }
+                    add(
+                        NavidromeEqualizerProfile(
+                            id = id,
+                            name = name,
+                            bandLevelsDb = levels
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun encodeStringArray(values: List<String>): String {
         return JSONArray().apply {
             values.forEach { value ->
@@ -1239,6 +1321,27 @@ class SessionPreferences @Inject constructor(
                 if (normalizedValue.isNotBlank()) {
                     put(normalizedValue)
                 }
+            }
+        }.toString()
+    }
+
+    private fun encodeNavidromeEqualizerProfiles(values: List<NavidromeEqualizerProfile>): String {
+        return JSONArray().apply {
+            values.forEach { profile ->
+                val id = profile.id.trim()
+                val name = profile.name.trim()
+                if (id.isBlank() || name.isBlank()) return@forEach
+                put(
+                    JSONObject()
+                        .put("id", id)
+                        .put("name", name)
+                        .put(
+                            "bandLevelsDb",
+                            JSONArray().apply {
+                                profile.normalizedBandLevelsDb().forEach { put(it.toDouble()) }
+                            }
+                        )
+                )
             }
         }.toString()
     }
@@ -1349,6 +1452,9 @@ data class SessionPreferenceState(
     val navidromeSongSort: String? = null,
     val navidromePlaylistSort: String? = null,
     val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
+    val navidromeEqualizerEnabled: Boolean = false,
+    val navidromeEqualizerActiveProfileId: String? = null,
+    val navidromeEqualizerProfiles: List<NavidromeEqualizerProfile> = emptyList(),
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,

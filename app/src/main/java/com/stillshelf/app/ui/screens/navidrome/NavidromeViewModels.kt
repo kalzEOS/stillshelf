@@ -3,10 +3,14 @@ package com.stillshelf.app.ui.screens.navidrome
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
+import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
 import com.stillshelf.app.core.model.NavidromeAlbum
 import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
+import com.stillshelf.app.core.model.NavidromeEqualizerProfile
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
 import com.stillshelf.app.core.model.NavidromePlayerState
@@ -21,6 +25,7 @@ import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.EndpointReachabilityStatus
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
+import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
 import com.stillshelf.app.data.repo.NavidromeRepository
@@ -46,6 +51,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class NavidromeLoginUiState(
@@ -1988,6 +1994,183 @@ class NavidromeSettingsViewModel @Inject constructor(
     }
 }
 
+data class NavidromeEqualizerUiState(
+    val isEnabled: Boolean = false,
+    val activeProfileId: String? = null,
+    val profiles: List<NavidromeEqualizerProfile> = emptyList(),
+    val editorProfile: NavidromeEqualizerProfile = newNavidromeEqualizerDraft(emptyList()),
+    val isEditorPersisted: Boolean = false,
+    val isEditorDirty: Boolean = false
+) {
+    val activeProfileName: String
+        get() = profiles.firstOrNull { it.id == activeProfileId }?.name ?: "Off"
+
+    val canSave: Boolean
+        get() = editorProfile.name.trim().isNotBlank() && (!isEditorPersisted || isEditorDirty)
+
+    val canDelete: Boolean
+        get() = isEditorPersisted || isEditorDirty
+}
+
+private data class NavidromeEqualizerEditorResolution(
+    val profile: NavidromeEqualizerProfile,
+    val isPersisted: Boolean,
+    val isDirty: Boolean
+)
+
+@HiltViewModel
+class NavidromeEqualizerViewModel @Inject constructor(
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(NavidromeEqualizerUiState())
+    val uiState: StateFlow<NavidromeEqualizerUiState> = mutableUiState.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            sessionPreferences.state.collect { preferences ->
+                val profiles = preferences.navidromeEqualizerProfiles
+                val activeProfileId = preferences.navidromeEqualizerActiveProfileId
+                    ?.takeIf { activeId -> profiles.any { it.id == activeId } }
+                val previousState = mutableUiState.value
+                val editorResolution = resolveNavidromeEqualizerEditorState(
+                    state = previousState,
+                    profiles = profiles,
+                    activeProfileId = activeProfileId
+                )
+                mutableUiState.value = previousState.copy(
+                    isEnabled = preferences.navidromeEqualizerEnabled,
+                    activeProfileId = activeProfileId,
+                    profiles = profiles,
+                    editorProfile = editorResolution.profile,
+                    isEditorPersisted = editorResolution.isPersisted,
+                    isEditorDirty = editorResolution.isDirty
+                )
+            }
+        }
+    }
+
+    fun setEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeEqualizerEnabled(enabled)
+        }
+    }
+
+    fun setActiveProfile(profileId: String?) {
+        val resolvedProfileId = profileId?.takeIf { requestedId ->
+            uiState.value.profiles.any { it.id == requestedId }
+        }
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeEqualizerActiveProfileId(resolvedProfileId)
+        }
+    }
+
+    fun selectEditorProfile(profileId: String) {
+        val selected = uiState.value.profiles.firstOrNull { it.id == profileId } ?: return
+        mutableUiState.update {
+            it.copy(
+                editorProfile = selected,
+                isEditorPersisted = true,
+                isEditorDirty = false
+            )
+        }
+    }
+
+    fun createNewProfile() {
+        mutableUiState.update { state ->
+            state.copy(
+                editorProfile = newNavidromeEqualizerDraft(state.profiles),
+                isEditorPersisted = false,
+                isEditorDirty = false
+            )
+        }
+    }
+
+    fun updateEditorName(name: String) {
+        mutableUiState.update { state ->
+            state.copy(
+                editorProfile = state.editorProfile.copy(name = name.take(40)),
+                isEditorDirty = true
+            )
+        }
+    }
+
+    fun updateBandLevel(index: Int, levelDb: Float) {
+        val current = uiState.value
+        if (index !in current.editorProfile.normalizedBandLevelsDb().indices) return
+        val normalizedLevel = normalizeNavidromeEqualizerLevel(levelDb)
+        val updatedLevels = current.editorProfile.normalizedBandLevelsDb().toMutableList()
+        if (abs(updatedLevels[index] - normalizedLevel) < 0.001f) return
+        updatedLevels[index] = normalizedLevel
+        mutableUiState.update { state ->
+            state.copy(
+                editorProfile = state.editorProfile.copy(bandLevelsDb = updatedLevels),
+                isEditorDirty = true
+            )
+        }
+    }
+
+    fun saveEditor() {
+        val state = uiState.value
+        val draft = state.editorProfile.copy(
+            name = state.editorProfile.name.trim().ifBlank {
+                newNavidromeEqualizerDraft(state.profiles).name
+            },
+            bandLevelsDb = state.editorProfile.normalizedBandLevelsDb()
+        )
+        val updatedProfiles = state.profiles.toMutableList().apply {
+            val existingIndex = indexOfFirst { it.id == draft.id }
+            if (existingIndex >= 0) {
+                this[existingIndex] = draft
+            } else {
+                add(draft)
+            }
+        }
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeEqualizerProfiles(updatedProfiles)
+        }
+        mutableUiState.update {
+            it.copy(
+                editorProfile = draft,
+                isEditorPersisted = true,
+                isEditorDirty = false
+            )
+        }
+    }
+
+    fun deleteEditor() {
+        val state = uiState.value
+        if (!state.isEditorPersisted) {
+            mutableUiState.update {
+                it.copy(
+                    editorProfile = newNavidromeEqualizerDraft(state.profiles),
+                    isEditorPersisted = false,
+                    isEditorDirty = false
+                )
+            }
+            return
+        }
+
+        val remainingProfiles = state.profiles.filterNot { it.id == state.editorProfile.id }
+        val nextEditor = remainingProfiles.firstOrNull() ?: newNavidromeEqualizerDraft(remainingProfiles)
+        val nextIsPersisted = remainingProfiles.any { it.id == nextEditor.id }
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeEqualizerProfiles(remainingProfiles)
+            if (state.activeProfileId == state.editorProfile.id) {
+                sessionPreferences.setNavidromeEqualizerActiveProfileId(null)
+            }
+        }
+        mutableUiState.update {
+            it.copy(
+                activeProfileId = if (state.activeProfileId == state.editorProfile.id) null else state.activeProfileId,
+                profiles = remainingProfiles,
+                editorProfile = nextEditor,
+                isEditorPersisted = nextIsPersisted,
+                isEditorDirty = false
+            )
+        }
+    }
+}
+
 @HiltViewModel
 class NavidromePlayerViewModel @Inject constructor(
     private val playerController: NavidromePlayerController,
@@ -2387,6 +2570,77 @@ private fun buildServerScanDetail(status: NavidromeServerScanStatus): String {
     } else {
         "Navidrome is scanning the server library. ${progressBits.joinToString(" • ")}"
     }
+}
+
+private fun resolveNavidromeEqualizerEditorState(
+    state: NavidromeEqualizerUiState,
+    profiles: List<NavidromeEqualizerProfile>,
+    activeProfileId: String?
+): NavidromeEqualizerEditorResolution {
+    if (!state.isEditorPersisted) {
+        val savedDraft = profiles.firstOrNull { it.id == state.editorProfile.id }
+        if (savedDraft != null) {
+            return NavidromeEqualizerEditorResolution(
+                profile = savedDraft,
+                isPersisted = true,
+                isDirty = false
+            )
+        }
+        return NavidromeEqualizerEditorResolution(
+            profile = state.editorProfile,
+            isPersisted = false,
+            isDirty = state.isEditorDirty
+        )
+    }
+
+    if (state.isEditorDirty) {
+        return NavidromeEqualizerEditorResolution(
+            profile = state.editorProfile,
+            isPersisted = true,
+            isDirty = true
+        )
+    }
+
+    val persistedEditor = profiles.firstOrNull { it.id == state.editorProfile.id }
+    if (persistedEditor != null) {
+        return NavidromeEqualizerEditorResolution(
+            profile = persistedEditor,
+            isPersisted = true,
+            isDirty = false
+        )
+    }
+
+    val fallbackProfile = profiles.firstOrNull { it.id == activeProfileId }
+        ?: profiles.firstOrNull()
+        ?: newNavidromeEqualizerDraft(profiles)
+    val fallbackPersisted = profiles.any { it.id == fallbackProfile.id }
+    return NavidromeEqualizerEditorResolution(
+        profile = fallbackProfile,
+        isPersisted = fallbackPersisted,
+        isDirty = false
+    )
+}
+
+private fun normalizeNavidromeEqualizerLevel(levelDb: Float): Float {
+    val safeLevelDb = levelDb.takeIf { it.isFinite() } ?: 0f
+    return ((safeLevelDb.coerceIn(NAVIDROME_EQUALIZER_MIN_DB, NAVIDROME_EQUALIZER_MAX_DB)) / NAVIDROME_EQUALIZER_STEP_DB)
+        .roundToInt()
+        .toFloat() * NAVIDROME_EQUALIZER_STEP_DB
+}
+
+private fun newNavidromeEqualizerDraft(profiles: List<NavidromeEqualizerProfile>): NavidromeEqualizerProfile {
+    val defaultBaseName = "My new Equalizer"
+    val existingNames = profiles.map { it.name.trim() }.toSet()
+    val uniqueName = generateSequence(1) { it + 1 }
+        .map { index ->
+            if (index == 1) defaultBaseName else "$defaultBaseName $index"
+        }
+        .first { candidate -> candidate !in existingNames }
+    return NavidromeEqualizerProfile(
+        id = "nav_eq_${System.currentTimeMillis()}_${profiles.size + 1}",
+        name = uniqueName,
+        bandLevelsDb = flatNavidromeEqualizerBandLevels()
+    )
 }
 
 private const val SERVER_SCAN_POLL_DELAY_MS = 1_500L

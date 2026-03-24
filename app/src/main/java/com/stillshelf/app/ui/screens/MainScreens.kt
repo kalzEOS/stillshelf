@@ -5098,6 +5098,7 @@ fun SettingsScreen(
 @Composable
 fun AboutScreen(
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: AboutViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -5121,7 +5122,8 @@ fun AboutScreen(
     ) {
         BackTitle(
             title = "About",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
 
         Card(

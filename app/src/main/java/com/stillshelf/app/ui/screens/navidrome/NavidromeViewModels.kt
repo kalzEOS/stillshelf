@@ -2059,6 +2059,30 @@ class NavidromePlayerViewModel @Inject constructor(
         }
     }
 
+    fun playAlbums(albums: List<NavidromeAlbum>, shuffle: Boolean = false) {
+        val albumIds = albums
+            .map { it.id.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (albumIds.isEmpty()) return
+
+        viewModelScope.launch {
+            val tracks = buildList {
+                albumIds.forEach { albumId ->
+                    when (val result = navidromeRepository.fetchAlbumDetail(albumId, forceRefresh = false)) {
+                        is AppResult.Success -> addAll(result.value.tracks)
+                        is AppResult.Error -> Unit
+                    }
+                }
+            }
+                .filter { it.id.isNotBlank() }
+
+            if (tracks.isEmpty()) return@launch
+            val queue = if (shuffle) tracks.shuffled() else tracks
+            playerController.playTracks(queue, startIndex = 0)
+        }
+    }
+
     fun togglePlayPause() {
         playerController.togglePlayPause()
     }

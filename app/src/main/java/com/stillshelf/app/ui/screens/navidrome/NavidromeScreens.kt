@@ -54,6 +54,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -2190,6 +2191,7 @@ private fun NavidromeAlbumsRoute(
     onOpenAlbum: (String) -> Unit,
     viewModel: NavidromeBrowseViewModel = hiltViewModel(),
     albumsViewModel: NavidromeAlbumsViewModel = hiltViewModel(),
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
     downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -2312,6 +2314,13 @@ private fun NavidromeAlbumsRoute(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    NavidromeTransportHeader(
+                        modifier = Modifier.fillMaxWidth(),
+                        onPlay = { playerViewModel.playAlbums(displayedAlbums) },
+                        onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
+                    )
+                }
                 items(displayedAlbums.size) { index ->
                     val album = displayedAlbums[index]
                     AlbumGridCard(
@@ -2335,6 +2344,15 @@ private fun NavidromeAlbumsRoute(
                 ),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
+                item {
+                    NavidromeTransportHeader(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        onPlay = { playerViewModel.playAlbums(displayedAlbums) },
+                        onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
+                    )
+                }
                 items(displayedAlbums) { album ->
                     AlbumRow(
                         album = album,
@@ -3219,13 +3237,22 @@ private fun NavidromeSongsRoute(
             }
         },
         topContent = {
-            NavidromeExpandableSearchField(
-                visible = showSearchField,
-                query = uiState.searchQuery,
-                label = "Search songs",
-                onQueryChange = viewModel::onSearchQueryChange,
-                modifier = Modifier.padding(horizontal = 0.dp)
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                NavidromeExpandableSearchField(
+                    visible = showSearchField,
+                    query = uiState.searchQuery,
+                    label = "Search songs",
+                    onQueryChange = viewModel::onSearchQueryChange,
+                    modifier = Modifier.padding(horizontal = 0.dp)
+                )
+                if (displayedSongs.isNotEmpty()) {
+                    NavidromeTransportHeader(
+                        modifier = Modifier.fillMaxWidth(),
+                        onPlay = { playerViewModel.playTracks(displayedSongs, startIndex = 0) },
+                        onShuffle = { playerViewModel.playTracks(displayedSongs.shuffled(), startIndex = 0) }
+                    )
+                }
+            }
         }
     ) {
         if (uiState.isLoading) {
@@ -6847,11 +6874,13 @@ private fun PillActionButton(
     label: String,
     onClick: () -> Unit
 ) {
+    val containerColor = MaterialTheme.colorScheme.tertiaryContainer
+    val contentColor = MaterialTheme.colorScheme.onTertiaryContainer
     Surface(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+        color = containerColor,
+        tonalElevation = 2.dp
     ) {
         Row(
             modifier = Modifier
@@ -6863,15 +6892,40 @@ private fun PillActionButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = Color(0xFFFF334B)
+                tint = contentColor
             )
             Spacer(modifier = Modifier.size(8.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
-                color = Color(0xFFFF334B)
+                color = contentColor
             )
         }
+    }
+}
+
+@Composable
+private fun NavidromeTransportHeader(
+    modifier: Modifier = Modifier,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        PillActionButton(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Outlined.PlayArrow,
+            label = "Play",
+            onClick = onPlay
+        )
+        PillActionButton(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Outlined.Shuffle,
+            label = "Shuffle",
+            onClick = onShuffle
+        )
     }
 }
 

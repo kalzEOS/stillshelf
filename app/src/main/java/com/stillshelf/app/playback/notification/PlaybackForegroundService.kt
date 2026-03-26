@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 
 class PlaybackForegroundService : Service() {
     companion object {
@@ -19,12 +21,32 @@ class PlaybackForegroundService : Service() {
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         @Volatile
         private var latestNotification: Notification? = null
+        @Volatile
+        private var foregroundServiceActive = false
+        @Volatile
+        private var foregroundServiceStartPending = false
 
         fun startOrUpdate(context: Context, notification: Notification) {
             latestNotification = notification
             val intent = Intent(context, PlaybackForegroundService::class.java).apply {
                 action = ACTION_UPDATE
             }
+            if (foregroundServiceActive) {
+                context.startService(intent)
+                return
+            }
+            val appInForeground = ProcessLifecycleOwner.get()
+                .lifecycle
+                .currentState
+                .isAtLeast(Lifecycle.State.STARTED)
+            if (appInForeground) {
+                context.startService(intent)
+                return
+            }
+            if (foregroundServiceStartPending) {
+                return
+            }
+            foregroundServiceStartPending = true
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)
             } else {
@@ -34,8 +56,12 @@ class PlaybackForegroundService : Service() {
 
         fun stop(context: Context) {
             latestNotification = null
+            foregroundServiceActive = false
+            foregroundServiceStartPending = false
             context.stopService(Intent(context, PlaybackForegroundService::class.java))
         }
+
+        fun isActive(): Boolean = foregroundServiceActive
     }
 
     private var foregroundStarted = false
@@ -78,6 +104,8 @@ class PlaybackForegroundService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
         foregroundStarted = true
+        foregroundServiceActive = true
+        foregroundServiceStartPending = false
     }
 
     private fun buildFallbackNotification(): Notification {
@@ -124,6 +152,14 @@ class PlaybackForegroundService : Service() {
     private fun stopForegroundCompat() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         foregroundStarted = false
+        foregroundServiceActive = false
+        foregroundServiceStartPending = false
+    }
+
+    override fun onDestroy() {
+        foregroundServiceActive = false
+        foregroundServiceStartPending = false
+        super.onDestroy()
     }
 }
 

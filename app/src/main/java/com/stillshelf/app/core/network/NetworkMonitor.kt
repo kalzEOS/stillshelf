@@ -56,18 +56,7 @@ class NetworkMonitor @Inject constructor(
             type = NetworkConnectionType.Offline,
             identity = "offline"
         )
-        val activeNetwork = manager.activeNetwork ?: return NetworkConnectionState(
-            type = NetworkConnectionType.Offline,
-            identity = "offline"
-        )
-        val capabilities = manager.getNetworkCapabilities(activeNetwork) ?: return NetworkConnectionState(
-            type = NetworkConnectionType.Offline,
-            identity = activeNetwork.toString()
-        )
-        return NetworkConnectionState(
-            type = capabilities.toConnectionType(),
-            identity = activeNetwork.toString()
-        )
+        return manager.resolvePreferredConnectionState()
     }
 
     private fun observeConnectionStateInternal(): Flow<NetworkConnectionState> = callbackFlow {
@@ -93,18 +82,64 @@ class NetworkMonitor @Inject constructor(
         }
 
         trySend(currentConnectionState())
-        runCatching {
-            manager.registerDefaultNetworkCallback(callback)
-        }.getOrElse {
-            val request = NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
-            manager.registerNetworkCallback(request, callback)
-        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        manager.registerNetworkCallback(request, callback)
 
         awaitClose {
             runCatching { manager.unregisterNetworkCallback(callback) }
         }
+    }
+}
+
+private fun ConnectivityManager.resolvePreferredConnectionState(): NetworkConnectionState {
+    val activeNetwork = activeNetwork
+    val candidates = allNetworks.mapNotNull { network ->
+        val capabilities = getNetworkCapabilities(network) ?: return@mapNotNull null
+        network to capabilities
+    }
+    val preferred = candidates.maxByOrNull { (network, capabilities) ->
+        capabilities.connectionPriority(isActive = network == activeNetwork)
+    }
+    if (
+        preferred != null &&
+        preferred.second.connectionPriority(isActive = preferred.first == activeNetwork) > 0
+    ) {
+        return NetworkConnectionState(
+            type = preferred.second.toConnectionType(),
+            identity = preferred.first.toString()
+        )
+    }
+    activeNetwork ?: return NetworkConnectionState(
+        type = NetworkConnectionType.Offline,
+        identity = "offline"
+    )
+    val capabilities = getNetworkCapabilities(activeNetwork) ?: return NetworkConnectionState(
+        type = NetworkConnectionType.Offline,
+        identity = activeNetwork.toString()
+    )
+    return NetworkConnectionState(
+        type = capabilities.toConnectionType(),
+        identity = activeNetwork.toString()
+    )
+}
+
+private fun NetworkCapabilities.connectionPriority(isActive: Boolean): Int {
+    if (!hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return 0
+    val isValidated = hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    if (!isValidated && !isActive) return 0
+
+    val transportScore = when {
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 300
+        hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 200
+        else -> 100
+    }
+    return when {
+        else -> transportScore +
+            if (isValidated) 40 else 0 +
+            if (isActive) 20 else 0
     }
 }
 

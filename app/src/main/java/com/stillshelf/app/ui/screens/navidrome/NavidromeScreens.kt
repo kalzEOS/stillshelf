@@ -7,6 +7,8 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
@@ -30,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,12 +56,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -118,6 +125,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -125,6 +133,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -133,6 +142,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -202,6 +212,7 @@ import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromePlayerState
+import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeServerScanProgress
 import com.stillshelf.app.core.model.NavidromeServerScanStatus
@@ -248,6 +259,50 @@ private data class NavidromePlaylistSelectionRequest(
     val label: String,
     val trackIds: List<String>
 )
+
+private const val NAVIDROME_PLAYER_QUEUE_PREVIEW_LIMIT = 50
+
+internal data class NavidromeQueuePreviewItem(
+    val queueIndex: Int,
+    val track: NavidromeTrack
+)
+
+internal data class NavidromeQueuePreview(
+    val items: List<NavidromeQueuePreviewItem>,
+    val totalCount: Int
+)
+
+internal fun buildNavidromeQueuePreview(
+    queue: List<NavidromeTrack>,
+    currentTrack: NavidromeTrack,
+    currentIndex: Int,
+    limit: Int = NAVIDROME_PLAYER_QUEUE_PREVIEW_LIMIT
+): NavidromeQueuePreview {
+    val effectiveQueue = queue.ifEmpty { listOf(currentTrack) }
+    if (effectiveQueue.isEmpty()) {
+        return NavidromeQueuePreview(items = emptyList(), totalCount = 0)
+    }
+    val safeLimit = limit.coerceAtLeast(1)
+    val fallbackIndex = effectiveQueue
+        .indexOfFirst { it.id == currentTrack.id }
+        .takeIf { it >= 0 }
+        ?: 0
+    val safeStartIndex = currentIndex
+        .takeIf { it in effectiveQueue.indices }
+        ?: fallbackIndex.coerceIn(0, effectiveQueue.lastIndex)
+    val upcomingQueue = effectiveQueue.drop(safeStartIndex)
+    return NavidromeQueuePreview(
+        items = upcomingQueue
+            .take(safeLimit)
+            .mapIndexed { offset, track ->
+                NavidromeQueuePreviewItem(
+                    queueIndex = safeStartIndex + offset,
+                    track = track
+                )
+            },
+        totalCount = upcomingQueue.size
+    )
+}
 
 private fun NavidromeTrack.toPlaylistSelectionRequest(): NavidromePlaylistSelectionRequest {
     return NavidromePlaylistSelectionRequest(
@@ -607,6 +662,7 @@ fun NavidromeAppRoute(
                 onToggleFavorite = playerViewModel::toggleFavoriteTrack,
                 onToggleDownload = { track -> downloadsViewModel.toggleTrackDownload(track) },
                 immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
+                materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
                 onAddToPlaylist = { track ->
                     pendingPlaylistRequest = track.toPlaylistSelectionRequest()
                 },
@@ -1999,7 +2055,31 @@ private fun NavidromeArtistsRoute(
     val context = LocalContext.current
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val showSearchField = searchExpanded || searchQuery.isNotBlank()
+    val collapseDistancePx = with(LocalDensity.current) {
+        NavidromeLargeTitleCollapseDistance.roundToPx()
+    }
+    val collapseFraction by remember(layoutMode, listState, gridState, collapseDistancePx) {
+        derivedStateOf {
+            when (layoutMode) {
+                NavidromeArtistsLayoutMode.Grid -> calculateHeaderCollapseFraction(gridState, collapseDistancePx)
+                NavidromeArtistsLayoutMode.List -> calculateHeaderCollapseFraction(listState, collapseDistancePx)
+            }
+        }
+    }
+    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
+        enabled = showSearchField,
+        firstVisibleItemIndex = when (layoutMode) {
+            NavidromeArtistsLayoutMode.Grid -> gridState.firstVisibleItemIndex
+            NavidromeArtistsLayoutMode.List -> listState.firstVisibleItemIndex
+        },
+        firstVisibleItemScrollOffset = when (layoutMode) {
+            NavidromeArtistsLayoutMode.Grid -> gridState.firstVisibleItemScrollOffset
+            NavidromeArtistsLayoutMode.List -> listState.firstVisibleItemScrollOffset
+        }
+    )
     val displayedArtists = remember(uiState.artists, sortOption, searchQuery) {
         val filteredArtists = uiState.artists.filter { artist ->
             searchQuery.isBlank() || artist.name.contains(searchQuery.trim(), ignoreCase = true)
@@ -2028,173 +2108,243 @@ private fun NavidromeArtistsRoute(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         downloadsViewModel.clearMessages()
     }
-    Column(modifier = Modifier.fillMaxSize()) {
-        DetailHeader(
-            title = "Artists",
-            onBack = onBack,
-            onHome = onHome,
-            actions = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RoundIconButton(
-                        icon = Icons.Outlined.Search,
-                        contentDescription = if (showSearchField) "Hide artist search" else "Show artist search",
-                        onClick = { searchExpanded = !showSearchField }
+    NavidromeHeaderScaffold(
+        title = "Artists",
+        collapseFraction = collapseFraction,
+        onBack = onBack,
+        onHome = onHome,
+        stickyHeaderVisible = false,
+        stickyHeaderContent = null,
+        containerColor = MaterialTheme.colorScheme.background,
+        actions = {
+            RoundIconButton(
+                icon = Icons.Outlined.Search,
+                contentDescription = if (showSearchField) "Hide artist search" else "Show artist search",
+                onClick = { searchExpanded = !showSearchField }
+            )
+            Box {
+                RoundIconButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Artist options",
+                    onClick = { menuExpanded = true }
+                )
+                AppDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    AppDropdownMenuItem(
+                        text = { Text("Grid") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.GridView,
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
+                            if (layoutMode == NavidromeArtistsLayoutMode.Grid) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        onClick = {
+                            artistsViewModel.setLayoutMode(NavidromeArtistsLayoutMode.Grid)
+                            menuExpanded = false
+                        }
                     )
-                    Box {
-                        RoundIconButton(
-                            icon = Icons.Outlined.MoreHoriz,
-                            contentDescription = "Artist options",
-                            onClick = { menuExpanded = true }
+                    AppDropdownMenuItem(
+                        text = { Text("List") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ViewList,
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
+                            if (layoutMode == NavidromeArtistsLayoutMode.List) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        onClick = {
+                            artistsViewModel.setLayoutMode(NavidromeArtistsLayoutMode.List)
+                            menuExpanded = false
+                        }
+                    )
+                    HorizontalDivider()
+                    NavidromeArtistSortOption.entries.forEach { sort ->
+                        AppDropdownMenuItem(
+                            text = { Text("Sort: ${sort.label}") },
+                            trailingIcon = {
+                                if (sortOption == sort) {
+                                    Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                                }
+                            },
+                            onClick = {
+                                artistsViewModel.setSortOption(sort)
+                                menuExpanded = false
+                            }
                         )
-                        AppDropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false }
-                        ) {
-                            AppDropdownMenuItem(
-                                text = { Text("Grid") },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Outlined.GridView,
-                                        contentDescription = null
-                                    )
-                                },
-                                trailingIcon = {
-                                    if (layoutMode == NavidromeArtistsLayoutMode.Grid) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Check,
-                                            contentDescription = null
+                    }
+                }
+            }
+        }
+    ) { topInsetPadding ->
+        when {
+            uiState.isLoading -> {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        NavidromeScrollingTitle(
+                            title = "Artists",
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (showSearchField) {
+                        item {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search artists",
+                                onQueryChange = artistsViewModel::onSearchQueryChange
+                            )
+                        }
+                    }
+                    item { LoadingCard() }
+                }
+            }
+            !uiState.errorMessage.isNullOrBlank() || displayedArtists.isEmpty() || layoutMode == NavidromeArtistsLayoutMode.List -> {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    item {
+                        NavidromeScrollingTitle(
+                            title = "Artists",
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (showSearchField) {
+                        item {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search artists",
+                                onQueryChange = artistsViewModel::onSearchQueryChange
+                            )
+                        }
+                    }
+                    when {
+                        !uiState.errorMessage.isNullOrBlank() -> {
+                            item { ErrorCard(uiState.errorMessage ?: "Unable to load artists.") }
+                        }
+                        displayedArtists.isEmpty() -> {
+                            item {
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 12.dp),
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = if (searchQuery.isBlank()) "No artists yet" else "No matching artists",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = if (searchQuery.isBlank()) {
+                                                "This server does not have any artists to show."
+                                            } else {
+                                                "Try a different artist name."
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                },
-                                onClick = {
-                                    artistsViewModel.setLayoutMode(NavidromeArtistsLayoutMode.Grid)
-                                    menuExpanded = false
                                 }
-                            )
-                            AppDropdownMenuItem(
-                                text = { Text("List") },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Outlined.ViewList,
-                                        contentDescription = null
-                                    )
-                                },
-                                trailingIcon = {
-                                    if (layoutMode == NavidromeArtistsLayoutMode.List) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Check,
-                                            contentDescription = null
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    artistsViewModel.setLayoutMode(NavidromeArtistsLayoutMode.List)
-                                    menuExpanded = false
-                                }
-                            )
-                            HorizontalDivider()
-                            NavidromeArtistSortOption.entries.forEach { sort ->
-                                AppDropdownMenuItem(
-                                    text = { Text("Sort: ${sort.label}") },
-                                    trailingIcon = {
-                                        if (sortOption == sort) {
-                                            Icon(imageVector = Icons.Filled.Check, contentDescription = null)
-                                        }
-                                    },
-                                    onClick = {
-                                        artistsViewModel.setSortOption(sort)
-                                        menuExpanded = false
-                                    }
+                            }
+                        }
+                        else -> {
+                            items(displayedArtists) { artist ->
+                                ArtistRow(
+                                    artist = artist,
+                                    isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
+                                        ?.let { it >= artist.albumCount && artist.albumCount > 0 }
+                                        ?: false,
+                                    downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
+                                    onClick = { onOpenArtist(artist.id) }
                                 )
                             }
                         }
                     }
                 }
             }
-        )
-        NavidromeExpandableSearchField(
-            visible = showSearchField,
-            query = searchQuery,
-            label = "Search artists",
-            onQueryChange = artistsViewModel::onSearchQueryChange
-        )
-        if (uiState.isLoading) {
-            LoadingCard()
-        } else if (!uiState.errorMessage.isNullOrBlank()) {
-            ErrorCard(uiState.errorMessage ?: "Unable to load artists.")
-        } else if (displayedArtists.isEmpty()) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+            else -> {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
-                    Text(
-                        text = if (searchQuery.isBlank()) "No artists yet" else "No matching artists",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = if (searchQuery.isBlank()) {
-                            "This server does not have any artists to show."
-                        } else {
-                            "Try a different artist name."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        } else if (layoutMode == NavidromeArtistsLayoutMode.Grid) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 12.dp,
-                    bottom = NavidromeOverlayBottomContentPadding
-                ),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                items(displayedArtists.size) { index ->
-                    val artist = displayedArtists[index]
-                    ArtistGridCard(
-                        artist = artist,
-                        isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
-                            ?.let { it >= artist.albumCount && artist.albumCount > 0 }
-                            ?: false,
-                        downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
-                        onClick = { onOpenArtist(artist.id) }
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 12.dp,
-                    bottom = NavidromeOverlayBottomContentPadding
-                ),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
-            ) {
-                items(displayedArtists) { artist ->
-                    ArtistRow(
-                        artist = artist,
-                        isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
-                            ?.let { it >= artist.albumCount && artist.albumCount > 0 }
-                            ?: false,
-                        downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
-                        onClick = { onOpenArtist(artist.id) }
-                    )
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        NavidromeScrollingTitle(
+                            title = "Artists",
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (showSearchField) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search artists",
+                                onQueryChange = artistsViewModel::onSearchQueryChange
+                            )
+                        }
+                    }
+                    items(displayedArtists.size) { index ->
+                        val artist = displayedArtists[index]
+                        ArtistGridCard(
+                            artist = artist,
+                            isDownloaded = downloadUiState.fullyDownloadedAlbumCountByArtistId[artist.id]
+                                ?.let { it >= artist.albumCount && artist.albumCount > 0 }
+                                ?: false,
+                            downloadProgressPercent = downloadUiState.artistProgressById[artist.id],
+                            onClick = { onOpenArtist(artist.id) }
+                        )
+                    }
                 }
             }
         }
@@ -2219,7 +2369,31 @@ private fun NavidromeAlbumsRoute(
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     val showSearchField = searchExpanded || searchQuery.isNotBlank()
+    val collapseDistancePx = with(LocalDensity.current) {
+        NavidromeLargeTitleCollapseDistance.roundToPx()
+    }
+    val collapseFraction by remember(displayStyle, listState, gridState, collapseDistancePx) {
+        derivedStateOf {
+            when (displayStyle) {
+                NavidromeAlbumsDisplayStyle.GRID -> calculateHeaderCollapseFraction(gridState, collapseDistancePx)
+                NavidromeAlbumsDisplayStyle.LIST -> calculateHeaderCollapseFraction(listState, collapseDistancePx)
+            }
+        }
+    }
+    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
+        enabled = showSearchField,
+        firstVisibleItemIndex = when (displayStyle) {
+            NavidromeAlbumsDisplayStyle.GRID -> gridState.firstVisibleItemIndex
+            NavidromeAlbumsDisplayStyle.LIST -> listState.firstVisibleItemIndex
+        },
+        firstVisibleItemScrollOffset = when (displayStyle) {
+            NavidromeAlbumsDisplayStyle.GRID -> gridState.firstVisibleItemScrollOffset
+            NavidromeAlbumsDisplayStyle.LIST -> listState.firstVisibleItemScrollOffset
+        }
+    )
     val displayedAlbums = remember(uiState.albums, uiState.albumSort, searchQuery) {
         val normalizedQuery = searchQuery.trim()
         uiState.albums.filter { album ->
@@ -2234,154 +2408,223 @@ private fun NavidromeAlbumsRoute(
             viewModel.setAlbumSort(lockedSort)
         }
     }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        DetailHeader(
-            title = title,
-            onBack = onBack,
-            onHome = onHome,
-            actions = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RoundIconButton(
-                        icon = Icons.Outlined.Search,
-                        contentDescription = if (showSearchField) "Hide album search" else "Show album search",
-                        onClick = { searchExpanded = !showSearchField }
+    NavidromeHeaderScaffold(
+        title = title,
+        collapseFraction = collapseFraction,
+        onBack = onBack,
+        onHome = onHome,
+        stickyHeaderVisible = false,
+        stickyHeaderContent = null,
+        containerColor = MaterialTheme.colorScheme.background,
+        actions = {
+            RoundIconButton(
+                icon = Icons.Outlined.Search,
+                contentDescription = if (showSearchField) "Hide album search" else "Show album search",
+                onClick = { searchExpanded = !showSearchField }
+            )
+            Box {
+                RoundIconButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Album options",
+                    onClick = { menuExpanded = true }
+                )
+                AppDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    AppDropdownMenuItem(
+                        text = { Text("Grid view") },
+                        leadingIcon = {
+                            if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
+                                Icon(Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.GRID)
+                            menuExpanded = false
+                        }
                     )
-                    Box {
-                        RoundIconButton(
-                            icon = Icons.Outlined.MoreHoriz,
-                            contentDescription = "Album options",
-                            onClick = { menuExpanded = true }
+                    AppDropdownMenuItem(
+                        text = { Text("List view") },
+                        leadingIcon = {
+                            if (displayStyle == NavidromeAlbumsDisplayStyle.LIST) {
+                                Icon(Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.LIST)
+                            menuExpanded = false
+                        }
+                    )
+                    if (lockedSort == null) {
+                        DividerLine()
+                        NavidromeAlbumSortOption.entries.forEach { sort ->
+                            AppDropdownMenuItem(
+                                text = { Text("Sort: ${sort.label}") },
+                                leadingIcon = {
+                                    if (uiState.albumSort == sort) {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.setAlbumSort(sort)
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    ) { topInsetPadding ->
+        when {
+            uiState.isLoading -> {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        NavidromeScrollingTitle(
+                            title = title,
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
                         )
-                        AppDropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false }
-                        ) {
-                            AppDropdownMenuItem(
-                                    text = { Text("Grid view") },
-                                    leadingIcon = {
-                                        if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
-                                            Icon(Icons.Filled.Check, contentDescription = null)
-                                        }
-                                    },
-                                onClick = {
-                                    albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.GRID)
-                                    menuExpanded = false
-                                }
+                    }
+                    if (showSearchField) {
+                        item {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search albums",
+                                onQueryChange = albumsViewModel::onSearchQueryChange
                             )
-                            AppDropdownMenuItem(
-                                    text = { Text("List view") },
-                                    leadingIcon = {
-                                        if (displayStyle == NavidromeAlbumsDisplayStyle.LIST) {
-                                            Icon(Icons.Filled.Check, contentDescription = null)
-                                        }
-                                    },
-                                onClick = {
-                                    albumsViewModel.setLayoutMode(NavidromeAlbumsDisplayStyle.LIST)
-                                    menuExpanded = false
-                                }
+                        }
+                    }
+                    item { LoadingCard() }
+                }
+            }
+            !uiState.errorMessage.isNullOrBlank() || displayedAlbums.isEmpty() || displayStyle == NavidromeAlbumsDisplayStyle.LIST -> {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    item {
+                        NavidromeScrollingTitle(
+                            title = title,
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (showSearchField) {
+                        item {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search albums",
+                                onQueryChange = albumsViewModel::onSearchQueryChange
                             )
-                            if (lockedSort == null) {
+                        }
+                    }
+                    when {
+                        !uiState.errorMessage.isNullOrBlank() -> {
+                            item { ErrorCard(uiState.errorMessage ?: "Unable to load albums.") }
+                        }
+                        displayedAlbums.isEmpty() -> {
+                            item {
+                                EmptyCard(
+                                    if (searchQuery.isBlank()) {
+                                        "No albums found."
+                                    } else {
+                                        "No albums match \"${searchQuery.trim()}\"."
+                                    }
+                                )
+                            }
+                        }
+                        else -> {
+                            item {
+                                NavidromeTransportHeader(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 12.dp, bottom = 12.dp),
+                                    onPlay = { playerViewModel.playAlbums(displayedAlbums) },
+                                    onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
+                                )
+                            }
+                            items(displayedAlbums) { album ->
+                                AlbumRow(
+                                    album = album,
+                                    isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                        ?.let { it >= album.songCount && album.songCount > 0 }
+                                        ?: false,
+                                    downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                                    onClick = { onOpenAlbum(album.id) }
+                                )
                                 DividerLine()
-                                NavidromeAlbumSortOption.entries.forEach { sort ->
-                                    AppDropdownMenuItem(
-                                        text = { Text("Sort: ${sort.label}") },
-                                        leadingIcon = {
-                                            if (uiState.albumSort == sort) {
-                                                Icon(Icons.Filled.Check, contentDescription = null)
-                                            }
-                                        },
-                                        onClick = {
-                                            viewModel.setAlbumSort(sort)
-                                            menuExpanded = false
-                                        }
-                                    )
-                                }
                             }
                         }
                     }
                 }
             }
-        )
-        NavidromeExpandableSearchField(
-            visible = showSearchField,
-            query = searchQuery,
-            label = "Search albums",
-            onQueryChange = albumsViewModel::onSearchQueryChange
-        )
-        if (uiState.isLoading) {
-            LoadingCard()
-        } else if (!uiState.errorMessage.isNullOrBlank()) {
-            ErrorCard(uiState.errorMessage ?: "Unable to load albums.")
-        } else if (displayedAlbums.isEmpty()) {
-            EmptyCard(
-                if (searchQuery.isBlank()) {
-                    "No albums found."
-                } else {
-                    "No albums match \"${searchQuery.trim()}\"."
-                }
-            )
-        } else if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 12.dp,
-                    bottom = NavidromeOverlayBottomContentPadding
-                ),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    NavidromeTransportHeader(
-                        modifier = Modifier.fillMaxWidth(),
-                        onPlay = { playerViewModel.playAlbums(displayedAlbums) },
-                        onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
-                    )
-                }
-                items(displayedAlbums.size) { index ->
-                    val album = displayedAlbums[index]
-                    AlbumGridCard(
-                        album = album,
-                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
-                            ?.let { it >= album.songCount && album.songCount > 0 }
-                            ?: false,
-                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
-                        onClick = { onOpenAlbum(album.id) }
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 12.dp,
-                    bottom = NavidromeOverlayBottomContentPadding
-                ),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
-            ) {
-                item {
-                    NavidromeTransportHeader(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 12.dp),
-                        onPlay = { playerViewModel.playAlbums(displayedAlbums) },
-                        onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
-                    )
-                }
-                items(displayedAlbums) { album ->
-                    AlbumRow(
-                        album = album,
-                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
-                            ?.let { it >= album.songCount && album.songCount > 0 }
-                            ?: false,
-                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
-                        onClick = { onOpenAlbum(album.id) }
-                    )
-                    DividerLine()
+            else -> {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        NavidromeScrollingTitle(
+                            title = title,
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (showSearchField) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            NavidromeExpandableSearchField(
+                                visible = true,
+                                query = searchQuery,
+                                label = "Search albums",
+                                onQueryChange = albumsViewModel::onSearchQueryChange
+                            )
+                        }
+                    }
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        NavidromeTransportHeader(
+                            modifier = Modifier.fillMaxWidth(),
+                            onPlay = { playerViewModel.playAlbums(displayedAlbums) },
+                            onShuffle = { playerViewModel.playAlbums(displayedAlbums, shuffle = true) }
+                        )
+                    }
+                    items(displayedAlbums.size) { index ->
+                        val album = displayedAlbums[index]
+                        AlbumGridCard(
+                            album = album,
+                            isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                ?.let { it >= album.songCount && album.songCount > 0 }
+                                ?: false,
+                            downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                            onClick = { onOpenAlbum(album.id) }
+                        )
+                    }
                 }
             }
         }
@@ -3261,14 +3504,25 @@ private fun NavidromeSongsRoute(
                     visible = showSearchField,
                     query = uiState.searchQuery,
                     label = "Search songs",
-                    onQueryChange = viewModel::onSearchQueryChange,
-                    modifier = Modifier.padding(horizontal = 0.dp)
+                    onQueryChange = viewModel::onSearchQueryChange
                 )
                 if (displayedSongs.isNotEmpty()) {
                     NavidromeTransportHeader(
                         modifier = Modifier.fillMaxWidth(),
-                        onPlay = { playerViewModel.playTracks(displayedSongs, startIndex = 0) },
-                        onShuffle = { playerViewModel.playTracks(displayedSongs.shuffled(), startIndex = 0) }
+                        onPlay = {
+                            playerViewModel.playTracks(
+                                tracks = displayedSongs,
+                                startIndex = 0,
+                                queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                            )
+                        },
+                        onShuffle = {
+                            playerViewModel.playTracks(
+                                tracks = displayedSongs.shuffled(),
+                                startIndex = 0,
+                                queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                            )
+                        }
                     )
                 }
             }
@@ -3285,7 +3539,13 @@ private fun NavidromeSongsRoute(
                     isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
                     isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
                     downloadProgressPercent = downloadUiState.trackProgressById[track.id],
-                    onClick = { playerViewModel.playTracks(displayedSongs, index) },
+                    onClick = {
+                        playerViewModel.playTracks(
+                            tracks = displayedSongs,
+                            startIndex = index,
+                            queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                        )
+                    },
                     trailingContent = {
                         var rowMenuExpanded by remember { mutableStateOf(false) }
                         Box {
@@ -3300,7 +3560,11 @@ private fun NavidromeSongsRoute(
                                 onDismissRequest = { rowMenuExpanded = false },
                                 onPlayTrack = {
                                     rowMenuExpanded = false
-                                    playerViewModel.playTracks(displayedSongs, index)
+                                    playerViewModel.playTracks(
+                                        tracks = displayedSongs,
+                                        startIndex = index,
+                                        queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                                    )
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                 isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
@@ -4241,6 +4505,7 @@ private fun NavidromeEqualizerRoute(
     }
     var activeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var editorMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var showPreampDialog by rememberSaveable { mutableStateOf(false) }
     var showNameDialog by rememberSaveable { mutableStateOf(false) }
     var nameDraft by rememberSaveable(uiState.editorProfile.id) { mutableStateOf(uiState.editorProfile.name) }
 
@@ -4308,6 +4573,13 @@ private fun NavidromeEqualizerRoute(
                         }
                     }
                 }
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Preamp",
+                    value = formatNavidromePreampLevelLabel(uiState.preampLevel),
+                    valueTextAlign = TextAlign.End,
+                    onClick = { showPreampDialog = true }
+                )
             }
         }
         item {
@@ -4429,6 +4701,16 @@ private fun NavidromeEqualizerRoute(
             }
         )
     }
+
+    if (showPreampDialog) {
+        NavidromeEffectSliderDialog(
+            title = "Preamp",
+            subtitle = "Increase overall playback loudness after EQ.",
+            value = uiState.preampLevel,
+            onValueChange = viewModel::setPreampLevel,
+            onDismiss = { showPreampDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -4451,6 +4733,53 @@ private fun NavidromeEqualizerActionRow(
             color = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         )
     }
+}
+
+@Composable
+private fun NavidromeEffectSliderDialog(
+    title: String,
+    subtitle: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    onValueChange(0f)
+                    onDismiss()
+                }
+            ) {
+                Text("Reset")
+            }
+        },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = formatNavidromePreampLevelLabel(value),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Slider(
+                    value = value.coerceIn(0f, 1f),
+                    onValueChange = { onValueChange(it.coerceIn(0f, 1f)) },
+                    valueRange = 0f..1f
+                )
+            }
+        }
+    )
 }
 
 @Composable
@@ -4828,6 +5157,11 @@ private fun formatNavidromeEqualizerFrequencyLabel(frequencyHz: Int): String {
     } else {
         frequencyHz.toString()
     }
+}
+
+private fun formatNavidromePreampLevelLabel(level: Float): String {
+    val percent = (level.coerceIn(0f, 1f) * 100f).roundToInt()
+    return "$percent%"
 }
 
 @Composable
@@ -5371,27 +5705,291 @@ private fun StandardTopScreen(
     onBack: () -> Unit,
     onHome: (() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
+    stickySearchEnabled: Boolean = false,
+    stickySearchContent: (@Composable () -> Unit)? = null,
     topContent: (@Composable () -> Unit)? = null,
     containerColor: Color = MaterialTheme.colorScheme.background,
     content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
 ) {
-    LazyColumn(
+    val listState = rememberLazyListState()
+    val collapseDistancePx = with(LocalDensity.current) {
+        NavidromeLargeTitleCollapseDistance.roundToPx()
+    }
+    val collapseFraction by remember(listState, collapseDistancePx) {
+        derivedStateOf {
+            calculateHeaderCollapseFraction(
+                firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+                collapseDistancePx = collapseDistancePx
+            )
+        }
+    }
+    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
+        enabled = stickySearchEnabled && stickySearchContent != null,
+        firstVisibleItemIndex = listState.firstVisibleItemIndex,
+        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
+    )
+    NavidromeHeaderScaffold(
+        title = title,
+        collapseFraction = collapseFraction,
+        onBack = onBack,
+        onHome = onHome,
+        actions = actions,
+        stickyHeaderVisible = stickySearchVisible,
+        stickyHeaderContent = stickySearchContent,
+        containerColor = containerColor
+    ) { topInsetPadding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                NavidromeScrollingTitle(
+                    title = title,
+                    collapseFraction = collapseFraction,
+                    topPadding = topInsetPadding
+                )
+            }
+            if (topContent != null) {
+                item { topContent() }
+            }
+            content()
+        }
+    }
+}
+
+private val NavidromePinnedHeaderHeight = 52.dp
+private val NavidromeLargeTitleCollapseDistance = 64.dp
+private val NavidromeTopContentInset = 60.dp
+private val NavidromeStickySearchInset = 76.dp
+
+@Composable
+private fun NavidromeHeaderScaffold(
+    title: String,
+    collapseFraction: Float,
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    actions: (@Composable RowScope.() -> Unit)?,
+    stickyHeaderVisible: Boolean = false,
+    stickyHeaderContent: (@Composable () -> Unit)? = null,
+    containerColor: Color,
+    content: @Composable BoxScope.(Dp) -> Unit
+) {
+    val stickyHeaderInset by animateDpAsState(
+        targetValue = if (stickyHeaderVisible && stickyHeaderContent != null) NavidromeStickySearchInset else 0.dp,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "navidromeStickyHeaderInset"
+    )
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(containerColor),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .background(containerColor)
     ) {
-        item {
-            Box(modifier = Modifier.statusBarsPadding()) {
-                DetailHeader(title = title, onBack = onBack, onHome = onHome, actions = actions)
+        content(NavidromeTopContentInset + stickyHeaderInset)
+        if (stickyHeaderContent != null) {
+            NavidromeStickyHeaderContent(
+                visible = stickyHeaderVisible,
+                containerColor = containerColor,
+                content = stickyHeaderContent
+            )
+        }
+        NavidromePinnedHeader(
+            title = title,
+            collapseFraction = collapseFraction,
+            onBack = onBack,
+            onHome = onHome,
+            actions = actions,
+            containerColor = containerColor
+        )
+    }
+}
+
+@Composable
+private fun NavidromeStickyHeaderContent(
+    visible: Boolean,
+    containerColor: Color,
+    content: @Composable () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(top = NavidromePinnedHeaderHeight + 8.dp, start = 20.dp, end = 20.dp),
+        enter = slideInVertically(
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            initialOffsetY = { -it / 2 }
+        ) + fadeIn(animationSpec = tween(durationMillis = 180)),
+        exit = slideOutVertically(
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            targetOffsetY = { -it / 2 }
+        ) + fadeOut(animationSpec = tween(durationMillis = 120))
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = containerColor
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            ) {
+                content()
             }
         }
-        if (topContent != null) {
-            item { topContent() }
-        }
-        content()
     }
+}
+
+@Composable
+private fun NavidromePinnedHeader(
+    title: String,
+    collapseFraction: Float,
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    actions: (@Composable RowScope.() -> Unit)?,
+    containerColor: Color
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = containerColor,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    modifier = Modifier.size(42.dp),
+                    onClick = onBack
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "Back"
+                    )
+                }
+                if (onHome != null) {
+                    CircleActionButton(
+                        icon = Icons.Outlined.Home,
+                        contentDescription = "Home",
+                        onClick = onHome
+                    )
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                if (actions != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = actions
+                    )
+                }
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 92.dp)
+                    .graphicsLayer {
+                        alpha = collapseFraction
+                        translationY = (1f - collapseFraction) * 10f
+                    }
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavidromeScrollingTitle(
+    title: String,
+    collapseFraction: Float,
+    topPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.Bold,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = topPadding, bottom = 4.dp)
+            .graphicsLayer {
+                alpha = 1f - collapseFraction
+                translationY = -24f * collapseFraction
+            }
+    )
+}
+
+private fun calculateHeaderCollapseFraction(
+    firstVisibleItemIndex: Int,
+    firstVisibleItemScrollOffset: Int,
+    collapseDistancePx: Int
+): Float {
+    if (firstVisibleItemIndex > 0) return 1f
+    if (collapseDistancePx <= 0) return 1f
+    return (firstVisibleItemScrollOffset / collapseDistancePx.toFloat()).coerceIn(0f, 1f)
+}
+
+private fun calculateHeaderCollapseFraction(
+    state: LazyListState,
+    collapseDistancePx: Int
+): Float = calculateHeaderCollapseFraction(
+    firstVisibleItemIndex = state.firstVisibleItemIndex,
+    firstVisibleItemScrollOffset = state.firstVisibleItemScrollOffset,
+    collapseDistancePx = collapseDistancePx
+)
+
+private fun calculateHeaderCollapseFraction(
+    state: LazyGridState,
+    collapseDistancePx: Int
+): Float = calculateHeaderCollapseFraction(
+    firstVisibleItemIndex = state.firstVisibleItemIndex,
+    firstVisibleItemScrollOffset = state.firstVisibleItemScrollOffset,
+    collapseDistancePx = collapseDistancePx
+)
+
+@Composable
+private fun rememberNavidromeStickyHeaderVisibility(
+    enabled: Boolean,
+    firstVisibleItemIndex: Int,
+    firstVisibleItemScrollOffset: Int
+): Boolean {
+    var visible by remember(enabled) { mutableStateOf(enabled) }
+    LaunchedEffect(enabled) {
+        visible = enabled
+    }
+    LaunchedEffect(enabled) {
+        if (!enabled) return@LaunchedEffect
+        var previousPosition = Long.MIN_VALUE
+        snapshotFlow { firstVisibleItemIndex to firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                val currentPosition = index.toLong() * 100_000L + offset.toLong()
+                if (previousPosition == Long.MIN_VALUE) {
+                    previousPosition = currentPosition
+                    visible = true
+                    return@collect
+                }
+                visible = when {
+                    index == 0 && offset <= 8 -> true
+                    currentPosition < previousPosition -> true
+                    currentPosition > previousPosition && currentPosition > 32L -> false
+                    else -> visible
+                }
+                previousPosition = currentPosition
+            }
+    }
+    return visible
 }
 
 @Composable
@@ -5408,9 +6006,7 @@ private fun NavidromeExpandableSearchField(
             onValueChange = onQueryChange,
             label = { Text(label) },
             modifier = modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(top = 8.dp),
+                .fillMaxWidth(),
             singleLine = true,
             leadingIcon = {
                 Icon(Icons.Outlined.Search, contentDescription = null)
@@ -5480,13 +6076,23 @@ private fun DetailHeader(
     onHome: (() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null
 ) {
+    val density = LocalDensity.current
+    val compactHeader = density.fontScale > 1.05f
+    val titleStyle = if (compactHeader) {
+        MaterialTheme.typography.titleLarge
+    } else {
+        MaterialTheme.typography.headlineSmall
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 4.dp, end = 10.dp, top = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onBack) {
+        IconButton(
+            modifier = Modifier.size(42.dp),
+            onClick = onBack
+        ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
                 contentDescription = "Back"
@@ -5502,7 +6108,7 @@ private fun DetailHeader(
         }
         Text(
             text = title,
-            style = MaterialTheme.typography.headlineMedium,
+            style = titleStyle,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f)
         )
@@ -7690,6 +8296,7 @@ private fun NavidromeExpandedPlayerSheet(
     onToggleFavorite: (NavidromeTrack) -> Boolean,
     onToggleDownload: ((NavidromeTrack) -> Unit)? = null,
     immersiveEnabled: Boolean = false,
+    materialDesignEnabled: Boolean = false,
     onAddToPlaylist: ((NavidromeTrack) -> Unit)? = null,
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
@@ -7724,6 +8331,7 @@ private fun NavidromeExpandedPlayerSheet(
     var showOutputSheet by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var renderQueue by rememberSaveable { mutableStateOf(false) }
+    var bottomSectionHeightPx by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
     val contentScrollState = rememberScrollState()
     var queueScrollAnimationJob by remember { mutableStateOf<Job?>(null) }
@@ -7735,8 +8343,20 @@ private fun NavidromeExpandedPlayerSheet(
         }
     }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val queuedTracks = remember(state.queue, track) {
-        state.queue.ifEmpty { listOf(track) }
+    val queuePreview = remember(state.queue, state.currentIndex, track) {
+        buildNavidromeQueuePreview(
+            queue = state.queue,
+            currentTrack = track,
+            currentIndex = state.currentIndex
+        )
+    }
+    val displayedQueueItems = remember(state.queueDisplayMode, state.queue, queuePreview, track) {
+        when (state.queueDisplayMode) {
+            NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW -> queuePreview.items
+            NavidromeQueueDisplayMode.FULL -> state.queue.ifEmpty { listOf(track) }.mapIndexed { index, queuedTrack ->
+                NavidromeQueuePreviewItem(queueIndex = index, track = queuedTrack)
+            }
+        }
     }
     val selectedOutput = remember(state.outputDevices, state.selectedOutputDeviceId) {
         state.outputDevices.firstOrNull { it.id == state.selectedOutputDeviceId }
@@ -7764,6 +8384,25 @@ private fun NavidromeExpandedPlayerSheet(
     }
     val immersiveBaseColor = remember(dominantCoverColor) {
         dominantCoverColor?.let(::brightenAndSaturateNavidromeCardColor) ?: Color(0xFF26343B)
+    }
+    val nonMaterialSectionSurfaceColor = MaterialTheme.colorScheme.surface.copy(
+        alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
+    )
+    val nonMaterialSectionBorderColor = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.1f)
+    }
+    val useMaterialSectionSurface = materialDesignEnabled && !immersiveEnabled
+    val sectionSurfaceColor = if (useMaterialSectionSurface) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        nonMaterialSectionSurfaceColor
+    }
+    val sectionSurfaceBorderColor = if (useMaterialSectionSurface) {
+        MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)
+    } else {
+        nonMaterialSectionBorderColor
     }
     val playerBackgroundColor = if (immersiveEnabled) Color.Transparent else MaterialTheme.colorScheme.background
     val coverShellColor = if (immersiveEnabled) {
@@ -7805,13 +8444,13 @@ private fun NavidromeExpandedPlayerSheet(
     val toolButtonContainerColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.12f)
     } else {
-        MaterialTheme.colorScheme.surface
+        sectionSurfaceColor
     }
     val toolButtonContentColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
     val toolButtonBorderColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.14f)
     } else {
-        Color.Transparent
+        sectionSurfaceBorderColor
     }
     val queueCardColor = if (immersiveEnabled) {
         Color.Black.copy(alpha = 0.24f)
@@ -7931,9 +8570,6 @@ private fun NavidromeExpandedPlayerSheet(
         val veryCompactLayout = usableSheetHeight < 720.dp
         val queueExpandedLayout = showQueue
         val targetCoverSize = when {
-            queueExpandedLayout && usableSheetHeight < 680.dp -> 156.dp
-            queueExpandedLayout && usableSheetHeight < 760.dp -> 176.dp
-            queueExpandedLayout -> 196.dp
             veryCompactLayout -> 200.dp
             usableSheetHeight < 680.dp -> 220.dp
             usableSheetHeight < 760.dp -> 242.dp
@@ -7950,7 +8586,7 @@ private fun NavidromeExpandedPlayerSheet(
             compactLayout -> 3.dp
             else -> 5.dp
         }
-        val handleTopPadding = (statusBarTopInset + 8.dp).coerceIn(24.dp, 44.dp)
+        val handleTopPadding = (statusBarTopInset + 16.dp).coerceIn(32.dp, 52.dp)
         val targetTopPadding = when {
             veryCompactLayout -> 6.dp
             compactLayout -> 8.dp
@@ -8169,6 +8805,143 @@ private fun NavidromeExpandedPlayerSheet(
                 )
             }
         }
+        val playerOptionsMenu: @Composable () -> Unit = {
+            Box(contentAlignment = Alignment.Center) {
+                Surface(
+                    modifier = Modifier.clickable(onClick = { isMenuExpanded = true }),
+                    shape = CircleShape,
+                    color = menuShellColor,
+                    tonalElevation = 2.dp
+                ) {
+                    Box(
+                        modifier = Modifier.size(38.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreHoriz,
+                            contentDescription = "Player options",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                AppDropdownMenu(
+                    expanded = isMenuExpanded,
+                    onDismissRequest = { isMenuExpanded = false }
+                ) {
+                    if (!isRadio) {
+                        AppDropdownMenuItem(
+                            text = { Text(if (isFavorite) "Remove Favorite" else "Favorite") },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Outlined.Favorite, contentDescription = null)
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                val added = onToggleFavorite(track)
+                                Toast.makeText(
+                                    context,
+                                    if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        )
+                        onAddToPlaylist?.let { addToPlaylist ->
+                            AppDropdownMenuItem(
+                                text = { Text("Add to Playlist") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.QueueMusic,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    isMenuExpanded = false
+                                    addToPlaylist(track)
+                                }
+                            )
+                        }
+                        onToggleDownload?.let { toggleDownload ->
+                            AppDropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (isDownloaded) {
+                                            "Remove Download"
+                                        } else {
+                                            "Download"
+                                        }
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Download,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    isMenuExpanded = false
+                                    toggleDownload(track)
+                                }
+                            )
+                        }
+                    }
+                    onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
+                        AppDropdownMenuItem(
+                            text = { Text("Show Album") },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Outlined.Album, contentDescription = null)
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                onDismiss()
+                                openAlbum(track.albumId!!)
+                            }
+                        )
+                    }
+                    onOpenArtist?.takeIf { track.artistId != null }?.let { openArtist ->
+                        AppDropdownMenuItem(
+                            text = { Text("Show Artist") },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Outlined.Person, contentDescription = null)
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                onDismiss()
+                                openArtist(track.artistId!!)
+                            }
+                        )
+                    }
+                    AppDropdownMenuItem(
+                        text = { Text("Track Details") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Outlined.Tune, contentDescription = null)
+                        },
+                        onClick = {
+                            isMenuExpanded = false
+                            showTrackDetails = true
+                        }
+                    )
+                }
+            }
+        }
+        val coverArtwork: @Composable () -> Unit = {
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = coverShellColor,
+                border = BorderStroke(1.dp, if (immersiveEnabled) Color.Transparent else sectionSurfaceBorderColor),
+                tonalElevation = 3.dp
+            ) {
+                Box(modifier = Modifier.padding(10.dp)) {
+                    AlbumArt(
+                        url = track.coverUrl,
+                        width = coverSize,
+                        height = coverSize,
+                        showDownloadedIndicator = isDownloaded,
+                        downloadProgressPercent = downloadProgressPercent,
+                        fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
+                    )
+                }
+            }
+        }
         val topContent: @Composable () -> Unit = {
             Spacer(modifier = Modifier.height(handleTopPadding))
             Box(
@@ -8184,181 +8957,62 @@ private fun NavidromeExpandedPlayerSheet(
                         }
                     )
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+            coverArtwork()
+        }
+        val playerControlPanel: @Composable () -> Unit = {
             Surface(
+                modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
-                color = coverShellColor,
-                tonalElevation = 3.dp
+                color = toolButtonContainerColor,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = toolButtonBorderColor
+                ),
+                tonalElevation = 1.dp
             ) {
-                Box(modifier = Modifier.padding(10.dp)) {
-                    AlbumArt(
-                        url = track.coverUrl,
-                        width = coverSize,
-                        height = coverSize,
-                        showDownloadedIndicator = isDownloaded,
-                        downloadProgressPercent = downloadProgressPercent,
-                        fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
-                    )
-                }
-            }
-            Box(modifier = Modifier.fillMaxWidth()) {
                 Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(titleSpacing)
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    Text(
-                        text = track.title,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = primaryTextColor,
-                        textAlign = TextAlign.Center,
-                        minLines = 2,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = track.artistName,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = secondaryTextColor,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = track.albumName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = secondaryTextColor,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .offset(y = (-4).dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Surface(
-                        modifier = Modifier.clickable(onClick = { isMenuExpanded = true }),
-                        shape = CircleShape,
-                        color = menuShellColor,
-                        tonalElevation = 2.dp
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier.size(34.dp),
-                            contentAlignment = Alignment.Center
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(titleSpacing)
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.MoreHoriz,
-                                contentDescription = "Player options",
-                                modifier = Modifier.size(20.dp),
-                                tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                            Text(
+                                text = track.title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = primaryTextColor,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = track.artistName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = secondaryTextColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = track.albumName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = secondaryTextColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        playerOptionsMenu()
                     }
-                    AppDropdownMenu(
-                        expanded = isMenuExpanded,
-                        onDismissRequest = { isMenuExpanded = false }
-                    ) {
-                        if (!isRadio) {
-                            AppDropdownMenuItem(
-                                text = { Text(if (isFavorite) "Remove Favorite" else "Favorite") },
-                                leadingIcon = {
-                                    Icon(imageVector = Icons.Outlined.Favorite, contentDescription = null)
-                                },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    val added = onToggleFavorite(track)
-                                    Toast.makeText(
-                                        context,
-                                        if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            )
-                            onAddToPlaylist?.let { addToPlaylist ->
-                                AppDropdownMenuItem(
-                                    text = { Text("Add to Playlist") },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Outlined.QueueMusic,
-                                            contentDescription = null
-                                        )
-                                    },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        addToPlaylist(track)
-                                    }
-                                )
-                            }
-                            onToggleDownload?.let { toggleDownload ->
-                                AppDropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (isDownloaded) {
-                                                "Remove Download"
-                                            } else {
-                                                "Download"
-                                            }
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Download,
-                                            contentDescription = null
-                                        )
-                                    },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        toggleDownload(track)
-                                    }
-                                )
-                            }
-                        }
-                        onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
-                            AppDropdownMenuItem(
-                                text = { Text("Show Album") },
-                                leadingIcon = {
-                                    Icon(imageVector = Icons.Outlined.Album, contentDescription = null)
-                                },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    onDismiss()
-                                    openAlbum(track.albumId!!)
-                                }
-                            )
-                        }
-                        onOpenArtist?.takeIf { track.artistId != null }?.let { openArtist ->
-                            AppDropdownMenuItem(
-                                text = { Text("Show Artist") },
-                                leadingIcon = {
-                                    Icon(imageVector = Icons.Outlined.Person, contentDescription = null)
-                                },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    onDismiss()
-                                    openArtist(track.artistId!!)
-                                }
-                            )
-                        }
-                        AppDropdownMenuItem(
-                            text = { Text("Track Details") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Tune, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                showTrackDetails = true
-                            }
-                        )
-                    }
+                    progressSection()
+                    transportRow()
                 }
             }
-            progressSection()
         }
         val queueCardContent: @Composable () -> Unit = {
             Box(
@@ -8397,15 +9051,21 @@ private fun NavidromeExpandedPlayerSheet(
                                 fontWeight = FontWeight.SemiBold,
                                 color = primaryTextColor
                             )
-                            queuedTracks.forEachIndexed { index, queuedTrack ->
-                                PlayerQueueRow(
-                                    track = queuedTrack,
-                                    isCurrent = index == state.currentIndex,
-                                    isDownloaded = queuedTrack.id in downloadedTrackIds,
-                                    downloadProgressPercent = trackProgressById[queuedTrack.id],
-                                    immersiveEnabled = immersiveEnabled,
-                                    onClick = { onSelectTrack(index) }
-                                )
+                            LazyColumn(
+                                modifier = Modifier.heightIn(max = 420.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(displayedQueueItems, key = { it.queueIndex }) { item ->
+                                        PlayerQueueRow(
+                                            track = item.track,
+                                            isCurrent = item.queueIndex == state.currentIndex ||
+                                                (state.currentIndex !in state.queue.indices && item.track.id == track.id),
+                                            isDownloaded = item.track.id in downloadedTrackIds,
+                                            downloadProgressPercent = trackProgressById[item.track.id],
+                                            immersiveEnabled = immersiveEnabled,
+                                            onClick = { onSelectTrack(item.queueIndex) }
+                                        )
+                                }
                             }
                         }
                     }
@@ -8413,24 +9073,58 @@ private fun NavidromeExpandedPlayerSheet(
             }
         }
         val hiddenPlayerContent: @Composable () -> Unit = {
-            Column(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .animateContentSize(animationSpec = tween(durationMillis = 260))
                     .navigationBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
             ) {
-                topContent()
-                Spacer(modifier = Modifier.weight(1f))
-                transportRow()
-                Spacer(
-                    modifier = Modifier.weight(
-                        if (compactLayout) 0.7f else 0.9f,
-                        fill = true
+                val bottomSectionHeight = with(density) { bottomSectionHeightPx.toDp() }
+                val artworkZoneHeight = (maxHeight - bottomSectionHeight)
+                    .coerceAtLeast(coverSize + handleTopPadding + 40.dp)
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(artworkZoneHeight),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.height(handleTopPadding))
+                    Box(
+                        modifier = Modifier
+                            .width(44.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(100))
+                            .background(
+                                if (immersiveEnabled) {
+                                    Color.White.copy(alpha = 0.68f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                                }
+                            )
                     )
-                )
-                toolRow()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        coverArtwork()
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp)
+                        .onSizeChanged { bottomSectionHeightPx = it.height },
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    playerControlPanel()
+                    toolRow()
+                }
             }
         }
         if (renderQueue) {
@@ -8450,7 +9144,7 @@ private fun NavidromeExpandedPlayerSheet(
                 ) {
                     topContent()
                     Spacer(modifier = Modifier.height(transportSectionTopGap))
-                    transportRow()
+                    playerControlPanel()
                     Spacer(modifier = Modifier.height(toolRowTopGap))
                     toolRow()
                     Spacer(modifier = Modifier.height(4.dp))

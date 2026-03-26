@@ -12,4 +12,6 @@ object PlaybackServiceController {
     fun stop(context: Context) {
         PlaybackForegroundService.stop(context)
     }
+
+    fun isActive(): Boolean = PlaybackForegroundService.isActive()
 }

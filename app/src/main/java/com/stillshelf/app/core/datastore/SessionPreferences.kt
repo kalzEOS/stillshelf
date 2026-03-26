@@ -51,6 +51,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeEqualizerEnabledKey = booleanPreferencesKey("navidrome_equalizer_enabled")
     private val navidromeEqualizerActiveProfileIdKey = stringPreferencesKey("navidrome_equalizer_active_profile_id")
     private val navidromeEqualizerProfilesKey = stringPreferencesKey("navidrome_equalizer_profiles")
+    private val navidromeEqualizerPreampLevelKey = floatPreferencesKey("navidrome_equalizer_preamp_level")
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
     private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
@@ -131,6 +132,7 @@ class SessionPreferences @Inject constructor(
             navidromeEqualizerProfiles = parseNavidromeEqualizerProfiles(
                 prefs[navidromeEqualizerProfilesKey]
             ),
+            navidromeEqualizerPreampLevel = (prefs[navidromeEqualizerPreampLevelKey] ?: 0f).coerceIn(0f, 1f),
             navidromeThemeMode = prefs[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = prefs[navidromeMaterialDesignEnabledKey] ?: false,
             navidromeImmersivePlayerEnabled = prefs[navidromeImmersivePlayerEnabledKey] ?: false,
@@ -550,6 +552,12 @@ class SessionPreferences @Inject constructor(
             if (!activeId.isNullOrBlank() && profiles.none { it.id == activeId }) {
                 prefs.remove(navidromeEqualizerActiveProfileIdKey)
             }
+        }
+    }
+
+    suspend fun setNavidromeEqualizerPreampLevel(level: Float) {
+        dataStore.edit { prefs ->
+            prefs[navidromeEqualizerPreampLevelKey] = level.coerceIn(0f, 1f)
         }
     }
 
@@ -1455,6 +1463,7 @@ data class SessionPreferenceState(
     val navidromeEqualizerEnabled: Boolean = false,
     val navidromeEqualizerActiveProfileId: String? = null,
     val navidromeEqualizerProfiles: List<NavidromeEqualizerProfile> = emptyList(),
+    val navidromeEqualizerPreampLevel: Float = 0f,
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,

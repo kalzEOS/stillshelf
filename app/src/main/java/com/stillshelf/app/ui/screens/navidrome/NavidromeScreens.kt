@@ -3504,37 +3504,39 @@ private fun NavidromeSongsRoute(
                     }
                 }
             }
-        },
-        topContent = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        }
+    ) {
+        if (showSearchField) {
+            item {
                 NavidromeExpandableSearchField(
-                    visible = showSearchField,
+                    visible = true,
                     query = uiState.searchQuery,
                     label = "Search songs",
                     onQueryChange = viewModel::onSearchQueryChange
                 )
-                if (displayedSongs.isNotEmpty()) {
-                    NavidromeTransportHeader(
-                        modifier = Modifier.fillMaxWidth(),
-                        onPlay = {
-                            playerViewModel.playTracks(
-                                tracks = displayedSongs,
-                                startIndex = 0,
-                                queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
-                            )
-                        },
-                        onShuffle = {
-                            playerViewModel.playTracks(
-                                tracks = displayedSongs.shuffled(),
-                                startIndex = 0,
-                                queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
-                            )
-                        }
-                    )
-                }
             }
         }
-    ) {
+        if (displayedSongs.isNotEmpty()) {
+            item {
+                NavidromeTransportHeader(
+                    modifier = Modifier.fillMaxWidth(),
+                    onPlay = {
+                        playerViewModel.playTracks(
+                            tracks = displayedSongs,
+                            startIndex = 0,
+                            queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                        )
+                    },
+                    onShuffle = {
+                        playerViewModel.playTracks(
+                            tracks = displayedSongs.shuffled(),
+                            startIndex = 0,
+                            queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
+                        )
+                    }
+                )
+            }
+        }
         if (uiState.isLoading) {
             item { LoadingCard() }
         } else if (displayedSongs.isNotEmpty()) {

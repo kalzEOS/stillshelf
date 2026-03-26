@@ -590,7 +590,7 @@ fun HomeScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(key = "home-top-bar") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -796,7 +796,7 @@ fun HomeScreen(
             }
 
             uiState.staleDataMessage?.let { staleMessage ->
-                item {
+                item(key = "home-stale-data") {
                     Card(
                         modifier = homeFullBleedModifier,
                         colors = CardDefaults.cardColors(
@@ -833,7 +833,7 @@ fun HomeScreen(
                 }
             }
 
-            item {
+            item(key = "home-library-sections") {
                 val sectionContent: @Composable () -> Unit = {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         orderedListItems.forEachIndexed { index, item ->
@@ -912,13 +912,13 @@ fun HomeScreen(
                 }
                 when (section.id) {
                     HomeSectionIds.CONTINUE -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Continue Listening",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             when {
                                 uiState.isLoading && uiState.continueListening.isEmpty() -> {
                                     LazyRow(
@@ -989,13 +989,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.LISTEN_AGAIN -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Listen Again",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val books = uiState.listenAgain
                             LazyRow(
                                 modifier = homeCarouselModifier,
@@ -1122,13 +1122,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.RECENTLY_ADDED -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Recently Added",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             when {
                                 uiState.isLoading && uiState.recentlyAdded.isEmpty() -> {
                                     LazyRow(
@@ -1273,13 +1273,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.RECENT_SERIES -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Recent Series",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val seriesItems = uiState.recentSeries
                             if (seriesItems.isEmpty()) {
                                 Text(
@@ -1308,13 +1308,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.DISCOVER -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Discover",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val discoverBooks = uiState.discoverBooks
                             if (discoverBooks.isEmpty()) {
                                 Text(
@@ -1440,13 +1440,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.NEWEST_AUTHORS -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Newest Authors",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val authorNames = uiState.recentlyAdded
                                 .flatMap { splitAuthorNames(it.authorName) }
                                 .filter { it.isNotBlank() }
@@ -1482,7 +1482,7 @@ fun HomeScreen(
             }
 
             uiState.errorMessage?.let { message ->
-                item {
+                item(key = "home-error") {
                     Column(
                         modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1500,7 +1500,7 @@ fun HomeScreen(
             }
 
             menuUiState.errorMessage?.let { message ->
-                item {
+                item(key = "home-menu-error") {
                     Column(
                         modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
                         verticalArrangement = Arrangement.spacedBy(8.dp)

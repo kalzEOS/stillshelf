@@ -17,9 +17,14 @@ import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
 import javax.inject.Inject
 import javax.inject.Singleton
 import org.json.JSONArray
@@ -29,6 +34,7 @@ import org.json.JSONObject
 class SessionPreferences @Inject constructor(
     private val dataStore: DataStore<Preferences>
 ) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val activeServerIdKey = stringPreferencesKey("active_server_id")
     private val activeLibraryIdKey = stringPreferencesKey("active_library_id")
     private val selectedBackendKey = stringPreferencesKey("selected_backend")
@@ -104,79 +110,13 @@ class SessionPreferences @Inject constructor(
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
     private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
 
-    val state: Flow<SessionPreferenceState> = dataStore.data.map { prefs ->
-        SessionPreferenceState(
-            activeServerId = prefs[activeServerIdKey],
-            activeLibraryId = prefs[activeLibraryIdKey],
-            selectedBackend = BackendProvider.fromStorageValue(prefs[selectedBackendKey]),
-            navidromeServers = parseNavidromeServers(prefs[navidromeServersPayloadKey]),
-            activeNavidromeServerId = prefs[activeNavidromeServerIdKey],
-            navidromeActiveLibraryIds = parseStringMap(prefs[navidromeActiveLibraryIdsKey]),
-            navidromeServerName = prefs[navidromeServerNameKey],
-            navidromeBaseUrl = prefs[navidromeBaseUrlKey],
-            navidromeUsername = prefs[navidromeUsernameKey],
-            navidromeHiddenBrowseSectionIds = parseCsv(prefs[navidromeHiddenBrowseSectionsKey]),
-            navidromeHiddenHomeSectionIds = parseCsv(prefs[navidromeHiddenHomeSectionsKey]),
-            navidromeBrowseSectionOrder = parseList(prefs[navidromeBrowseSectionOrderKey]),
-            navidromeHomeSectionOrder = parseList(prefs[navidromeHomeSectionOrderKey]),
-            navidromeArtistLayoutMode = prefs[navidromeArtistLayoutModeKey],
-            navidromeArtistSort = prefs[navidromeArtistSortKey],
-            navidromeAlbumLayoutMode = prefs[navidromeAlbumLayoutModeKey],
-            navidromeSongSort = prefs[navidromeSongSortKey],
-            navidromePlaylistSort = prefs[navidromePlaylistSortKey],
-            navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
-                prefs[navidromeFavoriteTracksPayloadKey]
-            ),
-            navidromeEqualizerEnabled = prefs[navidromeEqualizerEnabledKey] ?: false,
-            navidromeEqualizerActiveProfileId = prefs[navidromeEqualizerActiveProfileIdKey],
-            navidromeEqualizerProfiles = parseNavidromeEqualizerProfiles(
-                prefs[navidromeEqualizerProfilesKey]
-            ),
-            navidromeEqualizerPreampLevel = (prefs[navidromeEqualizerPreampLevelKey] ?: 0f).coerceIn(0f, 1f),
-            navidromeThemeMode = prefs[navidromeThemeModeKey] ?: "follow_system",
-            navidromeMaterialDesignEnabled = prefs[navidromeMaterialDesignEnabledKey] ?: false,
-            navidromeImmersivePlayerEnabled = prefs[navidromeImmersivePlayerEnabledKey] ?: false,
-            requiresLibrarySelection = prefs[requiresLibrarySelectionKey] ?: false,
-            lastPlayedBookId = prefs[lastPlayedBookIdKey],
-            hiddenBrowseSectionIds = parseCsv(prefs[hiddenBrowseSectionsKey]),
-            hiddenHomeSectionIds = parseCsv(prefs[hiddenHomeSectionsKey]),
-            browseSectionOrder = parseList(prefs[browseSectionOrderKey]),
-            homeSectionOrder = parseList(prefs[homeSectionOrderKey]),
-            booksLayoutMode = prefs[booksLayoutModeKey],
-            booksStatusFilter = prefs[booksStatusFilterKey],
-            booksSortKey = prefs[booksSortKey],
-            booksCollapseSeries = prefs[booksCollapseSeriesKey] ?: true,
-            authorLayoutMode = prefs[authorLayoutModeKey],
-            authorCollapseSeries = prefs[authorCollapseSeriesKey] ?: true,
-            seriesBrowseGridMode = prefs[seriesBrowseGridModeKey] ?: true,
-            seriesDetailListMode = prefs[seriesDetailListModeKey] ?: true,
-            seriesDetailCollapseSubseries = prefs[seriesDetailCollapseSubseriesKey] ?: true,
-            collectionDetailListMode = prefs[collectionDetailListModeKey] ?: true,
-            playlistDetailListMode = prefs[playlistDetailListModeKey] ?: true,
-            downloadedListMode = prefs[downloadedListModeKey] ?: true,
-            immersivePlayerEnabled = prefs[immersivePlayerEnabledKey] ?: false,
-            appThemeMode = prefs[appThemeModeKey] ?: "follow_system",
-            materialDesignEnabled = prefs[materialDesignEnabledKey] ?: false,
-            playerBottomToolsStyle = prefs[playerBottomToolsStyleKey] ?: "dock",
-            skipForwardSeconds = (prefs[skipForwardSecondsKey] ?: 15).coerceIn(5, 600),
-            skipBackwardSeconds = (prefs[skipBackwardSecondsKey] ?: 15).coerceIn(5, 600),
-            softToneLevel = (prefs[softToneLevelKey] ?: 0f).coerceIn(0f, 1f),
-            boostLevel = (prefs[boostLevelKey] ?: 0f).coerceIn(0f, 1f),
-            lockScreenControlMode = prefs[lockScreenControlModeKey] ?: "skip",
-            lastBookDetailTab = prefs[lastBookDetailTabKey] ?: "About",
-            downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey]),
-            serverEndpointSwitchingConfigs = parseServerEndpointSwitchingConfigs(
-                prefs[serverEndpointSwitchingConfigsKey]
-            ),
-            lastLibrarySyncAtMs = prefs[lastLibrarySyncAtMsKey],
-            updateCheckOnStartup = prefs[updateCheckOnStartupKey] ?: true,
-            updateIncludePrereleases = prefs[updateIncludePrereleasesKey] ?: false,
-            pendingUpdateApkPath = prefs[pendingUpdateApkPathKey],
-            pendingUpdateVersionName = prefs[pendingUpdateVersionNameKey],
-            recentSearchTerms = parseStringArray(prefs[recentSearchTermsKey]),
-            navidromeRecentSearchTerms = parseStringArray(prefs[navidromeRecentSearchTermsKey])
+    val state: Flow<SessionPreferenceState> = dataStore.data
+        .map { prefs -> prefs.toSessionPreferenceState() }
+        .shareIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            replay = 1
         )
-    }
 
     suspend fun setActiveServerId(serverId: String?) {
         dataStore.edit { prefs ->
@@ -1437,6 +1377,80 @@ class SessionPreferences @Inject constructor(
             }
         }
         return root.toString()
+    }
+
+    private fun Preferences.toSessionPreferenceState(): SessionPreferenceState {
+        return SessionPreferenceState(
+            activeServerId = this[activeServerIdKey],
+            activeLibraryId = this[activeLibraryIdKey],
+            selectedBackend = BackendProvider.fromStorageValue(this[selectedBackendKey]),
+            navidromeServers = parseNavidromeServers(this[navidromeServersPayloadKey]),
+            activeNavidromeServerId = this[activeNavidromeServerIdKey],
+            navidromeActiveLibraryIds = parseStringMap(this[navidromeActiveLibraryIdsKey]),
+            navidromeServerName = this[navidromeServerNameKey],
+            navidromeBaseUrl = this[navidromeBaseUrlKey],
+            navidromeUsername = this[navidromeUsernameKey],
+            navidromeHiddenBrowseSectionIds = parseCsv(this[navidromeHiddenBrowseSectionsKey]),
+            navidromeHiddenHomeSectionIds = parseCsv(this[navidromeHiddenHomeSectionsKey]),
+            navidromeBrowseSectionOrder = parseList(this[navidromeBrowseSectionOrderKey]),
+            navidromeHomeSectionOrder = parseList(this[navidromeHomeSectionOrderKey]),
+            navidromeArtistLayoutMode = this[navidromeArtistLayoutModeKey],
+            navidromeArtistSort = this[navidromeArtistSortKey],
+            navidromeAlbumLayoutMode = this[navidromeAlbumLayoutModeKey],
+            navidromeSongSort = this[navidromeSongSortKey],
+            navidromePlaylistSort = this[navidromePlaylistSortKey],
+            navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
+                this[navidromeFavoriteTracksPayloadKey]
+            ),
+            navidromeEqualizerEnabled = this[navidromeEqualizerEnabledKey] ?: false,
+            navidromeEqualizerActiveProfileId = this[navidromeEqualizerActiveProfileIdKey],
+            navidromeEqualizerProfiles = parseNavidromeEqualizerProfiles(
+                this[navidromeEqualizerProfilesKey]
+            ),
+            navidromeEqualizerPreampLevel = (this[navidromeEqualizerPreampLevelKey] ?: 0f).coerceIn(0f, 1f),
+            navidromeThemeMode = this[navidromeThemeModeKey] ?: "follow_system",
+            navidromeMaterialDesignEnabled = this[navidromeMaterialDesignEnabledKey] ?: false,
+            navidromeImmersivePlayerEnabled = this[navidromeImmersivePlayerEnabledKey] ?: false,
+            requiresLibrarySelection = this[requiresLibrarySelectionKey] ?: false,
+            lastPlayedBookId = this[lastPlayedBookIdKey],
+            hiddenBrowseSectionIds = parseCsv(this[hiddenBrowseSectionsKey]),
+            hiddenHomeSectionIds = parseCsv(this[hiddenHomeSectionsKey]),
+            browseSectionOrder = parseList(this[browseSectionOrderKey]),
+            homeSectionOrder = parseList(this[homeSectionOrderKey]),
+            booksLayoutMode = this[booksLayoutModeKey],
+            booksStatusFilter = this[booksStatusFilterKey],
+            booksSortKey = this[booksSortKey],
+            booksCollapseSeries = this[booksCollapseSeriesKey] ?: true,
+            authorLayoutMode = this[authorLayoutModeKey],
+            authorCollapseSeries = this[authorCollapseSeriesKey] ?: true,
+            seriesBrowseGridMode = this[seriesBrowseGridModeKey] ?: true,
+            seriesDetailListMode = this[seriesDetailListModeKey] ?: true,
+            seriesDetailCollapseSubseries = this[seriesDetailCollapseSubseriesKey] ?: true,
+            collectionDetailListMode = this[collectionDetailListModeKey] ?: true,
+            playlistDetailListMode = this[playlistDetailListModeKey] ?: true,
+            downloadedListMode = this[downloadedListModeKey] ?: true,
+            immersivePlayerEnabled = this[immersivePlayerEnabledKey] ?: false,
+            appThemeMode = this[appThemeModeKey] ?: "follow_system",
+            materialDesignEnabled = this[materialDesignEnabledKey] ?: false,
+            playerBottomToolsStyle = this[playerBottomToolsStyleKey] ?: "dock",
+            skipForwardSeconds = (this[skipForwardSecondsKey] ?: 15).coerceIn(5, 600),
+            skipBackwardSeconds = (this[skipBackwardSecondsKey] ?: 15).coerceIn(5, 600),
+            softToneLevel = (this[softToneLevelKey] ?: 0f).coerceIn(0f, 1f),
+            boostLevel = (this[boostLevelKey] ?: 0f).coerceIn(0f, 1f),
+            lockScreenControlMode = this[lockScreenControlModeKey] ?: "skip",
+            lastBookDetailTab = this[lastBookDetailTabKey] ?: "About",
+            downloadedBookIds = parseCsv(this[downloadedBookIdsKey]),
+            serverEndpointSwitchingConfigs = parseServerEndpointSwitchingConfigs(
+                this[serverEndpointSwitchingConfigsKey]
+            ),
+            lastLibrarySyncAtMs = this[lastLibrarySyncAtMsKey],
+            updateCheckOnStartup = this[updateCheckOnStartupKey] ?: true,
+            updateIncludePrereleases = this[updateIncludePrereleasesKey] ?: false,
+            pendingUpdateApkPath = this[pendingUpdateApkPathKey],
+            pendingUpdateVersionName = this[pendingUpdateVersionNameKey],
+            recentSearchTerms = parseStringArray(this[recentSearchTermsKey]),
+            navidromeRecentSearchTerms = parseStringArray(this[navidromeRecentSearchTermsKey])
+        )
     }
 }
 

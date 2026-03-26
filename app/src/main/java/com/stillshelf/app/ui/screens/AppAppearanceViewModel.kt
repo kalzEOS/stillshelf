@@ -10,7 +10,8 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 data class AppAppearanceUiState(
@@ -48,9 +49,9 @@ class AppAppearanceViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            sessionPreferences.state.collect { state ->
-                mutableUiState.update {
-                    it.copy(
+            sessionPreferences.state
+                .map { state ->
+                    AppAppearanceUiState(
                         themeMode = parseThemeMode(state.appThemeMode),
                         navidromeThemeMode = parseThemeMode(state.navidromeThemeMode),
                         materialDesignEnabled = state.materialDesignEnabled,
@@ -60,7 +61,10 @@ class AppAppearanceViewModel @Inject constructor(
                         playerBottomToolsStyle = state.playerBottomToolsStyle
                     )
                 }
-            }
+                .distinctUntilChanged()
+                .collect { appearanceState ->
+                    mutableUiState.value = appearanceState
+                }
         }
     }
 

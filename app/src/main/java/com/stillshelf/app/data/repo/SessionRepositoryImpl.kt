@@ -270,13 +270,15 @@ class SessionRepositoryImpl @Inject constructor(
         }
     }
 
-    override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state.map { prefState ->
-        SessionState(
-            activeServerId = prefState.activeServerId,
-            activeLibraryId = prefState.activeLibraryId,
-            requiresLibrarySelection = prefState.requiresLibrarySelection
-        )
-    }
+    override fun observeSessionState(): Flow<SessionState> = sessionPreferences.state
+        .map { prefState ->
+            SessionState(
+                activeServerId = prefState.activeServerId,
+                activeLibraryId = prefState.activeLibraryId,
+                requiresLibrarySelection = prefState.requiresLibrarySelection
+            )
+        }
+        .distinctUntilChanged()
 
     override fun observeBookProgressMutations(): Flow<BookProgressMutation> = mutableBookProgressMutations.asSharedFlow()
 

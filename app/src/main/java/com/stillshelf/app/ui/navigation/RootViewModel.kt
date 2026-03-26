@@ -9,27 +9,42 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.navidrome.NavidromePlayerController
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.Lazy
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 @HiltViewModel
+@OptIn(ExperimentalCoroutinesApi::class)
 class RootViewModel @Inject constructor(
     sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
-    private val playbackController: PlaybackController,
-    private val navidromePlayerController: NavidromePlayerController
+    private val playbackController: Lazy<PlaybackController>,
+    private val navidromePlayerController: Lazy<NavidromePlayerController>
 ) : ViewModel() {
 
-    private val hasNavidromeAuthFlow = sessionPreferences.state
+    private val selectedBackendFlow = sessionPreferences.state
+        .map { preferences -> preferences.selectedBackend }
+        .distinctUntilChanged()
+
+    private val navidromeSessionIdentityFlow = sessionPreferences.state
+        .map { preferences ->
+            preferences.navidromeBaseUrl.orEmpty() to preferences.navidromeUsername.orEmpty()
+        }
+        .distinctUntilChanged()
+
+    private val hasNavidromeAuthFlow = navidromeSessionIdentityFlow
         .mapLatest { preferences ->
-            val hasSessionIdentity = !preferences.navidromeBaseUrl.isNullOrBlank() &&
-                !preferences.navidromeUsername.isNullOrBlank()
+            val hasSessionIdentity = preferences.first.isNotBlank() &&
+                preferences.second.isNotBlank()
             if (!hasSessionIdentity) {
                 false
             } else {
@@ -42,9 +57,9 @@ class RootViewModel @Inject constructor(
         sessionRepository.observeSessionState(),
         sessionRepository.observeServers(),
         sessionRepository.observeLibrariesForActiveServer(),
-        sessionPreferences.state,
+        selectedBackendFlow,
         hasNavidromeAuthFlow
-    ) { session, servers, libraries, preferences, hasNavidromeAuth ->
+    ) { session, servers, libraries, selectedBackend, hasNavidromeAuth ->
         val activeServerId = session.activeServerId
         val activeLibraryId = session.activeLibraryId
         val requiresLibrarySelection = session.requiresLibrarySelection
@@ -58,7 +73,7 @@ class RootViewModel @Inject constructor(
 
         RootUiState(
             isLoading = false,
-            selectedBackend = preferences.selectedBackend,
+            selectedBackend = selectedBackend,
             hasNavidromeSession = hasNavidromeAuth,
             serverCount = servers.size,
             hasAnyServer = hasAnyServer,
@@ -75,10 +90,10 @@ class RootViewModel @Inject constructor(
     fun selectBackend(provider: BackendProvider) {
         viewModelScope.launch {
             if (provider != BackendProvider.NAVIDROME) {
-                navidromePlayerController.stop()
+                navidromePlayerController.get().stop()
             }
             if (provider != BackendProvider.AUDIOBOOKSHELF) {
-                playbackController.stop()
+                playbackController.get().stop()
             }
             sessionPreferences.setSelectedBackend(provider)
         }
@@ -86,16 +101,16 @@ class RootViewModel @Inject constructor(
 
     fun clearSelectedBackend() {
         viewModelScope.launch {
-            playbackController.stop()
-            navidromePlayerController.stop()
+            playbackController.get().stop()
+            navidromePlayerController.get().stop()
             sessionPreferences.setSelectedBackend(null)
         }
     }
 
     fun stopPlaybackForBackendSelection() {
         viewModelScope.launch {
-            playbackController.stop()
-            navidromePlayerController.stop()
+            playbackController.get().stop()
+            navidromePlayerController.get().stop()
         }
     }
 

@@ -84,7 +84,6 @@ class HomeViewModel @Inject constructor(
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
-        observeBookProgressMutations()
         observeLivePlaybackState()
         observeDownloadedState()
         observeActiveServerDataState()
@@ -110,51 +109,6 @@ class HomeViewModel @Inject constructor(
                         loadCachedThenMaybeRefresh()
                     }
                 }
-        }
-    }
-
-    private fun observeBookProgressMutations() {
-        viewModelScope.launch {
-            sessionRepository.observeBookProgressMutations().collect { mutation ->
-                mutableUiState.update { state ->
-                    val updatedRecentlyAdded = state.recentlyAdded.map { it.withBookProgressMutation(mutation) }
-                    val updatedDiscover = state.discoverBooks.map { it.withBookProgressMutation(mutation) }
-                    val updatedRecentSeries = state.recentSeries.map { series ->
-                        if (series.leadBook.id == mutation.bookId) {
-                            series.copy(leadBook = series.leadBook.withBookProgressMutation(mutation))
-                        } else {
-                            series
-                        }
-                    }
-                    val updatedContinue = when {
-                        mutation.isFinished || mutation.isResetToStart() ->
-                            state.continueListening.filterNot { item -> item.book.id == mutation.bookId }
-
-                        else -> state.continueListening.map { it.withBookProgressMutation(mutation) }
-                    }
-                    val updatedListenAgain = if (mutation.isFinished) {
-                        val sourceBook = updatedRecentlyAdded.firstOrNull { it.id == mutation.bookId }
-                            ?: updatedDiscover.firstOrNull { it.id == mutation.bookId }
-                            ?: updatedContinue.firstOrNull { it.book.id == mutation.bookId }?.book
-                            ?: updatedRecentSeries.firstOrNull { it.leadBook.id == mutation.bookId }?.leadBook
-                        if (sourceBook == null) {
-                            state.listenAgain
-                        } else {
-                            (listOf(sourceBook) + state.listenAgain.filterNot { it.id == mutation.bookId })
-                                .distinctBy { it.id }
-                        }
-                    } else {
-                        state.listenAgain.filterNot { it.id == mutation.bookId }
-                    }
-                    state.copy(
-                        continueListening = updatedContinue,
-                        recentlyAdded = updatedRecentlyAdded,
-                        discoverBooks = updatedDiscover,
-                        recentSeries = updatedRecentSeries,
-                        listenAgain = updatedListenAgain
-                    )
-                }
-            }
         }
     }
 

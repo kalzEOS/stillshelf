@@ -1219,7 +1219,7 @@ private fun NavidromeHomeScreen(
             contentPadding = PaddingValues(top = 12.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(key = "nav-home-top-bar") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1393,7 +1393,7 @@ private fun NavidromeHomeScreen(
                     }
                 }
             }
-            item {
+            item(key = "nav-home-library-sections") {
                 Card(
                     modifier = homeFullBleedModifier,
                     shape = RoundedCornerShape(18.dp),
@@ -1462,13 +1462,13 @@ private fun NavidromeHomeScreen(
                 }
                 when (section.id) {
                     NavidromeHomeSectionIds.CONTINUE -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Continue Listening",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             when {
                                 playerState.recentTracks.isEmpty() -> {
                                     Text(
@@ -1520,13 +1520,13 @@ private fun NavidromeHomeScreen(
                     }
 
                     NavidromeHomeSectionIds.RECENTLY_ADDED -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Recently Added",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             LazyRow(
                                 modifier = homeCarouselModifier,
                                 contentPadding = homeCarouselContentPadding,
@@ -1554,13 +1554,13 @@ private fun NavidromeHomeScreen(
                     }
 
                     NavidromeHomeSectionIds.DISCOVER -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Discover",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             LazyRow(
                                 modifier = homeCarouselModifier,
                                 contentPadding = homeCarouselContentPadding,
@@ -1588,13 +1588,13 @@ private fun NavidromeHomeScreen(
                     }
 
                     NavidromeHomeSectionIds.ARTISTS -> if (uiState.artists.isNotEmpty()) {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Artists",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             LazyRow(
                                 modifier = homeCarouselModifier,
                                 contentPadding = homeCarouselContentPadding,
@@ -1611,13 +1611,13 @@ private fun NavidromeHomeScreen(
                     }
 
                     NavidromeHomeSectionIds.PLAYLISTS -> if (uiState.playlists.isNotEmpty()) {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Playlists",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             LazyRow(
                                 modifier = homeCarouselModifier,
                                 contentPadding = homeCarouselContentPadding,
@@ -1643,7 +1643,7 @@ private fun NavidromeHomeScreen(
                 }
             }
             if (uiState.errorMessage != null) {
-                item {
+                item(key = "nav-home-error") {
                     Box(modifier = homeFullBleedModifier) {
                         ErrorCard(uiState.errorMessage)
                     }

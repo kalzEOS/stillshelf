@@ -1130,16 +1130,22 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(songs)
     }
 
-    suspend fun refreshPlayableTracks(tracks: List<NavidromeTrack>): AppResult<List<NavidromeTrack>> = withAuth { auth ->
-        AppResult.Success(
-            tracks.map { track ->
-                if (track.id.startsWith("radio:")) {
-                    track
-                } else {
-                    track.copy(streamUrl = navidromeApi.streamUrl(auth, track.id))
+    suspend fun refreshPlayableTracks(tracks: List<NavidromeTrack>): AppResult<List<NavidromeTrack>> {
+        val auth = currentAuth(requireFreshConnection = true)
+            ?: return AppResult.Error("Navidrome session expired. Please sign in again.")
+        return try {
+            AppResult.Success(
+                tracks.map { track ->
+                    if (track.id.startsWith("radio:")) {
+                        track
+                    } else {
+                        track.copy(streamUrl = navidromeApi.streamUrl(auth, track.id))
+                    }
                 }
-            }
-        )
+            )
+        } catch (t: Throwable) {
+            AppResult.Error(t.message ?: "Navidrome request failed.", t)
+        }
     }
 
     suspend fun currentPlaybackSessionKey(): String? {
@@ -1225,7 +1231,7 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(results)
     }
 
-    private suspend fun currentAuth(): NavidromeAuth? {
+    private suspend fun currentAuth(requireFreshConnection: Boolean = false): NavidromeAuth? {
         ensureMigratedLegacySession()
         val state = sessionPreferences.state.first()
         val activeServer = resolveActiveServer(state) ?: return null
@@ -1236,23 +1242,26 @@ class NavidromeRepository @Inject constructor(
         val musicFolderId = state.navidromeActiveLibraryIds[activeServer.id]
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-        mutableActiveConnectionStatus.value
-            ?.takeIf { it.serverId == activeServer.id }
-            ?.let { status ->
-                return NavidromeAuth(
-                    serverId = activeServer.id,
-                    musicFolderId = musicFolderId,
-                    baseUrl = status.effectiveBaseUrl,
-                    canonicalBaseUrl = activeServer.baseUrl,
-                    username = activeServer.username,
-                    encPassword = navidromeApi.encodePassword(password)
-                )
-            }
+        if (!requireFreshConnection) {
+            mutableActiveConnectionStatus.value
+                ?.takeIf { it.serverId == activeServer.id }
+                ?.let { status ->
+                    return NavidromeAuth(
+                        serverId = activeServer.id,
+                        musicFolderId = musicFolderId,
+                        baseUrl = status.effectiveBaseUrl,
+                        canonicalBaseUrl = activeServer.baseUrl,
+                        username = activeServer.username,
+                        encPassword = navidromeApi.encodePassword(password)
+                    )
+                }
+        }
         return when (
             val result = resolveConnection(
                 server = activeServer,
                 password = password,
-                config = serverSwitchingConfig(state, activeServer.id)
+                config = serverSwitchingConfig(state, activeServer.id),
+                ignoreResolvedCache = requireFreshConnection
             )
         ) {
             is AppResult.Success -> result.value.auth.copy(musicFolderId = musicFolderId)
@@ -1339,11 +1348,16 @@ class NavidromeRepository @Inject constructor(
     private suspend fun resolveConnection(
         server: NavidromeServer,
         password: String,
-        config: ServerEndpointSwitchingConfig
+        config: ServerEndpointSwitchingConfig,
+        ignoreResolvedCache: Boolean = false
     ): AppResult<ResolvedNavidromeConnection> {
         val now = System.currentTimeMillis()
         val cached = resolvedConnectionsByServerId[server.id]
-        if (cached != null && (now - cached.checkedAtMs) <= ACTIVE_CONNECTION_CACHE_MAX_AGE_MS) {
+        if (
+            !ignoreResolvedCache &&
+            cached != null &&
+            (now - cached.checkedAtMs) <= ACTIVE_CONNECTION_CACHE_MAX_AGE_MS
+        ) {
             mutableActiveConnectionStatus.value = cached.status
             return AppResult.Success(cached)
         }

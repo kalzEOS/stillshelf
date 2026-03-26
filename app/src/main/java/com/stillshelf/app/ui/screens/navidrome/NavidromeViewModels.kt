@@ -16,6 +16,7 @@ import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
+import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
 import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeSearchResults
 import com.stillshelf.app.core.model.NavidromeServer
@@ -1998,6 +1999,7 @@ data class NavidromeEqualizerUiState(
     val isEnabled: Boolean = false,
     val activeProfileId: String? = null,
     val profiles: List<NavidromeEqualizerProfile> = emptyList(),
+    val preampLevel: Float = 0f,
     val editorProfile: NavidromeEqualizerProfile = newNavidromeEqualizerDraft(emptyList()),
     val isEditorPersisted: Boolean = false,
     val isEditorDirty: Boolean = false
@@ -2041,6 +2043,7 @@ class NavidromeEqualizerViewModel @Inject constructor(
                     isEnabled = preferences.navidromeEqualizerEnabled,
                     activeProfileId = activeProfileId,
                     profiles = profiles,
+                    preampLevel = preferences.navidromeEqualizerPreampLevel,
                     editorProfile = editorResolution.profile,
                     isEditorPersisted = editorResolution.isPersisted,
                     isEditorDirty = editorResolution.isDirty
@@ -2061,6 +2064,12 @@ class NavidromeEqualizerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             sessionPreferences.setNavidromeEqualizerActiveProfileId(resolvedProfileId)
+        }
+    }
+
+    fun setPreampLevel(level: Float) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeEqualizerPreampLevel(level.coerceIn(0f, 1f))
         }
     }
 
@@ -2196,8 +2205,12 @@ class NavidromePlayerViewModel @Inject constructor(
             initialValue = emptySet()
         )
 
-    fun playTracks(tracks: List<NavidromeTrack>, startIndex: Int) {
-        playerController.playTracks(tracks, startIndex)
+    fun playTracks(
+        tracks: List<NavidromeTrack>,
+        startIndex: Int,
+        queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL
+    ) {
+        playerController.playTracks(tracks, startIndex, queueDisplayMode)
     }
 
     fun playTrack(track: NavidromeTrack) {

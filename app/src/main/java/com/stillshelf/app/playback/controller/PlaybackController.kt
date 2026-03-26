@@ -2764,7 +2764,10 @@ class PlaybackController @Inject constructor(
             isPlaying = state.isPlaying,
             hasArtwork = artworkBitmap != null
         )
-        if (notificationSignature == lastNotificationSignature) {
+        if (
+            notificationSignature == lastNotificationSignature &&
+            PlaybackServiceController.isActive()
+        ) {
             return
         }
 

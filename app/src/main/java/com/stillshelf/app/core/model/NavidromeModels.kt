@@ -122,6 +122,11 @@ data class NavidromeSearchResults(
     val tracks: List<NavidromeTrack>
 )
 
+enum class NavidromeQueueDisplayMode {
+    FULL,
+    SONGS_TAB_PREVIEW
+}
+
 data class NavidromeHome(
     val recentAlbums: List<NavidromeAlbum>,
     val artists: List<NavidromeArtist>,
@@ -153,13 +158,20 @@ data class NavidromeEqualizerProfile(
         }
     }
 
-    fun isFlat(): Boolean = normalizedBandLevelsDb().all { abs(it) < 0.001f }
+    fun effectiveBandLevelsDb(): List<Float> {
+        val normalizedLevels = normalizedBandLevelsDb()
+        val peakLevel = normalizedLevels.maxOrNull() ?: 0f
+        return normalizedLevels.map { level -> level - peakLevel }
+    }
+
+    fun isFlat(): Boolean = effectiveBandLevelsDb().all { abs(it) < 0.001f }
 }
 
 data class NavidromePlayerState(
     val currentTrack: NavidromeTrack? = null,
     val recentTracks: List<NavidromeTrack> = emptyList(),
     val queue: List<NavidromeTrack> = emptyList(),
+    val queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL,
     val currentIndex: Int = -1,
     val outputDevices: List<NavidromeOutputDevice> = emptyList(),
     val selectedOutputDeviceId: Int? = null,

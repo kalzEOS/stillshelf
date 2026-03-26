@@ -633,7 +633,14 @@ fun NavidromeAppRoute(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         downloadsViewModel.clearMessages()
     }
-    val topHomeAction: (() -> Unit)? = if (currentRoute == NavidromeRoute.HOME) null else { { navigateHome() } }
+    val topHomeAction: (() -> Unit)? = if (
+        currentRoute == NavidromeRoute.HOME ||
+        showBottomPlayerShell
+    ) {
+        null
+    } else {
+        { navigateHome() }
+    }
 
     if (showPlayerSheet && playerState.currentTrack != null) {
         ModalBottomSheet(

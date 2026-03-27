@@ -53,7 +53,7 @@ import com.stillshelf.app.core.model.Server
 @Composable
 fun ServersRoute(
     onAddServer: () -> Unit,
-    onServerSelected: () -> Unit,
+    onSelectionApplied: () -> Unit,
     onReauthenticate: (serverName: String, baseUrl: String) -> Unit,
     onBackToBackendSelection: (() -> Unit)? = null,
     viewModel: ServersViewModel = hiltViewModel()
@@ -64,7 +64,7 @@ fun ServersRoute(
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
-                ServersEvent.NavigateToLibraryPicker -> onServerSelected()
+                ServersEvent.SelectionApplied -> onSelectionApplied()
                 is ServersEvent.NavigateToLogin -> onReauthenticate(event.serverName, event.baseUrl)
             }
         }

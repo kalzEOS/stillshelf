@@ -18,7 +18,8 @@ data class ServerManagementUiState(
     val servers: List<Server> = emptyList(),
     val activeServerId: String? = null,
     val isSwitching: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val toastMessage: String? = null
 )
 
 @HiltViewModel
@@ -46,6 +47,8 @@ class ServerManagementViewModel @Inject constructor(
         }
     }
 
+    // ABS Manage Servers no longer exposes "Set active", but this stays in place so the
+    // path can be restored later without rebuilding the switching logic from scratch.
     fun setActiveServer(serverId: String) {
         if (serverId == uiState.value.activeServerId || uiState.value.isSwitching) return
         mutableUiState.update { it.copy(isSwitching = true, errorMessage = null) }
@@ -71,6 +74,10 @@ class ServerManagementViewModel @Inject constructor(
         mutableUiState.update { it.copy(errorMessage = null) }
     }
 
+    fun consumeToastMessage() {
+        mutableUiState.update { it.copy(toastMessage = null) }
+    }
+
     fun updateServer(serverId: String, name: String, baseUrl: String) {
         if (uiState.value.isSwitching) return
         mutableUiState.update { it.copy(isSwitching = true, errorMessage = null) }
@@ -94,11 +101,18 @@ class ServerManagementViewModel @Inject constructor(
 
     fun deleteServer(serverId: String) {
         if (uiState.value.isSwitching) return
+        val targetServer = uiState.value.servers.firstOrNull { it.id == serverId }
         mutableUiState.update { it.copy(isSwitching = true, errorMessage = null) }
         viewModelScope.launch {
             when (val result = sessionRepository.deleteServer(serverId)) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(isSwitching = false) }
+                    mutableUiState.update {
+                        it.copy(
+                            isSwitching = false,
+                            toastMessage = targetServer?.name
+                                ?.let { name -> "Deleted $name." }
+                        )
+                    }
                 }
 
                 is AppResult.Error -> {

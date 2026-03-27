@@ -97,6 +97,7 @@ class SessionPreferences @Inject constructor(
     private val lastBookDetailTabKey = stringPreferencesKey("last_book_detail_tab")
     private val downloadedBookIdsKey = stringPreferencesKey("downloaded_book_ids")
     private val serverEndpointSwitchingConfigsKey = stringPreferencesKey("server_endpoint_switching_configs")
+    private val cachedHomeFeedServerIdKey = stringPreferencesKey("cached_home_feed_server_id")
     private val cachedHomeFeedLibraryIdKey = stringPreferencesKey("cached_home_feed_library_id")
     private val cachedHomeFeedPayloadKey = stringPreferencesKey("cached_home_feed_payload")
     private val cachedHomeFeedSavedAtKey = longPreferencesKey("cached_home_feed_saved_at")
@@ -504,6 +505,26 @@ class SessionPreferences @Inject constructor(
     suspend fun setRequiresLibrarySelection(required: Boolean) {
         dataStore.edit { prefs ->
             prefs[requiresLibrarySelectionKey] = required
+        }
+    }
+
+    suspend fun setActiveSelectionState(
+        serverId: String?,
+        libraryId: String?,
+        requiresLibrarySelection: Boolean
+    ) {
+        dataStore.edit { prefs ->
+            if (serverId == null) {
+                prefs.remove(activeServerIdKey)
+            } else {
+                prefs[activeServerIdKey] = serverId
+            }
+            if (libraryId == null) {
+                prefs.remove(activeLibraryIdKey)
+            } else {
+                prefs[activeLibraryIdKey] = libraryId
+            }
+            prefs[requiresLibrarySelectionKey] = requiresLibrarySelection
         }
     }
 
@@ -946,10 +967,12 @@ class SessionPreferences @Inject constructor(
 
     suspend fun getCachedHomeFeed(): CachedHomeFeedPayload? {
         val prefs = dataStore.data.first()
+        val serverId = prefs[cachedHomeFeedServerIdKey]
         val libraryId = prefs[cachedHomeFeedLibraryIdKey] ?: return null
         val payload = prefs[cachedHomeFeedPayloadKey] ?: return null
         val savedAtMs = prefs[cachedHomeFeedSavedAtKey] ?: 0L
         return CachedHomeFeedPayload(
+            serverId = serverId,
             libraryId = libraryId,
             payload = payload,
             savedAtMs = savedAtMs
@@ -957,11 +980,13 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun setCachedHomeFeed(
+        serverId: String,
         libraryId: String,
         payload: String,
         savedAtMs: Long
     ) {
         dataStore.edit { prefs ->
+            prefs[cachedHomeFeedServerIdKey] = serverId
             prefs[cachedHomeFeedLibraryIdKey] = libraryId
             prefs[cachedHomeFeedPayloadKey] = payload
             prefs[cachedHomeFeedSavedAtKey] = savedAtMs
@@ -970,6 +995,7 @@ class SessionPreferences @Inject constructor(
 
     suspend fun clearCachedHomeFeed() {
         dataStore.edit { prefs ->
+            prefs.remove(cachedHomeFeedServerIdKey)
             prefs.remove(cachedHomeFeedLibraryIdKey)
             prefs.remove(cachedHomeFeedPayloadKey)
             prefs.remove(cachedHomeFeedSavedAtKey)
@@ -1521,6 +1547,7 @@ data class SessionPreferenceState(
 )
 
 data class CachedHomeFeedPayload(
+    val serverId: String?,
     val libraryId: String,
     val payload: String,
     val savedAtMs: Long

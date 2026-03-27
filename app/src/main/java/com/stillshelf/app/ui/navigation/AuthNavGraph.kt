@@ -25,7 +25,7 @@ fun NavGraphBuilder.authNavGraph(
         composable(AuthRoute.SERVERS) {
             ServersRoute(
                 onAddServer = { navController.navigate(AuthRoute.ADD_SERVER) },
-                onServerSelected = { navController.navigate(AuthRoute.LIBRARY_PICKER) },
+                onSelectionApplied = onAuthCompleted,
                 onReauthenticate = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
                 },
@@ -60,7 +60,7 @@ fun NavGraphBuilder.authNavGraph(
                         onExitAuthFlow()
                     }
                 },
-                onLoginSuccess = { navController.navigate(AuthRoute.LIBRARY_PICKER) }
+                onLoginSuccess = onAuthCompleted
             )
         }
 

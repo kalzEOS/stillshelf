@@ -52,6 +52,8 @@ class HomeViewModel @Inject constructor(
         private const val HOME_DISCOVER_LIMIT = 16
         private const val SILENT_REFRESH_INTERVAL_MS: Long = 5 * 60 * 1000L
         private const val SILENT_REFRESH_TICK_MS: Long = 30 * 1000L
+        private const val VISIBLE_ENTRY_REFRESH_RETRY_DELAY_MS: Long = 250L
+        private const val VISIBLE_ENTRY_REFRESH_RETRY_ATTEMPTS: Int = 8
     }
 
     private val mutableUiState = MutableStateFlow(HomeUiState())
@@ -93,17 +95,35 @@ class HomeViewModel @Inject constructor(
 
     private fun observeActiveLibrary() {
         viewModelScope.launch {
-            var previousLibraryId: String? = null
+            var previousSelection: Pair<String?, String?>? = null
             sessionRepository.observeSessionState()
-                .map { it.activeLibraryId }
+                .map { session ->
+                    Triple(
+                        session.activeServerId,
+                        session.activeLibraryId,
+                        session.requiresLibrarySelection
+                    )
+                }
                 .distinctUntilChanged()
-                .collect { libraryId ->
-                    if (libraryId != previousLibraryId) {
+                .collect { (serverId, libraryId, requiresLibrarySelection) ->
+                    val currentSelection = serverId to libraryId
+                    if (currentSelection != previousSelection) {
                         removedListenAgainBookIds = emptySet()
-                        previousLibraryId = libraryId
+                        previousSelection = currentSelection
                     }
-                    activeLibraryIdState.value = libraryId
-                    if (libraryId.isNullOrBlank()) {
+                    val readyLibraryId = resolveReadyHomeLibraryId(
+                        activeLibraryId = libraryId,
+                        requiresLibrarySelection = requiresLibrarySelection
+                    )
+                    activeLibraryIdState.value = readyLibraryId
+                    if (shouldPreserveHomeContentDuringPendingSelection(libraryId, requiresLibrarySelection)) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = true,
+                                errorMessage = null
+                            )
+                        }
+                    } else if (readyLibraryId.isNullOrBlank()) {
                         mutableUiState.update { HomeUiState() }
                     } else {
                         loadCachedThenMaybeRefresh()
@@ -304,7 +324,6 @@ class HomeViewModel @Inject constructor(
         forceRefreshDerivedContent: Boolean = false
     ): Boolean {
         if (isHomeFeedRefreshInFlight) return false
-        if (uiState.value.isLoading) return false
         isHomeFeedRefreshInFlight = true
         if (showLoading) {
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -514,9 +533,28 @@ class HomeViewModel @Inject constructor(
         try {
             val activeLibraryId = activeLibraryIdState.value
             if (activeLibraryId.isNullOrBlank()) return
-            refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
+            val didRefresh = refreshNetwork(
+                showLoading = shouldShowLoadingForVisibleHomeRefresh(uiState.value),
+                forceRefreshDerivedContent = true
+            )
+            if (didRefresh) return
+
+            waitForHomeFeedRefreshSlot()
+            if (activeLibraryIdState.value.isNullOrBlank()) return
+
+            refreshNetwork(
+                showLoading = shouldShowLoadingForVisibleHomeRefresh(uiState.value),
+                forceRefreshDerivedContent = true
+            )
         } finally {
             homeVisibilityRefreshInFlight = false
+        }
+    }
+
+    private suspend fun waitForHomeFeedRefreshSlot() {
+        repeat(VISIBLE_ENTRY_REFRESH_RETRY_ATTEMPTS) {
+            if (!isHomeFeedRefreshInFlight) return
+            delay(VISIBLE_ENTRY_REFRESH_RETRY_DELAY_MS)
         }
     }
 
@@ -697,6 +735,28 @@ data class HomeUiState(
     val actionMessage: String? = null,
     val errorMessage: String? = null
 )
+
+internal fun resolveReadyHomeLibraryId(
+    activeLibraryId: String?,
+    requiresLibrarySelection: Boolean
+): String? {
+    return activeLibraryId?.takeUnless { requiresLibrarySelection }
+}
+
+internal fun shouldPreserveHomeContentDuringPendingSelection(
+    activeLibraryId: String?,
+    requiresLibrarySelection: Boolean
+): Boolean {
+    return !activeLibraryId.isNullOrBlank() && requiresLibrarySelection
+}
+
+internal fun shouldShowLoadingForVisibleHomeRefresh(state: HomeUiState): Boolean {
+    return state.continueListening.isEmpty() &&
+        state.recentlyAdded.isEmpty() &&
+        state.listenAgain.isEmpty() &&
+        state.recentSeries.isEmpty() &&
+        state.discoverBooks.isEmpty()
+}
 
 internal fun shouldRefreshHomeOnAppForeground(
     wasInForeground: Boolean,

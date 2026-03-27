@@ -66,10 +66,13 @@ class RootViewModel @Inject constructor(
         val hasAnyServer = servers.isNotEmpty()
         val hasActiveServer = !activeServerId.isNullOrBlank() &&
             servers.any { it.id == activeServerId }
-        val hasActiveLibrary = hasActiveServer &&
-            !requiresLibrarySelection &&
-            !activeLibraryId.isNullOrBlank() &&
-            libraries.any { it.id == activeLibraryId }
+        val hasSelectedLibrary = hasResolvedActiveLibrarySelection(
+            hasActiveServer = hasActiveServer,
+            activeLibraryId = activeLibraryId,
+            availableLibraryIds = libraries.map { it.id }.toSet()
+        )
+        val hasActiveLibrary = hasSelectedLibrary && !requiresLibrarySelection
+        val hasPendingActiveLibrary = hasSelectedLibrary && requiresLibrarySelection
 
         RootUiState(
             isLoading = false,
@@ -78,7 +81,8 @@ class RootViewModel @Inject constructor(
             serverCount = servers.size,
             hasAnyServer = hasAnyServer,
             hasActiveServer = hasActiveServer,
-            hasActiveLibrary = hasActiveLibrary
+            hasActiveLibrary = hasActiveLibrary,
+            hasPendingActiveLibrary = hasPendingActiveLibrary
         )
     }
         .stateIn(
@@ -126,5 +130,15 @@ data class RootUiState(
     val serverCount: Int = 0,
     val hasAnyServer: Boolean = false,
     val hasActiveServer: Boolean = false,
-    val hasActiveLibrary: Boolean = false
+    val hasActiveLibrary: Boolean = false,
+    val hasPendingActiveLibrary: Boolean = false
 )
+
+internal fun hasResolvedActiveLibrarySelection(
+    hasActiveServer: Boolean,
+    activeLibraryId: String?,
+    availableLibraryIds: Set<String>
+): Boolean {
+    if (!hasActiveServer || activeLibraryId.isNullOrBlank()) return false
+    return availableLibraryIds.contains(activeLibraryId)
+}

@@ -23,8 +23,8 @@ android {
         applicationId = "com.stillshelf.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 52
-        versionName = "0.2.6-beta.13"
+        versionCode = 53
+        versionName = "0.2.6-beta.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

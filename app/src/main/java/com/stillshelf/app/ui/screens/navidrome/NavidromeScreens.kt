@@ -178,6 +178,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.lerp
@@ -1059,6 +1060,7 @@ private fun NavidromeHomeRoute(
         onOpenSettings = onOpenSettings,
         onOpenCustomize = onOpenCustomize,
         onOpenServers = onOpenServers,
+        onSelectServer = settingsViewModel::setActiveServer,
         onSelectLibrary = settingsViewModel::setActiveLibrary,
         onSwitchMode = onSwitchMode,
         onRenamePlaylist = viewModel::renamePlaylist,
@@ -1099,6 +1101,7 @@ private fun NavidromeHomeScreen(
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
     onOpenServers: () -> Unit,
+    onSelectServer: (String) -> Unit,
     onSelectLibrary: (String) -> Unit,
     onSwitchMode: () -> Unit,
     onRenamePlaylist: (String, String) -> Unit,
@@ -1366,7 +1369,9 @@ private fun NavidromeHomeScreen(
                                     },
                                     onClick = {
                                         isMenuExpanded = false
-                                        onOpenServers()
+                                        if (server.id != activeServerId) {
+                                            onSelectServer(server.id)
+                                        }
                                     }
                                 )
                             }
@@ -4514,6 +4519,7 @@ private fun NavidromeEqualizerRoute(
     }
     var activeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var editorMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var editorExpanded by rememberSaveable { mutableStateOf(false) }
     var showPreampDialog by rememberSaveable { mutableStateOf(false) }
     var showNameDialog by rememberSaveable { mutableStateOf(false) }
     var nameDraft by rememberSaveable(uiState.editorProfile.id) { mutableStateOf(uiState.editorProfile.name) }
@@ -4550,35 +4556,38 @@ private fun NavidromeEqualizerRoute(
                         valueTextAlign = TextAlign.End,
                         onClick = { activeMenuExpanded = true }
                     )
-                    AppDropdownMenu(
-                        expanded = activeMenuExpanded,
-                        onDismissRequest = { activeMenuExpanded = false }
-                    ) {
-                        AppDropdownMenuItem(
-                            text = { Text("Off") },
-                            trailingIcon = {
-                                if (uiState.activeProfileId == null) {
-                                    Icon(Icons.Filled.Check, contentDescription = null)
-                                }
-                            },
-                            onClick = {
-                                activeMenuExpanded = false
-                                viewModel.setActiveProfile(null)
-                            }
-                        )
-                        uiState.profiles.forEach { profile ->
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        AppDropdownMenu(
+                            expanded = activeMenuExpanded,
+                            onDismissRequest = { activeMenuExpanded = false },
+                            offset = DpOffset(x = 0.dp, y = 44.dp)
+                        ) {
                             AppDropdownMenuItem(
-                                text = { Text(profile.name) },
+                                text = { Text("Off") },
                                 trailingIcon = {
-                                    if (uiState.activeProfileId == profile.id) {
+                                    if (uiState.activeProfileId == null) {
                                         Icon(Icons.Filled.Check, contentDescription = null)
                                     }
                                 },
                                 onClick = {
                                     activeMenuExpanded = false
-                                    viewModel.setActiveProfile(profile.id)
+                                    viewModel.setActiveProfile(null)
                                 }
                             )
+                            uiState.profiles.forEach { profile ->
+                                AppDropdownMenuItem(
+                                    text = { Text(profile.name) },
+                                    trailingIcon = {
+                                        if (uiState.activeProfileId == profile.id) {
+                                            Icon(Icons.Filled.Check, contentDescription = null)
+                                        }
+                                    },
+                                    onClick = {
+                                        activeMenuExpanded = false
+                                        viewModel.setActiveProfile(profile.id)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -4607,76 +4616,89 @@ private fun NavidromeEqualizerRoute(
                 Box {
                     NavidromeSettingsRow(
                         title = "Equalizer",
-                        value = uiState.editorProfile.name,
+                        value = if (editorExpanded) uiState.editorProfile.name else "Select",
                         valueTextAlign = TextAlign.End,
                         onClick = { editorMenuExpanded = true }
                     )
-                    AppDropdownMenu(
-                        expanded = editorMenuExpanded,
-                        onDismissRequest = { editorMenuExpanded = false }
-                    ) {
-                        uiState.profiles.forEach { profile ->
-                            AppDropdownMenuItem(
-                                text = { Text(profile.name) },
-                                trailingIcon = {
-                                    if (uiState.isEditorPersisted && uiState.editorProfile.id == profile.id) {
-                                        Icon(Icons.Filled.Check, contentDescription = null)
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        AppDropdownMenu(
+                            expanded = editorMenuExpanded,
+                            onDismissRequest = { editorMenuExpanded = false },
+                            offset = DpOffset(x = 0.dp, y = 44.dp)
+                        ) {
+                            uiState.profiles.forEach { profile ->
+                                AppDropdownMenuItem(
+                                    text = { Text(profile.name) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Tune,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (uiState.isEditorPersisted && uiState.editorProfile.id == profile.id) {
+                                            Icon(Icons.Filled.Check, contentDescription = null)
+                                        }
+                                    },
+                                    onClick = {
+                                        editorMenuExpanded = false
+                                        viewModel.selectEditorProfile(profile.id)
+                                        editorExpanded = true
                                     }
+                                )
+                            }
+                            if (uiState.profiles.isNotEmpty()) {
+                                HorizontalDivider()
+                            }
+                            AppDropdownMenuItem(
+                                text = { Text("Create new Equalizer") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Add,
+                                        contentDescription = null
+                                    )
                                 },
                                 onClick = {
                                     editorMenuExpanded = false
-                                    viewModel.selectEditorProfile(profile.id)
+                                    viewModel.createNewProfile()
+                                    editorExpanded = true
                                 }
                             )
                         }
-                        if (uiState.profiles.isNotEmpty()) {
-                            HorizontalDivider()
-                        }
-                        AppDropdownMenuItem(
-                            text = { Text("Create new Equalizer") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Outlined.Add,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                editorMenuExpanded = false
-                                viewModel.createNewProfile()
-                            }
-                        )
                     }
                 }
-                DividerLine()
-                NavidromeSettingsRow(
-                    title = "Name",
-                    value = uiState.editorProfile.name,
-                    valueTextAlign = TextAlign.End,
-                    onClick = {
-                        nameDraft = uiState.editorProfile.name
-                        showNameDialog = true
-                    }
-                )
-                DividerLine()
-                NavidromeEqualizerChart(
-                    bandLevelsDb = uiState.editorProfile.normalizedBandLevelsDb(),
-                    onBandLevelChange = viewModel::updateBandLevel,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)
-                )
-                DividerLine()
-                NavidromeEqualizerActionRow(
-                    title = "Save",
-                    enabled = uiState.canSave,
-                    tint = MaterialTheme.colorScheme.primary,
-                    onClick = viewModel::saveEditor
-                )
-                DividerLine()
-                NavidromeEqualizerActionRow(
-                    title = "Delete",
-                    enabled = uiState.canDelete,
-                    tint = MaterialTheme.colorScheme.error,
-                    onClick = viewModel::deleteEditor
-                )
+                if (editorExpanded) {
+                    DividerLine()
+                    NavidromeSettingsRow(
+                        title = "Name",
+                        value = uiState.editorProfile.name,
+                        valueTextAlign = TextAlign.End,
+                        onClick = {
+                            nameDraft = uiState.editorProfile.name
+                            showNameDialog = true
+                        }
+                    )
+                    DividerLine()
+                    NavidromeEqualizerChart(
+                        bandLevelsDb = uiState.editorProfile.normalizedBandLevelsDb(),
+                        onBandLevelChange = viewModel::updateBandLevel,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp)
+                    )
+                    DividerLine()
+                    NavidromeEqualizerActionRow(
+                        title = "Save",
+                        enabled = uiState.canSave,
+                        tint = MaterialTheme.colorScheme.primary,
+                        onClick = viewModel::saveEditor
+                    )
+                    DividerLine()
+                    NavidromeEqualizerActionRow(
+                        title = "Delete",
+                        enabled = uiState.canDelete,
+                        tint = MaterialTheme.colorScheme.error,
+                        onClick = viewModel::deleteEditor
+                    )
+                }
             }
         }
     }
@@ -5220,7 +5242,7 @@ private fun NavidromeServersManagementRoute(
         title = "Manage Servers",
         onBack = onBack,
         onHome = onHome,
-        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+        containerColor = MaterialTheme.colorScheme.background
     ) {
         item {
             GroupedSettingsCard {
@@ -8932,6 +8954,11 @@ private fun NavidromeExpandedPlayerSheet(
                 }
             }
         }
+        val metadataSectionHeight = when {
+            veryCompactLayout -> 112.dp
+            queueExpandedLayout || compactLayout -> 124.dp
+            else -> 136.dp
+        }
         val coverArtwork: @Composable () -> Unit = {
             Surface(
                 shape = RoundedCornerShape(28.dp),
@@ -8984,14 +9011,14 @@ private fun NavidromeExpandedPlayerSheet(
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        contentAlignment = Alignment.TopStart
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(titleSpacing)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(metadataSectionHeight)
                         ) {
                             Text(
                                 text = track.title,
@@ -8999,24 +9026,35 @@ private fun NavidromeExpandedPlayerSheet(
                                 fontWeight = FontWeight.Bold,
                                 color = primaryTextColor,
                                 maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(end = 50.dp)
                             )
-                            Text(
-                                text = track.artistName,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = secondaryTextColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = track.albumName,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = secondaryTextColor,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(end = 50.dp),
+                                verticalArrangement = Arrangement.spacedBy(titleSpacing)
+                            ) {
+                                Text(
+                                    text = track.artistName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = secondaryTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = track.albumName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = secondaryTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                        playerOptionsMenu()
+                        Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                            playerOptionsMenu()
+                        }
                     }
                     progressSection()
                     transportRow()
@@ -9085,7 +9123,6 @@ private fun NavidromeExpandedPlayerSheet(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
-                    .animateContentSize(animationSpec = tween(durationMillis = 260))
                     .navigationBarsPadding()
                     .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
             ) {

@@ -4796,23 +4796,17 @@ fun SettingsScreen(
             border = sectionCardBorder
         ) {
             SettingsSwitchRow(
+                title = "Material Design",
+                checked = uiState.materialDesignEnabled,
+                onCheckedChange = viewModel::setMaterialDesignEnabled
+            )
+            HorizontalDivider()
+            SettingsSwitchRow(
                 title = "Immersive Player",
                 checked = uiState.immersivePlayerEnabled,
                 onCheckedChange = viewModel::setImmersivePlayerEnabled
             )
             HorizontalDivider()
-            SettingsSwitchRow(
-                title = "Material Design",
-                checked = uiState.materialDesignEnabled,
-                onCheckedChange = viewModel::setMaterialDesignEnabled
-            )
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
-            shape = RoundedCornerShape(18.dp),
-            border = sectionCardBorder
-        ) {
             SettingsRow(
                 title = "Follow System Theme",
                 selected = uiState.themeMode == AppThemeMode.FollowSystem,

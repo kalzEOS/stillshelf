@@ -540,7 +540,6 @@ fun HomeScreen(
     LaunchedEffect(menuViewModel) {
         menuViewModel.events.collect { event ->
             when (event) {
-                HomeMenuEvent.NavigateToLibraryPicker -> onNavigateToRoute(MainRoute.LIBRARY_PICKER)
                 is HomeMenuEvent.NavigateToLogin ->
                     onNavigateToRoute(AuthRoute.loginRoute(event.serverName, event.baseUrl))
             }
@@ -5847,6 +5846,12 @@ fun ServersManagementScreen(
         }
     }
 
+    LaunchedEffect(uiState.toastMessage) {
+        val toastMessage = uiState.toastMessage ?: return@LaunchedEffect
+        Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+        viewModel.consumeToastMessage()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -5930,15 +5935,6 @@ fun ServersManagementScreen(
                                 expanded = expandedServerMenuId == server.id,
                                 onDismissRequest = { expandedServerMenuId = null }
                             ) {
-                                if (server.id != uiState.activeServerId) {
-                                    AppDropdownMenuItem(
-                                        text = { Text("Set active") },
-                                        onClick = {
-                                            expandedServerMenuId = null
-                                            viewModel.setActiveServer(server.id)
-                                        }
-                                    )
-                                }
                                 AppDropdownMenuItem(
                                     text = { Text("Delete") },
                                     onClick = {

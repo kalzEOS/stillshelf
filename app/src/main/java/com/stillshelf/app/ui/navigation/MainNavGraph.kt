@@ -426,8 +426,10 @@ private fun MainTabsNavHost(
             LoginRoute(
                 onBack = { navController.popBackStack() },
                 onLoginSuccess = {
-                    navController.navigate(AuthRoute.LIBRARY_PICKER) {
-                        launchSingleTop = true
+                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(MainRoute.SERVERS) {
+                            launchSingleTop = true
+                        }
                     }
                 }
             )

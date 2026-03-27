@@ -97,12 +97,20 @@ class LibraryPickerViewModel @Inject constructor(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = LibraryPickerUiState()
+        initialValue = LibraryPickerUiState(isLoading = true)
     )
 
     fun onLibrarySelected(libraryId: String) {
         viewModelScope.launch {
-            when (val result = sessionRepository.setActiveLibrary(libraryId)) {
+            loadingState.value = true
+            when (
+                val result = sessionRepository.setActiveLibraryAndPrimeHomeFeed(
+                    libraryId = libraryId,
+                    continueLimit = 10,
+                    recentlyAddedLimit = 120,
+                    forceRefreshDerivedContent = true
+                )
+            ) {
                 is AppResult.Success -> {
                     errorState.value = null
                     mutableEvents.emit(LibraryPickerEvent.NavigateToMain)
@@ -112,6 +120,7 @@ class LibraryPickerViewModel @Inject constructor(
                     errorState.value = result.message
                 }
             }
+            loadingState.value = false
         }
     }
 

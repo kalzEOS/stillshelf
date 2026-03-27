@@ -10,6 +10,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -34,26 +37,35 @@ fun RootNavGraph(
         return
     }
 
-    val startGraph = when (uiState.selectedBackend) {
-        null -> GraphRoute.BACKEND_SELECTOR
-        BackendProvider.NAVIDROME -> if (uiState.hasNavidromeSession) {
-            GraphRoute.NAVIDROME
-        } else {
-            GraphRoute.NAVIDROME_AUTH
-        }
-        BackendProvider.AUDIOBOOKSHELF -> if (uiState.hasActiveServer && uiState.hasActiveLibrary) {
-            GraphRoute.MAIN
-        } else {
-            GraphRoute.AUTH
-        }
+    val desiredStartGraph = resolveDesiredRootStartGraph(
+        selectedBackend = uiState.selectedBackend,
+        hasNavidromeSession = uiState.hasNavidromeSession,
+        hasActiveServer = uiState.hasActiveServer,
+        hasActiveLibrary = uiState.hasActiveLibrary,
+        hasPendingActiveLibrary = uiState.hasPendingActiveLibrary
+    )
+    var startGraph by remember(uiState.selectedBackend) {
+        mutableStateOf(desiredStartGraph)
     }
-    val authStartDestination = when {
-        uiState.hasActiveServer -> AuthRoute.LIBRARY_PICKER
-        uiState.hasAnyServer -> AuthRoute.SERVERS
-        else -> AuthRoute.ADD_SERVER
+    LaunchedEffect(
+        desiredStartGraph,
+        uiState.selectedBackend,
+        uiState.hasActiveServer,
+        uiState.hasPendingActiveLibrary
+    ) {
+        startGraph = resolveDisplayedRootStartGraph(
+            previousStartGraph = startGraph,
+            desiredStartGraph = desiredStartGraph,
+            selectedBackend = uiState.selectedBackend,
+            hasActiveServer = uiState.hasActiveServer,
+            hasPendingActiveLibrary = uiState.hasPendingActiveLibrary
+        )
     }
+    val authStartDestination = resolveAuthStartDestination(
+        hasAnyServer = uiState.hasAnyServer
+    )
 
-    key(startGraph, authStartDestination) {
+    key(startGraph) {
         val navController = rememberNavController()
         NavHost(
             navController = navController,
@@ -134,5 +146,54 @@ private fun LoadingScreen() {
         contentAlignment = Alignment.Center
     ) {
         CircularProgressIndicator()
+    }
+}
+
+internal fun resolveDisplayedRootStartGraph(
+    previousStartGraph: String,
+    desiredStartGraph: String,
+    selectedBackend: BackendProvider?,
+    hasActiveServer: Boolean,
+    hasPendingActiveLibrary: Boolean
+): String {
+    return when {
+        desiredStartGraph == GraphRoute.MAIN -> GraphRoute.MAIN
+        previousStartGraph == GraphRoute.MAIN &&
+            selectedBackend == BackendProvider.AUDIOBOOKSHELF &&
+            hasActiveServer &&
+            hasPendingActiveLibrary -> GraphRoute.MAIN
+        else -> desiredStartGraph
+    }
+}
+
+internal fun resolveAuthStartDestination(hasAnyServer: Boolean): String {
+    return if (hasAnyServer) {
+        AuthRoute.SERVERS
+    } else {
+        AuthRoute.ADD_SERVER
+    }
+}
+
+internal fun resolveDesiredRootStartGraph(
+    selectedBackend: BackendProvider?,
+    hasNavidromeSession: Boolean,
+    hasActiveServer: Boolean,
+    hasActiveLibrary: Boolean,
+    hasPendingActiveLibrary: Boolean
+): String {
+    return when (selectedBackend) {
+        null -> GraphRoute.BACKEND_SELECTOR
+        BackendProvider.NAVIDROME -> if (hasNavidromeSession) {
+            GraphRoute.NAVIDROME
+        } else {
+            GraphRoute.NAVIDROME_AUTH
+        }
+        BackendProvider.AUDIOBOOKSHELF -> if (
+            hasActiveServer && (hasActiveLibrary || hasPendingActiveLibrary)
+        ) {
+            GraphRoute.MAIN
+        } else {
+            GraphRoute.AUTH
+        }
     }
 }

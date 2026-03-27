@@ -1,6 +1,7 @@
 package com.stillshelf.app.data.repo
 
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.stillshelf.app.core.database.LibraryDao
 import com.stillshelf.app.core.database.LibraryEntity
@@ -179,6 +180,26 @@ internal suspend fun retryResolvedServerRefresh(
     return lastResult
 }
 
+internal fun didResolvedActiveConnectionRequireRefresh(
+    previous: ActiveServerConnectionStatus?,
+    current: ActiveServerConnectionStatus
+): Boolean {
+    return previous?.serverId == current.serverId &&
+        (previous.effectiveBaseUrl != current.effectiveBaseUrl ||
+            previous.route != current.route ||
+            previous.connectionMode != current.connectionMode ||
+            previous.switchingEnabled != current.switchingEnabled ||
+            previous.lanFallbackToRemote != current.lanFallbackToRemote)
+}
+
+internal fun resolveResolvedActiveConnectionStatusToRefresh(
+    previousApplied: ActiveServerConnectionStatus?,
+    latestObserved: ActiveServerConnectionStatus?
+): ActiveServerConnectionStatus? {
+    val observed = latestObserved ?: return null
+    return observed.takeIf { didResolvedActiveConnectionRequireRefresh(previousApplied, observed) }
+}
+
 @Singleton
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionRepositoryImpl @Inject constructor(
@@ -244,29 +265,129 @@ class SessionRepositoryImpl @Inject constructor(
     private val collectionsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NamedEntitySummary>>>()
     private val refreshDeduper = DetailRefreshDeduper()
+    private val resolvedActiveConnectionRefreshMutex = Mutex()
     @Volatile
     private var lastObservedActiveConnectionStatus: ActiveServerConnectionStatus? = null
+    @Volatile
+    private var lastAppliedActiveConnectionStatus: ActiveServerConnectionStatus? = null
     @Volatile
     private var hasObservedInitialActiveConnectionStatus = false
 
     init {
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_START) {
+                    repositoryScope.launch {
+                        applyLatestObservedResolvedActiveConnectionStatusIfNeeded()
+                    }
+                }
+            }
+        )
+        repositoryScope.launch {
+            recoverPendingLibrarySelectionIfNeeded()
+        }
         repositoryScope.launch {
             activeServerEndpointResolver.observeActiveConnectionStatus().collect { status ->
-                val previousStatus = lastObservedActiveConnectionStatus
                 if (!hasObservedInitialActiveConnectionStatus) {
                     hasObservedInitialActiveConnectionStatus = true
                     lastObservedActiveConnectionStatus = status
+                    lastAppliedActiveConnectionStatus = status
                     return@collect
                 }
-                if (status == null || !didActiveConnectionStatusChange(previousStatus, status)) {
+                lastObservedActiveConnectionStatus = status
+                if (status == null) {
+                    lastAppliedActiveConnectionStatus = null
                     return@collect
                 }
                 if (!shouldApplyResolvedActiveConnectionStatus()) {
                     return@collect
                 }
-                lastObservedActiveConnectionStatus = status
-                applyResolvedActiveConnectionStatus(status)
+                applyLatestObservedResolvedActiveConnectionStatusIfNeeded()
             }
+        }
+    }
+
+    private suspend fun recoverPendingLibrarySelectionIfNeeded() {
+        val session = sessionPreferences.state.first()
+        val activeServerId = session.activeServerId ?: return
+        if (!session.requiresLibrarySelection) return
+
+        val token = secureTokenStorage.getToken(activeServerId) ?: return
+        val server = serverDao.getById(activeServerId) ?: return
+        val activeLibraryId = session.activeLibraryId
+
+        if (activeLibraryId.isNullOrBlank()) {
+            activateServerWithDefaultLibrary(activeServerId)
+            return
+        }
+
+        val library = libraryDao.getByServerAndId(activeServerId, activeLibraryId)
+        if (library == null) {
+            activateServerWithDefaultLibrary(activeServerId)
+            return
+        }
+
+        val resolvedStatus = activeServerEndpointResolver.resolveForServer(server)
+        val resolvedServer = server.copy(baseUrl = resolvedStatus.effectiveBaseUrl)
+
+        val homeFeedResult = try {
+            fetchHomeFeedForConnection(
+                connection = ActiveConnection(
+                    server = resolvedServer,
+                    token = token,
+                    library = library
+                ),
+                continueLimit = 10,
+                recentlyAddedLimit = 120,
+                forceRefreshDerivedContent = true
+            )
+        } catch (t: Throwable) {
+            AppResult.Error(
+                message = t.message ?: "Unable to restore the selected library.",
+                cause = t
+            )
+        }
+
+        if (!isPendingLibraryRecoveryStillCurrent(activeServerId, activeLibraryId)) {
+            return
+        }
+
+        when (homeFeedResult) {
+            is AppResult.Success -> {
+                sessionPreferences.setRequiresLibrarySelection(false)
+            }
+
+            is AppResult.Error -> {
+                markServerDataStale(activeServerId, homeFeedResult.message)
+                val hasCompatibleCachedHomeFeed = when (
+                    val cachedHomeFeed = fetchCachedHomeFeed(maxAgeMs = Long.MAX_VALUE)
+                ) {
+                    is AppResult.Success -> cachedHomeFeed.value != null
+                    is AppResult.Error -> false
+                }
+                if (hasCompatibleCachedHomeFeed) {
+                    sessionPreferences.setRequiresLibrarySelection(false)
+                }
+            }
+        }
+    }
+
+    private suspend fun applyLatestObservedResolvedActiveConnectionStatusIfNeeded() {
+        if (!shouldApplyResolvedActiveConnectionStatus()) return
+
+        resolvedActiveConnectionRefreshMutex.withLock {
+            val latestObservedStatus = lastObservedActiveConnectionStatus
+            val statusToRefresh = resolveResolvedActiveConnectionStatusToRefresh(
+                previousApplied = lastAppliedActiveConnectionStatus,
+                latestObserved = latestObservedStatus
+            )
+            if (statusToRefresh == null) {
+                lastAppliedActiveConnectionStatus = latestObservedStatus
+                return
+            }
+
+            applyResolvedActiveConnectionStatus(statusToRefresh)
+            lastAppliedActiveConnectionStatus = latestObservedStatus
         }
     }
 
@@ -338,21 +459,24 @@ class SessionRepositoryImpl @Inject constructor(
         val existing = serverDao.getById(serverId) ?: return AppResult.Error("Server not found.")
         return try {
             val nextServer = serverDao.getAll().firstOrNull { it.id != existing.id }
+            val session = sessionPreferences.state.first()
+            val isDeletingActiveServer = session.activeServerId == existing.id
+            if (isDeletingActiveServer) {
+                sessionPreferences.setLastPlayedBookId(null)
+                sessionPreferences.clearCachedHomeFeed()
+                prepareFallbackSelectionIfPossible(nextServer?.id)
+            }
             secureTokenStorage.clearToken(existing.id)
-            serverDao.deleteById(existing.id)
-            deletePersistedDetailCacheForServer(existing.id)
+            appDatabase.withTransaction {
+                libraryDao.deleteByServerId(existing.id)
+                serverDao.deleteById(existing.id)
+                deletePersistedDetailCacheForServer(existing.id)
+            }
             sessionPreferences.removeServerEndpointSwitchingConfig(existing.id)
             clearServerDataState(existing.id)
             clearContentCaches()
-            val session = sessionPreferences.state.first()
-            if (session.activeServerId == existing.id) {
-                sessionPreferences.setLastPlayedBookId(null)
-                sessionPreferences.clearCachedHomeFeed()
-                sessionPreferences.setActiveSelection(
-                    serverId = nextServer?.id,
-                    libraryId = null
-                )
-                sessionPreferences.setRequiresLibrarySelection(nextServer != null)
+            if (isDeletingActiveServer) {
+                activateNextServerOrClearSelection(nextServer?.id)
             }
             AppResult.Success(Unit)
         } catch (t: Throwable) {
@@ -443,12 +567,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return syncResult
         }
 
-        sessionPreferences.setActiveSelection(serverId = server.id, libraryId = null)
-        sessionPreferences.setLastPlayedBookId(null)
-        sessionPreferences.clearCachedHomeFeed()
-        sessionPreferences.setRequiresLibrarySelection(true)
-        clearContentCaches()
-        return AppResult.Success(Unit)
+        return activateServerWithDefaultLibrary(server.id)
     }
 
     override suspend fun setActiveLibrary(libraryId: String): AppResult<Unit> {
@@ -462,12 +581,102 @@ class SessionRepositoryImpl @Inject constructor(
         return AppResult.Success(Unit)
     }
 
+    override suspend fun setActiveLibraryAndPrimeHomeFeed(
+        libraryId: String,
+        continueLimit: Int,
+        recentlyAddedLimit: Int,
+        forceRefreshDerivedContent: Boolean
+    ): AppResult<Unit> {
+        val activeServerId = sessionPreferences.state.first().activeServerId
+            ?: return AppResult.Error("No active server selected.")
+        val library = libraryDao.getByServerAndId(activeServerId, libraryId)
+            ?: return AppResult.Error("Library not found.")
+
+        sessionPreferences.clearCachedHomeFeed()
+        sessionPreferences.setRequiresLibrarySelection(true)
+        sessionPreferences.setActiveLibraryId(library.id)
+
+        val homeFeedResult = fetchHomeFeed(
+            continueLimit = continueLimit,
+            recentlyAddedLimit = recentlyAddedLimit,
+            forceRefreshDerivedContent = forceRefreshDerivedContent
+        )
+
+        return when (homeFeedResult) {
+            is AppResult.Success -> {
+                sessionPreferences.setRequiresLibrarySelection(false)
+                AppResult.Success(Unit)
+            }
+
+            is AppResult.Error -> {
+                sessionPreferences.setActiveLibraryId(null)
+                AppResult.Error(homeFeedResult.message, homeFeedResult.cause)
+            }
+        }
+    }
+
+    private suspend fun activateServerWithDefaultLibrary(serverId: String): AppResult<Unit> {
+        val defaultLibraryId = libraryDao.getLibraries(serverId).firstOrNull()?.id
+            ?: return AppResult.Error("No libraries were returned for this server.")
+
+        sessionPreferences.setLastPlayedBookId(null)
+        sessionPreferences.clearCachedHomeFeed()
+        sessionPreferences.setActiveSelectionState(
+            serverId = serverId,
+            libraryId = defaultLibraryId,
+            requiresLibrarySelection = false
+        )
+        clearContentCaches()
+        return AppResult.Success(Unit)
+    }
+
+    private suspend fun activateNextServerOrClearSelection(nextServerId: String?) {
+        if (nextServerId.isNullOrBlank()) {
+            sessionPreferences.setActiveSelectionState(
+                serverId = null,
+                libraryId = null,
+                requiresLibrarySelection = false
+            )
+            return
+        }
+
+        prepareFallbackSelectionIfPossible(nextServerId)
+
+        when (setActiveServer(nextServerId)) {
+            is AppResult.Success -> Unit
+            is AppResult.Error -> {
+                sessionPreferences.setActiveSelectionState(
+                    serverId = null,
+                    libraryId = null,
+                    requiresLibrarySelection = false
+                )
+            }
+        }
+    }
+
+    private suspend fun prepareFallbackSelectionIfPossible(nextServerId: String?) {
+        if (nextServerId.isNullOrBlank()) return
+
+        val cachedDefaultLibraryId = libraryDao.getLibraries(nextServerId).firstOrNull()?.id
+        val hasSavedSession = !secureTokenStorage.getToken(nextServerId).isNullOrBlank()
+        if (!cachedDefaultLibraryId.isNullOrBlank() && hasSavedSession) {
+            sessionPreferences.setActiveSelectionState(
+                serverId = nextServerId,
+                libraryId = cachedDefaultLibraryId,
+                requiresLibrarySelection = false
+            )
+        }
+    }
+
     override suspend fun signOutActiveSession(): AppResult<Unit> {
         return try {
             val session = sessionPreferences.state.first()
             val activeServerId = session.activeServerId
                 ?: return AppResult.Error("No active server selected.")
             val nextServer = serverDao.getAll().firstOrNull { it.id != activeServerId }
+            sessionPreferences.setLastPlayedBookId(null)
+            sessionPreferences.clearCachedHomeFeed()
+            prepareFallbackSelectionIfPossible(nextServer?.id)
 
             runCatching { secureTokenStorage.clearToken(activeServerId) }
             appDatabase.withTransaction {
@@ -477,13 +686,7 @@ class SessionRepositoryImpl @Inject constructor(
             }
             sessionPreferences.removeServerEndpointSwitchingConfig(activeServerId)
             clearServerDataState(activeServerId)
-            sessionPreferences.setLastPlayedBookId(null)
-            sessionPreferences.clearCachedHomeFeed()
-            sessionPreferences.setActiveSelection(
-                serverId = nextServer?.id,
-                libraryId = null
-            )
-            sessionPreferences.setRequiresLibrarySelection(nextServer != null)
+            activateNextServerOrClearSelection(nextServer?.id)
             clearContentCaches()
             AppResult.Success(Unit)
         } catch (t: Throwable) {
@@ -618,13 +821,7 @@ class SessionRepositoryImpl @Inject constructor(
                     )
                 }
             }
-            sessionPreferences.setActiveSelection(serverId = serverId, libraryId = null)
-            sessionPreferences.setLastPlayedBookId(null)
-            sessionPreferences.clearCachedHomeFeed()
-            sessionPreferences.setRequiresLibrarySelection(true)
-            clearContentCaches()
-
-            AppResult.Success(Unit)
+            activateServerWithDefaultLibrary(serverId)
         } catch (t: Throwable) {
             if (matchingExistingServer == null) {
                 rollbackFailedServerSetup(serverId)
@@ -836,6 +1033,20 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        return fetchSeriesForConnection(
+            connection = connection,
+            limit = limit,
+            page = page,
+            forceRefresh = forceRefresh
+        )
+    }
+
+    private suspend fun fetchSeriesForConnection(
+        connection: ActiveConnection,
+        limit: Int,
+        page: Int,
+        forceRefresh: Boolean
+    ): AppResult<List<NamedEntitySummary>> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
@@ -893,6 +1104,20 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        return fetchSeriesContentsForConnection(
+            connection = connection,
+            seriesId = seriesId,
+            collapseSubseries = collapseSubseries,
+            forceRefresh = forceRefresh
+        )
+    }
+
+    private suspend fun fetchSeriesContentsForConnection(
+        connection: ActiveConnection,
+        seriesId: String,
+        collapseSubseries: Boolean,
+        forceRefresh: Boolean
+    ): AppResult<List<SeriesDetailEntry>> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
         val normalizedSeriesId = seriesId.trim()
         val persistedLocal = if (forceRefresh) {
@@ -1461,6 +1686,16 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        return fetchAllBooksForConnection(
+            connection = connection,
+            forceRefresh = forceRefresh
+        )
+    }
+
+    private suspend fun fetchAllBooksForConnection(
+        connection: ActiveConnection,
+        forceRefresh: Boolean
+    ): AppResult<List<BookSummary>> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
@@ -1977,6 +2212,18 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        return fetchBookDetailForConnection(
+            connection = connection,
+            bookId = bookId,
+            forceRefresh = forceRefresh
+        )
+    }
+
+    private suspend fun fetchBookDetailForConnection(
+        connection: ActiveConnection,
+        bookId: String,
+        forceRefresh: Boolean
+    ): AppResult<BookDetail> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
         val persistedLocal = if (forceRefresh) {
             null
@@ -2901,11 +3148,21 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     override suspend fun fetchCachedHomeFeed(maxAgeMs: Long?): AppResult<HomeFeed?> {
-        val activeLibraryId = sessionPreferences.state.first().activeLibraryId
+        val session = sessionPreferences.state.first()
+        val activeServerId = session.activeServerId
+            ?: return AppResult.Success(null)
+        val activeLibraryId = session.activeLibraryId
             ?: return AppResult.Success(null)
         val cached = sessionPreferences.getCachedHomeFeed()
             ?: return AppResult.Success(null)
-        if (cached.libraryId != activeLibraryId) {
+        if (
+            !matchesCachedHomeFeedSelection(
+                activeServerId = activeServerId,
+                activeLibraryId = activeLibraryId,
+                cachedServerId = cached.serverId,
+                cachedLibraryId = cached.libraryId
+            )
+        ) {
             return AppResult.Success(null)
         }
         val cacheAgeMs = (System.currentTimeMillis() - cached.savedAtMs).coerceAtLeast(0L)
@@ -2928,8 +3185,21 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
-        val library = connection.library ?: return AppResult.Error("No active library selected.")
+        return fetchHomeFeedForConnection(
+            connection = connection,
+            continueLimit = continueLimit,
+            recentlyAddedLimit = recentlyAddedLimit,
+            forceRefreshDerivedContent = forceRefreshDerivedContent
+        )
+    }
 
+    private suspend fun fetchHomeFeedForConnection(
+        connection: ActiveConnection,
+        continueLimit: Int,
+        recentlyAddedLimit: Int,
+        forceRefreshDerivedContent: Boolean
+    ): AppResult<HomeFeed> {
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
         return try {
             coroutineScope {
                 val inProgressDeferred = async {
@@ -2956,7 +3226,10 @@ class SessionRepositoryImpl @Inject constructor(
                     )
                 }
                 val allBooksDeferred = async {
-                    fetchAllBooksForActiveLibrary(forceRefresh = forceRefreshDerivedContent)
+                    fetchAllBooksForConnection(
+                        connection = connection,
+                        forceRefresh = forceRefreshDerivedContent
+                    )
                 }
                 val authorsDeferred = async {
                     audiobookshelfApi.getAuthors(
@@ -3024,6 +3297,7 @@ class SessionRepositoryImpl @Inject constructor(
                             .withLocalProgressOverride(connection.server.id)
                     }
                 val recentSeriesCandidates = enrichRecentBooksForSeriesMatching(
+                    connection = connection,
                     recentlyAdded = recentlyAdded,
                     forceRefresh = forceRefreshDerivedContent
                 )
@@ -3077,8 +3351,12 @@ class SessionRepositoryImpl @Inject constructor(
                     }
                     .toMutableList()
                 if (recentBookIds.isNotEmpty()) {
-                    val seriesSummaries = fetchAllSeriesForHome(forceRefresh = forceRefreshDerivedContent)
+                    val seriesSummaries = fetchAllSeriesForHome(
+                        connection = connection,
+                        forceRefresh = forceRefreshDerivedContent
+                    )
                     val supplementalRecentSeries = resolveRecentSeriesFromSeriesSummaries(
+                        connection = connection,
                         series = seriesSummaries,
                         allBooks = allBooks,
                         recentBookIds = recentBookIds,
@@ -3117,6 +3395,7 @@ class SessionRepositoryImpl @Inject constructor(
                 )
                 runCatching {
                     sessionPreferences.setCachedHomeFeed(
+                        serverId = connection.server.id,
                         libraryId = library.id,
                         payload = serializeHomeFeed(feed),
                         savedAtMs = System.currentTimeMillis()
@@ -3306,18 +3585,6 @@ class SessionRepositoryImpl @Inject constructor(
                 library = library
             )
         )
-    }
-
-    private fun didActiveConnectionStatusChange(
-        previous: ActiveServerConnectionStatus?,
-        current: ActiveServerConnectionStatus
-    ): Boolean {
-        return previous?.serverId != current.serverId ||
-            previous.effectiveBaseUrl != current.effectiveBaseUrl ||
-            previous.route != current.route ||
-            previous.connectionMode != current.connectionMode ||
-            previous.switchingEnabled != current.switchingEnabled ||
-            previous.lanFallbackToRemote != current.lanFallbackToRemote
     }
 
     private suspend fun applyResolvedActiveConnectionStatus(status: ActiveServerConnectionStatus) {
@@ -4254,6 +4521,7 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     private suspend fun enrichRecentBooksForSeriesMatching(
+        connection: ActiveConnection,
         recentlyAdded: List<BookSummary>,
         forceRefresh: Boolean
     ): List<BookSummary> {
@@ -4261,7 +4529,13 @@ class SessionRepositoryImpl @Inject constructor(
             if (book.seriesName != null || book.seriesNames.isNotEmpty() || book.seriesIds.isNotEmpty()) {
                 book
             } else {
-                when (val detailResult = fetchBookDetail(book.id, forceRefresh = forceRefresh)) {
+                when (
+                    val detailResult = fetchBookDetailForConnection(
+                        connection = connection,
+                        bookId = book.id,
+                        forceRefresh = forceRefresh
+                    )
+                ) {
                     is AppResult.Success -> {
                         val detailBook = detailResult.value.book
                         book.copy(
@@ -4279,13 +4553,15 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     private suspend fun fetchAllSeriesForHome(
+        connection: ActiveConnection,
         forceRefresh: Boolean
     ): List<NamedEntitySummary> {
         val series = mutableListOf<NamedEntitySummary>()
         var page = 0
         while (true) {
             when (
-                val result = fetchSeriesForActiveLibrary(
+                val result = fetchSeriesForConnection(
+                    connection = connection,
                     limit = SERVER_LIBRARY_PAGE_SIZE,
                     page = page,
                     forceRefresh = forceRefresh
@@ -4306,6 +4582,7 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     private suspend fun resolveRecentSeriesFromSeriesSummaries(
+        connection: ActiveConnection,
         series: List<NamedEntitySummary>,
         allBooks: List<BookSummary>,
         recentBookIds: Set<String>,
@@ -4335,6 +4612,7 @@ class SessionRepositoryImpl @Inject constructor(
                 (expectedCount != null && initialMatchedBooks.size < expectedCount)
             ) {
                 resolveSeriesBooksForHome(
+                    connection = connection,
                     series = seriesSummary,
                     books = allBooks,
                     initialMatchedBooks = initialMatchedBooks,
@@ -4372,6 +4650,7 @@ class SessionRepositoryImpl @Inject constructor(
     }
 
     private suspend fun resolveSeriesBooksForHome(
+        connection: ActiveConnection,
         series: NamedEntitySummary,
         books: List<BookSummary>,
         initialMatchedBooks: List<BookSummary>,
@@ -4381,7 +4660,8 @@ class SessionRepositoryImpl @Inject constructor(
     ): List<BookSummary> {
         if (series.id.isBlank()) return initialMatchedBooks
         val resolvedFromContents = when (
-            val result = fetchSeriesContentsForActiveLibrary(
+            val result = fetchSeriesContentsForConnection(
+                connection = connection,
                 seriesId = series.id,
                 collapseSubseries = false,
                 forceRefresh = forceRefresh
@@ -4403,7 +4683,13 @@ class SessionRepositoryImpl @Inject constructor(
                 return resolved.values.toList()
             }
             val detailBook = detailCache.getOrPut(book.id) {
-                when (val detailResult = fetchBookDetail(book.id, forceRefresh = forceRefresh)) {
+                when (
+                    val detailResult = fetchBookDetailForConnection(
+                        connection = connection,
+                        bookId = book.id,
+                        forceRefresh = forceRefresh
+                    )
+                ) {
                     is AppResult.Success -> detailResult.value.book
                     is AppResult.Error -> null
                 }
@@ -4945,4 +5231,24 @@ class SessionRepositoryImpl @Inject constructor(
             normalizedSource.endsWith(normalizedTarget, ignoreCase = true) ||
             normalizedTarget.endsWith(normalizedSource, ignoreCase = true)
     }
+
+    private suspend fun isPendingLibraryRecoveryStillCurrent(
+        activeServerId: String,
+        activeLibraryId: String?
+    ): Boolean {
+        val currentSession = sessionPreferences.state.first()
+        return currentSession.activeServerId == activeServerId &&
+            currentSession.activeLibraryId == activeLibraryId &&
+            currentSession.requiresLibrarySelection
+    }
+}
+
+internal fun matchesCachedHomeFeedSelection(
+    activeServerId: String,
+    activeLibraryId: String,
+    cachedServerId: String?,
+    cachedLibraryId: String
+): Boolean {
+    if (cachedServerId.isNullOrBlank()) return false
+    return cachedServerId == activeServerId && cachedLibraryId == activeLibraryId
 }

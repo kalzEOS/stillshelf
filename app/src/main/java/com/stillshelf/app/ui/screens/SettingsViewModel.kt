@@ -313,10 +313,16 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onSignOutClick() {
+        val currentServerName = uiState.value.serverDisplayName
         viewModelScope.launch {
             when (val result = sessionRepository.signOutActiveSession()) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(errorMessage = null) }
+                    mutableUiState.update {
+                        it.copy(
+                            errorMessage = null,
+                            syncToastMessage = "Signed out and removed $currentServerName from this device."
+                        )
+                    }
                 }
 
                 is AppResult.Error -> {

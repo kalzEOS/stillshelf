@@ -105,6 +105,20 @@ internal fun shouldKeepPlaybackSessionActive(
     hasActivePlayer: Boolean
 ): Boolean = book != null && hasActivePlayer
 
+internal enum class ResumeProgressUpdateMode {
+    Immediate,
+    OnAudioFocusGain,
+    Never
+}
+
+internal fun resolveResumeProgressUpdateMode(audioFocusResult: Int): ResumeProgressUpdateMode {
+    return when (audioFocusResult) {
+        AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> ResumeProgressUpdateMode.Immediate
+        AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> ResumeProgressUpdateMode.OnAudioFocusGain
+        else -> ResumeProgressUpdateMode.Never
+    }
+}
+
 @Singleton
 class PlaybackController @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
@@ -1189,16 +1203,21 @@ class PlaybackController @Inject constructor(
         clearDucking(player)
         wasPausedForTransientAudioFocusLoss = false
         val focusResult = requestAudioFocusForPlayback()
+        val progressUpdateMode = resolveResumeProgressUpdateMode(focusResult)
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             pendingPlayAfterAudioFocusGain = false
             pendingPlayStartsProgressUpdates = false
             runCatching { player.start() }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            if (progressUpdateMode == ResumeProgressUpdateMode.Immediate) {
+                startProgressUpdates()
+            }
             return
         }
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
             pendingPlayAfterAudioFocusGain = true
-            pendingPlayStartsProgressUpdates = false
+            pendingPlayStartsProgressUpdates =
+                progressUpdateMode == ResumeProgressUpdateMode.OnAudioFocusGain
             updateUiState { it.copy(isPlaying = false, errorMessage = null) }
             return
         }

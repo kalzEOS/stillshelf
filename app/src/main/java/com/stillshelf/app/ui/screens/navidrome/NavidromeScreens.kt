@@ -8827,6 +8827,10 @@ private fun NavidromeExpandedPlayerSheet(
                 @Suppress("DEPRECATION")
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
                 insetsController.isAppearanceLightStatusBars = false
+            } else {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = currentColorScheme.background.toArgb()
+                insetsController.isAppearanceLightStatusBars = currentColorScheme.background.luminance() > 0.5f
             }
             @Suppress("DEPRECATION")
             window.navigationBarColor = currentColorScheme.surface.toArgb()
@@ -8836,12 +8840,12 @@ private fun NavidromeExpandedPlayerSheet(
                 window.statusBarColor = if (immersiveEnabled) {
                     previousStatusBarColor
                 } else {
-                    currentColorScheme.surface.toArgb()
+                    previousStatusBarColor
                 }
                 insetsController.isAppearanceLightStatusBars = if (immersiveEnabled) {
                     previousLightStatusBars
                 } else {
-                    currentColorScheme.surface.luminance() > 0.5f
+                    previousLightStatusBars
                 }
                 @Suppress("DEPRECATION")
                 window.navigationBarColor = previousNavigationBarColor

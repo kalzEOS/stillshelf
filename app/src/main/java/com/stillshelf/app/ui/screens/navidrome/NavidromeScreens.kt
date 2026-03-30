@@ -9643,10 +9643,21 @@ private fun NavidromeLyricsSheetContent(
 ) {
     val view = LocalView.current
     val overlayBackgroundModel = rememberCoverImageModel(coverUrl, preferOriginalSize = true)
-    val accentDark = if (immersiveEnabled) Color.White else lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.34f)
-    val accentMid = if (immersiveEnabled) Color.White.copy(alpha = 0.92f) else lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.16f)
-    val accentSoft = if (immersiveEnabled) Color.White.copy(alpha = 0.76f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurface, 0.18f)
-    val accentMuted = if (immersiveEnabled) Color.White.copy(alpha = 0.58f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, 0.34f)
+    val headerTitleColor = if (immersiveEnabled) {
+        Color.White
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val headerAlbumColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.82f)
+    } else {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)
+    }
+    val headerMetaColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.62f)
+    } else {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.62f)
+    }
     val nonFocusedLyricBaseColor = when {
         immersiveEnabled -> Color.White
         MaterialTheme.colorScheme.background.luminance() < 0.5f -> Color.White
@@ -9898,25 +9909,27 @@ private fun NavidromeLyricsSheetContent(
                         text = "Lyrics",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = accentDark
+                        color = headerMetaColor
                     )
                     if (uiState.trackTitle.isNotBlank()) {
                         Text(
                             text = uiState.trackTitle,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Medium,
-                            color = accentMid
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = headerTitleColor
                         )
-                        Text(
-                            text = uiState.artistName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = accentSoft
-                        )
-                        uiState.sourceLabel?.let { sourceLabel ->
+                        if (uiState.albumName.isNotBlank()) {
                             Text(
-                                text = sourceLabel,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = accentMuted
+                                text = uiState.albumName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = headerAlbumColor
+                            )
+                        }
+                        if (uiState.artistName.isNotBlank()) {
+                            Text(
+                                text = uiState.artistName,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = headerMetaColor
                             )
                         }
                     }

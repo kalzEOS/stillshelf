@@ -40,13 +40,16 @@ import com.stillshelf.app.ui.screens.SettingsServerOption
 import com.stillshelf.app.ui.screens.resolveCurrentConnectionLabel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.net.URI
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -1592,6 +1595,15 @@ class NavidromeSettingsViewModel @Inject constructor(
                     host = parseHost(server.baseUrl)
                 )
             },
+            lyricsSources = preferences.navidromeLyricsSources.map { source ->
+                SettingsServerOption(
+                    id = source.id,
+                    name = source.name,
+                    baseUrl = source.baseUrl,
+                    host = parseHost(source.baseUrl)
+                )
+            },
+            activeLyricsSourceId = preferences.activeNavidromeLyricsSourceId,
             activeServerId = activeServerId,
             availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
@@ -1871,6 +1883,86 @@ class NavidromeSettingsViewModel @Inject constructor(
                     mutableLocalState.update { it.copy(isBusy = false, errorMessage = result.message) }
                 }
             }
+        }
+    }
+
+    fun setActiveLyricsSource(sourceId: String) {
+        viewModelScope.launch {
+            sessionPreferences.setActiveNavidromeLyricsSourceId(sourceId)
+            navidromeRepository.clearLyricsCache()
+            mutableLocalState.update { it.copy(errorMessage = null) }
+        }
+    }
+
+    fun addLyricsSource(name: String, baseUrl: String) {
+        val normalizedName = name.trim()
+        val normalizedBaseUrl = baseUrl.trim().removeSuffix("/")
+        if (normalizedName.length < 2) {
+            mutableLocalState.update { it.copy(errorMessage = "Source name must be at least 2 characters.") }
+            return
+        }
+        if (!normalizedBaseUrl.startsWith("http://", ignoreCase = true) &&
+            !normalizedBaseUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            mutableLocalState.update { it.copy(errorMessage = "Base URL must start with http:// or https://") }
+            return
+        }
+        viewModelScope.launch {
+            val current = sessionPreferences.state.first().navidromeLyricsSources
+            val source = com.stillshelf.app.core.model.NavidromeLyricsSource(
+                id = UUID.randomUUID().toString(),
+                name = normalizedName,
+                baseUrl = normalizedBaseUrl,
+                createdAt = System.currentTimeMillis()
+            )
+            sessionPreferences.setNavidromeLyricsSources(current + source)
+            if (sessionPreferences.state.first().activeNavidromeLyricsSourceId.isNullOrBlank()) {
+                sessionPreferences.setActiveNavidromeLyricsSourceId(source.id)
+            }
+            mutableLocalState.update { it.copy(errorMessage = null) }
+        }
+    }
+
+    fun updateLyricsSource(sourceId: String, name: String, baseUrl: String) {
+        val normalizedName = name.trim()
+        val normalizedBaseUrl = baseUrl.trim().removeSuffix("/")
+        if (normalizedName.length < 2) {
+            mutableLocalState.update { it.copy(errorMessage = "Source name must be at least 2 characters.") }
+            return
+        }
+        if (!normalizedBaseUrl.startsWith("http://", ignoreCase = true) &&
+            !normalizedBaseUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            mutableLocalState.update { it.copy(errorMessage = "Base URL must start with http:// or https://") }
+            return
+        }
+        viewModelScope.launch {
+            val state = sessionPreferences.state.first()
+            val updated = state.navidromeLyricsSources.map { source ->
+                if (source.id == sourceId) {
+                    source.copy(
+                        name = normalizedName,
+                        baseUrl = normalizedBaseUrl
+                    )
+                } else {
+                    source
+                }
+            }
+            sessionPreferences.setNavidromeLyricsSources(updated)
+            navidromeRepository.clearLyricsCache()
+            mutableLocalState.update { it.copy(errorMessage = null) }
+        }
+    }
+
+    fun deleteLyricsSource(sourceId: String) {
+        viewModelScope.launch {
+            val state = sessionPreferences.state.first()
+            val updated = state.navidromeLyricsSources.filterNot { it.id == sourceId }
+            sessionPreferences.setNavidromeLyricsSources(updated)
+            if (state.activeNavidromeLyricsSourceId == sourceId) {
+                sessionPreferences.setActiveNavidromeLyricsSourceId(updated.firstOrNull()?.id)
+            }
+            mutableLocalState.update { it.copy(errorMessage = null) }
         }
     }
 
@@ -2186,6 +2278,9 @@ class NavidromePlayerViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
+    private val mutableLyricsUiState = MutableStateFlow(NavidromeLyricsUiState())
+    private var lyricsLoadJob: kotlinx.coroutines.Job? = null
+    private var lyricsLoadRequestId = 0L
     private val preferenceState = sessionPreferences.state
         .stateIn(
             scope = viewModelScope,
@@ -2197,6 +2292,7 @@ class NavidromePlayerViewModel @Inject constructor(
         )
 
     val uiState: StateFlow<NavidromePlayerState> = playerController.state
+    val lyricsUiState: StateFlow<NavidromeLyricsUiState> = mutableLyricsUiState.asStateFlow()
     val favoriteTrackIds: StateFlow<Set<String>> = preferenceState
         .map { state -> favoriteTracksForCurrentSession(state).map { it.id }.toSet() }
         .stateIn(
@@ -2204,6 +2300,27 @@ class NavidromePlayerViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = emptySet()
         )
+
+    init {
+        viewModelScope.launch {
+            playerController.state
+                .map { it.currentTrack }
+                .distinctUntilChangedBy { it?.id }
+                .collect { track ->
+                    val state = mutableLyricsUiState.value
+                    if (track == null) {
+                        lyricsLoadJob?.cancel()
+                        lyricsLoadJob = null
+                        lyricsLoadRequestId += 1L
+                        mutableLyricsUiState.value = NavidromeLyricsUiState()
+                    } else if (state.isVisible) {
+                        loadLyrics(track, showSheet = true)
+                    } else if (state.trackId != track.id) {
+                        mutableLyricsUiState.value = NavidromeLyricsUiState(trackId = track.id)
+                    }
+                }
+        }
+    }
 
     fun playTracks(
         tracks: List<NavidromeTrack>,
@@ -2307,6 +2424,24 @@ class NavidromePlayerViewModel @Inject constructor(
         playerController.selectAudioOutputDevice(deviceId)
     }
 
+    fun showLyrics() {
+        val track = uiState.value.currentTrack ?: return
+        loadLyrics(track = track, showSheet = true)
+    }
+
+    fun dismissLyrics() {
+        lyricsLoadJob?.cancel()
+        lyricsLoadJob = null
+        lyricsLoadRequestId += 1L
+        mutableLyricsUiState.update { it.copy(isVisible = false, errorMessage = null) }
+    }
+
+    fun clearLyricsCache() {
+        viewModelScope.launch {
+            navidromeRepository.clearLyricsCache(uiState.value.currentTrack)
+        }
+    }
+
     fun toggleFavoriteTrack(track: NavidromeTrack): Boolean {
         if (track.id.startsWith("radio:")) return false
         val sessionKey = navidromeSessionKey(
@@ -2319,7 +2454,84 @@ class NavidromePlayerViewModel @Inject constructor(
         }
         return !wasFavorite
     }
+
+    private fun loadLyrics(track: NavidromeTrack, showSheet: Boolean) {
+        lyricsLoadJob?.cancel()
+        val requestId = lyricsLoadRequestId + 1L
+        lyricsLoadRequestId = requestId
+        lyricsLoadJob = viewModelScope.launch {
+            mutableLyricsUiState.update {
+                it.copy(
+                    isVisible = showSheet,
+                    isLoading = true,
+                    trackId = track.id,
+                    trackTitle = track.title,
+                    artistName = track.artistName,
+                    sourceLabel = null,
+                    lyrics = emptyList(),
+                    isSynced = false,
+                    errorMessage = null
+                )
+            }
+            when (val result = navidromeRepository.fetchLyrics(track)) {
+                is AppResult.Success -> {
+                    mutableLyricsUiState.update { current ->
+                        if (
+                            lyricsLoadRequestId != requestId ||
+                            current.trackId != track.id ||
+                            (showSheet && !current.isVisible)
+                        ) {
+                            return@update current
+                        }
+                        current.copy(
+                            isVisible = showSheet,
+                            isLoading = false,
+                            sourceLabel = result.value.sourceLabel,
+                            lyrics = result.value.lines,
+                            isSynced = result.value.isSynced,
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableLyricsUiState.update { current ->
+                        if (
+                            lyricsLoadRequestId != requestId ||
+                            current.trackId != track.id ||
+                            (showSheet && !current.isVisible)
+                        ) {
+                            return@update current
+                        }
+                        current.copy(
+                            isVisible = showSheet,
+                            isLoading = false,
+                            lyrics = emptyList(),
+                            sourceLabel = null,
+                            isSynced = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+            if (lyricsLoadRequestId == requestId) {
+                lyricsLoadJob = null
+            }
+        }
+    }
 }
+
+data class NavidromeLyricsUiState(
+    val isVisible: Boolean = false,
+    val isLoading: Boolean = false,
+    val trackId: String? = null,
+    val trackTitle: String = "",
+    val artistName: String = "",
+    val sourceLabel: String? = null,
+    val lyrics: List<com.stillshelf.app.core.model.NavidromeLyricsLine> = emptyList(),
+    val isSynced: Boolean = false,
+    val errorMessage: String? = null
+)
 
 private fun favoriteTracksForCurrentSession(
     state: com.stillshelf.app.core.datastore.SessionPreferenceState
@@ -2542,6 +2754,8 @@ class NavidromePlaylistDetailViewModel @Inject constructor(
 data class NavidromeSettingsUiState(
     val session: com.stillshelf.app.core.model.NavidromeSession? = null,
     val savedServers: List<SettingsServerOption> = emptyList(),
+    val lyricsSources: List<SettingsServerOption> = emptyList(),
+    val activeLyricsSourceId: String? = null,
     val activeServerId: String? = null,
     val availableLibraries: List<NavidromeLibrary> = emptyList(),
     val activeLibraryId: String? = null,

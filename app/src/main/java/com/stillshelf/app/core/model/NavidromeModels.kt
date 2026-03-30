@@ -18,6 +18,13 @@ data class NavidromeServer(
     val createdAt: Long
 )
 
+data class NavidromeLyricsSource(
+    val id: String,
+    val name: String,
+    val baseUrl: String,
+    val createdAt: Long
+)
+
 data class NavidromeSession(
     val serverId: String,
     val serverName: String?,
@@ -84,6 +91,17 @@ data class NavidromeTrack(
     val streamUrl: String,
     val formatLabel: String?,
     val bitRateKbps: Int?
+)
+
+data class NavidromeLyricsLine(
+    val timestampMs: Int?,
+    val text: String
+)
+
+data class NavidromeLyrics(
+    val lines: List<NavidromeLyricsLine>,
+    val sourceLabel: String,
+    val isSynced: Boolean
 )
 
 data class NavidromePlaylist(

@@ -97,6 +97,7 @@ class NavidromePlayerController @Inject constructor(
 ) {
     private companion object {
         const val MAX_RECENT_TRACKS = 7
+        const val PREVIOUS_RESTART_THRESHOLD_MS = 3_000
         const val CHANNEL_ID = "stillshelf_playback_v4"
         const val NOTIFICATION_ID = 1101
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.navidrome.playback.action.PLAY_PAUSE"
@@ -454,47 +455,29 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun playNext() {
-        val activePlayer = player
-        if (activePlayer == null) {
-            val nextIndex = (mutableState.value.currentIndex + 1).takeIf { it in queueTracks.indices } ?: return
-            startPlaybackAt(index = nextIndex, positionMs = 0, playWhenReady = true)
-            return
-        }
-        if (!activePlayer.hasNextMediaItem()) return
-        activePlayer.seekToNextMediaItem()
-        activePlayer.play()
-        updateStateFromPlayer()
-        persistPlaybackSnapshot()
-        ensureProgressUpdates()
+        val currentIndex = resolveCurrentQueueIndex()
+        val nextIndex = (currentIndex + 1).takeIf { it in queueTracks.indices } ?: return
+        seekToQueueIndex(index = nextIndex, positionMs = 0, playWhenReady = true)
     }
 
     fun playPrevious() {
-        val activePlayer = player
-        if (activePlayer == null) {
-            val previousIndex = (mutableState.value.currentIndex - 1).takeIf { it in queueTracks.indices } ?: return
-            startPlaybackAt(index = previousIndex, positionMs = 0, playWhenReady = true)
+        val currentIndex = resolveCurrentQueueIndex()
+        if (currentIndex !in queueTracks.indices) return
+        val currentTrack = queueTracks[currentIndex]
+        if (!currentTrack.isRadioTrack() && mutableState.value.positionMs > PREVIOUS_RESTART_THRESHOLD_MS) {
+            seekToQueueIndex(index = currentIndex, positionMs = 0, playWhenReady = true)
             return
         }
-        if (!activePlayer.hasPreviousMediaItem()) return
-        activePlayer.seekToPreviousMediaItem()
-        activePlayer.play()
-        updateStateFromPlayer()
-        persistPlaybackSnapshot()
-        ensureProgressUpdates()
+        val previousIndex = (currentIndex - 1).takeIf { it in queueTracks.indices } ?: run {
+            seekToQueueIndex(index = currentIndex, positionMs = 0, playWhenReady = true)
+            return
+        }
+        seekToQueueIndex(index = previousIndex, positionMs = 0, playWhenReady = true)
     }
 
     fun playQueueIndex(index: Int) {
         if (index !in queueTracks.indices) return
-        val activePlayer = player
-        if (activePlayer == null) {
-            startPlaybackAt(index = index, positionMs = 0, playWhenReady = true)
-            return
-        }
-        activePlayer.seekTo(index, 0L)
-        activePlayer.play()
-        updateStateFromPlayer()
-        persistPlaybackSnapshot()
-        ensureProgressUpdates()
+        seekToQueueIndex(index = index, positionMs = 0, playWhenReady = true)
     }
 
     fun shuffleQueue() {
@@ -675,6 +658,45 @@ class NavidromePlayerController @Inject constructor(
             state.positionMs.coerceAtLeast(0)
         }
         startPlaybackAt(index = index, positionMs = positionMs, playWhenReady = playWhenReady)
+    }
+
+    private fun resolveCurrentQueueIndex(): Int {
+        val activePlayer = player
+        return activePlayer?.currentMediaItemIndex
+            ?.takeIf { it in queueTracks.indices }
+            ?: mutableState.value.currentIndex.takeIf { it in queueTracks.indices }
+            ?: -1
+    }
+
+    private fun seekToQueueIndex(
+        index: Int,
+        positionMs: Int,
+        playWhenReady: Boolean
+    ) {
+        if (index !in queueTracks.indices) return
+        val safePositionMs = positionMs.coerceAtLeast(0)
+        val activePlayer = player
+        if (activePlayer == null) {
+            startPlaybackAt(index = index, positionMs = safePositionMs, playWhenReady = playWhenReady)
+            return
+        }
+        activePlayer.seekTo(index, safePositionMs.toLong())
+        if (playWhenReady) {
+            activePlayer.play()
+        } else {
+            activePlayer.pause()
+        }
+        mutableState.value = mutableState.value.copy(
+            currentIndex = index,
+            currentTrack = queueTracks[index],
+            positionMs = safePositionMs,
+            durationMs = resolveTrackDurationMs(queueTracks[index]),
+            isLoading = true,
+            errorMessage = null
+        )
+        updateStateFromPlayer()
+        persistPlaybackSnapshot()
+        ensureProgressUpdates()
     }
 
     private fun releasePlayer(clearQueue: Boolean) {

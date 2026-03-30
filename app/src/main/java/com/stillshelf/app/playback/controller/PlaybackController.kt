@@ -2912,7 +2912,12 @@ class PlaybackController @Inject constructor(
                     existing.sound != null
                 )
         ) {
-            manager.deleteNotificationChannel(CHANNEL_ID)
+            val deleted = runCatching {
+                manager.deleteNotificationChannel(CHANNEL_ID)
+            }.isSuccess
+            if (!deleted) {
+                return
+            }
         } else if (existing != null) {
             return
         }

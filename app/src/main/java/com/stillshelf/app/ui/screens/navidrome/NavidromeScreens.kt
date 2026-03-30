@@ -1,17 +1,20 @@
 package com.stillshelf.app.ui.screens.navidrome
 
 import android.app.Activity
+import android.os.Build
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -25,6 +28,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
@@ -82,6 +86,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
@@ -105,6 +110,7 @@ import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.SkipNext
 import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Visibility
@@ -128,6 +134,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -143,6 +150,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -161,6 +171,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -182,6 +195,8 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -209,6 +224,7 @@ import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
+import com.stillshelf.app.core.model.NavidromeLyricsLine
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
@@ -229,6 +245,7 @@ import com.stillshelf.app.ui.common.StandardGridCoverWidth
 import com.stillshelf.app.ui.navigation.NavidromeRoute
 import com.stillshelf.app.ui.screens.AppAppearanceViewModel
 import com.stillshelf.app.ui.screens.AppScreenHorizontalPadding
+import com.stillshelf.app.ui.screens.SettingsServerOption
 import com.stillshelf.app.ui.screens.ToggleSectionItem
 import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
@@ -605,6 +622,7 @@ fun NavidromeAppRoute(
     val playlistPickerViewModel: NavidromePlaylistPickerViewModel = hiltViewModel()
     val downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val lyricsUiState by playerViewModel.lyricsUiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -612,9 +630,16 @@ fun NavidromeAppRoute(
     val showBottomPlayerShell = showMiniPlayer &&
         currentRoute != NavidromeRoute.SETTINGS &&
         currentRoute != NavidromeRoute.EQUALIZER &&
+        currentRoute != NavidromeRoute.LYRICS_SOURCES &&
         currentRoute != NavidromeRoute.SERVERS &&
         currentRoute != NavidromeRoute.LOGIN
-    val playerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var lockPlayerSheetDismiss by rememberSaveable { mutableStateOf(false) }
+    val playerSheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { target ->
+            target != SheetValue.Hidden || !lockPlayerSheetDismiss
+        }
+    )
     var showPlayerSheet by rememberSaveable { mutableStateOf(false) }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     val view = LocalView.current
@@ -645,7 +670,11 @@ fun NavidromeAppRoute(
 
     if (showPlayerSheet && playerState.currentTrack != null) {
         ModalBottomSheet(
-            onDismissRequest = { showPlayerSheet = false },
+            onDismissRequest = {
+                if (!lockPlayerSheetDismiss) {
+                    showPlayerSheet = false
+                }
+            },
             sheetState = playerSheetState,
             dragHandle = null,
             containerColor = MaterialTheme.colorScheme.background
@@ -671,9 +700,14 @@ fun NavidromeAppRoute(
                 onToggleDownload = { track -> downloadsViewModel.toggleTrackDownload(track) },
                 immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
                 materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
+                lyricsUiState = lyricsUiState,
                 onAddToPlaylist = { track ->
                     pendingPlaylistRequest = track.toPlaylistSelectionRequest()
                 },
+                onShowLyrics = playerViewModel::showLyrics,
+                onDismissLyrics = playerViewModel::dismissLyrics,
+                onClearLyricsCache = playerViewModel::clearLyricsCache,
+                onLyricsModeChanged = { visible -> lockPlayerSheetDismiss = visible },
                 onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
                 onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
             )
@@ -790,6 +824,7 @@ fun NavidromeAppRoute(
                     onHome = topHomeAction,
                     onSwitchMode = onSwitchMode,
                     onOpenEqualizer = { navController.navigate(NavidromeRoute.EQUALIZER) },
+                    onOpenLyricsSources = { navController.navigate(NavidromeRoute.LYRICS_SOURCES) },
                     onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) }
                 )
             }
@@ -804,6 +839,12 @@ fun NavidromeAppRoute(
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction,
                     onAddServer = { navController.navigate(NavidromeRoute.LOGIN) }
+                )
+            }
+            composable(NavidromeRoute.LYRICS_SOURCES) {
+                NavidromeLyricsSourcesRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction
                 )
             }
             composable(NavidromeRoute.LOGIN) {
@@ -4225,6 +4266,7 @@ private fun NavidromeSettingsRoute(
     onHome: (() -> Unit)?,
     onSwitchMode: () -> Unit,
     onOpenEqualizer: () -> Unit,
+    onOpenLyricsSources: () -> Unit,
     onOpenServers: () -> Unit,
     viewModel: NavidromeSettingsViewModel = hiltViewModel(),
     equalizerViewModel: NavidromeEqualizerViewModel = hiltViewModel(),
@@ -4358,6 +4400,14 @@ private fun NavidromeSettingsRoute(
                     },
                     valueTextAlign = TextAlign.End,
                     onClick = onOpenEqualizer
+                )
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Lyrics Sources",
+                    value = uiState.lyricsSources.firstOrNull { it.id == uiState.activeLyricsSourceId }?.name
+                        ?: if (uiState.lyricsSources.isEmpty()) "Not configured" else "Choose source",
+                    valueTextAlign = TextAlign.End,
+                    onClick = onOpenLyricsSources
                 )
             }
         }
@@ -5725,6 +5775,258 @@ private fun NavidromeServersManagementRoute(
                         advancedUrlError = null
                     }
                 ) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun NavidromeLyricsSourcesRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    viewModel: NavidromeSettingsViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var creatingSource by remember { mutableStateOf(false) }
+    var editingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
+    var deletingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
+    var sourceName by rememberSaveable { mutableStateOf("") }
+    var sourceUrl by rememberSaveable { mutableStateOf("") }
+    var dialogError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    StandardTopScreen(
+        title = "Lyrics Sources",
+        onBack = onBack,
+        onHome = onHome,
+        containerColor = MaterialTheme.colorScheme.background
+    ) {
+        item {
+            GroupedSettingsCard {
+                if (uiState.lyricsSources.isEmpty()) {
+                    Text(
+                        text = "No lyrics sources added yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp)
+                    )
+                } else {
+                    uiState.lyricsSources.forEachIndexed { index, source ->
+                        var rowMenuExpanded by remember(source.id) { mutableStateOf(false) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    editingSource = source
+                                    sourceName = source.name
+                                    sourceUrl = source.baseUrl
+                                    dialogError = null
+                                }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Subtitles,
+                                    contentDescription = null
+                                )
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp)
+                            ) {
+                                Text(
+                                    text = source.name,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = source.host,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (source.id == uiState.activeLyricsSourceId) {
+                                Text(
+                                    text = "Active",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(end = 8.dp)
+                                )
+                            }
+                            Box(contentAlignment = Alignment.TopEnd) {
+                                IconButton(onClick = { rowMenuExpanded = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        contentDescription = "Lyrics source actions"
+                                    )
+                                }
+                                AppDropdownMenu(
+                                    expanded = rowMenuExpanded,
+                                    onDismissRequest = { rowMenuExpanded = false }
+                                ) {
+                                    if (source.id != uiState.activeLyricsSourceId) {
+                                        AppDropdownMenuItem(
+                                            text = { Text("Set active") },
+                                            onClick = {
+                                                rowMenuExpanded = false
+                                                viewModel.setActiveLyricsSource(source.id)
+                                            }
+                                        )
+                                    }
+                                    AppDropdownMenuItem(
+                                        text = { Text("Edit") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            editingSource = source
+                                            sourceName = source.name
+                                            sourceUrl = source.baseUrl
+                                            dialogError = null
+                                        }
+                                    )
+                                    AppDropdownMenuItem(
+                                        text = { Text("Delete") },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            deletingSource = source
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (index < uiState.lyricsSources.lastIndex) {
+                            DividerLine()
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = {
+                    creatingSource = true
+                    sourceName = ""
+                    sourceUrl = ""
+                    dialogError = null
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppScreenHorizontalPadding)
+            ) {
+                Text("Add Source")
+            }
+        }
+        uiState.errorMessage?.let { message ->
+            item {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+                )
+            }
+        }
+    }
+
+    if (creatingSource || editingSource != null) {
+        AlertDialog(
+            onDismissRequest = {
+                creatingSource = false
+                editingSource = null
+                dialogError = null
+            },
+            title = {
+                Text(if (editingSource != null) "Edit Lyrics Source" else "Add Lyrics Source")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = sourceName,
+                        onValueChange = {
+                            sourceName = it
+                            dialogError = null
+                        },
+                        label = { Text("Source Name") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = sourceUrl,
+                        onValueChange = {
+                            sourceUrl = it.replace(" ", "")
+                            dialogError = null
+                        },
+                        label = { Text("Base URL") },
+                        singleLine = true
+                    )
+                    dialogError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val trimmedName = sourceName.trim()
+                        val trimmedUrl = sourceUrl.trim()
+                        if (trimmedName.length < 2) {
+                            dialogError = "Source name must be at least 2 characters."
+                            return@TextButton
+                        }
+                        val validUrl = trimmedUrl.startsWith("https://", ignoreCase = true) ||
+                            trimmedUrl.startsWith("http://", ignoreCase = true)
+                        if (!validUrl) {
+                            dialogError = "Base URL must start with http:// or https://"
+                            return@TextButton
+                        }
+                        val source = editingSource
+                        if (source != null) {
+                            viewModel.updateLyricsSource(source.id, trimmedName, trimmedUrl)
+                        } else {
+                            viewModel.addLyricsSource(trimmedName, trimmedUrl)
+                        }
+                        creatingSource = false
+                        editingSource = null
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        creatingSource = false
+                        editingSource = null
+                        dialogError = null
+                    }
+                ) { Text("Cancel") }
+            }
+        )
+    }
+
+    deletingSource?.let { source ->
+        AlertDialog(
+            onDismissRequest = { deletingSource = null },
+            title = { Text("Delete Source?") },
+            text = { Text("Remove ${source.name} from this device?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteLyricsSource(source.id)
+                        deletingSource = null
+                    }
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingSource = null }) { Text("Cancel") }
             }
         )
     }
@@ -8311,6 +8613,7 @@ private fun NavidromeMiniPlayerBar(
 @Composable
 private fun NavidromeExpandedPlayerSheet(
     state: NavidromePlayerState,
+    lyricsUiState: NavidromeLyricsUiState,
     onDismiss: () -> Unit,
     onPrevious: () -> Unit,
     onPlayPause: () -> Unit,
@@ -8329,6 +8632,10 @@ private fun NavidromeExpandedPlayerSheet(
     immersiveEnabled: Boolean = false,
     materialDesignEnabled: Boolean = false,
     onAddToPlaylist: ((NavidromeTrack) -> Unit)? = null,
+    onShowLyrics: () -> Unit,
+    onDismissLyrics: () -> Unit,
+    onClearLyricsCache: () -> Unit,
+    onLyricsModeChanged: (Boolean) -> Unit,
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
@@ -8359,6 +8666,7 @@ private fun NavidromeExpandedPlayerSheet(
     }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var showTrackDetails by remember { mutableStateOf(false) }
+    var showLyricsMode by rememberSaveable { mutableStateOf(false) }
     var showOutputSheet by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
     var renderQueue by rememberSaveable { mutableStateOf(false) }
@@ -8374,6 +8682,13 @@ private fun NavidromeExpandedPlayerSheet(
         }
     }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    fun dismissLyricsMode() {
+        showLyricsMode = false
+        onDismissLyrics()
+    }
+    LaunchedEffect(showLyricsMode) {
+        onLyricsModeChanged(showLyricsMode)
+    }
     val queuePreview = remember(state.queue, state.currentIndex, track) {
         buildNavidromeQueuePreview(
             queue = state.queue,
@@ -8728,17 +9043,14 @@ private fun NavidromeExpandedPlayerSheet(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
+                NavidromeTransportIconButton(
                     onClick = onPrevious,
-                    modifier = Modifier.size(skipButtonSize)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.SkipPrevious,
-                        contentDescription = "Previous",
-                        modifier = Modifier.size(skipIconSize),
-                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                    )
-                }
+                    modifier = Modifier.size(skipButtonSize),
+                    icon = Icons.Outlined.SkipPrevious,
+                    contentDescription = "Previous",
+                    iconSize = skipIconSize,
+                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                )
                 Surface(
                     modifier = Modifier.size(transportButtonSize),
                     shape = CircleShape,
@@ -8766,17 +9078,14 @@ private fun NavidromeExpandedPlayerSheet(
                         )
                     }
                 }
-                IconButton(
+                NavidromeTransportIconButton(
                     onClick = onNext,
-                    modifier = Modifier.size(skipButtonSize)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.SkipNext,
-                        contentDescription = "Next",
-                        modifier = Modifier.size(skipIconSize),
-                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                    )
-                }
+                    modifier = Modifier.size(skipButtonSize),
+                    icon = Icons.Outlined.SkipNext,
+                    contentDescription = "Next",
+                    iconSize = skipIconSize,
+                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                )
             }
         }
         val toolRow: @Composable () -> Unit = {
@@ -8914,6 +9223,30 @@ private fun NavidromeExpandedPlayerSheet(
                                 }
                             )
                         }
+                        AppDropdownMenuItem(
+                            text = { Text("Show Lyrics") },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Outlined.Subtitles, contentDescription = null)
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                showQueue = false
+                                renderQueue = false
+                                showLyricsMode = true
+                                onShowLyrics()
+                            }
+                        )
+                        AppDropdownMenuItem(
+                            text = { Text("Clear Lyrics Cache") },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Outlined.Refresh, contentDescription = null)
+                            },
+                            onClick = {
+                                isMenuExpanded = false
+                                onClearLyricsCache()
+                                Toast.makeText(context, "Lyrics cache cleared.", Toast.LENGTH_SHORT).show()
+                            }
+                        )
                     }
                     onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
                         AppDropdownMenuItem(
@@ -9215,6 +9548,26 @@ private fun NavidromeExpandedPlayerSheet(
             hiddenPlayerContent()
         }
     }
+    if (showLyricsMode) {
+        Dialog(
+            onDismissRequest = {},
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false
+            )
+        ) {
+            NavidromeLyricsSheetContent(
+                uiState = lyricsUiState,
+                playbackPositionMs = state.positionMs,
+                coverUrl = track.coverUrl,
+                onDismiss = ::dismissLyricsMode,
+                immersiveEnabled = immersiveEnabled,
+                immersiveBaseColor = immersiveBaseColor
+            )
+        }
+    }
     if (showOutputSheet) {
         ModalBottomSheet(
             onDismissRequest = { showOutputSheet = false },
@@ -9272,6 +9625,496 @@ private fun NavidromeExpandedPlayerSheet(
 }
 
 @Composable
+private fun NavidromeLyricsSheetContent(
+    uiState: NavidromeLyricsUiState,
+    playbackPositionMs: Int,
+    coverUrl: String?,
+    onDismiss: () -> Unit,
+    immersiveEnabled: Boolean = false,
+    immersiveBaseColor: Color = Color(0xFF26343B)
+) {
+    val view = LocalView.current
+    val overlayBackgroundModel = rememberCoverImageModel(coverUrl, preferOriginalSize = true)
+    val accentDark = if (immersiveEnabled) Color.White else lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.34f)
+    val accentMid = if (immersiveEnabled) Color.White.copy(alpha = 0.92f) else lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.16f)
+    val accentSoft = if (immersiveEnabled) Color.White.copy(alpha = 0.76f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurface, 0.18f)
+    val accentMuted = if (immersiveEnabled) Color.White.copy(alpha = 0.58f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, 0.34f)
+    val closeButtonShellColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.12f)
+    } else {
+        MaterialTheme.colorScheme.surface.copy(alpha = 0.42f)
+    }
+    val closeButtonIconColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+    val loadingIndicatorColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.primary
+    val emptyStateColor = if (immersiveEnabled) Color.White.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant
+    val syncButtonColor = if (immersiveEnabled) {
+        lerp(immersiveBaseColor, Color.Black, 0.18f).copy(alpha = 0.96f)
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+    val syncButtonContentColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary
+    val syncButtonBorderColor = if (immersiveEnabled) Color.White.copy(alpha = 0.18f) else Color.Transparent
+    val lyricsWindow = remember(view) {
+        (view.parent as? DialogWindowProvider)?.window
+    }
+    val lyricsListState = rememberLazyListState()
+    val plainLyricsScrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    var autoSyncLyrics by remember(uiState.trackTitle, uiState.artistName) { mutableStateOf(true) }
+    var contentHeightPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val centerPadding = remember(contentHeightPx, density) {
+        with(density) {
+            val viewportHeightDp = contentHeightPx.toDp()
+            ((viewportHeightDp / 2f) - 28.dp).coerceAtLeast(140.dp)
+        }
+    }
+    val lyricsBottomPadding = centerPadding + 96.dp
+    val lyricsScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    autoSyncLyrics = false
+                }
+                return Offset.Zero
+            }
+        }
+    }
+    val currentLineIndex = remember(uiState.lyrics, uiState.isSynced, playbackPositionMs) {
+        if (!uiState.isSynced) {
+            -1
+        } else {
+            uiState.lyrics.indexOfLast { line ->
+                val timestampMs = line.timestampMs ?: return@indexOfLast false
+                timestampMs <= playbackPositionMs
+            }
+        }
+    }
+    val centeredVisibleIndex by remember(lyricsListState) {
+        derivedStateOf {
+            val layoutInfo = lyricsListState.layoutInfo
+            val visibleItems = layoutInfo.visibleItemsInfo
+            if (visibleItems.isEmpty()) {
+                -1
+            } else {
+                val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
+                visibleItems.minByOrNull { item ->
+                    abs((item.offset + item.size / 2) - viewportCenter)
+                }?.index ?: -1
+            }
+        }
+    }
+    val focusedLineIndex = if (uiState.isSynced) {
+        if (autoSyncLyrics) currentLineIndex.coerceAtLeast(0) else centeredVisibleIndex.coerceAtLeast(0)
+    } else {
+        -1
+    }
+    val isPreStartFocus = uiState.isSynced && autoSyncLyrics && currentLineIndex < 0 && focusedLineIndex == 0
+    DisposableEffect(lyricsWindow, view, immersiveEnabled) {
+        val window = lyricsWindow
+        if (window == null) {
+            onDispose { }
+        } else {
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            val previousStatusBarColor = window.statusBarColor
+            val previousNavigationBarColor = window.navigationBarColor
+            val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+            val previousLightNavigationBars = insetsController.isAppearanceLightNavigationBars
+            val previousNavigationBarContrastEnforced = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced
+            } else {
+                null
+            }
+            val previousStatusBarContrastEnforced = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isStatusBarContrastEnforced
+            } else {
+                null
+            }
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            @Suppress("DEPRECATION")
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = false
+                window.isStatusBarContrastEnforced = false
+            }
+            insetsController.isAppearanceLightStatusBars = !immersiveEnabled
+            insetsController.isAppearanceLightNavigationBars = !immersiveEnabled
+            onDispose {
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+                @Suppress("DEPRECATION")
+                window.statusBarColor = previousStatusBarColor
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = previousNavigationBarColor
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.isNavigationBarContrastEnforced = previousNavigationBarContrastEnforced ?: true
+                    window.isStatusBarContrastEnforced = previousStatusBarContrastEnforced ?: true
+                }
+                insetsController.isAppearanceLightStatusBars = previousLightStatusBars
+                insetsController.isAppearanceLightNavigationBars = previousLightNavigationBars
+            }
+        }
+    }
+    LaunchedEffect(uiState.isSynced, currentLineIndex, uiState.lyrics.size, autoSyncLyrics) {
+        if (!autoSyncLyrics) return@LaunchedEffect
+        if (!uiState.isSynced || uiState.lyrics.isEmpty()) return@LaunchedEffect
+        val targetIndex = currentLineIndex.coerceAtLeast(0)
+        if (targetIndex !in lyricsListState.layoutInfo.visibleItemsInfo.map { it.index }) {
+            lyricsListState.scrollToItem(targetIndex)
+            withFrameNanos { }
+        }
+        val layoutInfo = lyricsListState.layoutInfo
+        val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex } ?: return@LaunchedEffect
+        val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f
+        val itemCenter = itemInfo.offset + (itemInfo.size / 2f)
+        val delta = itemCenter - viewportCenter
+        if (abs(delta) > 1f) {
+            lyricsListState.animateScrollBy(
+                value = delta,
+                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+            )
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxSize()
+    ) {
+        AsyncImage(
+            model = overlayBackgroundModel,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(alpha = if (immersiveEnabled) 0.98f else 0.92f)
+                .blur(if (immersiveEnabled) 32.dp else 36.dp)
+        )
+        if (immersiveEnabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to immersiveBaseColor.copy(alpha = 0.34f),
+                                0.28f to immersiveBaseColor.copy(alpha = 0.26f),
+                                0.72f to immersiveBaseColor.copy(alpha = 0.18f),
+                                1.00f to immersiveBaseColor.copy(alpha = 0.28f)
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to Color.Black.copy(alpha = 0.68f),
+                                0.26f to Color.Black.copy(alpha = 0.56f),
+                                0.68f to Color.Black.copy(alpha = 0.62f),
+                                1.00f to Color.Black.copy(alpha = 0.76f)
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.10f))
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.00f to MaterialTheme.colorScheme.surface.copy(alpha = 0.76f),
+                                0.38f to MaterialTheme.colorScheme.surface.copy(alpha = 0.64f),
+                                1.00f to MaterialTheme.colorScheme.surface.copy(alpha = 0.82f)
+                            )
+                        )
+                    )
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(
+                    start = 22.dp,
+                    end = 22.dp,
+                    top = 30.dp,
+                    bottom = 18.dp
+                ),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Lyrics",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = accentDark
+                    )
+                    if (uiState.trackTitle.isNotBlank()) {
+                        Text(
+                            text = uiState.trackTitle,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = accentMid
+                        )
+                        Text(
+                            text = uiState.artistName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = accentSoft
+                        )
+                        uiState.sourceLabel?.let { sourceLabel ->
+                            Text(
+                                text = sourceLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = accentMuted
+                            )
+                        }
+                    }
+                }
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = closeButtonShellColor,
+                        tonalElevation = 0.dp
+                    ) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Outlined.Close,
+                                contentDescription = "Close lyrics",
+                                tint = closeButtonIconColor
+                            )
+                        }
+                    }
+                    if (uiState.isSynced && !autoSyncLyrics) {
+                        Surface(
+                            modifier = Modifier
+                                .clickable {
+                                    autoSyncLyrics = true
+                                    scope.launch {
+                                        lyricsListState.animateScrollToItem(currentLineIndex.coerceAtLeast(0))
+                                    }
+                                },
+                            shape = RoundedCornerShape(18.dp),
+                            color = syncButtonColor,
+                            border = BorderStroke(1.dp, syncButtonBorderColor),
+                            tonalElevation = 4.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Refresh,
+                                    contentDescription = null,
+                                    tint = syncButtonContentColor
+                                )
+                                Text(
+                                    text = "Sync Lyrics",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = syncButtonContentColor
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            when {
+                uiState.isLoading -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(32.dp),
+                            strokeWidth = 2.5.dp,
+                            color = loadingIndicatorColor
+                        )
+                    }
+                }
+
+                uiState.lyrics.isEmpty() -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = uiState.errorMessage ?: "No lyrics found.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = emptyStateColor,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                uiState.isSynced -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .onSizeChanged { contentHeightPx = it.height }
+                        ) {
+                            LazyColumn(
+                                state = lyricsListState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .nestedScroll(lyricsScrollConnection),
+                                contentPadding = PaddingValues(
+                                    top = centerPadding,
+                                    bottom = lyricsBottomPadding
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                itemsIndexed(uiState.lyrics) { index, line ->
+                                    val lineDistance = if (focusedLineIndex >= 0) {
+                                        abs(index - focusedLineIndex)
+                                    } else {
+                                        Int.MAX_VALUE
+                                    }
+                                    val isFocusedLine = index == focusedLineIndex
+                                    val targetBlurRadius = if (isFocusedLine) {
+                                        if (isPreStartFocus) 1.5.dp else 0.dp
+                                    } else {
+                                        minOf(lineDistance.toFloat() * 1.6f, 8f).dp
+                                    }
+                                    val targetScale = if (isFocusedLine) 1.08f else 0.92f
+                                    val targetColor = if (isFocusedLine) {
+                                        if (immersiveEnabled) {
+                                            if (isPreStartFocus) Color.White.copy(alpha = 0.88f) else Color.White
+                                        } else {
+                                            if (isPreStartFocus) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
+                                            } else {
+                                                MaterialTheme.colorScheme.primary
+                                            }
+                                        }
+                                    } else {
+                                        val alpha = when (lineDistance) {
+                                            0 -> 1f
+                                            1 -> 0.42f
+                                            2 -> 0.22f
+                                            else -> 0.08f
+                                        }
+                                        if (immersiveEnabled) {
+                                            Color.White.copy(alpha = alpha)
+                                        } else {
+                                            Color.Black.copy(alpha = alpha)
+                                        }
+                                    }
+                                    val lyricAnimationSpec = remember(autoSyncLyrics) {
+                                        tween<Float>(
+                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            easing = FastOutSlowInEasing
+                                        )
+                                    }
+                                    val blurRadius by animateDpAsState(
+                                        targetValue = targetBlurRadius,
+                                        animationSpec = tween(
+                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            easing = FastOutSlowInEasing
+                                        ),
+                                        label = "navidromeLyricBlur"
+                                    )
+                                    val textScale by animateFloatAsState(
+                                        targetValue = targetScale,
+                                        animationSpec = lyricAnimationSpec,
+                                        label = "navidromeLyricScale"
+                                    )
+                                    val textColor by animateColorAsState(
+                                        targetValue = targetColor,
+                                        animationSpec = tween(
+                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            easing = FastOutSlowInEasing
+                                        ),
+                                        label = "navidromeLyricColor"
+                                    )
+                                    Text(
+                                        text = line.text,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 26.dp)
+                                            .graphicsLayer {
+                                                scaleX = textScale
+                                                scaleY = textScale
+                                            }
+                                            .blur(blurRadius),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = if (isFocusedLine) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = textColor,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 34.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(plainLyricsScrollState),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        uiState.lyrics.forEach { line ->
+                            Text(
+                                text = line.text,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 18.dp),
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = if (immersiveEnabled) {
+                                    Color.White.copy(alpha = 0.92f)
+                                } else {
+                                    Color.Black.copy(alpha = 0.86f)
+                                },
+                                lineHeight = 34.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun NavidromePlayerToolButton(
     modifier: Modifier = Modifier,
     icon: ImageVector,
@@ -9309,6 +10152,39 @@ private fun NavidromePlayerToolButton(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+@Composable
+private fun NavidromeTransportIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    iconSize: Dp
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1f,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "navidromeTransportScale"
+    )
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        },
+        interactionSource = interactionSource
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(iconSize),
+            tint = tint
+        )
     }
 }
 

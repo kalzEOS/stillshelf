@@ -68,6 +68,17 @@ data class NavidromeTrackDto(
     val bitRateKbps: Int?
 )
 
+data class NavidromeLyricsLineDto(
+    val startMs: Int?,
+    val value: String
+)
+
+data class NavidromeStructuredLyricsDto(
+    val synced: Boolean,
+    val offsetMs: Int?,
+    val lines: List<NavidromeLyricsLineDto>
+)
+
 data class NavidromePlaylistDto(
     val id: String,
     val name: String,
@@ -434,6 +445,42 @@ class NavidromeApi @Inject constructor(
         }
     }
 
+    suspend fun getLyricsBySongId(
+        auth: NavidromeAuth,
+        songId: String
+    ): Result<List<NavidromeStructuredLyricsDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/getLyricsBySongId.view",
+                    query = mapOf("id" to songId)
+                )
+            )
+            parseStructuredLyrics(root.optJSONObject("lyricsList")?.optJSONArray("structuredLyrics"))
+        }
+    }
+
+    suspend fun getLyrics(
+        auth: NavidromeAuth,
+        artistName: String,
+        trackTitle: String
+    ): Result<String?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(
+                buildRequest(
+                    auth = auth,
+                    path = "rest/getLyrics.view",
+                    query = mapOf(
+                        "artist" to artistName,
+                        "title" to trackTitle
+                    )
+                )
+            )
+            parsePlainLyrics(root)
+        }
+    }
+
     fun coverArtUrl(auth: NavidromeAuth, coverArtId: String?, size: Int = 600): String? {
         val id = coverArtId?.trim()?.takeIf { it.isNotBlank() } ?: return null
         return buildUrl(
@@ -651,6 +698,53 @@ class NavidromeApi @Inject constructor(
             contentType = item.optString("contentType").ifBlank { null },
             bitRateKbps = bitRateKbps
         )
+    }
+
+    private fun parseStructuredLyrics(items: JSONArray?): List<NavidromeStructuredLyricsDto> {
+        if (items == null) return emptyList()
+        val results = mutableListOf<NavidromeStructuredLyricsDto>()
+        repeat(items.length()) { index ->
+            val item = items.optJSONObject(index) ?: return@repeat
+            val lines = buildList {
+                val sourceLines = item.optJSONArray("line") ?: JSONArray()
+                repeat(sourceLines.length()) { lineIndex ->
+                    val line = sourceLines.optJSONObject(lineIndex) ?: return@repeat
+                    val value = line.optString("value").trim()
+                    if (value.isBlank()) return@repeat
+                    add(
+                        NavidromeLyricsLineDto(
+                            startMs = line.takeIf { it.has("start") }
+                                ?.optInt("start")
+                                ?.takeIf { it >= 0 },
+                            value = value
+                        )
+                    )
+                }
+            }
+            if (lines.isEmpty()) return@repeat
+            results += NavidromeStructuredLyricsDto(
+                synced = item.optBoolean("synced", false),
+                offsetMs = item.takeIf { it.has("offset") }?.optInt("offset"),
+                lines = lines
+            )
+        }
+        return results
+    }
+
+    private fun parsePlainLyrics(root: JSONObject): String? {
+        val directNode = root.optJSONObject("lyrics")
+        val arrayNode = root.optJSONArray("lyrics")?.optJSONObject(0)
+        val value = sequenceOf(directNode, arrayNode)
+            .mapNotNull { node ->
+                node?.optString("value")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: node?.optString("lyrics")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+            }
+            .firstOrNull()
+        return value
     }
 
     private fun parsePlaylist(item: JSONObject): NavidromePlaylistDto {

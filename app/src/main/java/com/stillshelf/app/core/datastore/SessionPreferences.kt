@@ -13,6 +13,7 @@ import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NavidromeServer
 import com.stillshelf.app.core.model.NavidromeEqualizerProfile
+import com.stillshelf.app.core.model.NavidromeLyricsSource
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.model.ServerConnectionMode
@@ -25,10 +26,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 import org.json.JSONArray
 import org.json.JSONObject
+
+private const val DEFAULT_NAVIDROME_LYRICS_SOURCE_ID = "default-lrclib"
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -39,6 +43,9 @@ class SessionPreferences @Inject constructor(
     private val activeLibraryIdKey = stringPreferencesKey("active_library_id")
     private val selectedBackendKey = stringPreferencesKey("selected_backend")
     private val navidromeServersPayloadKey = stringPreferencesKey("navidrome_servers_payload")
+    private val navidromeLyricsSourcesPayloadKey = stringPreferencesKey("navidrome_lyrics_sources_payload")
+    private val activeNavidromeLyricsSourceIdKey = stringPreferencesKey("active_navidrome_lyrics_source_id")
+    private val navidromeLyricsSourcesSeededKey = booleanPreferencesKey("navidrome_lyrics_sources_seeded")
     private val activeNavidromeServerIdKey = stringPreferencesKey("active_navidrome_server_id")
     private val navidromeActiveLibraryIdsKey = stringPreferencesKey("navidrome_active_library_ids")
     private val navidromeServerNameKey = stringPreferencesKey("navidrome_server_name")
@@ -67,6 +74,7 @@ class SessionPreferences @Inject constructor(
     private val cachedNavidromePlaybackSessionKey = stringPreferencesKey("cached_navidrome_playback_session_key")
     private val cachedNavidromePlaybackPayloadKey = stringPreferencesKey("cached_navidrome_playback_payload")
     private val cachedNavidromePlaybackSavedAtKey = longPreferencesKey("cached_navidrome_playback_saved_at")
+    private val cachedNavidromeLyricsPayloadKey = stringPreferencesKey("cached_navidrome_lyrics_payload")
     private val requiresLibrarySelectionKey = booleanPreferencesKey("requires_library_selection")
     private val lastPlayedBookIdKey = stringPreferencesKey("last_played_book_id")
     private val hiddenBrowseSectionsKey = stringPreferencesKey("hidden_browse_sections")
@@ -119,6 +127,12 @@ class SessionPreferences @Inject constructor(
             replay = 1
         )
 
+    init {
+        scope.launch {
+            ensureDefaultNavidromeLyricsSourceSeeded()
+        }
+    }
+
     suspend fun setActiveServerId(serverId: String?) {
         dataStore.edit { prefs ->
             if (serverId == null) {
@@ -156,6 +170,48 @@ class SessionPreferences @Inject constructor(
             } else {
                 prefs[navidromeServersPayloadKey] = encodeNavidromeServers(servers)
             }
+        }
+    }
+
+    suspend fun setNavidromeLyricsSources(sources: List<NavidromeLyricsSource>) {
+        dataStore.edit { prefs ->
+            if (sources.isEmpty()) {
+                prefs.remove(navidromeLyricsSourcesPayloadKey)
+            } else {
+                prefs[navidromeLyricsSourcesPayloadKey] = encodeNavidromeLyricsSources(sources)
+            }
+        }
+    }
+
+    suspend fun setActiveNavidromeLyricsSourceId(sourceId: String?) {
+        dataStore.edit { prefs ->
+            if (sourceId.isNullOrBlank()) {
+                prefs.remove(activeNavidromeLyricsSourceIdKey)
+            } else {
+                prefs[activeNavidromeLyricsSourceIdKey] = sourceId.trim()
+            }
+        }
+    }
+
+    suspend fun ensureDefaultNavidromeLyricsSourceSeeded() {
+        dataStore.edit { prefs ->
+            if (prefs[navidromeLyricsSourcesSeededKey] == true) return@edit
+
+            val existingSources = parseNavidromeLyricsSources(prefs[navidromeLyricsSourcesPayloadKey])
+            if (existingSources.isEmpty()) {
+                val defaultSource = NavidromeLyricsSource(
+                    id = DEFAULT_NAVIDROME_LYRICS_SOURCE_ID,
+                    name = "LRCLIB",
+                    baseUrl = "https://lrclib.net",
+                    createdAt = 0L
+                )
+                prefs[navidromeLyricsSourcesPayloadKey] = encodeNavidromeLyricsSources(listOf(defaultSource))
+                if (prefs[activeNavidromeLyricsSourceIdKey].isNullOrBlank()) {
+                    prefs[activeNavidromeLyricsSourceIdKey] = defaultSource.id
+                }
+            }
+
+            prefs[navidromeLyricsSourcesSeededKey] = true
         }
     }
 
@@ -281,6 +337,62 @@ class SessionPreferences @Inject constructor(
             prefs.remove(cachedNavidromePlaybackSessionKey)
             prefs.remove(cachedNavidromePlaybackPayloadKey)
             prefs.remove(cachedNavidromePlaybackSavedAtKey)
+        }
+    }
+
+    suspend fun getCachedNavidromeLyrics(cacheKey: String): CachedNavidromeLyricsPayload? {
+        val normalizedCacheKey = cacheKey.trim()
+        if (normalizedCacheKey.isBlank()) return null
+        val prefs = dataStore.data.first()
+        val entries = parseCachedNavidromeLyricsEntries(prefs[cachedNavidromeLyricsPayloadKey])
+        return entries[normalizedCacheKey]
+    }
+
+    suspend fun setCachedNavidromeLyrics(cacheKey: String, payload: String, savedAtMs: Long) {
+        val normalizedCacheKey = cacheKey.trim()
+        if (normalizedCacheKey.isBlank() || payload.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseCachedNavidromeLyricsEntries(prefs[cachedNavidromeLyricsPayloadKey]).toMutableMap()
+            current[normalizedCacheKey] = CachedNavidromeLyricsPayload(
+                cacheKey = normalizedCacheKey,
+                payload = payload,
+                savedAtMs = savedAtMs
+            )
+            prefs[cachedNavidromeLyricsPayloadKey] = encodeCachedNavidromeLyricsEntries(current)
+        }
+    }
+
+    suspend fun clearCachedNavidromeLyrics(cacheKey: String? = null) {
+        val normalizedCacheKey = cacheKey?.trim()
+        dataStore.edit { prefs ->
+            if (normalizedCacheKey.isNullOrBlank()) {
+                prefs.remove(cachedNavidromeLyricsPayloadKey)
+                return@edit
+            }
+            val current = parseCachedNavidromeLyricsEntries(prefs[cachedNavidromeLyricsPayloadKey]).toMutableMap()
+            current.remove(normalizedCacheKey)
+            if (current.isEmpty()) {
+                prefs.remove(cachedNavidromeLyricsPayloadKey)
+            } else {
+                prefs[cachedNavidromeLyricsPayloadKey] = encodeCachedNavidromeLyricsEntries(current)
+            }
+        }
+    }
+
+    suspend fun clearCachedNavidromeLyricsByPrefix(cacheKeyPrefix: String) {
+        val normalizedPrefix = cacheKeyPrefix.trim()
+        if (normalizedPrefix.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseCachedNavidromeLyricsEntries(prefs[cachedNavidromeLyricsPayloadKey])
+            val remaining = removeCachedNavidromeLyricsEntriesByPrefix(
+                values = current,
+                cacheKeyPrefix = normalizedPrefix
+            )
+            if (remaining.isEmpty()) {
+                prefs.remove(cachedNavidromeLyricsPayloadKey)
+            } else {
+                prefs[cachedNavidromeLyricsPayloadKey] = encodeCachedNavidromeLyricsEntries(remaining)
+            }
         }
     }
 
@@ -1115,6 +1227,30 @@ class SessionPreferences @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
+    private fun parseNavidromeLyricsSources(raw: String?): List<NavidromeLyricsSource> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val source = JSONArray(raw)
+            buildList {
+                for (index in 0 until source.length()) {
+                    val item = source.optJSONObject(index) ?: continue
+                    val id = item.optString("id").trim()
+                    val name = item.optString("name").trim()
+                    val baseUrl = item.optString("baseUrl").trim().removeSuffix("/")
+                    if (id.isBlank() || name.isBlank() || baseUrl.isBlank()) continue
+                    add(
+                        NavidromeLyricsSource(
+                            id = id,
+                            name = name,
+                            baseUrl = baseUrl,
+                            createdAt = item.optLong("createdAt").coerceAtLeast(0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun parseNavidromeFavoriteTracksBySession(
         raw: String?
     ): Map<String, List<NavidromeTrack>> {
@@ -1180,6 +1316,43 @@ class SessionPreferences @Inject constructor(
                 )
             }
         }.toString()
+    }
+
+    private fun encodeNavidromeLyricsSources(values: List<NavidromeLyricsSource>): String {
+        return values.mapNotNull { source ->
+            val id = source.id.trim()
+            val name = source.name.trim()
+            val baseUrl = source.baseUrl.trim().removeSuffix("/")
+            if (id.isBlank() || name.isBlank() || baseUrl.isBlank()) {
+                null
+            } else {
+                """{"id":"${escapeJsonString(id)}","name":"${escapeJsonString(name)}","baseUrl":"${escapeJsonString(baseUrl)}","createdAt":${source.createdAt.coerceAtLeast(0L)}}"""
+            }
+        }.joinToString(prefix = "[", postfix = "]")
+    }
+
+    private fun escapeJsonString(value: String): String {
+        return buildString(value.length + 8) {
+            value.forEach { char ->
+                when (char) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\b' -> append("\\b")
+                    '\u000C' -> append("\\f")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> {
+                        if (char.code < 0x20) {
+                            append("\\u")
+                            append(char.code.toString(16).padStart(4, '0'))
+                        } else {
+                            append(char)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun encodeNavidromeFavoriteTracksBySession(
@@ -1405,12 +1578,67 @@ class SessionPreferences @Inject constructor(
         return root.toString()
     }
 
+    private fun parseCachedNavidromeLyricsEntries(
+        raw: String?
+    ): Map<String, CachedNavidromeLyricsPayload> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(raw)
+            buildMap {
+                root.keys().forEach { key ->
+                    val normalizedKey = key.trim()
+                    if (normalizedKey.isBlank()) return@forEach
+                    val node = root.optJSONObject(key) ?: return@forEach
+                    val payload = node.optString("payload").trim()
+                    if (payload.isBlank()) return@forEach
+                    put(
+                        normalizedKey,
+                        CachedNavidromeLyricsPayload(
+                            cacheKey = normalizedKey,
+                            payload = payload,
+                            savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeCachedNavidromeLyricsEntries(
+        values: Map<String, CachedNavidromeLyricsPayload>
+    ): String {
+        val root = JSONObject()
+        values.forEach { (key, value) ->
+            val normalizedKey = key.trim()
+            val normalizedPayload = value.payload.trim()
+            if (normalizedKey.isBlank() || normalizedPayload.isBlank()) return@forEach
+            root.put(
+                normalizedKey,
+                JSONObject()
+                    .put("payload", normalizedPayload)
+                    .put("savedAtMs", value.savedAtMs.coerceAtLeast(0L))
+            )
+        }
+        return root.toString()
+    }
+
+    internal fun removeCachedNavidromeLyricsEntriesByPrefix(
+        values: Map<String, CachedNavidromeLyricsPayload>,
+        cacheKeyPrefix: String
+    ): Map<String, CachedNavidromeLyricsPayload> {
+        val normalizedPrefix = cacheKeyPrefix.trim()
+        if (normalizedPrefix.isBlank()) return values
+        return values.filterKeys { key -> !key.startsWith(normalizedPrefix) }
+    }
+
     private fun Preferences.toSessionPreferenceState(): SessionPreferenceState {
         return SessionPreferenceState(
             activeServerId = this[activeServerIdKey],
             activeLibraryId = this[activeLibraryIdKey],
             selectedBackend = BackendProvider.fromStorageValue(this[selectedBackendKey]),
             navidromeServers = parseNavidromeServers(this[navidromeServersPayloadKey]),
+            navidromeLyricsSources = parseNavidromeLyricsSources(this[navidromeLyricsSourcesPayloadKey]),
+            activeNavidromeLyricsSourceId = this[activeNavidromeLyricsSourceIdKey],
             activeNavidromeServerId = this[activeNavidromeServerIdKey],
             navidromeActiveLibraryIds = parseStringMap(this[navidromeActiveLibraryIdsKey]),
             navidromeServerName = this[navidromeServerNameKey],
@@ -1485,6 +1713,8 @@ data class SessionPreferenceState(
     val activeLibraryId: String?,
     val selectedBackend: BackendProvider? = null,
     val navidromeServers: List<NavidromeServer> = emptyList(),
+    val navidromeLyricsSources: List<NavidromeLyricsSource> = emptyList(),
+    val activeNavidromeLyricsSourceId: String? = null,
     val activeNavidromeServerId: String? = null,
     val navidromeActiveLibraryIds: Map<String, String> = emptyMap(),
     val navidromeServerName: String? = null,
@@ -1561,6 +1791,12 @@ data class CachedNavidromeHomePayload(
 
 data class CachedNavidromePlaybackSnapshot(
     val sessionKey: String?,
+    val payload: String,
+    val savedAtMs: Long
+)
+
+data class CachedNavidromeLyricsPayload(
+    val cacheKey: String,
     val payload: String,
     val savedAtMs: Long
 )

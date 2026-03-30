@@ -145,6 +145,7 @@ object NavidromeRoute {
     const val SEARCH = "navidrome/search"
     const val SETTINGS = "navidrome/settings"
     const val EQUALIZER = "navidrome/settings/equalizer"
+    const val LYRICS_SOURCES = "navidrome/settings/lyrics-sources"
     const val SERVERS = "navidrome/settings/servers"
     const val CUSTOMIZE = "navidrome/customize"
     const val ARTIST_ID_ARG = "artistId"

@@ -5,6 +5,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.CachedNavidromeHomePayload
+import com.stillshelf.app.core.datastore.CachedNavidromeLyricsPayload
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.ActiveEndpointHealth
 import com.stillshelf.app.core.model.ActiveServerConnectionStatus
@@ -16,6 +17,9 @@ import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.model.NavidromeHome
 import com.stillshelf.app.core.model.NavidromeLibrary
 import com.stillshelf.app.core.model.NavidromeLibraryResyncProgress
+import com.stillshelf.app.core.model.NavidromeLyrics
+import com.stillshelf.app.core.model.NavidromeLyricsLine
+import com.stillshelf.app.core.model.NavidromeLyricsSource
 import com.stillshelf.app.core.model.NavidromePlaylist
 import com.stillshelf.app.core.model.NavidromePlaylistDetail
 import com.stillshelf.app.core.model.NavidromeRadio
@@ -38,6 +42,7 @@ import com.stillshelf.app.data.api.NavidromeArtistDetailDto
 import com.stillshelf.app.data.api.NavidromeAuth
 import com.stillshelf.app.data.api.NavidromePlaylistDetailDto
 import com.stillshelf.app.data.api.NavidromeRadioDto
+import com.stillshelf.app.data.api.NavidromeStructuredLyricsDto
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +53,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -59,6 +65,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -84,12 +93,41 @@ data class NavidromePlaylistAddOutcome(
     val duplicateCount: Int
 )
 
+private data class NavidromeLyricsLookup(
+    val artistName: String,
+    val trackName: String,
+    val albumName: String? = null,
+    val durationSeconds: Int? = null
+)
+
+internal data class NavidromeLyricsCacheKeys(
+    val sourceScopedKey: String,
+    val fallbackKey: String
+)
+
+internal fun buildNavidromeLyricsCacheKeys(
+    cachePrefix: String,
+    trackId: String,
+    activeLyricsSourceId: String?
+): NavidromeLyricsCacheKeys {
+    val normalizedSourceId = activeLyricsSourceId?.trim().orEmpty().ifBlank { "none" }
+    return NavidromeLyricsCacheKeys(
+        sourceScopedKey = "${cachePrefix}lyrics:${trackId}:source:$normalizedSourceId",
+        fallbackKey = "${cachePrefix}lyrics:${trackId}:fallback"
+    )
+}
+
+internal fun buildNavidromeLyricsCachePrefixForTrack(cachePrefix: String, trackId: String): String {
+    return "${cachePrefix}lyrics:${trackId}:"
+}
+
 @Singleton
 class NavidromeRepository @Inject constructor(
     private val navidromeApi: NavidromeApi,
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
-    private val networkMonitor: NetworkMonitor
+    private val networkMonitor: NetworkMonitor,
+    private val okHttpClient: OkHttpClient
 ) {
     private companion object {
         const val NAVIDROME_PASSWORD_KEY = "navidrome_password"
@@ -130,6 +168,7 @@ class NavidromeRepository @Inject constructor(
     private val albumDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromeAlbumDetail>>()
     private val playlistDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromePlaylistDetail>>()
     private val searchCache = mutableMapOf<String, TimedCacheEntry<NavidromeSearchResults>>()
+    private val lyricsCache = mutableMapOf<String, TimedCacheEntry<NavidromeLyrics>>()
     private val mutableActiveConnectionStatus = MutableStateFlow<ActiveServerConnectionStatus?>(null)
     private val mutableEndpointHealth = MutableStateFlow<ActiveEndpointHealth?>(null)
     private val resolvedConnectionsByServerId = mutableMapOf<String, ResolvedNavidromeConnection>()
@@ -1130,6 +1169,113 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(songs)
     }
 
+    suspend fun fetchLyrics(track: NavidromeTrack): AppResult<NavidromeLyrics> = withAuth { auth ->
+        if (track.id.startsWith("radio:")) {
+            return@withAuth AppResult.Error("Lyrics are not available for radio stations.")
+        }
+
+        val preferencesState = sessionPreferences.state.first()
+        val activeLyricsSourceId = preferencesState.activeNavidromeLyricsSourceId
+        val cacheKeys = buildNavidromeLyricsCacheKeys(
+            cachePrefix = cachePrefix(auth),
+            trackId = track.id,
+            activeLyricsSourceId = activeLyricsSourceId
+        )
+        val sourceScopedCacheKey = cacheKeys.sourceScopedKey
+        val fallbackCacheKey = cacheKeys.fallbackKey
+        getAnyCache(lyricsCache, sourceScopedCacheKey)?.let { cached ->
+            if (sourceScopedCacheKey != fallbackCacheKey) {
+                cacheResolvedLyrics(fallbackCacheKey, cached)
+            }
+            return@withAuth AppResult.Success(cached)
+        }
+        sessionPreferences.getCachedNavidromeLyrics(sourceScopedCacheKey)
+            ?.let(::parseLyricsCachePayload)
+            ?.also { cached ->
+                putCache(lyricsCache, sourceScopedCacheKey, cached)
+                if (sourceScopedCacheKey != fallbackCacheKey) {
+                    cacheResolvedLyrics(fallbackCacheKey, cached)
+                }
+                return@withAuth AppResult.Success(cached)
+            }
+        getAnyCache(lyricsCache, fallbackCacheKey)?.let { cached ->
+            return@withAuth AppResult.Success(cached)
+        }
+        sessionPreferences.getCachedNavidromeLyrics(fallbackCacheKey)
+            ?.let(::parseLyricsCachePayload)
+            ?.also { cached ->
+                putCache(lyricsCache, fallbackCacheKey, cached)
+                return@withAuth AppResult.Success(cached)
+            }
+
+        navidromeApi.getLyricsBySongId(auth, track.id)
+            .getOrNull()
+            .orEmpty()
+            .toModel()
+            ?.copy(sourceLabel = "Embedded lyrics")
+            ?.let {
+                cacheResolvedLyrics(sourceScopedCacheKey, it)
+                cacheResolvedLyrics(fallbackCacheKey, it)
+                return@withAuth AppResult.Success(it)
+            }
+
+        navidromeApi.getLyrics(auth, track.artistName, track.title)
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::plainLyricsToModel)
+            ?.copy(sourceLabel = "Embedded lyrics")
+            ?.let {
+                cacheResolvedLyrics(sourceScopedCacheKey, it)
+                cacheResolvedLyrics(fallbackCacheKey, it)
+                return@withAuth AppResult.Success(it)
+            }
+
+        val externalSource = resolveActiveLyricsSource(preferencesState)
+        val externalLyrics = externalSource?.let { source ->
+            fetchExternalLyrics(
+                source = source,
+                track = track
+            )
+        }
+        if (externalLyrics != null) {
+            cacheResolvedLyrics(sourceScopedCacheKey, externalLyrics)
+            cacheResolvedLyrics(fallbackCacheKey, externalLyrics)
+            return@withAuth AppResult.Success(externalLyrics)
+        }
+        val netEaseLyrics = fetchNetEaseLyrics(track)
+            ?: return@withAuth AppResult.Error("No lyrics found.")
+        cacheResolvedLyrics(sourceScopedCacheKey, netEaseLyrics)
+        cacheResolvedLyrics(fallbackCacheKey, netEaseLyrics)
+        AppResult.Success(netEaseLyrics)
+    }
+
+    suspend fun clearLyricsCache(track: NavidromeTrack? = null) {
+        if (track == null) {
+            clearAllLyricsCache()
+            return
+        }
+        val auth = currentAuth() ?: run {
+            clearAllLyricsCache()
+            return
+        }
+        val trackCachePrefix = buildNavidromeLyricsCachePrefixForTrack(
+            cachePrefix = cachePrefix(auth),
+            trackId = track.id
+        )
+        cacheMutex.withLock {
+            lyricsCache.keys.removeAll { key -> key.startsWith(trackCachePrefix) }
+        }
+        sessionPreferences.clearCachedNavidromeLyricsByPrefix(trackCachePrefix)
+    }
+
+    private suspend fun clearAllLyricsCache() {
+        cacheMutex.withLock {
+            lyricsCache.clear()
+        }
+        sessionPreferences.clearCachedNavidromeLyrics()
+    }
+
     suspend fun refreshPlayableTracks(tracks: List<NavidromeTrack>): AppResult<List<NavidromeTrack>> {
         val auth = currentAuth(requireFreshConnection = true)
             ?: return AppResult.Error("Navidrome session expired. Please sign in again.")
@@ -1497,6 +1643,420 @@ class NavidromeRepository @Inject constructor(
         return navidromeApi.testServerConnection(baseUrl).isSuccess
     }
 
+    private fun resolveActiveLyricsSource(
+        state: com.stillshelf.app.core.datastore.SessionPreferenceState
+    ): NavidromeLyricsSource? {
+        val requestedId = state.activeNavidromeLyricsSourceId
+        return state.navidromeLyricsSources.firstOrNull { it.id == requestedId }
+            ?: state.navidromeLyricsSources.firstOrNull()
+    }
+
+    private fun List<NavidromeStructuredLyricsDto>.toModel(): NavidromeLyrics? {
+        val primary = firstOrNull { it.lines.isNotEmpty() && it.synced }
+            ?: firstOrNull { it.lines.isNotEmpty() }
+            ?: return null
+        val lines = primary.lines.map { line ->
+            val baseTimestamp = line.startMs?.coerceAtLeast(0)
+            val offset = primary.offsetMs?.takeIf { it >= 0 }
+            NavidromeLyricsLine(
+                timestampMs = if (baseTimestamp != null) {
+                    (baseTimestamp + (offset ?: 0)).coerceAtLeast(0)
+                } else {
+                    null
+                },
+                text = line.value.trim()
+            )
+        }.filter { it.text.isNotBlank() }
+        if (lines.isEmpty()) return null
+        return NavidromeLyrics(
+            lines = lines,
+            sourceLabel = "Lyrics",
+            isSynced = primary.synced && lines.any { it.timestampMs != null }
+        )
+    }
+
+    private fun plainLyricsToModel(text: String): NavidromeLyrics? {
+        val lines = text.lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { NavidromeLyricsLine(timestampMs = null, text = it) }
+        if (lines.isEmpty()) return null
+        return NavidromeLyrics(
+            lines = lines,
+            sourceLabel = "Lyrics",
+            isSynced = false
+        )
+    }
+
+    private suspend fun fetchExternalLyrics(
+        source: NavidromeLyricsSource,
+        track: NavidromeTrack
+    ): NavidromeLyrics? {
+        val normalizedArtist = normalizeLyricsArtist(track.artistName)
+        val normalizedTrack = normalizeLyricsTrack(track.title)
+        val normalizedAlbum = normalizeLyricsAlbum(track.albumName)
+        val compactArtist = compactLyricsField(normalizedArtist)
+        val compactTrack = compactLyricsField(normalizedTrack)
+        val compactAlbum = compactLyricsField(normalizedAlbum)
+        val lookups = buildList {
+            add(
+                NavidromeLyricsLookup(
+                    artistName = track.artistName,
+                    trackName = track.title,
+                    albumName = track.albumName,
+                    durationSeconds = track.durationSeconds
+                )
+            )
+            add(
+                NavidromeLyricsLookup(
+                    artistName = track.artistName,
+                    trackName = track.title,
+                    albumName = track.albumName,
+                    durationSeconds = null
+                )
+            )
+            add(
+                NavidromeLyricsLookup(
+                    artistName = track.artistName,
+                    trackName = track.title,
+                    albumName = null,
+                    durationSeconds = null
+                )
+            )
+            if (normalizedArtist != track.artistName || normalizedTrack != track.title || normalizedAlbum != track.albumName) {
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = normalizedArtist,
+                        trackName = normalizedTrack,
+                        albumName = normalizedAlbum,
+                        durationSeconds = track.durationSeconds
+                    )
+                )
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = normalizedArtist,
+                        trackName = normalizedTrack,
+                        albumName = normalizedAlbum,
+                        durationSeconds = null
+                    )
+                )
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = normalizedArtist,
+                        trackName = normalizedTrack,
+                        albumName = null,
+                        durationSeconds = null
+                    )
+                )
+            }
+            if (compactArtist.isNotBlank() && compactTrack.isNotBlank()) {
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = compactArtist,
+                        trackName = compactTrack,
+                        albumName = compactAlbum.ifBlank { null },
+                        durationSeconds = track.durationSeconds
+                    )
+                )
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = compactArtist,
+                        trackName = compactTrack,
+                        albumName = compactAlbum.ifBlank { null },
+                        durationSeconds = null
+                    )
+                )
+                add(
+                    NavidromeLyricsLookup(
+                        artistName = compactArtist,
+                        trackName = compactTrack,
+                        albumName = null,
+                        durationSeconds = null
+                    )
+                )
+            }
+        }.distinct()
+
+        lookups.forEach { lookup ->
+            fetchExactExternalLyrics(source, lookup)?.let { return it }
+        }
+        lookups.forEach { lookup ->
+            fetchSearchedExternalLyrics(source, lookup)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun fetchExactExternalLyrics(
+        source: NavidromeLyricsSource,
+        lookup: NavidromeLyricsLookup
+    ): NavidromeLyrics? {
+        val requestUrl = source.baseUrl.toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addPathSegments("api/get")
+            ?.addQueryParameter("artist_name", lookup.artistName)
+            ?.addQueryParameter("track_name", lookup.trackName)
+            ?.apply {
+                lookup.albumName?.takeIf { it.isNotBlank() }?.let { addQueryParameter("album_name", it) }
+            }
+            ?.apply {
+                lookup.durationSeconds?.takeIf { it > 0 }?.let { addQueryParameter("duration", it.toString()) }
+            }
+            ?.build()
+            ?: return null
+        return executeExternalLyricsRequest(source, requestUrl.toString(), expectArray = false)
+    }
+
+    private suspend fun fetchSearchedExternalLyrics(
+        source: NavidromeLyricsSource,
+        lookup: NavidromeLyricsLookup
+    ): NavidromeLyrics? {
+        val requestUrl = source.baseUrl.toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addPathSegments("api/search")
+            ?.addQueryParameter("track_name", lookup.trackName)
+            ?.addQueryParameter("artist_name", lookup.artistName)
+            ?.apply {
+                lookup.albumName?.takeIf { it.isNotBlank() }?.let { addQueryParameter("album_name", it) }
+            }
+            ?.build()
+            ?: return null
+        return executeExternalLyricsRequest(source, requestUrl.toString(), expectArray = true)
+    }
+
+    private suspend fun executeExternalLyricsRequest(
+        source: NavidromeLyricsSource,
+        requestUrl: String,
+        expectArray: Boolean
+    ): NavidromeLyrics? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(requestUrl)
+            .get()
+            .header("User-Agent", "StillShelf Navidrome Client")
+            .header("Accept", "application/json")
+            .build()
+
+        runCatching {
+            okHttpClient.newCall(request).execute().use { response ->
+                if (response.code == 404) return@use null
+                if (!response.isSuccessful) return@use null
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@use null
+                if (expectArray) {
+                    parseExternalLyricsSearchResponse(source, body)
+                } else {
+                    parseExternalLyricsResponse(source, body)
+                }
+            }
+        }.getOrNull()
+    }
+
+    private fun parseExternalLyricsResponse(
+        source: NavidromeLyricsSource,
+        body: String
+    ): NavidromeLyrics? {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        if (root.isInstrumentalEntry()) return null
+        val syncedLyrics = root.optString("syncedLyrics").trim().takeIf { it.isNotBlank() }
+        if (syncedLyrics != null) {
+            val syncedLines = syncedLyrics.lines()
+                .mapNotNull(::parseSyncedLyricsLine)
+            if (syncedLines.isNotEmpty()) {
+                return NavidromeLyrics(
+                    lines = syncedLines,
+                    sourceLabel = source.name,
+                    isSynced = true
+                )
+            }
+        }
+        val plainLyrics = root.optString("plainLyrics").trim().takeIf { it.isNotBlank() } ?: return null
+        return plainLyricsToModel(plainLyrics)?.copy(sourceLabel = source.name)
+    }
+
+    private fun parseExternalLyricsSearchResponse(
+        source: NavidromeLyricsSource,
+        body: String
+    ): NavidromeLyrics? {
+        val results = runCatching { JSONArray(body) }.getOrNull() ?: return null
+        for (index in 0 until results.length()) {
+            val entry = results.optJSONObject(index) ?: continue
+            if (entry.isInstrumentalEntry()) continue
+            parseExternalLyricsResponse(source, entry.toString())?.let { return it }
+        }
+        return null
+    }
+
+    private fun JSONObject.isInstrumentalEntry(): Boolean {
+        return when (val instrumental = opt("instrumental")) {
+            is Boolean -> instrumental
+            is Number -> instrumental.toInt() != 0
+            is String -> instrumental.equals("true", ignoreCase = true) || instrumental == "1"
+            else -> false
+        }
+    }
+
+    private fun normalizeLyricsArtist(raw: String): String {
+        return raw
+            .substringBefore(" feat.", missingDelimiterValue = raw)
+            .substringBefore(" ft.", missingDelimiterValue = raw)
+            .substringBefore(" featuring ", missingDelimiterValue = raw)
+            .substringBefore(" with ", missingDelimiterValue = raw)
+            .substringBefore(" x ", missingDelimiterValue = raw)
+            .substringBefore(";")
+            .substringBefore(",")
+            .replace("&", "and")
+            .normalizeLyricsField()
+    }
+
+    private fun normalizeLyricsTrack(raw: String): String {
+        return raw
+            .replace(Regex("""^\d+\s*[-.:]\s*"""), "")
+            .replace(Regex("""^\d+\s+"""), "")
+            .substringBefore(" - ")
+            .substringBefore(" — ")
+            .substringBefore(" – ")
+            .replace(Regex("""\s*\(([^)]*(live|remaster|remastered|version|edit|mono|stereo|deluxe|explicit)[^)]*)\)""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*\[([^\]]*(live|remaster|remastered|version|edit|mono|stereo|deluxe|explicit)[^\]]*)]""", RegexOption.IGNORE_CASE), "")
+            .normalizeLyricsField()
+    }
+
+    private fun normalizeLyricsAlbum(raw: String): String {
+        return raw.normalizeLyricsField()
+    }
+
+    private fun String.normalizeLyricsField(): String {
+        return trim()
+            .replace('’', '\'')
+            .replace('‘', '\'')
+            .replace('“', '"')
+            .replace('”', '"')
+            .replace(Regex("""\s+"""), " ")
+    }
+
+    private fun compactLyricsField(raw: String): String {
+        return raw
+            .lowercase()
+            .replace("&", "and")
+            .replace(Regex("""[^a-z0-9]+"""), "")
+    }
+
+    private suspend fun fetchNetEaseLyrics(track: NavidromeTrack): NavidromeLyrics? = withContext(Dispatchers.IO) {
+        val normalizedArtist = normalizeLyricsArtist(track.artistName)
+        val normalizedTrack = normalizeLyricsTrack(track.title)
+        val searchQueries = buildList {
+            add("${track.title} ${track.artistName}".trim())
+            if (normalizedTrack != track.title || normalizedArtist != track.artistName) {
+                add("$normalizedTrack $normalizedArtist".trim())
+            }
+            val compactTrack = compactLyricsField(normalizedTrack)
+            val compactArtist = compactLyricsField(normalizedArtist)
+            if (compactTrack.isNotBlank() && compactArtist.isNotBlank()) {
+                add("$compactTrack $compactArtist")
+            }
+        }.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+
+        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        searchQueries.forEach { query ->
+            val searchUrl = "https://music.163.com/api/search/get?s=${java.net.URLEncoder.encode(query, "UTF-8")}&type=1&limit=1"
+            val searchRequest = Request.Builder()
+                .url(searchUrl)
+                .get()
+                .header("User-Agent", userAgent)
+                .header("Accept", "application/json")
+                .build()
+            val songId = runCatching {
+                okHttpClient.newCall(searchRequest).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val body = response.body?.string().orEmpty()
+                    if (body.isBlank()) return@use null
+                    val root = JSONObject(body)
+                    root.optJSONObject("result")
+                        ?.optJSONArray("songs")
+                        ?.optJSONObject(0)
+                        ?.optLong("id")
+                        ?.takeIf { it > 0L }
+                }
+            }.getOrNull() ?: return@forEach
+
+            val lyricsRequest = Request.Builder()
+                .url("https://music.163.com/api/song/lyric?os=pc&id=$songId&lv=-1&kv=-1&tv=-1")
+                .get()
+                .header("User-Agent", userAgent)
+                .header("Accept", "application/json")
+                .build()
+            runCatching {
+                okHttpClient.newCall(lyricsRequest).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val body = response.body?.string().orEmpty()
+                    if (body.isBlank()) return@use null
+                    parseNetEaseLyricsResponse(body)
+                }
+            }.getOrNull()?.let { return@withContext it }
+        }
+
+        null
+    }
+
+    private fun parseNetEaseLyricsResponse(body: String): NavidromeLyrics? {
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        val rawLyrics = root.optJSONObject("lrc")
+            ?.optString("lyric")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val lines = rawLyrics.lines()
+            .mapNotNull(::parseNetEaseLyricsLine)
+        if (lines.isEmpty()) return null
+        return NavidromeLyrics(
+            lines = lines,
+            sourceLabel = "NetEase",
+            isSynced = true
+        )
+    }
+
+    private fun parseNetEaseLyricsLine(rawLine: String): NavidromeLyricsLine? {
+        val line = rawLine.trim()
+        if (line.isBlank() || !line.startsWith("[")) return null
+        val closingBracket = line.indexOf(']')
+        if (closingBracket <= 1) return null
+        val timestampLabel = line.substring(1, closingBracket)
+        val text = line.substring(closingBracket + 1).trim()
+        if (text.isBlank()) return null
+        val timestampMs = parseLyricsTimestamp(timestampLabel) ?: return null
+        return NavidromeLyricsLine(
+            timestampMs = timestampMs,
+            text = text
+        )
+    }
+
+    private fun parseSyncedLyricsLine(rawLine: String): NavidromeLyricsLine? {
+        val line = rawLine.trim()
+        if (line.isBlank() || !line.startsWith("[")) return null
+        val closingBracket = line.indexOf(']')
+        if (closingBracket <= 1) return null
+        val timestampLabel = line.substring(1, closingBracket)
+        val text = line.substring(closingBracket + 1).trim()
+        if (text.isBlank()) return null
+        val timestampMs = parseLyricsTimestamp(timestampLabel) ?: return null
+        return NavidromeLyricsLine(
+            timestampMs = timestampMs,
+            text = text
+        )
+    }
+
+    private fun parseLyricsTimestamp(raw: String): Int? {
+        val parts = raw.split(":", limit = 2)
+        if (parts.size != 2) return null
+        val minutes = parts[0].toIntOrNull() ?: return null
+        val secondParts = parts[1].split(".", limit = 2)
+        val seconds = secondParts[0].toIntOrNull() ?: return null
+        val hundredths = secondParts.getOrNull(1)
+            ?.take(2)
+            ?.padEnd(2, '0')
+            ?.toIntOrNull()
+            ?: 0
+        return ((minutes * 60) + seconds) * 1000 + (hundredths * 10)
+    }
+
     private fun passwordKey(serverId: String): String = "${NAVIDROME_PASSWORD_KEY}_$serverId"
 
     private fun formatFallbackServerName(baseUrl: String): String {
@@ -1551,7 +2111,68 @@ class NavidromeRepository @Inject constructor(
             albumDetailCache.clear()
             playlistDetailCache.clear()
             searchCache.clear()
+            lyricsCache.clear()
         }
+        sessionPreferences.clearCachedNavidromeLyrics()
+    }
+
+    private suspend fun cacheResolvedLyrics(cacheKey: String, lyrics: NavidromeLyrics) {
+        putCache(lyricsCache, cacheKey, lyrics)
+        sessionPreferences.setCachedNavidromeLyrics(
+            cacheKey = cacheKey,
+            payload = encodeLyricsCachePayload(lyrics),
+            savedAtMs = System.currentTimeMillis()
+        )
+    }
+
+    private fun encodeLyricsCachePayload(lyrics: NavidromeLyrics): String {
+        return JSONObject()
+            .put("sourceLabel", lyrics.sourceLabel)
+            .put("isSynced", lyrics.isSynced)
+            .put(
+                "lines",
+                JSONArray().apply {
+                    lyrics.lines.forEach { line ->
+                        put(
+                            JSONObject()
+                                .put("text", line.text)
+                                .apply {
+                                    line.timestampMs?.let { put("timestampMs", it) }
+                                }
+                        )
+                    }
+                }
+            )
+            .toString()
+    }
+
+    private fun parseLyricsCachePayload(
+        cached: CachedNavidromeLyricsPayload
+    ): NavidromeLyrics? {
+        val root = runCatching { JSONObject(cached.payload) }.getOrNull() ?: return null
+        val linesArray = root.optJSONArray("lines") ?: return null
+        val lines = buildList {
+            for (index in 0 until linesArray.length()) {
+                val node = linesArray.optJSONObject(index) ?: continue
+                val text = node.optString("text").trim()
+                if (text.isBlank()) continue
+                add(
+                    NavidromeLyricsLine(
+                        timestampMs = node.takeIf { it.has("timestampMs") }
+                            ?.optLong("timestampMs")
+                            ?.takeIf { it >= 0L }
+                            ?.toInt(),
+                        text = text
+                    )
+                )
+            }
+        }
+        if (lines.isEmpty()) return null
+        return NavidromeLyrics(
+            lines = lines,
+            sourceLabel = root.optString("sourceLabel").trim().ifBlank { "Lyrics" },
+            isSynced = root.optBoolean("isSynced")
+        )
     }
 
     private suspend fun invalidatePlaylistCaches(

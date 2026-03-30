@@ -98,6 +98,8 @@ class NavidromePlayerController @Inject constructor(
     private companion object {
         const val MAX_RECENT_TRACKS = 7
         const val PREVIOUS_RESTART_THRESHOLD_MS = 3_000
+        const val PLAYING_PROGRESS_UPDATE_INTERVAL_MS = 80L
+        const val IDLE_PROGRESS_UPDATE_INTERVAL_MS = 250L
         const val CHANNEL_ID = "stillshelf_playback_v4"
         const val NOTIFICATION_ID = 1101
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.navidrome.playback.action.PLAY_PAUSE"
@@ -819,12 +821,19 @@ class NavidromePlayerController @Inject constructor(
 
     private fun startProgressUpdates() {
         if (progressJob?.isActive == true) return
-            progressJob = scope.launch {
+        progressJob = scope.launch {
             while (isActive) {
                 if (queueTracks.isNotEmpty()) {
                     updateStateFromPlayer()
                 }
-                delay(500)
+                val activePlayer = player
+                delay(
+                    if (activePlayer?.isPlaying == true) {
+                        PLAYING_PROGRESS_UPDATE_INTERVAL_MS
+                    } else {
+                        IDLE_PROGRESS_UPDATE_INTERVAL_MS
+                    }
+                )
             }
         }
     }

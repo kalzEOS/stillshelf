@@ -1243,6 +1243,9 @@ class NavidromeRepository @Inject constructor(
             cacheResolvedLyrics(fallbackCacheKey, externalLyrics)
             return@withAuth AppResult.Success(externalLyrics)
         }
+        if (externalSource == null) {
+            return@withAuth AppResult.Error("No lyrics found.")
+        }
         val netEaseLyrics = fetchNetEaseLyrics(track)
             ?: return@withAuth AppResult.Error("No lyrics found.")
         cacheResolvedLyrics(sourceScopedCacheKey, netEaseLyrics)

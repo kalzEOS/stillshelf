@@ -9561,6 +9561,8 @@ private fun NavidromeExpandedPlayerSheet(
             NavidromeLyricsSheetContent(
                 uiState = lyricsUiState,
                 playbackPositionMs = state.positionMs,
+                isPlaying = state.isPlaying,
+                durationMs = state.durationMs,
                 coverUrl = track.coverUrl,
                 onDismiss = ::dismissLyricsMode,
                 immersiveEnabled = immersiveEnabled,
@@ -9628,6 +9630,8 @@ private fun NavidromeExpandedPlayerSheet(
 private fun NavidromeLyricsSheetContent(
     uiState: NavidromeLyricsUiState,
     playbackPositionMs: Int,
+    isPlaying: Boolean,
+    durationMs: Int,
     coverUrl: String?,
     onDismiss: () -> Unit,
     immersiveEnabled: Boolean = false,
@@ -9639,12 +9643,11 @@ private fun NavidromeLyricsSheetContent(
     val accentMid = if (immersiveEnabled) Color.White.copy(alpha = 0.92f) else lerp(MaterialTheme.colorScheme.primary, Color.Black, 0.16f)
     val accentSoft = if (immersiveEnabled) Color.White.copy(alpha = 0.76f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurface, 0.18f)
     val accentMuted = if (immersiveEnabled) Color.White.copy(alpha = 0.58f) else lerp(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, 0.34f)
-    val closeButtonShellColor = if (immersiveEnabled) {
-        Color.White.copy(alpha = 0.12f)
-    } else {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.42f)
+    val nonFocusedLyricBaseColor = when {
+        immersiveEnabled -> Color.White
+        MaterialTheme.colorScheme.background.luminance() < 0.5f -> Color.White
+        else -> Color.Black
     }
-    val closeButtonIconColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
     val loadingIndicatorColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.primary
     val emptyStateColor = if (immersiveEnabled) Color.White.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant
     val syncButtonColor = if (immersiveEnabled) {
@@ -9654,6 +9657,9 @@ private fun NavidromeLyricsSheetContent(
     }
     val syncButtonContentColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary
     val syncButtonBorderColor = if (immersiveEnabled) Color.White.copy(alpha = 0.18f) else Color.Transparent
+    val closeButtonShellColor = syncButtonColor
+    val closeButtonIconColor = syncButtonContentColor
+    val closeButtonBorderColor = syncButtonBorderColor
     val lyricsWindow = remember(view) {
         (view.parent as? DialogWindowProvider)?.window
     }
@@ -9680,16 +9686,34 @@ private fun NavidromeLyricsSheetContent(
             }
         }
     }
-    val currentLineIndex = remember(uiState.lyrics, uiState.isSynced, playbackPositionMs) {
-        if (!uiState.isSynced) {
-            -1
-        } else {
-            uiState.lyrics.indexOfLast { line ->
-                val timestampMs = line.timestampMs ?: return@indexOfLast false
-                timestampMs <= playbackPositionMs
-            }
+    val smoothedPlaybackPositionMs by produceState(
+        initialValue = playbackPositionMs,
+        key1 = playbackPositionMs,
+        key2 = isPlaying,
+        key3 = durationMs
+    ) {
+        if (!isPlaying) {
+            value = playbackPositionMs
+            return@produceState
+        }
+        val anchorPositionMs = playbackPositionMs
+        val anchorFrameNanos = withFrameNanos { it }
+        while (true) {
+            val nowNanos = withFrameNanos { it }
+            val elapsedMs = ((nowNanos - anchorFrameNanos) / 1_000_000L).toInt()
+            value = (anchorPositionMs + elapsedMs)
+                .coerceAtLeast(0)
+                .coerceAtMost(durationMs.takeIf { it > 0 } ?: Int.MAX_VALUE)
         }
     }
+    val syncProgressState = remember(uiState.lyrics, uiState.isSynced, smoothedPlaybackPositionMs) {
+        resolveSyncedLyricsProgress(
+            lyrics = uiState.lyrics,
+            isSynced = uiState.isSynced,
+            playbackPositionMs = smoothedPlaybackPositionMs + NAVIDROME_SYNC_FOCUS_LEAD_MS
+        )
+    }
+    val currentLineIndex = syncProgressState?.currentIndex ?: -1
     val centeredVisibleIndex by remember(lyricsListState) {
         derivedStateOf {
             val layoutInfo = lyricsListState.layoutInfo
@@ -9709,7 +9733,7 @@ private fun NavidromeLyricsSheetContent(
     } else {
         -1
     }
-    val isPreStartFocus = uiState.isSynced && autoSyncLyrics && currentLineIndex < 0 && focusedLineIndex == 0
+    val isPreStartFocus = syncProgressState?.isPreStart == true && autoSyncLyrics && focusedLineIndex == 0
     DisposableEffect(lyricsWindow, view, immersiveEnabled) {
         val window = lyricsWindow
         if (window == null) {
@@ -9756,7 +9780,7 @@ private fun NavidromeLyricsSheetContent(
             }
         }
     }
-    LaunchedEffect(uiState.isSynced, currentLineIndex, uiState.lyrics.size, autoSyncLyrics) {
+    LaunchedEffect(uiState.isSynced, uiState.lyrics.size, autoSyncLyrics, currentLineIndex, contentHeightPx) {
         if (!autoSyncLyrics) return@LaunchedEffect
         if (!uiState.isSynced || uiState.lyrics.isEmpty()) return@LaunchedEffect
         val targetIndex = currentLineIndex.coerceAtLeast(0)
@@ -9765,14 +9789,17 @@ private fun NavidromeLyricsSheetContent(
             withFrameNanos { }
         }
         val layoutInfo = lyricsListState.layoutInfo
-        val itemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex } ?: return@LaunchedEffect
+        val currentItemInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex } ?: return@LaunchedEffect
         val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2f
-        val itemCenter = itemInfo.offset + (itemInfo.size / 2f)
-        val delta = itemCenter - viewportCenter
-        if (abs(delta) > 1f) {
+        val currentCenter = currentItemInfo.offset + (currentItemInfo.size / 2f)
+        val delta = currentCenter - viewportCenter
+        if (abs(delta) > 0.5f) {
             lyricsListState.animateScrollBy(
                 value = delta,
-                animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                animationSpec = tween(
+                    durationMillis = NAVIDROME_SYNC_SCROLL_ANIMATION_MS,
+                    easing = FastOutSlowInEasing
+                )
             )
         }
     }
@@ -9897,6 +9924,7 @@ private fun NavidromeLyricsSheetContent(
                     Surface(
                         shape = CircleShape,
                         color = closeButtonShellColor,
+                        border = BorderStroke(1.dp, closeButtonBorderColor),
                         tonalElevation = 0.dp
                     ) {
                         IconButton(onClick = onDismiss) {
@@ -10028,22 +10056,18 @@ private fun NavidromeLyricsSheetContent(
                                             2 -> 0.22f
                                             else -> 0.08f
                                         }
-                                        if (immersiveEnabled) {
-                                            Color.White.copy(alpha = alpha)
-                                        } else {
-                                            Color.Black.copy(alpha = alpha)
-                                        }
+                                        nonFocusedLyricBaseColor.copy(alpha = alpha)
                                     }
                                     val lyricAnimationSpec = remember(autoSyncLyrics) {
                                         tween<Float>(
-                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            durationMillis = if (autoSyncLyrics) 100 else 180,
                                             easing = FastOutSlowInEasing
                                         )
                                     }
                                     val blurRadius by animateDpAsState(
                                         targetValue = targetBlurRadius,
                                         animationSpec = tween(
-                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            durationMillis = if (autoSyncLyrics) 80 else 180,
                                             easing = FastOutSlowInEasing
                                         ),
                                         label = "navidromeLyricBlur"
@@ -10056,7 +10080,7 @@ private fun NavidromeLyricsSheetContent(
                                     val textColor by animateColorAsState(
                                         targetValue = targetColor,
                                         animationSpec = tween(
-                                            durationMillis = if (autoSyncLyrics) 320 else 180,
+                                            durationMillis = if (autoSyncLyrics) 100 else 180,
                                             easing = FastOutSlowInEasing
                                         ),
                                         label = "navidromeLyricColor"
@@ -10186,6 +10210,46 @@ private fun NavidromeTransportIconButton(
             tint = tint
         )
     }
+}
+
+private data class SyncedLyricsProgress(
+    val currentIndex: Int,
+    val isPreStart: Boolean
+)
+
+private const val NAVIDROME_SYNC_FOCUS_LEAD_MS = 60
+private const val NAVIDROME_SYNC_SCROLL_ANIMATION_MS = 100
+
+private fun resolveSyncedLyricsProgress(
+    lyrics: List<NavidromeLyricsLine>,
+    isSynced: Boolean,
+    playbackPositionMs: Int
+): SyncedLyricsProgress? {
+    if (!isSynced || lyrics.isEmpty()) return null
+
+    val timedLines = lyrics.mapIndexedNotNull { index, line ->
+        line.timestampMs?.let { timestampMs -> index to timestampMs }
+    }
+    if (timedLines.isEmpty()) return null
+
+    val firstTimedLine = timedLines.first()
+    val currentTimedLinePosition = timedLines.indexOfLast { (_, timestampMs) ->
+        timestampMs <= playbackPositionMs
+    }
+
+    if (currentTimedLinePosition < 0) {
+        return SyncedLyricsProgress(
+            currentIndex = firstTimedLine.first,
+            isPreStart = true
+        )
+    }
+
+    val currentTimedLine = timedLines[currentTimedLinePosition]
+
+    return SyncedLyricsProgress(
+        currentIndex = currentTimedLine.first,
+        isPreStart = false
+    )
 }
 
 @Composable

@@ -5847,6 +5847,7 @@ private fun NavidromeLyricsSourcesRoute(
     var creatingSource by remember { mutableStateOf(false) }
     var editingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
     var deletingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
+    var confirmClearAllLyricsCache by remember { mutableStateOf(false) }
     var sourceName by rememberSaveable { mutableStateOf("") }
     var sourceUrl by rememberSaveable { mutableStateOf("") }
     var dialogError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -5988,7 +5989,7 @@ private fun NavidromeLyricsSourcesRoute(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedButton(
-                    onClick = viewModel::clearAllLyricsCache,
+                    onClick = { confirmClearAllLyricsCache = true },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Clear All Lyrics Cache")
@@ -6090,6 +6091,35 @@ private fun NavidromeLyricsSourcesRoute(
                         dialogError = null
                     }
                 ) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (confirmClearAllLyricsCache) {
+        AlertDialog(
+            onDismissRequest = { confirmClearAllLyricsCache = false },
+            title = { Text("Clear all lyrics cache?") },
+            text = {
+                Text(
+                    "This will remove all downloaded lyrics stored on this device. Lyrics can be downloaded again later."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearAllLyricsCache = false
+                        viewModel.clearAllLyricsCache()
+                    }
+                ) {
+                    Text("Clear Cache")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { confirmClearAllLyricsCache = false }
+                ) {
+                    Text("Cancel")
+                }
             }
         )
     }

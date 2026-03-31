@@ -114,6 +114,7 @@ class SessionPreferences @Inject constructor(
     private val updateIncludePrereleasesKey = booleanPreferencesKey("update_include_prereleases")
     private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
     private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
+    private val acknowledgedUpgradeNoticeVersionKey = stringPreferencesKey("acknowledged_upgrade_notice_version")
     private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
     private val playbackCheckpointSnapshotKey = stringPreferencesKey("playback_checkpoint_snapshot")
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
@@ -901,6 +902,21 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(pendingUpdateVersionNameKey)
             } else {
                 prefs[pendingUpdateVersionNameKey] = versionName.trim()
+            }
+        }
+    }
+
+    suspend fun getAcknowledgedUpgradeNoticeVersion(): String? {
+        val prefs = dataStore.data.first()
+        return prefs[acknowledgedUpgradeNoticeVersionKey]
+    }
+
+    suspend fun setAcknowledgedUpgradeNoticeVersion(versionName: String?) {
+        dataStore.edit { prefs ->
+            if (versionName.isNullOrBlank()) {
+                prefs.remove(acknowledgedUpgradeNoticeVersionKey)
+            } else {
+                prefs[acknowledgedUpgradeNoticeVersionKey] = versionName.trim()
             }
         }
     }

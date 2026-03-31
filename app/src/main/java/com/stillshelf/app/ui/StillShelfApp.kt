@@ -25,6 +25,7 @@ fun StillShelfApp() {
     val rootUiState by rootViewModel.uiState.collectAsStateWithLifecycle()
     val startupViewModel: StartupViewModel = hiltViewModel()
     val startupUpdatePrompt by startupViewModel.startupUpdatePrompt.collectAsStateWithLifecycle()
+    val upgradeMessagePrompt by startupViewModel.upgradeMessagePrompt.collectAsStateWithLifecycle()
     StillShelfTheme(
         themeMode = appearance.themeModeForBackend(rootUiState.selectedBackend),
         materialDesignEnabled = appearance.materialDesignEnabledForBackend(rootUiState.selectedBackend)
@@ -37,7 +38,26 @@ fun StillShelfApp() {
                 onHomeScreenReached = startupViewModel::onHomeScreenReached,
                 rootViewModel = rootViewModel
             )
-            startupUpdatePrompt?.let { release ->
+            upgradeMessagePrompt?.let { prompt ->
+                AlertDialog(
+                    onDismissRequest = startupViewModel::dismissUpgradeMessagePrompt,
+                    title = { Text("Welcome to StillShelf ${prompt.versionName}") },
+                    text = {
+                        Text(
+                            "This update adds a full Navidrome frontend, including lyrics support.\n\n" +
+                                "Your existing Audiobookshelf setup is still here.\n\n" +
+                                "On the mode selection screen:\n" +
+                                "Choose Audiobookshelf if you only use Audiobookshelf.\n" +
+                                "Choose Navidrome if you want to add or use a Navidrome server."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = startupViewModel::dismissUpgradeMessagePrompt) {
+                            Text("Got it")
+                        }
+                    }
+                )
+            } ?: startupUpdatePrompt?.let { release ->
                 AlertDialog(
                     onDismissRequest = startupViewModel::dismissStartupUpdatePrompt,
                     title = { Text("Update available") },

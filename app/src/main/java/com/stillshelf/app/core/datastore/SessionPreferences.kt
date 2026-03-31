@@ -396,6 +396,17 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    fun observeCachedNavidromeLyricsSizeBytes(): Flow<Long> {
+        return dataStore.data.map { prefs ->
+            calculateCachedNavidromeLyricsSizeBytes(prefs[cachedNavidromeLyricsPayloadKey])
+        }
+    }
+
+    suspend fun getCachedNavidromeLyricsSizeBytes(): Long {
+        val prefs = dataStore.data.first()
+        return calculateCachedNavidromeLyricsSizeBytes(prefs[cachedNavidromeLyricsPayloadKey])
+    }
+
     suspend fun setNavidromeHiddenBrowseSectionIds(ids: Set<String>) {
         dataStore.edit { prefs ->
             if (ids.isEmpty()) {
@@ -1629,6 +1640,11 @@ class SessionPreferences @Inject constructor(
         val normalizedPrefix = cacheKeyPrefix.trim()
         if (normalizedPrefix.isBlank()) return values
         return values.filterKeys { key -> !key.startsWith(normalizedPrefix) }
+    }
+
+    internal fun calculateCachedNavidromeLyricsSizeBytes(raw: String?): Long {
+        if (raw.isNullOrEmpty()) return 0L
+        return raw.toByteArray(Charsets.UTF_8).size.toLong()
     }
 
     private fun Preferences.toSessionPreferenceState(): SessionPreferenceState {

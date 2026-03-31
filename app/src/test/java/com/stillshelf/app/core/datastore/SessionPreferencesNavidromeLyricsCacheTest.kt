@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionPreferencesNavidromeLyricsCacheTest {
@@ -39,6 +40,17 @@ class SessionPreferencesNavidromeLyricsCacheTest {
         )
 
         assertEquals(setOf(trackTwoScoped), remaining.keys)
+    }
+
+    @Test
+    fun calculateCachedNavidromeLyricsSizeBytes_returnsUtf8PayloadSize() {
+        val preferences = SessionPreferences(dataStore = unusedDataStore())
+        val raw = """{"track":"180 Darga","payload":"مرحبا"}"""
+
+        val sizeBytes = preferences.calculateCachedNavidromeLyricsSizeBytes(raw)
+
+        assertEquals(raw.toByteArray(Charsets.UTF_8).size.toLong(), sizeBytes)
+        assertTrue(sizeBytes > raw.length.toLong())
     }
 
     private fun unusedDataStore() = PreferenceDataStoreFactory.create(

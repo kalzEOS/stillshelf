@@ -147,6 +147,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
@@ -766,6 +767,7 @@ fun NavidromeAppRoute(
                     onOpenSettings = { navController.navigate(NavidromeRoute.SETTINGS) },
                     onOpenCustomize = { navController.navigate(NavidromeRoute.CUSTOMIZE) },
                     onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) },
+                    onOpenLyricsSources = { navController.navigate(NavidromeRoute.LYRICS_SOURCES) },
                     onSwitchMode = onSwitchMode,
                     playerState = playerState,
                     onPlayPause = playerViewModel::togglePlayPause,
@@ -1022,6 +1024,7 @@ private fun NavidromeHomeRoute(
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
     onOpenServers: () -> Unit,
+    onOpenLyricsSources: () -> Unit,
     onSwitchMode: () -> Unit,
     playerState: NavidromePlayerState,
     onPlayPause: () -> Unit,
@@ -1101,6 +1104,7 @@ private fun NavidromeHomeRoute(
         onOpenSettings = onOpenSettings,
         onOpenCustomize = onOpenCustomize,
         onOpenServers = onOpenServers,
+        onOpenLyricsSources = onOpenLyricsSources,
         onSelectServer = settingsViewModel::setActiveServer,
         onSelectLibrary = settingsViewModel::setActiveLibrary,
         onSwitchMode = onSwitchMode,
@@ -1142,6 +1146,7 @@ private fun NavidromeHomeScreen(
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
     onOpenServers: () -> Unit,
+    onOpenLyricsSources: () -> Unit,
     onSelectServer: (String) -> Unit,
     onSelectLibrary: (String) -> Unit,
     onSwitchMode: () -> Unit,
@@ -1435,6 +1440,58 @@ private fun NavidromeHomeScreen(
                                     onOpenServers()
                                 }
                             )
+                        }
+                    }
+                }
+            }
+            if (uiState.lyricsCacheSizeBytes >= NAVIDROME_LYRICS_CACHE_SOFT_WARNING_BYTES) {
+                item(key = "nav-home-lyrics-cache-warning") {
+                    val isStrongWarning = uiState.lyricsCacheSizeBytes >= NAVIDROME_LYRICS_CACHE_STRONG_WARNING_BYTES
+                    val containerColor = if (isStrongWarning) {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f)
+                    } else {
+                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.92f)
+                    }
+                    val contentColor = if (isStrongWarning) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        MaterialTheme.colorScheme.onTertiaryContainer
+                    }
+                    val borderColor = if (isStrongWarning) {
+                        MaterialTheme.colorScheme.error.copy(alpha = 0.2f)
+                    } else {
+                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)
+                    }
+                    Card(
+                        modifier = homeFullBleedModifier,
+                        colors = CardDefaults.cardColors(containerColor = containerColor),
+                        border = BorderStroke(1.dp, borderColor),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (isStrongWarning) {
+                                    "Lyrics cache is using a lot of storage"
+                                } else {
+                                    "Lyrics cache is getting large"
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                color = contentColor
+                            )
+                            Text(
+                                text = "Lyrics cache is currently using ${formatStorageSize(uiState.lyricsCacheSizeBytes)} on this device.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = contentColor
+                            )
+                            TextButton(
+                                onClick = onOpenLyricsSources,
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Manage Cache")
+                            }
                         }
                     }
                 }
@@ -5923,6 +5980,31 @@ private fun NavidromeLyricsSourcesRoute(
                 Text("Add Source")
             }
         }
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppScreenHorizontalPadding),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = viewModel::clearAllLyricsCache,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Clear All Lyrics Cache")
+                }
+                Text(
+                    text = "Lyrics cache: ${formatStorageSize(uiState.lyricsCacheSizeBytes)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Cached lyrics stay on this device so songs can reopen faster and still show offline. Clear them anytime if you want to free up space.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         uiState.errorMessage?.let { message ->
             item {
                 Text(
@@ -9683,6 +9765,7 @@ private fun NavidromeLyricsSheetContent(
     val scope = rememberCoroutineScope()
     var autoSyncLyrics by remember(uiState.trackTitle, uiState.artistName) { mutableStateOf(true) }
     var contentHeightPx by remember { mutableIntStateOf(0) }
+    val latestPlaybackPositionMs by rememberUpdatedState(playbackPositionMs)
     val density = LocalDensity.current
     val centerPadding = remember(contentHeightPx, density) {
         with(density) {
@@ -9703,22 +9786,27 @@ private fun NavidromeLyricsSheetContent(
     }
     val smoothedPlaybackPositionMs by produceState(
         initialValue = playbackPositionMs,
-        key1 = playbackPositionMs,
+        key1 = uiState.trackId,
         key2 = isPlaying,
         key3 = durationMs
     ) {
-        if (!isPlaying) {
-            value = playbackPositionMs
-            return@produceState
-        }
-        val anchorPositionMs = playbackPositionMs
-        val anchorFrameNanos = withFrameNanos { it }
+        var anchorPositionMs = latestPlaybackPositionMs
+        var anchorFrameNanos = withFrameNanos { it }
         while (true) {
             val nowNanos = withFrameNanos { it }
-            val elapsedMs = ((nowNanos - anchorFrameNanos) / 1_000_000L).toInt()
-            value = (anchorPositionMs + elapsedMs)
-                .coerceAtLeast(0)
-                .coerceAtMost(durationMs.takeIf { it > 0 } ?: Int.MAX_VALUE)
+            val latestPositionMs = latestPlaybackPositionMs
+            if (latestPositionMs != anchorPositionMs) {
+                anchorPositionMs = latestPositionMs
+                anchorFrameNanos = nowNanos
+            }
+            value = if (isPlaying) {
+                val elapsedMs = ((nowNanos - anchorFrameNanos) / 1_000_000L).toInt()
+                (anchorPositionMs + elapsedMs)
+                    .coerceAtLeast(0)
+                    .coerceAtMost(durationMs.takeIf { it > 0 } ?: Int.MAX_VALUE)
+            } else {
+                latestPositionMs
+            }
         }
     }
     val syncProgressState = remember(uiState.lyrics, uiState.isSynced, smoothedPlaybackPositionMs) {
@@ -9816,6 +9904,16 @@ private fun NavidromeLyricsSheetContent(
                     easing = FastOutSlowInEasing
                 )
             )
+        }
+    }
+    LaunchedEffect(uiState.trackId) {
+        autoSyncLyrics = true
+        contentHeightPx = 0
+        if (lyricsListState.firstVisibleItemIndex != 0 || lyricsListState.firstVisibleItemScrollOffset != 0) {
+            lyricsListState.scrollToItem(0)
+        }
+        if (plainLyricsScrollState.value != 0) {
+            plainLyricsScrollState.scrollTo(0)
         }
     }
     Box(
@@ -10978,6 +11076,25 @@ private fun LoadingCard() {
         contentAlignment = Alignment.Center
     ) {
         CircularProgressIndicator()
+    }
+}
+
+private const val NAVIDROME_LYRICS_CACHE_SOFT_WARNING_BYTES = 100L * 1024L * 1024L
+private const val NAVIDROME_LYRICS_CACHE_STRONG_WARNING_BYTES = 250L * 1024L * 1024L
+
+private fun formatStorageSize(bytes: Long?): String {
+    val value = bytes ?: return "Unknown"
+    if (value <= 0L) return "0 KB"
+    val kb = value / 1024.0
+    if (kb < 1024.0) {
+        val displayKb = ((value + 1023L) / 1024L).coerceAtLeast(1L)
+        return String.format(Locale.getDefault(), "%d KB", displayKb)
+    }
+    val mb = kb / 1024.0
+    return if (mb >= 1024.0) {
+        String.format(Locale.getDefault(), "%.1f GB", mb / 1024.0)
+    } else {
+        String.format(Locale.getDefault(), "%.0f MB", mb)
     }
 }
 

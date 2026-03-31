@@ -274,6 +274,7 @@ data class NavidromeHomeUiState(
     val artists: List<NavidromeArtist> = emptyList(),
     val playlists: List<NavidromePlaylist> = emptyList(),
     val radios: List<NavidromeRadio> = emptyList(),
+    val lyricsCacheSizeBytes: Long = 0L,
     val isLoading: Boolean = true,
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
@@ -282,13 +283,21 @@ data class NavidromeHomeUiState(
 
 @HiltViewModel
 class NavidromeHomeViewModel @Inject constructor(
-    private val navidromeRepository: NavidromeRepository
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(NavidromeHomeUiState())
     val uiState: StateFlow<NavidromeHomeUiState> = mutableUiState.asStateFlow()
 
     init {
         refresh(forceRefresh = false)
+        viewModelScope.launch {
+            sessionPreferences.observeCachedNavidromeLyricsSizeBytes()
+                .distinctUntilChanged()
+                .collect { sizeBytes ->
+                    mutableUiState.update { it.copy(lyricsCacheSizeBytes = sizeBytes) }
+                }
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
@@ -1559,13 +1568,25 @@ class NavidromeSettingsViewModel @Inject constructor(
 
     val uiState: StateFlow<NavidromeSettingsUiState> = combine(
         combine(
-            navidromeRepository.observeSession(),
-            navidromeRepository.observeServers(),
-            sessionPreferences.state,
-            navidromeRepository.observeActiveConnectionStatus(),
-            navidromeRepository.observeEndpointHealth()
-        ) { session, servers, preferences, connectionStatus, endpointHealth ->
-            Quintuple(session, servers, preferences, connectionStatus, endpointHealth)
+            combine(
+                navidromeRepository.observeSession(),
+                navidromeRepository.observeServers(),
+                sessionPreferences.state,
+                navidromeRepository.observeActiveConnectionStatus(),
+                navidromeRepository.observeEndpointHealth()
+            ) { session, servers, preferences, connectionStatus, endpointHealth ->
+                Quintuple(session, servers, preferences, connectionStatus, endpointHealth)
+            },
+            sessionPreferences.observeCachedNavidromeLyricsSizeBytes()
+        ) { upstream, lyricsCacheSizeBytes ->
+            Sextuple(
+                upstream.session,
+                upstream.servers,
+                upstream.preferences,
+                upstream.connectionStatus,
+                upstream.endpointHealth,
+                lyricsCacheSizeBytes
+            )
         },
         mutableLocalState
     ) { upstream, localState ->
@@ -1574,6 +1595,7 @@ class NavidromeSettingsViewModel @Inject constructor(
         val preferences = upstream.preferences
         val connectionStatus = upstream.connectionStatus
         val endpointHealth = upstream.endpointHealth
+        val lyricsCacheSizeBytes = upstream.sixth
         val activeServerId = preferences.activeNavidromeServerId ?: servers.firstOrNull()?.id
         val activeServer = servers.firstOrNull { it.id == activeServerId }
         val activeLibraryId = activeServer?.id?.let(preferences.navidromeActiveLibraryIds::get)
@@ -1604,6 +1626,7 @@ class NavidromeSettingsViewModel @Inject constructor(
                 )
             },
             activeLyricsSourceId = preferences.activeNavidromeLyricsSourceId,
+            lyricsCacheSizeBytes = lyricsCacheSizeBytes,
             activeServerId = activeServerId,
             availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
@@ -1963,6 +1986,18 @@ class NavidromeSettingsViewModel @Inject constructor(
                 sessionPreferences.setActiveNavidromeLyricsSourceId(updated.firstOrNull()?.id)
             }
             mutableLocalState.update { it.copy(errorMessage = null) }
+        }
+    }
+
+    fun clearAllLyricsCache() {
+        viewModelScope.launch {
+            navidromeRepository.clearLyricsCache()
+            mutableLocalState.update {
+                it.copy(
+                    errorMessage = null,
+                    syncToastMessage = "Lyrics cache cleared"
+                )
+            }
         }
     }
 
@@ -2758,6 +2793,7 @@ data class NavidromeSettingsUiState(
     val savedServers: List<SettingsServerOption> = emptyList(),
     val lyricsSources: List<SettingsServerOption> = emptyList(),
     val activeLyricsSourceId: String? = null,
+    val lyricsCacheSizeBytes: Long = 0L,
     val activeServerId: String? = null,
     val availableLibraries: List<NavidromeLibrary> = emptyList(),
     val activeLibraryId: String? = null,
@@ -2912,6 +2948,15 @@ private data class Quintuple<A, B, C, D, E>(
     val preferences: C,
     val connectionStatus: D,
     val endpointHealth: E
+)
+
+private data class Sextuple<A, B, C, D, E, F>(
+    val session: A,
+    val servers: B,
+    val preferences: C,
+    val connectionStatus: D,
+    val endpointHealth: E,
+    val sixth: F
 )
 
 private data class NavidromeSettingsLocalState(

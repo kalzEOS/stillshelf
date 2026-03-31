@@ -1677,12 +1677,46 @@ class NavidromeSettingsViewModel @Inject constructor(
     fun signOut() {
         viewModelScope.launch {
             mutableLocalState.update { it.copy(isBusy = true) }
-            navidromeRepository.signOut()
-            mutableLocalState.update {
-                it.copy(
-                    isBusy = false,
-                    libraries = emptyList()
-                )
+            val state = uiState.value
+            val activeServerId = state.activeServerId
+            val activeServer = state.savedServers.firstOrNull { it.id == activeServerId }
+            if (activeServer != null) {
+                val hasFallbackServer = state.savedServers.any { it.id != activeServerId }
+                when (val result = navidromeRepository.deleteServer(activeServer.id)) {
+                    is AppResult.Success -> {
+                        mutableLocalState.update {
+                            it.copy(
+                                isBusy = false,
+                                errorMessage = null,
+                                syncToastMessage = if (hasFallbackServer) {
+                                    "Signed out and removed ${activeServer.name} from this device."
+                                } else {
+                                    null
+                                }
+                            )
+                        }
+                        refreshConnectionStatus()
+                        refreshLibraries(forceRefresh = false)
+                    }
+
+                    is AppResult.Error -> {
+                        mutableLocalState.update {
+                            it.copy(
+                                isBusy = false,
+                                errorMessage = result.message
+                            )
+                        }
+                    }
+                }
+            } else {
+                navidromeRepository.signOut()
+                mutableLocalState.update {
+                    it.copy(
+                        isBusy = false,
+                        libraries = emptyList(),
+                        errorMessage = null
+                    )
+                }
             }
         }
     }
@@ -1894,10 +1928,17 @@ class NavidromeSettingsViewModel @Inject constructor(
     fun deleteServer(serverId: String) {
         if (mutableLocalState.value.isBusy) return
         viewModelScope.launch {
+            val serverName = uiState.value.savedServers.firstOrNull { it.id == serverId }?.name
             mutableLocalState.update { it.copy(isBusy = true) }
             when (val result = navidromeRepository.deleteServer(serverId)) {
                 is AppResult.Success -> {
-                    mutableLocalState.update { it.copy(isBusy = false, errorMessage = null) }
+                    mutableLocalState.update {
+                        it.copy(
+                            isBusy = false,
+                            errorMessage = null,
+                            syncToastMessage = serverName?.let { name -> "Deleted $name." }
+                        )
+                    }
                     refreshConnectionStatus()
                     refreshLibraries(forceRefresh = false)
                 }
@@ -2812,6 +2853,78 @@ data class NavidromeSettingsUiState(
     val syncToastMessage: String? = null,
     val errorMessage: String? = null
 )
+
+data class NavidromeHomeMenuUiState(
+    val servers: List<SettingsServerOption> = emptyList(),
+    val activeServerId: String? = null,
+    val isSwitchingServer: Boolean = false,
+    val errorMessage: String? = null
+)
+
+@HiltViewModel
+class NavidromeHomeMenuViewModel @Inject constructor(
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(NavidromeHomeMenuUiState())
+    val uiState: StateFlow<NavidromeHomeMenuUiState> = mutableUiState.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            combine(
+                navidromeRepository.observeServers(),
+                sessionPreferences.state
+            ) { servers, preferences ->
+                val activeServerId = preferences.activeNavidromeServerId ?: servers.firstOrNull()?.id
+                NavidromeHomeMenuUiState(
+                    servers = servers.map { server ->
+                        SettingsServerOption(
+                            id = server.id,
+                            name = server.name,
+                            baseUrl = server.baseUrl,
+                            host = parseHost(server.baseUrl)
+                        )
+                    },
+                    activeServerId = activeServerId,
+                    isSwitchingServer = mutableUiState.value.isSwitchingServer,
+                    errorMessage = mutableUiState.value.errorMessage
+                )
+            }.collect { state ->
+                mutableUiState.update {
+                    it.copy(
+                        servers = state.servers,
+                        activeServerId = state.activeServerId
+                    )
+                }
+            }
+        }
+    }
+
+    fun onServerSelected(serverId: String) {
+        if (mutableUiState.value.isSwitchingServer || serverId == mutableUiState.value.activeServerId) return
+        mutableUiState.update { it.copy(isSwitchingServer = true, errorMessage = null) }
+        viewModelScope.launch {
+            when (val result = navidromeRepository.setActiveServer(serverId)) {
+                is AppResult.Success -> {
+                    mutableUiState.update { it.copy(isSwitchingServer = false, errorMessage = null) }
+                }
+
+                is AppResult.Error -> {
+                    mutableUiState.update {
+                        it.copy(
+                            isSwitchingServer = false,
+                            errorMessage = result.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun clearError() {
+        mutableUiState.update { it.copy(errorMessage = null) }
+    }
+}
 
 private fun NavidromeServerScanStatus.toProgress(detail: String): NavidromeServerScanProgress {
     return NavidromeServerScanProgress(

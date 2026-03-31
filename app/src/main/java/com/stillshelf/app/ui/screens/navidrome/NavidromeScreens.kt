@@ -131,6 +131,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -1034,11 +1037,13 @@ private fun NavidromeHomeRoute(
     downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel(),
     customizeViewModel: NavidromeCustomizeViewModel = hiltViewModel(),
     settingsViewModel: NavidromeSettingsViewModel = hiltViewModel(),
+    homeMenuViewModel: NavidromeHomeMenuViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val customizeUiState by customizeViewModel.uiState.collectAsStateWithLifecycle()
     val settingsUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val homeMenuUiState by homeMenuViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -1068,6 +1073,11 @@ private fun NavidromeHomeRoute(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         viewModel.clearMessages()
     }
+    LaunchedEffect(homeMenuUiState.errorMessage) {
+        val message = homeMenuUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        homeMenuViewModel.clearError()
+    }
     LaunchedEffect(settingsUiState.activeServerId, settingsUiState.activeLibraryId) {
         if (settingsUiState.activeServerId != null) {
             viewModel.refresh(forceRefresh = false)
@@ -1082,8 +1092,8 @@ private fun NavidromeHomeRoute(
             ?: settingsUiState.session?.serverName?.takeIf { it.isNotBlank() }?.let { "$it Music" }
             ?: settingsUiState.session?.username?.takeIf { it.isNotBlank() }?.let { "$it Music" }
             ?: "Navidrome Music",
-        savedServers = settingsUiState.savedServers,
-        activeServerId = settingsUiState.activeServerId,
+        savedServers = homeMenuUiState.servers,
+        activeServerId = homeMenuUiState.activeServerId,
         availableLibraries = settingsUiState.availableLibraries,
         activeLibraryId = settingsUiState.activeLibraryId,
         playerState = playerState,
@@ -1105,7 +1115,7 @@ private fun NavidromeHomeRoute(
         onOpenCustomize = onOpenCustomize,
         onOpenServers = onOpenServers,
         onOpenLyricsSources = onOpenLyricsSources,
-        onSelectServer = settingsViewModel::setActiveServer,
+        onSelectServer = homeMenuViewModel::onServerSelected,
         onSelectLibrary = settingsViewModel::setActiveLibrary,
         onSwitchMode = onSwitchMode,
         onRenamePlaylist = viewModel::renamePlaylist,
@@ -4332,7 +4342,7 @@ private fun NavidromeSettingsRoute(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val equalizerUiState by equalizerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
-    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
     var signOutDialogVisible by rememberSaveable { mutableStateOf(false) }
     var resyncDialogVisible by rememberSaveable { mutableStateOf(false) }
     var serverScanDialogVisible by rememberSaveable { mutableStateOf(false) }
@@ -4353,16 +4363,17 @@ private fun NavidromeSettingsRoute(
         ?.let { timestamp -> "Last synced ${formatNavidromeLastSyncedTimestamp(timestamp)}" }
     LaunchedEffect(uiState.syncToastMessage) {
         val toastMessage = uiState.syncToastMessage ?: return@LaunchedEffect
-        Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+        snackbarHostState.showSnackbar(toastMessage)
         viewModel.consumeSyncToastMessage()
     }
 
-    StandardTopScreen(
-        title = "Settings",
-        onBack = onBack,
-        onHome = onHome,
-        containerColor = MaterialTheme.colorScheme.background
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        StandardTopScreen(
+            title = "Settings",
+            onBack = onBack,
+            onHome = onHome,
+            containerColor = MaterialTheme.colorScheme.background
+        ) {
         item {
             Text(
                 text = "PRODUCT MODE",
@@ -4589,6 +4600,14 @@ private fun NavidromeSettingsRoute(
                 )
             }
         }
+        }
+        AppThemedSnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+        )
     }
 
     uiState.resyncProgress?.let { progress ->
@@ -5307,10 +5326,13 @@ private fun NavidromeServersManagementRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     onAddServer: () -> Unit,
-    viewModel: NavidromeSettingsViewModel = hiltViewModel()
+    viewModel: NavidromeSettingsViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
     var editingServer by remember { mutableStateOf<com.stillshelf.app.ui.screens.SettingsServerOption?>(null) }
     var deletingServer by remember { mutableStateOf<com.stillshelf.app.ui.screens.SettingsServerOption?>(null) }
     var editingName by rememberSaveable { mutableStateOf("") }
@@ -5327,6 +5349,16 @@ private fun NavidromeServersManagementRoute(
     val hasLocalServer = uiState.lanServerUrl.isNotBlank()
     val hasRemoteServer = uiState.wanServerUrl.isNotBlank()
     val hasRoutingPair = hasLocalServer && hasRemoteServer
+    val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
     val statusValue = remember(uiState.connectionStatusLabel, uiState.connectionLatencyMs) {
         buildString {
             append(uiState.connectionStatusLabel)
@@ -5345,14 +5377,24 @@ private fun NavidromeServersManagementRoute(
         }
     }
 
-    StandardTopScreen(
-        title = "Manage Servers",
-        onBack = onBack,
-        onHome = onHome,
-        containerColor = MaterialTheme.colorScheme.background
-    ) {
+    LaunchedEffect(uiState.syncToastMessage) {
+        val message = uiState.syncToastMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message)
+        viewModel.consumeSyncToastMessage()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        StandardTopScreen(
+            title = "Manage Servers",
+            onBack = onBack,
+            onHome = onHome,
+            containerColor = MaterialTheme.colorScheme.background
+        ) {
         item {
-            GroupedSettingsCard {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
                 uiState.savedServers.forEachIndexed { index, server ->
                     var rowMenuExpanded by remember(server.id) { mutableStateOf(false) }
                     Row(
@@ -5415,15 +5457,6 @@ private fun NavidromeServersManagementRoute(
                                 expanded = rowMenuExpanded,
                                 onDismissRequest = { rowMenuExpanded = false }
                             ) {
-                                if (server.id != uiState.activeServerId) {
-                                    AppDropdownMenuItem(
-                                        text = { Text("Set active") },
-                                        onClick = {
-                                            rowMenuExpanded = false
-                                            viewModel.setActiveServer(server.id)
-                                        }
-                                    )
-                                }
                                 AppDropdownMenuItem(
                                     text = { Text("Delete") },
                                     onClick = {
@@ -5460,7 +5493,10 @@ private fun NavidromeServersManagementRoute(
                 )
             }
             item {
-                GroupedSettingsCard {
+                GroupedSettingsCard(
+                    containerColor = sectionCardColor,
+                    border = sectionCardBorder
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -5586,6 +5622,14 @@ private fun NavidromeServersManagementRoute(
                 )
             }
         }
+        }
+        AppThemedSnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+        )
     }
 
     editingServer?.let { server ->
@@ -5841,9 +5885,11 @@ private fun NavidromeServersManagementRoute(
 private fun NavidromeLyricsSourcesRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
-    viewModel: NavidromeSettingsViewModel = hiltViewModel()
+    viewModel: NavidromeSettingsViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     var creatingSource by remember { mutableStateOf(false) }
     var editingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
     var deletingSource by remember { mutableStateOf<SettingsServerOption?>(null) }
@@ -5851,6 +5897,16 @@ private fun NavidromeLyricsSourcesRoute(
     var sourceName by rememberSaveable { mutableStateOf("") }
     var sourceUrl by rememberSaveable { mutableStateOf("") }
     var dialogError by rememberSaveable { mutableStateOf<String?>(null) }
+    val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
 
     StandardTopScreen(
         title = "Lyrics Sources",
@@ -5859,7 +5915,10 @@ private fun NavidromeLyricsSourcesRoute(
         containerColor = MaterialTheme.colorScheme.background
     ) {
         item {
-            GroupedSettingsCard {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
                 if (uiState.lyricsSources.isEmpty()) {
                     Text(
                         text = "No lyrics sources added yet.",
@@ -8063,6 +8122,26 @@ private fun GroupedSettingsCard(
     ) {
         Column(content = content)
     }
+}
+
+@Composable
+private fun AppThemedSnackbarHost(
+    hostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    SnackbarHost(
+        hostState = hostState,
+        modifier = modifier,
+        snackbar = { data ->
+            Snackbar(
+                snackbarData = data,
+                shape = RoundedCornerShape(18.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                actionColor = MaterialTheme.colorScheme.primary
+            )
+        }
+    )
 }
 
 @Composable

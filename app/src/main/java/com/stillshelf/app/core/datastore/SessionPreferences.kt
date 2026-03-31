@@ -46,6 +46,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeLyricsSourcesPayloadKey = stringPreferencesKey("navidrome_lyrics_sources_payload")
     private val activeNavidromeLyricsSourceIdKey = stringPreferencesKey("active_navidrome_lyrics_source_id")
     private val navidromeLyricsSourcesSeededKey = booleanPreferencesKey("navidrome_lyrics_sources_seeded")
+    private val navidromeLegacySessionMigratedKey = booleanPreferencesKey("navidrome_legacy_session_migrated")
     private val activeNavidromeServerIdKey = stringPreferencesKey("active_navidrome_server_id")
     private val navidromeActiveLibraryIdsKey = stringPreferencesKey("navidrome_active_library_ids")
     private val navidromeServerNameKey = stringPreferencesKey("navidrome_server_name")
@@ -166,11 +167,22 @@ class SessionPreferences @Inject constructor(
 
     suspend fun setNavidromeServers(servers: List<NavidromeServer>) {
         dataStore.edit { prefs ->
+            prefs[navidromeLegacySessionMigratedKey] = true
             if (servers.isEmpty()) {
                 prefs.remove(navidromeServersPayloadKey)
             } else {
                 prefs[navidromeServersPayloadKey] = encodeNavidromeServers(servers)
             }
+        }
+    }
+
+    suspend fun isNavidromeLegacySessionMigrated(): Boolean {
+        return dataStore.data.first()[navidromeLegacySessionMigratedKey] == true
+    }
+
+    suspend fun setNavidromeLegacySessionMigrated(migrated: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[navidromeLegacySessionMigratedKey] = migrated
         }
     }
 

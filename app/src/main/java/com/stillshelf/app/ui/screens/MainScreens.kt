@@ -123,6 +123,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -5822,6 +5823,7 @@ fun ServersManagementScreen(
     val uriHandler = LocalUriHandler.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val routingUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
     var expandedServerMenuId by remember { mutableStateOf<String?>(null) }
     var editingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
     var editingName by remember { mutableStateOf("") }
@@ -5834,8 +5836,9 @@ fun ServersManagementScreen(
     var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
     var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
     val screenContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
-    val sectionCardColor = MaterialTheme.colorScheme.surface
-    val sectionCardBorder: BorderStroke? = null
+    val sectionCardColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val sectionCardBorder: BorderStroke? =
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
     val openUrl: (String) -> Unit = { url ->
         val normalizedUrl = url.trim()
         if (normalizedUrl.isNotBlank()) {
@@ -5848,19 +5851,20 @@ fun ServersManagementScreen(
 
     LaunchedEffect(uiState.toastMessage) {
         val toastMessage = uiState.toastMessage ?: return@LaunchedEffect
-        Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
+        snackbarHostState.showSnackbar(toastMessage)
         viewModel.consumeToastMessage()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(screenContainerColor)
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(screenContainerColor)
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -6157,7 +6161,35 @@ fun ServersManagementScreen(
                 advancedUrlError = null
             }
         )
+        }
+        AppThemedSnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+        )
     }
+}
+
+@Composable
+private fun AppThemedSnackbarHost(
+    hostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    SnackbarHost(
+        hostState = hostState,
+        modifier = modifier,
+        snackbar = { data ->
+            Snackbar(
+                snackbarData = data,
+                shape = RoundedCornerShape(18.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                actionColor = MaterialTheme.colorScheme.primary
+            )
+        }
+    )
 }
 
 @Composable

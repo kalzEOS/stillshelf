@@ -257,20 +257,18 @@ class NavidromeRepository @Inject constructor(
         if (normalizedBaseUrl.isBlank()) return AppResult.Error("Navidrome URL is required.")
         if (normalizedUsername.isBlank()) return AppResult.Error("Username is required.")
         if (password.isBlank()) return AppResult.Error("Password is required.")
+        val state = sessionPreferences.state.first()
+        val duplicateServer = state.navidromeServers.firstOrNull { server ->
+            server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true)
+        }
+        if (duplicateServer != null) {
+            return AppResult.Error("This server already exists.")
+        }
 
         val ping = navidromeApi.ping(normalizedBaseUrl, normalizedUsername, password)
         if (ping.isSuccess) {
             return try {
-                val state = sessionPreferences.state.first()
-                val existingServer = state.navidromeServers.firstOrNull { server ->
-                    server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true) &&
-                        server.username.equals(normalizedUsername, ignoreCase = true)
-                }
-                val targetServer = existingServer?.copy(
-                    name = normalizedServerName,
-                    baseUrl = normalizedBaseUrl,
-                    username = normalizedUsername
-                ) ?: NavidromeServer(
+                val targetServer = NavidromeServer(
                     id = UUID.randomUUID().toString(),
                     name = normalizedServerName,
                     baseUrl = normalizedBaseUrl,
@@ -279,9 +277,7 @@ class NavidromeRepository @Inject constructor(
                 )
                 val updatedServers = buildList {
                     add(targetServer)
-                    state.navidromeServers
-                        .filterNot { it.id == targetServer.id }
-                        .forEach(::add)
+                    state.navidromeServers.forEach(::add)
                 }
                 clearCaches()
                 sessionPreferences.clearCachedNavidromeHome()
@@ -357,8 +353,7 @@ class NavidromeRepository @Inject constructor(
                 ?: return AppResult.Error("Server not found.")
             val duplicate = state.navidromeServers.firstOrNull { server ->
                 server.id != serverId &&
-                    server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true) &&
-                    server.username.equals(target.username, ignoreCase = true)
+                    server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true)
             }
             if (duplicate != null) {
                 return AppResult.Error("A server with this URL already exists.")
@@ -1441,7 +1436,11 @@ class NavidromeRepository @Inject constructor(
     private suspend fun ensureMigratedLegacySession() {
         migrationMutex.withLock {
             val state = sessionPreferences.state.first()
-            if (state.navidromeServers.isNotEmpty()) return
+            if (state.navidromeServers.isNotEmpty()) {
+                sessionPreferences.setNavidromeLegacySessionMigrated(true)
+                return
+            }
+            if (sessionPreferences.isNavidromeLegacySessionMigrated()) return
             val baseUrl = state.navidromeBaseUrl?.trim().orEmpty()
             val username = state.navidromeUsername?.trim().orEmpty()
             if (baseUrl.isBlank() || username.isBlank()) return
@@ -1459,6 +1458,7 @@ class NavidromeRepository @Inject constructor(
             if (!legacyPassword.isNullOrBlank()) {
                 secureTokenStorage.saveNamedSecret(passwordKey(server.id), legacyPassword)
             }
+            sessionPreferences.setNavidromeLegacySessionMigrated(true)
         }
     }
 

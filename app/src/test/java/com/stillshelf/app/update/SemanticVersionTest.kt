@@ -62,4 +62,15 @@ class SemanticVersionTest {
 
         assertTrue(stable > prerelease)
     }
+
+    @Test
+    fun compare_ordersReleaseCandidatesNumerically() {
+        val rc1 = SemanticVersion.parse("v0.2.6-rc.1")
+        val rc2 = SemanticVersion.parse("v0.2.6-rc.2")
+
+        requireNotNull(rc1)
+        requireNotNull(rc2)
+
+        assertTrue(rc2 > rc1)
+    }
 }

@@ -99,7 +99,7 @@ data class PlaybackUiState(
     val errorMessage: String? = null
 )
 
-// Keep paused playback reachable for a limited time, then tear it down to bound battery cost.
+// Keep paused playback reachable while the player still exists so resume is stable across route changes.
 internal fun shouldKeepPlaybackSessionActive(
     book: BookSummary?,
     hasActivePlayer: Boolean
@@ -130,7 +130,6 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
-        private const val PAUSED_PLAYER_RELEASE_DELAY_MS = 8 * 60 * 1000L
         private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
@@ -142,7 +141,6 @@ class PlaybackController @Inject constructor(
         private const val LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS = 6_000L
         private const val LOCK_SCREEN_BOOK_NAV_PAGE_SIZE = 200
         private const val LOCK_SCREEN_BOOK_NAV_MAX_PAGES = 20
-
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
         const val ACTION_FORWARD = "com.stillshelf.app.playback.action.FORWARD"
@@ -153,7 +151,6 @@ class PlaybackController @Inject constructor(
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
-    private var pausedReleaseJob: Job? = null
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -1092,12 +1089,11 @@ class PlaybackController @Inject constructor(
         val shouldAutoSwitchToBluetooth = reason == OutputRefreshReason.DeviceAdded &&
             bluetoothOutputId != null &&
             bluetoothOutputId !in lastKnownOutputDeviceIds
-        val validPreferredId = preferredOutputDeviceId?.takeIf { preferredId ->
-            available.any { it.id == preferredId }
-        }
         val resolvedPreferredId = when {
             shouldAutoSwitchToBluetooth -> bluetoothOutputId
-            validPreferredId != null -> validPreferredId
+            preferredOutputDeviceId?.let { preferredId ->
+                available.any { it.id == preferredId }
+            } == true -> preferredOutputDeviceId
             else -> available.firstOrNull()?.id
         }
         if (preferredOutputDeviceId != resolvedPreferredId) {
@@ -1282,7 +1278,6 @@ class PlaybackController @Inject constructor(
             if (clampedResume > 0L) {
                 runCatching { prepared.seekTo(clampedResume.toInt()) }
             }
-            val focusResult = requestAudioFocusForPlayback()
             updateUiState {
                 it.copy(
                     isLoading = false,
@@ -1294,6 +1289,7 @@ class PlaybackController @Inject constructor(
             }
             updateCachedFromUiState()
             persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
+            val focusResult = requestAudioFocusForPlayback()
             when (focusResult) {
                 AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                     pendingPlayAfterAudioFocusGain = false
@@ -1387,36 +1383,6 @@ class PlaybackController @Inject constructor(
             allowBackgroundRetry = false
         )
         updateUiState { it.copy(isPlaying = false) }
-    }
-
-    private fun cancelPausedPlayerRelease() {
-        pausedReleaseJob?.cancel()
-        pausedReleaseJob = null
-    }
-
-    private fun ensurePausedPlayerReleasePolicy() {
-        val state = uiState.value
-        val player = mediaPlayer
-        val shouldScheduleRelease = state.book != null &&
-            player != null &&
-            !state.isPlaying &&
-            !state.isLoading
-        if (!shouldScheduleRelease) {
-            cancelPausedPlayerRelease()
-            return
-        }
-        if (pausedReleaseJob?.isActive == true) return
-        pausedReleaseJob = scope.launch {
-            delay(PAUSED_PLAYER_RELEASE_DELAY_MS)
-            val latestState = uiState.value
-            val latestPlayer = mediaPlayer
-            val stillPaused = latestState.book != null &&
-                latestPlayer != null &&
-                !latestState.isPlaying &&
-                !latestState.isLoading
-            if (!stillPaused) return@launch
-            releasePlayer(syncProgressBeforeRelease = true)
-        }
     }
 
     private fun configurePlayerAudioAttributes(player: MediaPlayer) {
@@ -1662,7 +1628,6 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
-        cancelPausedPlayerRelease()
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -2182,7 +2147,6 @@ class PlaybackController @Inject constructor(
     private inline fun updateUiState(transform: (PlaybackUiState) -> PlaybackUiState) {
         mutableUiState.update(transform)
         updatePlaybackSurface()
-        ensurePausedPlayerReleasePolicy()
     }
 
     private fun startSleepTimer(
@@ -2673,6 +2637,7 @@ class PlaybackController @Inject constructor(
                     audioManager.clearCommunicationDevice()
                 }
                 audioManager.mode = AudioManager.MODE_NORMAL
+                @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = true
                 true
             }.getOrDefault(false)
@@ -2688,6 +2653,7 @@ class PlaybackController @Inject constructor(
                 audioManager.clearCommunicationDevice()
             }
             audioManager.mode = AudioManager.MODE_NORMAL
+            @Suppress("DEPRECATION")
             audioManager.isSpeakerphoneOn = false
         }
         return false

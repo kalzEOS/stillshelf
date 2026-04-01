@@ -1,5 +1,6 @@
 package com.stillshelf.app.ui.screens.navidrome
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Build
 import android.content.Intent
@@ -141,8 +142,10 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -220,6 +223,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.rememberAsyncImagePainter
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.stillshelf.app.core.model.NavidromeAlbum
@@ -363,6 +368,7 @@ enum class NavidromeAlbumsDisplayStyle(
 private val NavidromeHomeTopBarLibrarySelectorMinWidth = 184.dp
 private val NavidromeHomeTopBarLibrarySelectorPreferredWidth = 236.dp
 private val NavidromeOverlayBottomContentPadding = 120.dp
+private val LocalNavidromeBottomOverlayPadding = compositionLocalOf { NavidromeOverlayBottomContentPadding }
 
 @Composable
 fun NavidromeLoginRoute(
@@ -651,6 +657,12 @@ fun NavidromeAppRoute(
     val systemInsets = ViewCompat.getRootWindowInsets(view)
         ?.getInsets(WindowInsetsCompat.Type.systemBars())
     val safeBottomInset = with(density) { (systemInsets?.bottom ?: 0).toDp() }
+    var measuredBottomOverlayPadding by remember { mutableStateOf(0.dp) }
+    val bottomOverlayPadding = if (showBottomPlayerShell) {
+        measuredBottomOverlayPadding.takeIf { it > 0.dp } ?: (safeBottomInset + 96.dp)
+    } else {
+        safeBottomInset
+    }
 
     fun navigateHome() {
         navController.navigate(NavidromeRoute.HOME) {
@@ -718,42 +730,43 @@ fun NavidromeAppRoute(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        NavHost(
-            navController = navController,
-            startDestination = NavidromeRoute.HOME,
+    CompositionLocalProvider(LocalNavidromeBottomOverlayPadding provides bottomOverlayPadding) {
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding(),
-            enterTransition = {
-                slideInHorizontally(
-                    initialOffsetX = { fullWidth -> fullWidth },
-                    animationSpec = tween(durationMillis = 260)
-                )
-            },
-            exitTransition = {
-                slideOutHorizontally(
-                    targetOffsetX = { fullWidth -> -fullWidth },
-                    animationSpec = tween(durationMillis = 260)
-                )
-            },
-            popEnterTransition = {
-                slideInHorizontally(
-                    initialOffsetX = { fullWidth -> -fullWidth },
-                    animationSpec = tween(durationMillis = 260)
-                )
-            },
-            popExitTransition = {
-                slideOutHorizontally(
-                    targetOffsetX = { fullWidth -> fullWidth },
-                    animationSpec = tween(durationMillis = 260)
-                )
-            }
+                .background(MaterialTheme.colorScheme.background)
         ) {
+            NavHost(
+                navController = navController,
+                startDestination = NavidromeRoute.HOME,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding(),
+                enterTransition = {
+                    slideInHorizontally(
+                        initialOffsetX = { fullWidth -> fullWidth },
+                        animationSpec = tween(durationMillis = 260)
+                    )
+                },
+                exitTransition = {
+                    slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> -fullWidth },
+                        animationSpec = tween(durationMillis = 260)
+                    )
+                },
+                popEnterTransition = {
+                    slideInHorizontally(
+                        initialOffsetX = { fullWidth -> -fullWidth },
+                        animationSpec = tween(durationMillis = 260)
+                    )
+                },
+                popExitTransition = {
+                    slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> fullWidth },
+                        animationSpec = tween(durationMillis = 260)
+                    )
+                }
+            ) {
             composable(NavidromeRoute.HOME) {
                 NavidromeHomeRoute(
                     onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
@@ -928,81 +941,85 @@ fun NavidromeAppRoute(
                     onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
                 )
             }
-        }
-        NavidromePlaylistPickerHost(
-            pendingRequest = pendingPlaylistRequest,
-            onDismiss = { pendingPlaylistRequest = null },
-            viewModel = playlistPickerViewModel
-        )
-        if (safeBottomInset > 0.dp) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(safeBottomInset)
-                    .background(MaterialTheme.colorScheme.background)
+            }
+            NavidromePlaylistPickerHost(
+                pendingRequest = pendingPlaylistRequest,
+                onDismiss = { pendingPlaylistRequest = null },
+                viewModel = playlistPickerViewModel
             )
-        }
-        AnimatedVisibility(
-            visible = showBottomPlayerShell,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = slideInVertically(
-                initialOffsetY = { fullHeight -> fullHeight },
-                animationSpec = tween(durationMillis = 260)
-            ),
-            exit = slideOutVertically(
-                targetOffsetY = { fullHeight -> fullHeight },
-                animationSpec = tween(durationMillis = 260)
-            )
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = safeBottomInset + 6.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                NavidromeMiniPlayerBar(
-                    state = playerState,
-                    onPrevious = playerViewModel::playPrevious,
-                    onPlayPause = playerViewModel::togglePlayPause,
-                    onNext = playerViewModel::playNext,
-                    onOpenPlayer = {
-                        if (playerState.currentTrack != null) {
-                            showPlayerSheet = true
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
+            if (safeBottomInset > 0.dp) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(safeBottomInset)
+                        .background(MaterialTheme.colorScheme.background)
                 )
-                if (currentRoute != NavidromeRoute.HOME) {
-                    val homeBubbleShape = RoundedCornerShape(24.dp)
-                    val homeBubbleBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(54.dp)
-                            .padding(vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
+            }
+            AnimatedVisibility(
+                visible = showBottomPlayerShell,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = slideInVertically(
+                    initialOffsetY = { fullHeight -> fullHeight },
+                    animationSpec = tween(durationMillis = 260)
+                ),
+                exit = slideOutVertically(
+                    targetOffsetY = { fullHeight -> fullHeight },
+                    animationSpec = tween(durationMillis = 260)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = safeBottomInset + 6.dp)
+                        .onSizeChanged {
+                            measuredBottomOverlayPadding = with(density) { it.height.toDp() + safeBottomInset }
+                        },
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    NavidromeMiniPlayerBar(
+                        state = playerState,
+                        onPrevious = playerViewModel::playPrevious,
+                        onPlayPause = playerViewModel::togglePlayPause,
+                        onNext = playerViewModel::playNext,
+                        onOpenPlayer = {
+                            if (playerState.currentTrack != null) {
+                                showPlayerSheet = true
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (currentRoute != NavidromeRoute.HOME) {
+                        val homeBubbleShape = RoundedCornerShape(24.dp)
+                        val homeBubbleBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
+                        Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .clip(homeBubbleShape)
-                                .background(
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shape = homeBubbleShape
-                                )
-                                .border(width = 1.5.dp, color = homeBubbleBorderColor, shape = homeBubbleShape)
-                                .clickable(onClick = ::navigateHome),
+                                .fillMaxHeight()
+                                .width(54.dp)
+                                .padding(vertical = 4.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Home,
-                                contentDescription = "Home",
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(homeBubbleShape)
+                                    .background(
+                                        color = MaterialTheme.colorScheme.surface,
+                                        shape = homeBubbleShape
+                                    )
+                                    .border(width = 1.5.dp, color = homeBubbleBorderColor, shape = homeBubbleShape)
+                                    .clickable(onClick = ::navigateHome),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Home,
+                                    contentDescription = "Home",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
                 }
@@ -1128,6 +1145,7 @@ private fun NavidromeHomeRoute(
     )
 }
 
+@SuppressLint("UnusedBoxWithConstraintsScope")
 @Composable
 @OptIn(androidx.compose.material.ExperimentalMaterialApi::class)
 private fun NavidromeHomeScreen(
@@ -4051,6 +4069,7 @@ private fun NavidromeArtistDetailRoute(
     val displayStyle by albumsViewModel.layoutMode.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val bottomOverlayPadding = LocalNavidromeBottomOverlayPadding.current
     val context = LocalContext.current
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(downloadUiState.actionMessage) {
@@ -4145,7 +4164,7 @@ private fun NavidromeArtistDetailRoute(
                     start = 20.dp,
                     end = 20.dp,
                     top = 12.dp,
-                    bottom = NavidromeOverlayBottomContentPadding
+                    bottom = bottomOverlayPadding + 25.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -4164,24 +4183,31 @@ private fun NavidromeArtistDetailRoute(
                 item { SectionTitle("Albums") }
                 if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
                     item {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            userScrollEnabled = false,
-                            modifier = Modifier.height((((detail.albums.size + 1) / 2) * 244).dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        Column(
                             verticalArrangement = Arrangement.spacedBy(20.dp)
                         ) {
-                            items(detail.albums.size) { index ->
-                                val album = detail.albums[index]
-                                AlbumGridCard(
-                                    album = album,
-                                    isCurrent = playerState.currentTrack?.albumId == album.id,
-                                    isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
-                                        ?.let { it >= album.songCount && album.songCount > 0 }
-                                        ?: false,
-                                    downloadProgressPercent = downloadUiState.albumProgressById[album.id],
-                                    onClick = { onOpenAlbum(album.id) }
-                                )
+                            detail.albums.chunked(2).forEach { albumRow ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    albumRow.forEach { album ->
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            AlbumGridCard(
+                                                album = album,
+                                                isCurrent = playerState.currentTrack?.albumId == album.id,
+                                                isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                                    ?.let { it >= album.songCount && album.songCount > 0 }
+                                                    ?: false,
+                                                downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                                                onClick = { onOpenAlbum(album.id) }
+                                            )
+                                        }
+                                    }
+                                    if (albumRow.size == 1) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
                             }
                         }
                     }
@@ -8914,6 +8940,14 @@ private fun NavidromeExpandedPlayerSheet(
         coverUrl = track.coverUrl,
         enabled = immersiveEnabled
     )
+    val playerCoverModel = rememberCoverImageModel(track.coverUrl, preferOriginalSize = true)
+    val playerCoverPainter = rememberAsyncImagePainter(model = playerCoverModel)
+    var lastSuccessfulPlayerCoverModel by remember { mutableStateOf<Any?>(null) }
+    LaunchedEffect(playerCoverPainter.state, playerCoverModel) {
+        if (playerCoverPainter.state is AsyncImagePainter.State.Success && playerCoverModel != null) {
+            lastSuccessfulPlayerCoverModel = playerCoverModel
+        }
+    }
     val immersiveBackgroundModel = if (immersiveEnabled) {
         rememberCoverImageModel(track.coverUrl, preferOriginalSize = true)
     } else {
@@ -9495,14 +9529,58 @@ private fun NavidromeExpandedPlayerSheet(
                 tonalElevation = 3.dp
             ) {
                 Box(modifier = Modifier.padding(10.dp)) {
-                    AlbumArt(
-                        url = track.coverUrl,
-                        width = coverSize,
-                        height = coverSize,
-                        showDownloadedIndicator = isDownloaded,
-                        downloadProgressPercent = downloadProgressPercent,
-                        fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
-                    )
+                    Box(
+                        modifier = Modifier
+                            .width(coverSize)
+                            .height(coverSize)
+                    ) {
+                        val coverShape = RoundedCornerShape(18.dp)
+                        val fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
+                        if (playerCoverModel == null) {
+                            Box(
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .clip(coverShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = fallbackIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(92.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            val shouldShowPreviousCover = playerCoverPainter.state !is AsyncImagePainter.State.Success &&
+                                lastSuccessfulPlayerCoverModel != null &&
+                                lastSuccessfulPlayerCoverModel != playerCoverModel
+                            if (shouldShowPreviousCover) {
+                                AsyncImage(
+                                    model = lastSuccessfulPlayerCoverModel,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .clip(coverShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                            AsyncImage(
+                                model = playerCoverModel,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .clip(coverShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        NavidromeDownloadBadge(
+                            visible = isDownloaded || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
+                            isCompleted = isDownloaded && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
+                            progressPercent = downloadProgressPercent,
+                            modifier = Modifier.align(Alignment.TopEnd)
+                        )
+                    }
                 }
             }
         }
@@ -10336,7 +10414,8 @@ private fun NavidromeLyricsSheetContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .verticalScroll(plainLyricsScrollState),
+                            .verticalScroll(plainLyricsScrollState)
+                            .padding(bottom = lyricsBottomPadding),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         uiState.lyrics.forEach { line ->

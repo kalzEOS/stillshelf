@@ -123,6 +123,55 @@ internal fun buildNavidromeLyricsCachePrefixForTrack(cachePrefix: String, trackI
     return "${cachePrefix}lyrics:${trackId}:"
 }
 
+internal sealed interface NavidromeLoginServerPlan {
+    data class Create(
+        val server: NavidromeServer
+    ) : NavidromeLoginServerPlan
+
+    data class ReuseExisting(
+        val server: NavidromeServer
+    ) : NavidromeLoginServerPlan
+
+    data object RejectDuplicate : NavidromeLoginServerPlan
+}
+
+internal fun planNavidromeLoginServer(
+    existingServers: List<NavidromeServer>,
+    normalizedServerName: String,
+    normalizedBaseUrl: String,
+    normalizedUsername: String,
+    serverIdsWithSavedPassword: Set<String>,
+    nowMs: Long,
+    newServerId: String
+): NavidromeLoginServerPlan {
+    val duplicateServer = existingServers.firstOrNull { server ->
+        server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true)
+    }
+    if (duplicateServer != null) {
+        return if (serverIdsWithSavedPassword.contains(duplicateServer.id)) {
+            NavidromeLoginServerPlan.RejectDuplicate
+        } else {
+            NavidromeLoginServerPlan.ReuseExisting(
+                server = duplicateServer.copy(
+                    name = normalizedServerName,
+                    baseUrl = normalizedBaseUrl,
+                    username = normalizedUsername
+                )
+            )
+        }
+    }
+
+    return NavidromeLoginServerPlan.Create(
+        server = NavidromeServer(
+            id = newServerId,
+            name = normalizedServerName,
+            baseUrl = normalizedBaseUrl,
+            username = normalizedUsername,
+            createdAt = nowMs
+        )
+    )
+}
+
 @Singleton
 class NavidromeRepository @Inject constructor(
     private val navidromeApi: NavidromeApi,
@@ -264,26 +313,44 @@ class NavidromeRepository @Inject constructor(
         if (normalizedUsername.isBlank()) return AppResult.Error("Username is required.")
         if (password.isBlank()) return AppResult.Error("Password is required.")
         val state = sessionPreferences.state.first()
-        val duplicateServer = state.navidromeServers.firstOrNull { server ->
-            server.baseUrl.equals(normalizedBaseUrl, ignoreCase = true)
-        }
-        if (duplicateServer != null) {
+        val loginPlan = planNavidromeLoginServer(
+            existingServers = state.navidromeServers,
+            normalizedServerName = normalizedServerName,
+            normalizedBaseUrl = normalizedBaseUrl,
+            normalizedUsername = normalizedUsername,
+            serverIdsWithSavedPassword = state.navidromeServers
+                .mapNotNull { server ->
+                    server.id.takeIf {
+                        secureTokenStorage.getNamedSecret(passwordKey(server.id))
+                            ?.trim()
+                            ?.isNotBlank() == true
+                    }
+                }
+                .toSet(),
+            nowMs = System.currentTimeMillis(),
+            newServerId = UUID.randomUUID().toString()
+        )
+        if (loginPlan is NavidromeLoginServerPlan.RejectDuplicate) {
             return AppResult.Error("This server already exists.")
         }
 
         val ping = navidromeApi.ping(normalizedBaseUrl, normalizedUsername, password)
         if (ping.isSuccess) {
             return try {
-                val targetServer = NavidromeServer(
-                    id = UUID.randomUUID().toString(),
-                    name = normalizedServerName,
-                    baseUrl = normalizedBaseUrl,
-                    username = normalizedUsername,
-                    createdAt = System.currentTimeMillis()
-                )
-                val updatedServers = buildList {
-                    add(targetServer)
-                    state.navidromeServers.forEach(::add)
+                val targetServer = when (loginPlan) {
+                    is NavidromeLoginServerPlan.Create -> loginPlan.server
+                    is NavidromeLoginServerPlan.ReuseExisting -> loginPlan.server
+                    NavidromeLoginServerPlan.RejectDuplicate -> error("duplicate plan handled above")
+                }
+                val updatedServers: List<NavidromeServer> = when (loginPlan) {
+                    is NavidromeLoginServerPlan.Create -> buildList {
+                        add(targetServer)
+                        state.navidromeServers.forEach(::add)
+                    }
+                    is NavidromeLoginServerPlan.ReuseExisting -> state.navidromeServers.map { server ->
+                        if (server.id == targetServer.id) targetServer else server
+                    }
+                    NavidromeLoginServerPlan.RejectDuplicate -> error("duplicate plan handled above")
                 }
                 clearCaches()
                 sessionPreferences.clearCachedNavidromeHome()

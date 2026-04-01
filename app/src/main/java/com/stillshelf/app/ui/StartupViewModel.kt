@@ -137,7 +137,7 @@ internal fun shouldShowUpgradeMessagePrompt(
     acknowledgedVersion: String?,
     preferences: SessionPreferenceState
 ): Boolean {
-    if (!currentVersionName.startsWith("0.2.6")) return false
+    if (!currentVersionName.startsWith("0.3.0")) return false
     if (currentVersionCode <= 0) return false
     if (acknowledgedVersion == currentVersionName) return false
     if (lastUpdateTimeMs <= firstInstallTimeMs) return false

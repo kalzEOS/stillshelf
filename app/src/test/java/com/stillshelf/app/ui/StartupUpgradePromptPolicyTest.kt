@@ -17,7 +17,7 @@ class StartupUpgradePromptPolicyTest {
         )
 
         val shouldShow = shouldShowUpgradeMessagePrompt(
-            currentVersionName = "0.2.6-beta.21",
+            currentVersionName = "0.3.0-rc.1",
             currentVersionCode = 59,
             firstInstallTimeMs = 100L,
             lastUpdateTimeMs = 200L,
@@ -37,7 +37,7 @@ class StartupUpgradePromptPolicyTest {
         )
 
         val shouldShow = shouldShowUpgradeMessagePrompt(
-            currentVersionName = "0.2.6-beta.21",
+            currentVersionName = "0.3.0-rc.1",
             currentVersionCode = 59,
             firstInstallTimeMs = 100L,
             lastUpdateTimeMs = 100L,
@@ -57,11 +57,11 @@ class StartupUpgradePromptPolicyTest {
         )
 
         val shouldShow = shouldShowUpgradeMessagePrompt(
-            currentVersionName = "0.2.6-beta.21",
+            currentVersionName = "0.3.0-rc.1",
             currentVersionCode = 59,
             firstInstallTimeMs = 100L,
             lastUpdateTimeMs = 200L,
-            acknowledgedVersion = "0.2.6-beta.21",
+            acknowledgedVersion = "0.3.0-rc.1",
             preferences = preferences
         )
 
@@ -86,7 +86,7 @@ class StartupUpgradePromptPolicyTest {
         )
 
         val shouldShow = shouldShowUpgradeMessagePrompt(
-            currentVersionName = "0.2.6-beta.21",
+            currentVersionName = "0.3.0-rc.1",
             currentVersionCode = 59,
             firstInstallTimeMs = 100L,
             lastUpdateTimeMs = 200L,

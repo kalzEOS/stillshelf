@@ -12,6 +12,7 @@ import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -88,6 +89,99 @@ internal fun resolveNavidromeEqualizerBandLevelDb(
     return desiredLevels.getOrElse(nearestIndex) { 0f }
 }
 
+internal fun isNavidromeOutputSwitchInFlight(
+    nowElapsedMs: Long,
+    suppressRefreshRoutingUntilElapsedMs: Long
+): Boolean {
+    return nowElapsedMs < suppressRefreshRoutingUntilElapsedMs
+}
+
+internal data class NavidromeTrackSnapshotPayload(
+    val id: String,
+    val title: String,
+    val artistName: String,
+    val albumName: String,
+    val albumId: String?,
+    val artistId: String?,
+    val trackNumber: Int?,
+    val durationSeconds: Int?,
+    val coverUrl: String?,
+    val streamUrl: String,
+    val formatLabel: String?,
+    val bitRateKbps: Int?
+)
+
+internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
+    return NavidromeTrackSnapshotPayload(
+        id = id,
+        title = title,
+        artistName = artistName,
+        albumName = albumName,
+        albumId = albumId,
+        artistId = artistId,
+        trackNumber = trackNumber,
+        durationSeconds = durationSeconds,
+        coverUrl = coverUrl,
+        streamUrl = streamUrl,
+        formatLabel = formatLabel,
+        bitRateKbps = bitRateKbps
+    )
+}
+
+internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
+    if (id.isBlank()) return null
+    return NavidromeTrack(
+        id = id,
+        title = title.ifBlank { "Unknown track" },
+        artistName = artistName.ifBlank { "Unknown artist" },
+        albumName = albumName.ifBlank { "Unknown album" },
+        albumId = albumId?.takeIf { it.isNotBlank() },
+        artistId = artistId?.takeIf { it.isNotBlank() },
+        trackNumber = trackNumber?.takeIf { it > 0 },
+        durationSeconds = durationSeconds?.takeIf { it > 0 },
+        coverUrl = coverUrl?.takeIf { it.isNotBlank() },
+        streamUrl = streamUrl.trim(),
+        formatLabel = formatLabel?.takeIf { it.isNotBlank() },
+        bitRateKbps = bitRateKbps?.takeIf { it > 0 }
+    )
+}
+
+internal fun serializeNavidromeTrackSnapshot(track: NavidromeTrack): JSONObject {
+    val payload = track.toSnapshotPayload()
+    return JSONObject()
+        .put("id", payload.id)
+        .put("title", payload.title)
+        .put("artistName", payload.artistName)
+        .put("albumName", payload.albumName)
+        .put("streamUrl", payload.streamUrl)
+        .apply {
+            payload.albumId?.let { put("albumId", it) }
+            payload.artistId?.let { put("artistId", it) }
+            payload.trackNumber?.let { put("trackNumber", it) }
+            payload.durationSeconds?.let { put("durationSeconds", it) }
+            payload.coverUrl?.let { put("coverUrl", it) }
+            payload.formatLabel?.let { put("formatLabel", it) }
+            payload.bitRateKbps?.let { put("bitRateKbps", it) }
+        }
+}
+
+internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
+    return NavidromeTrackSnapshotPayload(
+        id = item.optString("id").trim(),
+        title = item.optString("title"),
+        artistName = item.optString("artistName"),
+        albumName = item.optString("albumName"),
+        albumId = item.optString("albumId").ifBlank { null },
+        artistId = item.optString("artistId").ifBlank { null },
+        trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber"),
+        durationSeconds = item.takeIf { it.has("durationSeconds") }?.optInt("durationSeconds"),
+        coverUrl = item.optString("coverUrl").ifBlank { null },
+        streamUrl = item.optString("streamUrl").trim(),
+        formatLabel = item.optString("formatLabel").ifBlank { null },
+        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+    ).toTrack()
+}
+
 @Singleton
 class NavidromePlayerController @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -110,6 +204,7 @@ class NavidromePlayerController @Inject constructor(
         const val SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS = 450L
         const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
         const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
+        const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
         const val NAVIDROME_PREAMP_MAX_GAIN_MB = 1200
     }
 
@@ -165,8 +260,10 @@ class NavidromePlayerController @Inject constructor(
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
+    private var suppressRefreshRoutingUntilElapsedMs: Long = 0L
     private val forcedRemoteTrackIds = mutableSetOf<String>()
     private var playbackRecoveryTrackId: String? = null
+    private var restorePlaybackGeneration: Long = 0L
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
@@ -331,6 +428,7 @@ class NavidromePlayerController @Inject constructor(
         queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL
     ) {
         if (tracks.isEmpty()) return
+        invalidatePendingPlaybackRestore()
         val index = startIndex.coerceIn(0, tracks.lastIndex)
         playbackRecoveryTrackId = null
         queueTracks = tracks
@@ -510,6 +608,7 @@ class NavidromePlayerController @Inject constructor(
     fun currentRepeatMode(): Int = repeatMode
 
     fun stop() {
+        invalidatePendingPlaybackRestore()
         queueTracks = emptyList()
         lastRecordedTrackId = null
         forcedRemoteTrackIds.clear()
@@ -761,6 +860,7 @@ class NavidromePlayerController @Inject constructor(
         scope.launch(Dispatchers.IO) {
             val cachedSnapshot = sessionPreferences.getCachedNavidromePlayback()
                 ?: return@launch
+            val restoreGeneration = restorePlaybackGeneration
             val currentSessionKey = navidromeRepository.currentPlaybackSessionKey()
             if (cachedSnapshot.sessionKey.isNullOrBlank()) {
                 sessionPreferences.clearCachedNavidromePlayback()
@@ -795,6 +895,13 @@ class NavidromePlayerController @Inject constructor(
                 return@launch
             }
             scope.launch(Dispatchers.Main.immediate) {
+                if (
+                    restoreGeneration != restorePlaybackGeneration ||
+                    player != null ||
+                    queueTracks.isNotEmpty()
+                ) {
+                    return@launch
+                }
                 queueTracks = refreshedQueue
                 queueDisplayMode = snapshot.queueDisplayMode
                 recentTracks = refreshedRecent
@@ -1315,20 +1422,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun NavidromeTrack.toJson(): JSONObject {
-        return JSONObject()
-            .put("id", id)
-            .put("title", title)
-            .put("artistName", artistName)
-            .put("albumName", albumName)
-            .apply {
-                albumId?.let { put("albumId", it) }
-                artistId?.let { put("artistId", it) }
-                trackNumber?.let { put("trackNumber", it) }
-                durationSeconds?.let { put("durationSeconds", it) }
-                coverUrl?.let { put("coverUrl", it) }
-                formatLabel?.let { put("formatLabel", it) }
-                bitRateKbps?.let { put("bitRateKbps", it) }
-            }
+        return serializeNavidromeTrackSnapshot(this)
     }
 
     private fun parsePlaybackSnapshot(payload: String): NavidromePlaybackSnapshot? {
@@ -1358,25 +1452,7 @@ class NavidromePlayerController @Inject constructor(
         return buildList {
             repeat(length()) { index ->
                 val item = optJSONObject(index) ?: return@repeat
-                val id = item.optString("id").trim()
-                val streamUrl = item.optString("streamUrl").trim()
-                if (id.isBlank()) return@repeat
-                add(
-                    NavidromeTrack(
-                        id = id,
-                        title = item.optString("title").ifBlank { "Unknown track" },
-                        artistName = item.optString("artistName").ifBlank { "Unknown artist" },
-                        albumName = item.optString("albumName").ifBlank { "Unknown album" },
-                        albumId = item.optString("albumId").ifBlank { null },
-                        artistId = item.optString("artistId").ifBlank { null },
-                        trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber")?.takeIf { it > 0 },
-                        durationSeconds = item.takeIf { it.has("durationSeconds") }?.optInt("durationSeconds")?.takeIf { it > 0 },
-                        coverUrl = item.optString("coverUrl").ifBlank { null },
-                        streamUrl = streamUrl,
-                        formatLabel = item.optString("formatLabel").ifBlank { null },
-                        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")?.takeIf { it > 0 }
-                    )
-                )
+                parseNavidromeTrackSnapshot(item)?.let(::add)
             }
         }
     }
@@ -1412,11 +1488,17 @@ class NavidromePlayerController @Inject constructor(
             bluetoothOutputId != null && bluetoothOutputId in availableIds -> bluetoothOutputId
             else -> available.firstOrNull()?.id
         }
+        val shouldSkipRoutingApply = isNavidromeOutputSwitchInFlight(
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+            suppressRefreshRoutingUntilElapsedMs = suppressRefreshRoutingUntilElapsedMs
+        )
         player?.let { activePlayer ->
-            if (shouldFollowSystemRoute) {
-                applySystemDefaultOutputRouting(activePlayer)
-            } else {
-                applyPreferredOutputDevice(activePlayer)
+            if (!shouldSkipRoutingApply) {
+                if (shouldFollowSystemRoute) {
+                    applySystemDefaultOutputRouting(activePlayer)
+                } else {
+                    applyPreferredOutputDevice(activePlayer)
+                }
             }
         }
         mutableState.value = mutableState.value.copy(
@@ -1680,6 +1762,8 @@ class NavidromePlayerController @Inject constructor(
 
     private fun performMutedOutputSwitch(player: ExoPlayer, block: () -> Boolean, toSpeakerRoute: Boolean): Boolean {
         cancelOutputRecovery()
+        suppressRefreshRoutingUntilElapsedMs =
+            SystemClock.elapsedRealtime() + resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute)
         val originalVolume = player.volume
         val shouldResumePlayback = player.isPlaying || player.playWhenReady
         if (shouldResumePlayback) {
@@ -1729,6 +1813,20 @@ class NavidromePlayerController @Inject constructor(
     private fun cancelOutputRecovery() {
         outputRecoveryJob?.cancel()
         outputRecoveryJob = null
+        suppressRefreshRoutingUntilElapsedMs = 0L
+    }
+
+    private fun resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute: Boolean): Long {
+        val restoreDelayMs = if (toSpeakerRoute) {
+            SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS
+        } else {
+            OUTPUT_SWITCH_RESTORE_DELAY_MS
+        }
+        return restoreDelayMs + OUTPUT_SWITCH_REFRESH_GRACE_MS
+    }
+
+    private fun invalidatePendingPlaybackRestore() {
+        restorePlaybackGeneration += 1L
     }
 
     private fun clearPreferredOutputOverride(player: ExoPlayer): Boolean {

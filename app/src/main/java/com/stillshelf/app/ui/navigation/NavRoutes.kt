@@ -3,8 +3,11 @@ package com.stillshelf.app.ui.navigation
 import android.net.Uri
 
 object GraphRoute {
+    const val BACKEND_SELECTOR = "backend_selector"
     const val AUTH = "auth_graph"
     const val MAIN = "main_graph"
+    const val NAVIDROME_AUTH = "navidrome_auth"
+    const val NAVIDROME = "navidrome_graph"
 }
 
 object AuthRoute {
@@ -125,4 +128,35 @@ enum class MainTab(val route: String, val label: String) {
             return entries.firstOrNull { it.route == route } ?: Home
         }
     }
+}
+
+object NavidromeRoute {
+    const val LOGIN = "navidrome/login"
+    const val HOME = "navidrome/home"
+    const val LIBRARY = "navidrome/library"
+    const val ARTISTS = "navidrome/library/artists"
+    const val ALBUMS = "navidrome/library/albums"
+    const val NEWEST_ALBUMS = "navidrome/library/albums/newest"
+    const val RADIOS = "navidrome/library/radios"
+    const val SONGS = "navidrome/library/songs"
+    const val FAVORITES = "navidrome/library/favorites"
+    const val PLAYLISTS = "navidrome/library/playlists"
+    const val PLAYLIST_ID_ARG = "playlistId"
+    const val SEARCH = "navidrome/search"
+    const val SETTINGS = "navidrome/settings"
+    const val EQUALIZER = "navidrome/settings/equalizer"
+    const val LYRICS_SOURCES = "navidrome/settings/lyrics-sources"
+    const val SERVERS = "navidrome/settings/servers"
+    const val CUSTOMIZE = "navidrome/customize"
+    const val ARTIST_ID_ARG = "artistId"
+    const val ALBUM_ID_ARG = "albumId"
+    const val PLAYLIST_PATTERN = "navidrome/playlist/{$PLAYLIST_ID_ARG}"
+    const val ARTIST_PATTERN = "navidrome/artist/{$ARTIST_ID_ARG}"
+    const val ALBUM_PATTERN = "navidrome/album/{$ALBUM_ID_ARG}"
+
+    fun playlist(playlistId: String): String = "navidrome/playlist/${Uri.encode(playlistId)}"
+
+    fun artist(artistId: String): String = "navidrome/artist/${Uri.encode(artistId)}"
+
+    fun album(albumId: String): String = "navidrome/album/${Uri.encode(albumId)}"
 }

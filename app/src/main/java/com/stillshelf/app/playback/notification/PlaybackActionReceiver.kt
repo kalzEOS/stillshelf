@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.stillshelf.app.playback.controller.PlaybackController
+import com.stillshelf.app.playback.navidrome.NavidromePlayerController
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
@@ -17,7 +18,14 @@ class PlaybackActionReceiver : BroadcastReceiver() {
             context.applicationContext,
             PlaybackActionReceiverEntryPoint::class.java
         )
-        entryPoint.playbackController().handleExternalPlaybackAction(action)
+        when {
+            action.startsWith("com.stillshelf.app.navidrome.playback.action.") -> {
+                entryPoint.navidromePlayerController().handleExternalPlaybackAction(action)
+            }
+            else -> {
+                entryPoint.playbackController().handleExternalPlaybackAction(action)
+            }
+        }
     }
 }
 
@@ -25,4 +33,5 @@ class PlaybackActionReceiver : BroadcastReceiver() {
 @InstallIn(SingletonComponent::class)
 interface PlaybackActionReceiverEntryPoint {
     fun playbackController(): PlaybackController
+    fun navidromePlayerController(): NavidromePlayerController
 }

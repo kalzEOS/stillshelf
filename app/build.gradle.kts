@@ -23,8 +23,8 @@ android {
         applicationId = "com.stillshelf.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.2.5"
+        versionCode = 64
+        versionName = "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -117,6 +117,7 @@ dependencies {
     }
     implementation(libs.coil.compose)
     implementation(libs.androidx.media)
+    implementation(libs.androidx.media3.exoplayer)
 
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)

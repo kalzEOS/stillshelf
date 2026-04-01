@@ -99,11 +99,25 @@ data class PlaybackUiState(
     val errorMessage: String? = null
 )
 
-// Battery-first policy: only keep the playback session/service alive while audio is actively playing.
+// Keep paused playback reachable for a limited time, then tear it down to bound battery cost.
 internal fun shouldKeepPlaybackSessionActive(
     book: BookSummary?,
-    isPlaying: Boolean
-): Boolean = book != null && isPlaying
+    hasActivePlayer: Boolean
+): Boolean = book != null && hasActivePlayer
+
+internal enum class ResumeProgressUpdateMode {
+    Immediate,
+    OnAudioFocusGain,
+    Never
+}
+
+internal fun resolveResumeProgressUpdateMode(audioFocusResult: Int): ResumeProgressUpdateMode {
+    return when (audioFocusResult) {
+        AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> ResumeProgressUpdateMode.Immediate
+        AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> ResumeProgressUpdateMode.OnAudioFocusGain
+        else -> ResumeProgressUpdateMode.Never
+    }
+}
 
 @Singleton
 class PlaybackController @Inject constructor(
@@ -116,6 +130,7 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val PAUSED_PLAYER_RELEASE_DELAY_MS = 8 * 60 * 1000L
         private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
@@ -138,6 +153,7 @@ class PlaybackController @Inject constructor(
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
+    private var pausedReleaseJob: Job? = null
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -638,6 +654,54 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    fun playCurrent() {
+        resume()
+    }
+
+    fun pauseCurrent() {
+        pause()
+    }
+
+    fun stop() {
+        val hadBook = uiState.value.book != null
+        if (hadBook) {
+            updateCachedFromUiState()
+        }
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        syncQueueJob?.cancel()
+        syncQueueJob = null
+        pendingSyncRequests.clear()
+        releasePlayer(syncProgressBeforeRelease = true)
+        currentBookId = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
+        attemptedAutoAdvanceTargetsMs.clear()
+        previousRestartState = null
+        playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
+        suppressNextAutoAdvanceOnCompletion = false
+        cancelSleepTimer(updateUi = false)
+        updateUiState { state ->
+            state.copy(
+                isLoading = false,
+                book = null,
+                isPlaying = false,
+                positionMs = 0L,
+                durationMs = 0L,
+                errorMessage = null,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false
+            )
+        }
+    }
+
     fun seekBy(deltaMs: Long) {
         val player = mediaPlayer ?: return
         val duration = resolveDisplayedDurationMs(player)
@@ -805,7 +869,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun setPlaybackSpeed(speed: Float) {
-        val clampedSpeed = speed.coerceIn(0.7f, 2.0f)
+        val clampedSpeed = speed.coerceIn(0.5f, 2.0f)
         currentPlaybackSpeed = clampedSpeed
         val wasPlaying = uiState.value.isPlaying
         mediaPlayer?.let { player ->
@@ -823,6 +887,53 @@ class PlaybackController @Inject constructor(
                 isPlaying = if (wasPlaying) it.isPlaying else false
             )
         }
+    }
+
+    fun cyclePlaybackSpeed(
+        steps: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.2f, 1.3f, 1.5f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.5f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextIndex = normalizedSteps.indexOfFirst { step -> step > (currentSpeed + 0.01f) }
+            .takeIf { it >= 0 }
+            ?: 0
+        val nextSpeed = normalizedSteps[nextIndex]
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
+    }
+
+    fun increasePlaybackSpeed(
+        steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.5f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextSpeed = normalizedSteps.firstOrNull { it > (currentSpeed + 0.01f) }
+            ?: normalizedSteps.last()
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
+    }
+
+    fun decreasePlaybackSpeed(
+        steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
+    ): Float {
+        val normalizedSteps = steps
+            .map { it.coerceIn(0.5f, 2.0f) }
+            .distinct()
+            .sorted()
+        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
+        val currentSpeed = uiState.value.playbackSpeed
+        val nextSpeed = normalizedSteps.lastOrNull { it < (currentSpeed - 0.01f) }
+            ?: normalizedSteps.first()
+        setPlaybackSpeed(nextSpeed)
+        return nextSpeed
     }
 
     fun setSoftToneLevel(level: Float) {
@@ -877,6 +988,84 @@ class PlaybackController @Inject constructor(
 
     fun clearSleepTimer() {
         cancelSleepTimer(updateUi = true)
+    }
+
+    suspend fun cycleCarSleepTimer(): String {
+        val state = uiState.value
+        val currentMode = state.sleepTimerMode
+        val remainingMinutes = (((state.sleepTimerRemainingMs ?: 0L) + 59_999L) / 60_000L).toInt()
+        return when {
+            currentMode == SleepTimerMode.Off -> {
+                startSleepTimerMinutes(15)
+                "Sleep timer 15m"
+            }
+            currentMode == SleepTimerMode.Duration && remainingMinutes <= 15 -> {
+                startSleepTimerMinutes(30)
+                "Sleep timer 30m"
+            }
+            currentMode == SleepTimerMode.Duration -> {
+                if (startSleepTimerEndOfChapter()) {
+                    "Sleep timer end of chapter"
+                } else {
+                    clearSleepTimer()
+                    "Sleep timer off"
+                }
+            }
+            currentMode == SleepTimerMode.EndOfChapter -> {
+                clearSleepTimer()
+                "Sleep timer off"
+            }
+            else -> {
+                clearSleepTimer()
+                "Sleep timer off"
+            }
+        }
+    }
+
+    fun addBookmarkAtCurrentPosition(title: String? = null) {
+        val bookId = currentBookId ?: uiState.value.book?.id ?: return
+        val timeSeconds = uiState.value.positionMs.coerceAtLeast(0L) / 1000.0
+        scope.launch {
+            when (
+                val result = sessionRepository.createBookmark(
+                    bookId = bookId,
+                    timeSeconds = timeSeconds,
+                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                )
+            ) {
+                is AppResult.Success -> updateUiState { it.copy(errorMessage = null) }
+                is AppResult.Error -> updateUiState { it.copy(errorMessage = result.message) }
+            }
+        }
+    }
+
+    fun jumpToNextChapter() {
+        scope.launch {
+            val bookId = currentBookId ?: uiState.value.book?.id ?: return@launch
+            val chapterStartsMs = resolveChapterStartsMs(bookId)
+            if (chapterStartsMs.isEmpty()) return@launch
+            val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val nextChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex + 1) ?: return@launch
+            seekToPosition(targetMs = nextChapterStartMs, forceSync = true)
+        }
+    }
+
+    fun jumpToPreviousChapter() {
+        scope.launch {
+            val bookId = currentBookId ?: uiState.value.book?.id ?: return@launch
+            val chapterStartsMs = resolveChapterStartsMs(bookId)
+            if (chapterStartsMs.isEmpty()) return@launch
+            val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
+            val currentChapterIndex = resolveCurrentChapterIndex(chapterStartsMs, currentPositionMs)
+            val currentChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex)?.coerceAtLeast(0L) ?: 0L
+            if (currentPositionMs > currentChapterStartMs + 1_000L) {
+                seekToPosition(targetMs = currentChapterStartMs, forceSync = true)
+                return@launch
+            }
+            val previousChapterStartMs = chapterStartsMs.getOrNull(currentChapterIndex - 1) ?: return@launch
+            seekToPosition(targetMs = previousChapterStartMs, forceSync = true)
+        }
     }
 
     fun extendSleepTimerOneMinute() {
@@ -1005,21 +1194,30 @@ class PlaybackController @Inject constructor(
     }
 
     private fun resume() {
-        val player = mediaPlayer ?: return
+        val player = mediaPlayer
+        if (player == null) {
+            val book = uiState.value.book ?: return
+            playBook(book.id, uiState.value.positionMs)
+            return
+        }
         clearDucking(player)
         wasPausedForTransientAudioFocusLoss = false
         val focusResult = requestAudioFocusForPlayback()
+        val progressUpdateMode = resolveResumeProgressUpdateMode(focusResult)
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             pendingPlayAfterAudioFocusGain = false
             pendingPlayStartsProgressUpdates = false
             runCatching { player.start() }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
-            startProgressUpdates()
+            if (progressUpdateMode == ResumeProgressUpdateMode.Immediate) {
+                startProgressUpdates()
+            }
             return
         }
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
             pendingPlayAfterAudioFocusGain = true
-            pendingPlayStartsProgressUpdates = true
+            pendingPlayStartsProgressUpdates =
+                progressUpdateMode == ResumeProgressUpdateMode.OnAudioFocusGain
             updateUiState { it.copy(isPlaying = false, errorMessage = null) }
             return
         }
@@ -1189,6 +1387,36 @@ class PlaybackController @Inject constructor(
             allowBackgroundRetry = false
         )
         updateUiState { it.copy(isPlaying = false) }
+    }
+
+    private fun cancelPausedPlayerRelease() {
+        pausedReleaseJob?.cancel()
+        pausedReleaseJob = null
+    }
+
+    private fun ensurePausedPlayerReleasePolicy() {
+        val state = uiState.value
+        val player = mediaPlayer
+        val shouldScheduleRelease = state.book != null &&
+            player != null &&
+            !state.isPlaying &&
+            !state.isLoading
+        if (!shouldScheduleRelease) {
+            cancelPausedPlayerRelease()
+            return
+        }
+        if (pausedReleaseJob?.isActive == true) return
+        pausedReleaseJob = scope.launch {
+            delay(PAUSED_PLAYER_RELEASE_DELAY_MS)
+            val latestState = uiState.value
+            val latestPlayer = mediaPlayer
+            val stillPaused = latestState.book != null &&
+                latestPlayer != null &&
+                !latestState.isPlaying &&
+                !latestState.isLoading
+            if (!stillPaused) return@launch
+            releasePlayer(syncProgressBeforeRelease = true)
+        }
     }
 
     private fun configurePlayerAudioAttributes(player: MediaPlayer) {
@@ -1434,6 +1662,7 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        cancelPausedPlayerRelease()
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -1953,6 +2182,7 @@ class PlaybackController @Inject constructor(
     private inline fun updateUiState(transform: (PlaybackUiState) -> PlaybackUiState) {
         mutableUiState.update(transform)
         updatePlaybackSurface()
+        ensurePausedPlayerReleasePolicy()
     }
 
     private fun startSleepTimer(
@@ -2467,7 +2697,7 @@ class PlaybackController @Inject constructor(
         val state = uiState.value
         val keepPlaybackSessionActive = shouldKeepPlaybackSessionActive(
             book = state.book,
-            isPlaying = state.isPlaying
+            hasActivePlayer = mediaPlayer != null
         )
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(
@@ -2553,7 +2783,10 @@ class PlaybackController @Inject constructor(
             isPlaying = state.isPlaying,
             hasArtwork = artworkBitmap != null
         )
-        if (notificationSignature == lastNotificationSignature) {
+        if (
+            notificationSignature == lastNotificationSignature &&
+            PlaybackServiceController.isActive()
+        ) {
             return
         }
 
@@ -2679,7 +2912,12 @@ class PlaybackController @Inject constructor(
                     existing.sound != null
                 )
         ) {
-            manager.deleteNotificationChannel(CHANNEL_ID)
+            val deleted = runCatching {
+                manager.deleteNotificationChannel(CHANNEL_ID)
+            }.isSuccess
+            if (!deleted) {
+                return
+            }
         } else if (existing != null) {
             return
         }

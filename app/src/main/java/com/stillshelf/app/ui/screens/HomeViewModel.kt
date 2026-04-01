@@ -52,6 +52,8 @@ class HomeViewModel @Inject constructor(
         private const val HOME_DISCOVER_LIMIT = 16
         private const val SILENT_REFRESH_INTERVAL_MS: Long = 5 * 60 * 1000L
         private const val SILENT_REFRESH_TICK_MS: Long = 30 * 1000L
+        private const val VISIBLE_ENTRY_REFRESH_RETRY_DELAY_MS: Long = 250L
+        private const val VISIBLE_ENTRY_REFRESH_RETRY_ATTEMPTS: Int = 8
     }
 
     private val mutableUiState = MutableStateFlow(HomeUiState())
@@ -84,7 +86,6 @@ class HomeViewModel @Inject constructor(
     init {
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         observeActiveLibrary()
-        observeBookProgressMutations()
         observeLivePlaybackState()
         observeDownloadedState()
         observeActiveServerDataState()
@@ -94,67 +95,40 @@ class HomeViewModel @Inject constructor(
 
     private fun observeActiveLibrary() {
         viewModelScope.launch {
-            var previousLibraryId: String? = null
+            var previousSelection: Pair<String?, String?>? = null
             sessionRepository.observeSessionState()
-                .map { it.activeLibraryId }
+                .map { session ->
+                    Triple(
+                        session.activeServerId,
+                        session.activeLibraryId,
+                        session.requiresLibrarySelection
+                    )
+                }
                 .distinctUntilChanged()
-                .collect { libraryId ->
-                    if (libraryId != previousLibraryId) {
+                .collect { (serverId, libraryId, requiresLibrarySelection) ->
+                    val currentSelection = serverId to libraryId
+                    if (currentSelection != previousSelection) {
                         removedListenAgainBookIds = emptySet()
-                        previousLibraryId = libraryId
+                        previousSelection = currentSelection
                     }
-                    activeLibraryIdState.value = libraryId
-                    if (libraryId.isNullOrBlank()) {
+                    val readyLibraryId = resolveReadyHomeLibraryId(
+                        activeLibraryId = libraryId,
+                        requiresLibrarySelection = requiresLibrarySelection
+                    )
+                    activeLibraryIdState.value = readyLibraryId
+                    if (shouldPreserveHomeContentDuringPendingSelection(libraryId, requiresLibrarySelection)) {
+                        mutableUiState.update {
+                            it.copy(
+                                isLoading = true,
+                                errorMessage = null
+                            )
+                        }
+                    } else if (readyLibraryId.isNullOrBlank()) {
                         mutableUiState.update { HomeUiState() }
                     } else {
                         loadCachedThenMaybeRefresh()
                     }
                 }
-        }
-    }
-
-    private fun observeBookProgressMutations() {
-        viewModelScope.launch {
-            sessionRepository.observeBookProgressMutations().collect { mutation ->
-                mutableUiState.update { state ->
-                    val updatedRecentlyAdded = state.recentlyAdded.map { it.withBookProgressMutation(mutation) }
-                    val updatedDiscover = state.discoverBooks.map { it.withBookProgressMutation(mutation) }
-                    val updatedRecentSeries = state.recentSeries.map { series ->
-                        if (series.leadBook.id == mutation.bookId) {
-                            series.copy(leadBook = series.leadBook.withBookProgressMutation(mutation))
-                        } else {
-                            series
-                        }
-                    }
-                    val updatedContinue = when {
-                        mutation.isFinished || mutation.isResetToStart() ->
-                            state.continueListening.filterNot { item -> item.book.id == mutation.bookId }
-
-                        else -> state.continueListening.map { it.withBookProgressMutation(mutation) }
-                    }
-                    val updatedListenAgain = if (mutation.isFinished) {
-                        val sourceBook = updatedRecentlyAdded.firstOrNull { it.id == mutation.bookId }
-                            ?: updatedDiscover.firstOrNull { it.id == mutation.bookId }
-                            ?: updatedContinue.firstOrNull { it.book.id == mutation.bookId }?.book
-                            ?: updatedRecentSeries.firstOrNull { it.leadBook.id == mutation.bookId }?.leadBook
-                        if (sourceBook == null) {
-                            state.listenAgain
-                        } else {
-                            (listOf(sourceBook) + state.listenAgain.filterNot { it.id == mutation.bookId })
-                                .distinctBy { it.id }
-                        }
-                    } else {
-                        state.listenAgain.filterNot { it.id == mutation.bookId }
-                    }
-                    state.copy(
-                        continueListening = updatedContinue,
-                        recentlyAdded = updatedRecentlyAdded,
-                        discoverBooks = updatedDiscover,
-                        recentSeries = updatedRecentSeries,
-                        listenAgain = updatedListenAgain
-                    )
-                }
-            }
         }
     }
 
@@ -350,7 +324,6 @@ class HomeViewModel @Inject constructor(
         forceRefreshDerivedContent: Boolean = false
     ): Boolean {
         if (isHomeFeedRefreshInFlight) return false
-        if (uiState.value.isLoading) return false
         isHomeFeedRefreshInFlight = true
         if (showLoading) {
             mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
@@ -560,9 +533,28 @@ class HomeViewModel @Inject constructor(
         try {
             val activeLibraryId = activeLibraryIdState.value
             if (activeLibraryId.isNullOrBlank()) return
-            refreshNetwork(showLoading = false, forceRefreshDerivedContent = true)
+            val didRefresh = refreshNetwork(
+                showLoading = shouldShowLoadingForVisibleHomeRefresh(uiState.value),
+                forceRefreshDerivedContent = true
+            )
+            if (didRefresh) return
+
+            waitForHomeFeedRefreshSlot()
+            if (activeLibraryIdState.value.isNullOrBlank()) return
+
+            refreshNetwork(
+                showLoading = shouldShowLoadingForVisibleHomeRefresh(uiState.value),
+                forceRefreshDerivedContent = true
+            )
         } finally {
             homeVisibilityRefreshInFlight = false
+        }
+    }
+
+    private suspend fun waitForHomeFeedRefreshSlot() {
+        repeat(VISIBLE_ENTRY_REFRESH_RETRY_ATTEMPTS) {
+            if (!isHomeFeedRefreshInFlight) return
+            delay(VISIBLE_ENTRY_REFRESH_RETRY_DELAY_MS)
         }
     }
 
@@ -743,6 +735,28 @@ data class HomeUiState(
     val actionMessage: String? = null,
     val errorMessage: String? = null
 )
+
+internal fun resolveReadyHomeLibraryId(
+    activeLibraryId: String?,
+    requiresLibrarySelection: Boolean
+): String? {
+    return activeLibraryId?.takeUnless { requiresLibrarySelection }
+}
+
+internal fun shouldPreserveHomeContentDuringPendingSelection(
+    activeLibraryId: String?,
+    requiresLibrarySelection: Boolean
+): Boolean {
+    return !activeLibraryId.isNullOrBlank() && requiresLibrarySelection
+}
+
+internal fun shouldShowLoadingForVisibleHomeRefresh(state: HomeUiState): Boolean {
+    return state.continueListening.isEmpty() &&
+        state.recentlyAdded.isEmpty() &&
+        state.listenAgain.isEmpty() &&
+        state.recentSeries.isEmpty() &&
+        state.discoverBooks.isEmpty()
+}
 
 internal fun shouldRefreshHomeOnAppForeground(
     wasInForeground: Boolean,

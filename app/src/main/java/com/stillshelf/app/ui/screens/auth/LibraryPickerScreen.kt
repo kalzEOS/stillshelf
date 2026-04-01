@@ -1,9 +1,10 @@
 package com.stillshelf.app.ui.screens.auth
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -14,9 +15,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoStories
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -24,7 +28,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,14 +40,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.PaddingValues
 
 @Composable
 fun LibraryPickerRoute(
     onLibrarySelected: () -> Unit,
     onManageServers: () -> Unit,
+    onBackToBackendSelection: (() -> Unit)? = null,
     viewModel: LibraryPickerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -69,7 +70,8 @@ fun LibraryPickerRoute(
         uiState = uiState,
         snackbarHostState = snackbarHostState,
         onLibrarySelected = viewModel::onLibrarySelected,
-        onManageServers = onManageServers
+        onManageServers = onManageServers,
+        onBackToBackendSelection = onBackToBackendSelection
     )
 }
 
@@ -78,8 +80,11 @@ private fun LibraryPickerScreen(
     uiState: LibraryPickerUiState,
     snackbarHostState: SnackbarHostState,
     onLibrarySelected: (String) -> Unit,
-    onManageServers: () -> Unit
+    onManageServers: () -> Unit,
+    onBackToBackendSelection: (() -> Unit)?
 ) {
+    val showLibrarySelectionLoading = uiState.isLoading && uiState.libraries.isNotEmpty()
+
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { paddingValues ->
@@ -176,13 +181,55 @@ private fun LibraryPickerScreen(
                     )
                     Button(
                         onClick = onManageServers,
-                        modifier = Modifier
-                            .padding(top = 16.dp)
+                        modifier = Modifier.padding(top = 16.dp)
                     ) {
                         Text("Manage Servers")
                     }
+                    onBackToBackendSelection?.let { onBack ->
+                        Button(
+                            onClick = onBack,
+                            modifier = Modifier.padding(top = 10.dp)
+                        ) {
+                            Text("Back to Product Modes")
+                        }
+                    }
                 }
             } else {
+                if (showLibrarySelectionLoading) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        tonalElevation = 3.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.height(22.dp)
+                            )
+                            Column(
+                                modifier = Modifier.padding(start = 14.dp)
+                            ) {
+                                Text(
+                                    text = "Loading selected library...",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Please wait while StillShelf prepares your Audiobookshelf home screen.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
                 val reachableLayout = uiState.libraries.size <= 3
                 if (reachableLayout) {
                     Surface(
@@ -216,7 +263,8 @@ private fun LibraryPickerScreen(
                             .heightIn(max = 260.dp),
                         libraries = uiState.libraries,
                         activeLibraryId = uiState.activeLibraryId,
-                        onLibrarySelected = onLibrarySelected
+                        onLibrarySelected = onLibrarySelected,
+                        selectionEnabled = !showLibrarySelectionLoading
                     )
                 } else {
                     LibraryListSurface(
@@ -225,10 +273,19 @@ private fun LibraryPickerScreen(
                             .fillMaxHeight(),
                         libraries = uiState.libraries,
                         activeLibraryId = uiState.activeLibraryId,
-                        onLibrarySelected = onLibrarySelected
+                        onLibrarySelected = onLibrarySelected,
+                        selectionEnabled = !showLibrarySelectionLoading
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
+                onBackToBackendSelection?.let { onBack ->
+                    Button(
+                        onClick = onBack,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Back to Product Modes")
+                    }
+                }
             }
         }
     }
@@ -239,7 +296,8 @@ private fun LibraryListSurface(
     modifier: Modifier,
     libraries: List<com.stillshelf.app.core.model.Library>,
     activeLibraryId: String?,
-    onLibrarySelected: (String) -> Unit
+    onLibrarySelected: (String) -> Unit,
+    selectionEnabled: Boolean
 ) {
     Surface(
         modifier = modifier,
@@ -267,7 +325,7 @@ private fun LibraryListSurface(
                                 MaterialTheme.colorScheme.surface
                             }
                         )
-                        .clickable { onLibrarySelected(library.id) }
+                        .clickable(enabled = selectionEnabled) { onLibrarySelected(library.id) }
                         .padding(horizontal = 14.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {

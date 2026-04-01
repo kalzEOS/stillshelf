@@ -50,6 +50,12 @@ interface SessionRepository {
     fun observeLibrariesForActiveServer(): Flow<List<Library>>
     suspend fun setActiveServer(serverId: String): AppResult<Unit>
     suspend fun setActiveLibrary(libraryId: String): AppResult<Unit>
+    suspend fun setActiveLibraryAndPrimeHomeFeed(
+        libraryId: String,
+        continueLimit: Int = 10,
+        recentlyAddedLimit: Int = 120,
+        forceRefreshDerivedContent: Boolean = true
+    ): AppResult<Unit>
     suspend fun signOutActiveSession(): AppResult<Unit>
     suspend fun refreshLibrariesForActiveServer(): AppResult<Unit>
     suspend fun addServerAndLogin(

@@ -28,7 +28,6 @@ data class HomeMenuUiState(
 )
 
 sealed interface HomeMenuEvent {
-    data object NavigateToLibraryPicker : HomeMenuEvent
     data class NavigateToLogin(
         val serverName: String,
         val baseUrl: String
@@ -68,19 +67,13 @@ class HomeMenuViewModel @Inject constructor(
     fun onServerSelected(serverId: String) {
         if (uiState.value.isSwitchingServer) return
         val selectedServer = uiState.value.servers.firstOrNull { it.id == serverId }
-        if (serverId == uiState.value.activeServerId) {
-            viewModelScope.launch {
-                mutableEvents.emit(HomeMenuEvent.NavigateToLibraryPicker)
-            }
-            return
-        }
+        if (serverId == uiState.value.activeServerId) return
         mutableUiState.update { it.copy(isSwitchingServer = true, errorMessage = null) }
 
         viewModelScope.launch {
             when (val result = sessionRepository.setActiveServer(serverId)) {
                 is AppResult.Success -> {
                     mutableUiState.update { it.copy(isSwitchingServer = false) }
-                    mutableEvents.emit(HomeMenuEvent.NavigateToLibraryPicker)
                 }
 
                 is AppResult.Error -> {

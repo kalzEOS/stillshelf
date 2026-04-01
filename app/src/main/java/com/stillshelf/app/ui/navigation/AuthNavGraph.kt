@@ -15,7 +15,8 @@ fun NavGraphBuilder.authNavGraph(
     navController: NavHostController,
     startDestination: String,
     hasAnyServer: Boolean,
-    onAuthCompleted: () -> Unit
+    onAuthCompleted: () -> Unit,
+    onExitAuthFlow: () -> Unit
 ) {
     navigation(
         route = GraphRoute.AUTH,
@@ -24,21 +25,25 @@ fun NavGraphBuilder.authNavGraph(
         composable(AuthRoute.SERVERS) {
             ServersRoute(
                 onAddServer = { navController.navigate(AuthRoute.ADD_SERVER) },
-                onServerSelected = { navController.navigate(AuthRoute.LIBRARY_PICKER) },
+                onSelectionApplied = onAuthCompleted,
                 onReauthenticate = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
-                }
+                },
+                onBackToBackendSelection = onExitAuthFlow
             )
         }
 
         composable(AuthRoute.ADD_SERVER) {
-            val canNavigateBack = navController.previousBackStackEntry != null
             AddServerRoute(
                 onContinue = { serverName, baseUrl ->
                     navController.navigate(AuthRoute.loginRoute(serverName, baseUrl))
                 },
-                onBack = { navController.popBackStack() },
-                showBackButton = canNavigateBack
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        onExitAuthFlow()
+                    }
+                },
+                showBackButton = true
             )
         }
 
@@ -50,8 +55,12 @@ fun NavGraphBuilder.authNavGraph(
             )
         ) {
             LoginRoute(
-                onBack = { navController.popBackStack() },
-                onLoginSuccess = { navController.navigate(AuthRoute.LIBRARY_PICKER) }
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        onExitAuthFlow()
+                    }
+                },
+                onLoginSuccess = onAuthCompleted
             )
         }
 
@@ -69,7 +78,8 @@ fun NavGraphBuilder.authNavGraph(
                             launchSingleTop = true
                         }
                     }
-                }
+                },
+                onBackToBackendSelection = onExitAuthFlow
             )
         }
     }

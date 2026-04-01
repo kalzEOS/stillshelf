@@ -1,7 +1,9 @@
 package com.stillshelf.app.playback.controller
 
+import android.media.AudioManager
 import com.stillshelf.app.core.model.BookSummary
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,27 +14,27 @@ class PlaybackBackgroundPolicyTest {
         assertFalse(
             shouldKeepPlaybackSessionActive(
                 book = null,
-                isPlaying = true
+                hasActivePlayer = true
             )
         )
     }
 
     @Test
-    fun shouldKeepPlaybackSessionActive_requiresActivePlayback() {
+    fun shouldKeepPlaybackSessionActive_requiresActivePlayer() {
         assertFalse(
             shouldKeepPlaybackSessionActive(
                 book = sampleBook(),
-                isPlaying = false
+                hasActivePlayer = false
             )
         )
     }
 
     @Test
-    fun shouldKeepPlaybackSessionActive_allowsForegroundSessionOnlyDuringPlayback() {
+    fun shouldKeepPlaybackSessionActive_allowsForegroundSessionWhilePlayerExists() {
         assertTrue(
             shouldKeepPlaybackSessionActive(
                 book = sampleBook(),
-                isPlaying = true
+                hasActivePlayer = true
             )
         )
     }
@@ -62,6 +64,30 @@ class PlaybackBackgroundPolicyTest {
                 currentBookId = "book-1",
                 isPlaybackActive = true
             )
+        )
+    }
+
+    @Test
+    fun resolveResumeProgressUpdateMode_startsImmediatelyWhenAudioFocusIsGranted() {
+        assertEquals(
+            ResumeProgressUpdateMode.Immediate,
+            resolveResumeProgressUpdateMode(AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+        )
+    }
+
+    @Test
+    fun resolveResumeProgressUpdateMode_waitsForAudioFocusWhenPlaybackIsDelayed() {
+        assertEquals(
+            ResumeProgressUpdateMode.OnAudioFocusGain,
+            resolveResumeProgressUpdateMode(AudioManager.AUDIOFOCUS_REQUEST_DELAYED)
+        )
+    }
+
+    @Test
+    fun resolveResumeProgressUpdateMode_disablesUpdatesWhenAudioFocusFails() {
+        assertEquals(
+            ResumeProgressUpdateMode.Never,
+            resolveResumeProgressUpdateMode(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
         )
     }
 

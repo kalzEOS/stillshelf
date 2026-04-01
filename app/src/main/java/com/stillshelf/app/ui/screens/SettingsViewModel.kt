@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.BuildConfig
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.EndpointReachabilityStatus
@@ -64,6 +65,7 @@ internal fun resolveCurrentConnectionLabel(
 
 data class SettingsUiState(
     val activeServerId: String? = null,
+    val selectedBackend: BackendProvider? = null,
     val serverDisplayName: String = "Account",
     val serverHost: String = "-",
     val serverBaseUrl: String? = null,
@@ -134,6 +136,7 @@ class SettingsViewModel @Inject constructor(
                 if (server == null) {
                     SettingsUiState(
                         activeServerId = session.activeServerId,
+                        selectedBackend = pref.selectedBackend,
                         appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
                         immersivePlayerEnabled = pref.immersivePlayerEnabled,
                         themeMode = parseThemeMode(pref.appThemeMode),
@@ -163,6 +166,7 @@ class SettingsViewModel @Inject constructor(
                 } else {
                     SettingsUiState(
                         activeServerId = server.id,
+                        selectedBackend = pref.selectedBackend,
                         serverDisplayName = server.name,
                         serverHost = parseHost(server.baseUrl),
                         serverBaseUrl = server.baseUrl,
@@ -309,16 +313,28 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onSignOutClick() {
+        val currentServerName = uiState.value.serverDisplayName
         viewModelScope.launch {
             when (val result = sessionRepository.signOutActiveSession()) {
                 is AppResult.Success -> {
-                    mutableUiState.update { it.copy(errorMessage = null) }
+                    mutableUiState.update {
+                        it.copy(
+                            errorMessage = null,
+                            syncToastMessage = "Signed out and removed $currentServerName from this device."
+                        )
+                    }
                 }
 
                 is AppResult.Error -> {
                     mutableUiState.update { it.copy(errorMessage = result.message) }
                 }
             }
+        }
+    }
+
+    fun resetSelectedBackend() {
+        viewModelScope.launch {
+            sessionPreferences.setSelectedBackend(null)
         }
     }
 

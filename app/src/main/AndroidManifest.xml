@@ -18,6 +18,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.StillShelf"
         android:usesCleartextTraffic="true">
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.TintableAttributionIcon"
+            android:resource="@drawable/ic_launcher_monochrome" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -40,6 +47,16 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".androidauto.StillShelfCarMediaService"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

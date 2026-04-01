@@ -53,7 +53,7 @@ class ServersViewModel @Inject constructor(
                 is AppResult.Success -> {
                     busyState.value = false
                     errorState.value = null
-                    mutableEvents.emit(ServersEvent.NavigateToLibraryPicker)
+                    mutableEvents.emit(ServersEvent.SelectionApplied)
                 }
 
                 is AppResult.Error -> {
@@ -122,7 +122,7 @@ data class ServersUiState(
 )
 
 sealed interface ServersEvent {
-    data object NavigateToLibraryPicker : ServersEvent
+    data object SelectionApplied : ServersEvent
     data class NavigateToLogin(
         val serverName: String,
         val baseUrl: String

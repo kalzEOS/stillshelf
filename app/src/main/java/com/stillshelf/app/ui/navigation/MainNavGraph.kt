@@ -290,6 +290,7 @@ private fun MainTabsNavHost(
         composable(MainTab.Settings.route) {
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true
@@ -305,6 +306,7 @@ private fun MainTabsNavHost(
         composable(MainRoute.SETTINGS) {
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true
@@ -319,7 +321,8 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.ABOUT) {
             AboutScreen(
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
             )
         }
         composable(
@@ -423,8 +426,10 @@ private fun MainTabsNavHost(
             LoginRoute(
                 onBack = { navController.popBackStack() },
                 onLoginSuccess = {
-                    navController.navigate(AuthRoute.LIBRARY_PICKER) {
-                        launchSingleTop = true
+                    if (!navController.popBackStack(MainRoute.SERVERS, inclusive = false)) {
+                        navController.navigate(MainRoute.SERVERS) {
+                            launchSingleTop = true
+                        }
                     }
                 }
             )

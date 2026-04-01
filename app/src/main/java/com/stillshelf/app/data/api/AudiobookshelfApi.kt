@@ -47,6 +47,7 @@ data class AudiobookshelfLibraryItemDto(
     val genres: List<String>,
     val publishedYear: String?,
     val addedAtMs: Long?,
+    val authorIds: List<String> = emptyList(),
     val progressPercent: Double?,
     val currentTimeSeconds: Double?,
     val isFinished: Boolean,
@@ -2546,6 +2547,11 @@ class AudiobookshelfApi @Inject constructor(
             title = title,
             relPath = item.optString("relPath"),
             authorName = metadata?.optString("authorName"),
+            authorIds = extractAuthorIds(
+                metadata = metadata,
+                rootAuthorsArray = item.optJSONArray("authors"),
+                mediaAuthorsArray = media?.optJSONArray("authors")
+            ),
             narratorName = metadata?.optString("narratorName"),
             narratorNames = extractNarratorNames(
                 metadata = metadata,
@@ -2572,6 +2578,7 @@ class AudiobookshelfApi @Inject constructor(
         title: String?,
         relPath: String?,
         authorName: String?,
+        authorIds: List<String> = emptyList(),
         narratorName: String?,
         narratorNames: List<String>,
         durationSeconds: Double?,
@@ -2607,6 +2614,7 @@ class AudiobookshelfApi @Inject constructor(
             genres = genres,
             publishedYear = publishedYear,
             addedAtMs = addedAtMs,
+            authorIds = authorIds,
             progressPercent = progressPercent?.coerceIn(0.0, 1.0),
             currentTimeSeconds = currentTimeSeconds?.coerceAtLeast(0.0),
             isFinished = isFinished,
@@ -3582,6 +3590,49 @@ class AudiobookshelfApi @Inject constructor(
             item.optDoubleOrNull("seriesSequence")?.let { return it }
         }
         return null
+    }
+
+    private fun extractAuthorIds(
+        metadata: JSONObject?,
+        rootAuthorsArray: JSONArray?,
+        mediaAuthorsArray: JSONArray?
+    ): List<String> {
+        val nestedArrays = listOfNotNull(
+            metadata?.optJSONArray("authors"),
+            rootAuthorsArray,
+            mediaAuthorsArray
+        )
+        val ids = buildList {
+            nestedArrays.forEach { source ->
+                for (index in 0 until source.length()) {
+                    val value = source.opt(index)
+                    when (value) {
+                        is JSONObject -> {
+                            value.optString("id")
+                                .ifBlank { value.optString("_id") }
+                                .trim()
+                                .takeIf { it.isNotBlank() }
+                                ?.let(::add)
+                        }
+                        is String -> value.trim().takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                }
+            }
+        }
+        if (ids.isNotEmpty()) return ids.distinct()
+
+        val authorIdCandidates = buildList {
+            listOfNotNull(
+                metadata?.optJSONArray("authorIds"),
+                metadata?.optJSONArray("authorId"),
+                metadata?.optJSONArray("authorsId")
+            ).forEach { source ->
+                for (index in 0 until source.length()) {
+                    source.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }
+        return authorIdCandidates.distinct()
     }
 
     private fun extractSeriesNames(

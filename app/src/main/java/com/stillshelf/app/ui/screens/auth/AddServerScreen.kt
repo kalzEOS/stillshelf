@@ -106,7 +106,7 @@ private fun AddServerScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Add Server",
+                    text = "Add Audiobookshelf Server",
                     style = MaterialTheme.typography.headlineMedium
                 )
 

@@ -123,6 +123,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -540,7 +541,6 @@ fun HomeScreen(
     LaunchedEffect(menuViewModel) {
         menuViewModel.events.collect { event ->
             when (event) {
-                HomeMenuEvent.NavigateToLibraryPicker -> onNavigateToRoute(MainRoute.LIBRARY_PICKER)
                 is HomeMenuEvent.NavigateToLogin ->
                     onNavigateToRoute(AuthRoute.loginRoute(event.serverName, event.baseUrl))
             }
@@ -590,7 +590,7 @@ fun HomeScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(key = "home-top-bar") {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -768,13 +768,35 @@ fun HomeScreen(
                                     )
                                 }
                             }
+                            if (menuUiState.servers.isNotEmpty()) {
+                                HorizontalDivider()
+                            }
+                            AppDropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Manage Servers",
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Dns,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    isMenuExpanded = false
+                                    onNavigateToRoute(MainRoute.SERVERS)
+                                }
+                            )
                         }
                     }
                 }
             }
 
             uiState.staleDataMessage?.let { staleMessage ->
-                item {
+                item(key = "home-stale-data") {
                     Card(
                         modifier = homeFullBleedModifier,
                         colors = CardDefaults.cardColors(
@@ -811,7 +833,7 @@ fun HomeScreen(
                 }
             }
 
-            item {
+            item(key = "home-library-sections") {
                 val sectionContent: @Composable () -> Unit = {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         orderedListItems.forEachIndexed { index, item ->
@@ -890,13 +912,13 @@ fun HomeScreen(
                 }
                 when (section.id) {
                     HomeSectionIds.CONTINUE -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Continue Listening",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             when {
                                 uiState.isLoading && uiState.continueListening.isEmpty() -> {
                                     LazyRow(
@@ -967,13 +989,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.LISTEN_AGAIN -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Listen Again",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val books = uiState.listenAgain
                             LazyRow(
                                 modifier = homeCarouselModifier,
@@ -1100,13 +1122,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.RECENTLY_ADDED -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Recently Added",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             when {
                                 uiState.isLoading && uiState.recentlyAdded.isEmpty() -> {
                                     LazyRow(
@@ -1251,13 +1273,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.RECENT_SERIES -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Recent Series",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val seriesItems = uiState.recentSeries
                             if (seriesItems.isEmpty()) {
                                 Text(
@@ -1286,13 +1308,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.DISCOVER -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Discover",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val discoverBooks = uiState.discoverBooks
                             if (discoverBooks.isEmpty()) {
                                 Text(
@@ -1418,13 +1440,13 @@ fun HomeScreen(
                     }
 
                     HomeSectionIds.NEWEST_AUTHORS -> {
-                        item {
+                        item(key = "${section.id}-title") {
                             SectionTitle(
                                 title = "Newest Authors",
                                 modifier = Modifier.padding(start = homeStartInset, end = homeEndInset)
                             )
                         }
-                        item {
+                        item(key = "${section.id}-content") {
                             val authorNames = uiState.recentlyAdded
                                 .flatMap { splitAuthorNames(it.authorName) }
                                 .filter { it.isNotBlank() }
@@ -1460,7 +1482,7 @@ fun HomeScreen(
             }
 
             uiState.errorMessage?.let { message ->
-                item {
+                item(key = "home-error") {
                     Column(
                         modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1478,7 +1500,7 @@ fun HomeScreen(
             }
 
             menuUiState.errorMessage?.let { message ->
-                item {
+                item(key = "home-menu-error") {
                     Column(
                         modifier = Modifier.padding(start = homeStartInset, end = homeEndInset),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -4695,6 +4717,7 @@ fun SettingsScreen(
     onManageServers: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -4733,8 +4756,34 @@ fun SettingsScreen(
     ) {
         BackTitle(
             title = "Settings",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
+
+        Text(
+            text = "PRODUCT MODE",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
+        ) {
+            SettingsRow(
+                title = "Selected backend",
+                value = uiState.selectedBackend?.displayName ?: "Choose on next launch",
+                showChevronWhenValue = false,
+                showChevronWhenUnselected = false,
+                onClick = null
+            )
+            HorizontalDivider()
+            SettingsRow(
+                title = "Switch product mode",
+                value = "Return to backend selector",
+                onClick = viewModel::resetSelectedBackend
+            )
+        }
 
         Text(
             text = "APPEARANCE",
@@ -4747,23 +4796,17 @@ fun SettingsScreen(
             border = sectionCardBorder
         ) {
             SettingsSwitchRow(
+                title = "Material Design",
+                checked = uiState.materialDesignEnabled,
+                onCheckedChange = viewModel::setMaterialDesignEnabled
+            )
+            HorizontalDivider()
+            SettingsSwitchRow(
                 title = "Immersive Player",
                 checked = uiState.immersivePlayerEnabled,
                 onCheckedChange = viewModel::setImmersivePlayerEnabled
             )
             HorizontalDivider()
-            SettingsSwitchRow(
-                title = "Material Design",
-                checked = uiState.materialDesignEnabled,
-                onCheckedChange = viewModel::setMaterialDesignEnabled
-            )
-        }
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
-            shape = RoundedCornerShape(18.dp),
-            border = sectionCardBorder
-        ) {
             SettingsRow(
                 title = "Follow System Theme",
                 selected = uiState.themeMode == AppThemeMode.FollowSystem,
@@ -5049,6 +5092,7 @@ fun SettingsScreen(
 @Composable
 fun AboutScreen(
     onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
     viewModel: AboutViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -5072,7 +5116,8 @@ fun AboutScreen(
     ) {
         BackTitle(
             title = "About",
-            onBackClick = onBackClick
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
         )
 
         Card(
@@ -5331,6 +5376,7 @@ private fun SettingsRow(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
                 .weight(1f)
+                .widthIn(min = 150.dp)
                 .padding(end = 12.dp)
                 .then(
                     if (forceTitleTwoLineHeight) Modifier.heightIn(min = 44.dp) else Modifier
@@ -5339,9 +5385,9 @@ private fun SettingsRow(
             overflow = TextOverflow.Ellipsis
         )
         Row(
-            modifier = Modifier.width(resolvedTrailingContentWidth),
+            modifier = Modifier.widthIn(max = resolvedTrailingContentWidth),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
         ) {
             if (!value.isNullOrBlank()) {
                 Text(
@@ -5777,6 +5823,7 @@ fun ServersManagementScreen(
     val uriHandler = LocalUriHandler.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val routingUiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
     var expandedServerMenuId by remember { mutableStateOf<String?>(null) }
     var editingServer by remember { mutableStateOf<com.stillshelf.app.core.model.Server?>(null) }
     var editingName by remember { mutableStateOf("") }
@@ -5788,16 +5835,10 @@ fun ServersManagementScreen(
     var advancedUrlDialogTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
     var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
-    val sectionCardColor = if (routingUiState.materialDesignEnabled) {
-        MaterialTheme.colorScheme.surfaceContainerHigh
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-    val sectionCardBorder = if (routingUiState.materialDesignEnabled) {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
-    } else {
-        null
-    }
+    val screenContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+    val sectionCardColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val sectionCardBorder: BorderStroke? =
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
     val openUrl: (String) -> Unit = { url ->
         val normalizedUrl = url.trim()
         if (normalizedUrl.isNotBlank()) {
@@ -5808,20 +5849,28 @@ fun ServersManagementScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
+    LaunchedEffect(uiState.toastMessage) {
+        val toastMessage = uiState.toastMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(toastMessage)
+        viewModel.consumeToastMessage()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(screenContainerColor)
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             BackTitle(
-                title = "Servers",
+                title = "Manage Servers",
                 onBackClick = onBackClick,
                 onHomeClick = onHomeClick,
                 modifier = Modifier.weight(1f)
@@ -5829,7 +5878,7 @@ fun ServersManagementScreen(
         }
 
         Card(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),
             border = sectionCardBorder
         ) {
@@ -5844,18 +5893,25 @@ fun ServersManagementScreen(
                                 editingUrl = server.baseUrl
                                 editingError = null
                             }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Person,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Dns,
+                                contentDescription = null
+                            )
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(start = 10.dp)
+                                .padding(start = 12.dp)
                         ) {
                             Text(text = server.name, style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -5865,9 +5921,14 @@ fun ServersManagementScreen(
                             )
                         }
                         if (server.id == uiState.activeServerId) {
-                            Icon(imageVector = Icons.Filled.Check, contentDescription = "Active")
+                            Text(
+                                text = "Active",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
                         }
-                        Box {
+                        Box(contentAlignment = Alignment.TopEnd) {
                             IconButton(onClick = { expandedServerMenuId = server.id }) {
                                 Icon(
                                     imageVector = Icons.Outlined.MoreHoriz,
@@ -5878,15 +5939,6 @@ fun ServersManagementScreen(
                                 expanded = expandedServerMenuId == server.id,
                                 onDismissRequest = { expandedServerMenuId = null }
                             ) {
-                                if (server.id != uiState.activeServerId) {
-                                    AppDropdownMenuItem(
-                                        text = { Text("Set active") },
-                                        onClick = {
-                                            expandedServerMenuId = null
-                                            viewModel.setActiveServer(server.id)
-                                        }
-                                    )
-                                }
                                 AppDropdownMenuItem(
                                     text = { Text("Delete") },
                                     onClick = {
@@ -5898,20 +5950,18 @@ fun ServersManagementScreen(
                         }
                     }
                     if (index < uiState.servers.lastIndex) {
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     }
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 14.dp))
-                Text(
-                    text = "Add Server",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onAddServerClick)
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
-                )
             }
+        }
+
+        Button(
+            onClick = onAddServerClick,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Text("Add Server")
         }
 
         AutomaticServerRoutingSection(
@@ -6111,7 +6161,35 @@ fun ServersManagementScreen(
                 advancedUrlError = null
             }
         )
+        }
+        AppThemedSnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+        )
     }
+}
+
+@Composable
+private fun AppThemedSnackbarHost(
+    hostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    SnackbarHost(
+        hostState = hostState,
+        modifier = modifier,
+        snackbar = { data ->
+            Snackbar(
+                snackbarData = data,
+                shape = RoundedCornerShape(18.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                actionColor = MaterialTheme.colorScheme.primary
+            )
+        }
+    )
 }
 
 @Composable

@@ -29,6 +29,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
@@ -113,6 +114,22 @@ internal fun shouldKeepPlaybackSessionActive(
     hasActivePlayer: Boolean
 ): Boolean = book != null && hasActivePlayer
 
+internal fun shouldScheduleAbsPausedPlayerRelease(
+    book: BookSummary?,
+    hasActivePlayer: Boolean,
+    isPlaying: Boolean,
+    playWhenReady: Boolean,
+    playbackState: Int,
+    appInForeground: Boolean
+): Boolean {
+    return book != null &&
+        hasActivePlayer &&
+        !appInForeground &&
+        !isPlaying &&
+        !playWhenReady &&
+        playbackState != Player.STATE_BUFFERING
+}
+
 internal enum class ResumeProgressUpdateMode {
     Immediate,
     OnAudioFocusGain,
@@ -138,6 +155,7 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val PAUSED_PLAYER_RELEASE_DELAY_MS = 10 * 60 * 1000L
         private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
@@ -159,6 +177,7 @@ class PlaybackController @Inject constructor(
     private var mediaPlayer: ExoPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
+    private var pausedReleaseJob: Job? = null
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -246,6 +265,7 @@ class PlaybackController @Inject constructor(
     private var hasObservedActiveServerId: Boolean = false
     private var pendingAutoAdvanceUiBookId: String? = null
     private var pendingAutoAdvanceUiPositionMs: Long? = null
+    private var appInForeground: Boolean = false
 
     private data class NotificationSignature(
         val bookId: String,
@@ -275,14 +295,18 @@ class PlaybackController @Inject constructor(
 
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
+            appInForeground = true
             lastAppBackgroundSyncAtElapsedMs = 0L
             lastAppBackgroundSyncPositionMs = -1L
             syncPendingPlaybackCheckpointsOnForeground()
+            ensurePausedPlayerReleasePolicy()
         }
 
         override fun onStop(owner: LifecycleOwner) {
+            appInForeground = false
             scope.launch(Dispatchers.Main.immediate) {
                 syncProgressOnAppBackgroundIfNeeded()
+                ensurePausedPlayerReleasePolicy()
             }
         }
     }
@@ -319,6 +343,10 @@ class PlaybackController @Inject constructor(
         registerNoisyAudioReceiver()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+        appInForeground = ProcessLifecycleOwner.get()
+            .lifecycle
+            .currentState
+            .isAtLeast(Lifecycle.State.STARTED)
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         observePlaybackPreferences()
         observeActiveServerSelection()
@@ -1532,6 +1560,7 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        cancelPausedPlayerRelease()
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -2767,6 +2796,51 @@ class PlaybackController @Inject constructor(
                 .build()
         )
         showPlaybackNotification(state)
+        ensurePausedPlayerReleasePolicy()
+    }
+
+    private fun cancelPausedPlayerRelease() {
+        pausedReleaseJob?.cancel()
+        pausedReleaseJob = null
+    }
+
+    private fun ensurePausedPlayerReleasePolicy() {
+        val player = mediaPlayer
+        val state = uiState.value
+        val shouldScheduleRelease = shouldScheduleAbsPausedPlayerRelease(
+            book = state.book,
+            hasActivePlayer = player != null,
+            isPlaying = player?.isPlaying == true,
+            playWhenReady = player?.playWhenReady == true,
+            playbackState = player?.playbackState ?: Player.STATE_IDLE,
+            appInForeground = appInForeground
+        )
+        if (!shouldScheduleRelease) {
+            cancelPausedPlayerRelease()
+            return
+        }
+        if (pausedReleaseJob?.isActive == true) return
+        pausedReleaseJob = scope.launch {
+            delay(PAUSED_PLAYER_RELEASE_DELAY_MS)
+            val playerToRelease = mediaPlayer
+            val currentState = uiState.value
+            val stillPaused = shouldScheduleAbsPausedPlayerRelease(
+                book = currentState.book,
+                hasActivePlayer = playerToRelease != null,
+                isPlaying = playerToRelease?.isPlaying == true,
+                playWhenReady = playerToRelease?.playWhenReady == true,
+                playbackState = playerToRelease?.playbackState ?: Player.STATE_IDLE,
+                appInForeground = appInForeground
+            )
+            if (!stillPaused) return@launch
+            releasePlayer(syncProgressBeforeRelease = true)
+            updateUiState {
+                it.copy(
+                    isPlaying = false,
+                    isLoading = false
+                )
+            }
+        }
     }
 
     private fun showPlaybackNotification(state: PlaybackUiState) {

@@ -4,6 +4,7 @@ import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackTrack
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PlaybackTrackResolverTest {
@@ -28,6 +29,38 @@ class PlaybackTrackResolverTest {
         )
 
         assertEquals(120_000L, nextTrackStartMs)
+    }
+
+    @Test
+    fun resolvePlaybackTrackSelection_fallsBackToLastTrackPastEndOfBook() {
+        val selection = resolvePlaybackTrackSelection(
+            source = testSource(),
+            positionMs = 240_000L
+        )
+
+        assertEquals("track-3", selection.streamUrl)
+        assertEquals(120_000L, selection.trackStartOffsetMs)
+        assertEquals(120_000L, selection.localSeekMs)
+    }
+
+    @Test
+    fun resolveTrackStartOffsetForPosition_returnsLastTrackWhenSeekingPastFinalBoundary() {
+        val startOffsetMs = resolveTrackStartOffsetForPosition(
+            tracks = testSource().tracks,
+            positionMs = 240_000L
+        )
+
+        assertEquals(120_000L, startOffsetMs)
+    }
+
+    @Test
+    fun resolveNextTrackStartMs_returnsNullAtFinalTrack() {
+        val nextTrackStartMs = resolveNextTrackStartMs(
+            tracks = testSource().tracks,
+            currentTrackStartOffsetMs = 120_000L
+        )
+
+        assertNull(nextTrackStartMs)
     }
 
     private fun testSource() = PlaybackSource(

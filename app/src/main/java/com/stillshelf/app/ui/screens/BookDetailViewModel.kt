@@ -13,8 +13,11 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.playback.controller.PlaybackPositionCommand
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.playback.controller.resolvePlaybackPositionCommand
+import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.downloadProgressForBook
@@ -440,15 +443,29 @@ class BookDetailViewModel @Inject constructor(
 
     fun playChapter(startSeconds: Double) {
         if (bookId.isBlank()) return
-        val positionMs = (startSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(startSeconds) ?: return
         val playbackState = playbackUiState.value
-        if (playbackState.book?.id == bookId) {
-            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
-            if (!playbackState.isPlaying) {
-                playbackController.togglePlayPause()
+        when (
+            val command = resolvePlaybackPositionCommand(
+                activeBookId = playbackState.book?.id,
+                targetBookId = bookId,
+                targetPositionMs = positionMs,
+                isPlaying = playbackState.isPlaying
+            )
+        ) {
+            is PlaybackPositionCommand.SeekCurrentBook -> {
+                playbackController.seekToPositionMs(positionMs = command.positionMs, commit = true)
+                if (command.shouldResume) {
+                    playbackController.togglePlayPause()
+                }
             }
-        } else {
-            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+
+            is PlaybackPositionCommand.StartBookAtPosition -> {
+                playbackController.playBookFromPosition(
+                    bookId = command.bookId,
+                    startPositionMs = command.positionMs
+                )
+            }
         }
     }
 
@@ -474,15 +491,14 @@ class BookDetailViewModel @Inject constructor(
             mutableUiState.update { it.copy(actionMessage = message) }
             return
         }
-        val positionMs = (targetSeconds * 1000.0).toLong().coerceAtLeast(0L)
+        val positionMs = secondsToPlaybackPositionMs(targetSeconds) ?: return
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
         mutableUiState.update { it.copy(actionMessage = "Skipped chapter.") }
     }
 
     fun playBookmark(bookmark: BookBookmark) {
         if (bookId.isBlank()) return
-        val bookmarkSeconds = bookmark.timeSeconds ?: return
-        val positionMs = (bookmarkSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(bookmark.timeSeconds) ?: return
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
     }
 

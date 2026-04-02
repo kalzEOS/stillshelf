@@ -15,8 +15,12 @@ import com.stillshelf.app.core.util.resolveUnfinishedProgressState
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.playback.controller.PlaybackPositionCommand
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.playback.controller.normalizeBookmarkTitle
+import com.stillshelf.app.playback.controller.resolvePlaybackPositionCommand
+import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.downloadProgressForBook
@@ -374,15 +378,29 @@ class PlayerViewModel @Inject constructor(
 
     fun jumpToSeconds(seconds: Double) {
         val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id ?: return
-        val positionMs = (seconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(seconds) ?: return
         val playbackState = uiState.value
-        if (playbackState.book?.id == bookId) {
-            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
-            if (!playbackState.isPlaying) {
-                playbackController.togglePlayPause()
+        when (
+            val command = resolvePlaybackPositionCommand(
+                activeBookId = playbackState.book?.id,
+                targetBookId = bookId,
+                targetPositionMs = positionMs,
+                isPlaying = playbackState.isPlaying
+            )
+        ) {
+            is PlaybackPositionCommand.SeekCurrentBook -> {
+                playbackController.seekToPositionMs(positionMs = command.positionMs, commit = true)
+                if (command.shouldResume) {
+                    playbackController.togglePlayPause()
+                }
             }
-        } else {
-            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+
+            is PlaybackPositionCommand.StartBookAtPosition -> {
+                playbackController.playBookFromPosition(
+                    bookId = command.bookId,
+                    startPositionMs = command.positionMs
+                )
+            }
         }
     }
 
@@ -397,7 +415,7 @@ class PlayerViewModel @Inject constructor(
                 val result = sessionRepository.createBookmark(
                     bookId = bookId,
                     timeSeconds = positionSeconds.coerceAtLeast(0.0),
-                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                    title = normalizeBookmarkTitle(title)
                 )
             ) {
                 is AppResult.Success -> {

@@ -1,6 +1,6 @@
 # ABS ExoPlayer Beta Plan
 
-Working branch: `beta-abs-exoplayer-migration`
+Working branch: `beta-abs-exoplayer-progress-parity`
 
 Purpose:
 - migrate ABS playback from `MediaPlayer` to ExoPlayer/Media3 on beta only
@@ -19,7 +19,7 @@ How to use this file:
 - [x] Keep `main` out of the beta migration flow
 - [x] Keep Navidrome behavior isolated unless shared playback infrastructure must change
 - [x] Keep ABS UI contracts stable unless a controller-level change is unavoidable
-- [ ] Keep changes narrowly tied to the ABS ExoPlayer migration and related routing parity
+- [x] Keep changes narrowly tied to the ABS ExoPlayer migration and related routing parity
 
 ## Phase 1: Discovery And Invariants
 
@@ -107,12 +107,15 @@ Goal:
 - [ ] Preserve local checkpoint saving
 - [ ] Preserve server progress sync timing and throttling
 - [ ] Preserve resume-position accuracy after pause/background/relaunch
-- [ ] Preserve finished-state detection
+- [x] Preserve finished-state detection
 - [ ] Preserve continue-listening updates
 - [ ] Preserve bookmark creation at current position
-- [ ] Preserve bookmark restore/jump behavior
-- [ ] Preserve stop-and-restore-progress behavior
-- [ ] Preserve restart-from-beginning behavior
+- [x] Preserve bookmark restore/jump behavior
+- [x] Preserve stop-and-restore-progress behavior
+- [x] Preserve restart-from-beginning behavior
+
+Phase 4 progress:
+- Added direct unit coverage for local-vs-server progress preference, checkpoint replay matching, restart-from-beginning thresholds, finished-state detection, continue-listening summary math, shared bookmark/chapter jump decisions, and stop-and-restore progress clamping.
 
 Exit criteria:
 - [ ] Checkpoints still save correctly
@@ -125,12 +128,15 @@ Exit criteria:
 Goal:
 - keep ABS audiobook navigation behavior intact
 
-- [ ] Preserve chapter boundary detection
-- [ ] Preserve previous/next chapter behavior
-- [ ] Preserve chapter auto-advance
-- [ ] Preserve multi-track audiobook handling
-- [ ] Preserve track-boundary seeking at the correct absolute position
+- [x] Preserve chapter boundary detection
+- [x] Preserve previous/next chapter behavior
+- [x] Preserve chapter auto-advance
+- [x] Preserve multi-track audiobook handling
+- [x] Preserve track-boundary seeking at the correct absolute position
 - [ ] Preserve end-of-book completion behavior
+
+Phase 5 progress:
+- Added direct unit coverage for chapter-index tolerance around boundaries and for track selection when seeking across or past track edges.
 
 Exit criteria:
 - [ ] Chapter navigation feels unchanged
@@ -144,10 +150,13 @@ Goal:
 - [ ] Preserve play/pause
 - [ ] Preserve rewind/forward skip behavior
 - [ ] Preserve seek bar drag and commit behavior
-- [ ] Preserve playback speed control
+- [x] Preserve playback speed control
 - [ ] Preserve sleep timer behavior
 - [ ] Preserve audio focus handling
 - [ ] Preserve noisy-audio handling like unplug/disconnect pause behavior
+
+Phase 6 progress:
+- Added direct unit coverage for playback-speed stepping and the end-of-chapter boundary selection math used by the sleep timer. Timer countdown and interruption behavior still need real playback validation.
 
 Exit criteria:
 - [ ] Common player controls feel unchanged
@@ -186,6 +195,9 @@ Exit criteria:
 - [ ] Notification controls work
 - [ ] Lock screen controls work
 - [ ] Android Auto behavior is verified on DHU
+
+Phase 8 progress:
+- Added direct unit coverage for lock-screen control mode normalization and the double-press previous-after-restart decision path. Android Auto and lock-screen behavior still need real device or DHU validation.
 
 ## Phase 9: Output Switching
 

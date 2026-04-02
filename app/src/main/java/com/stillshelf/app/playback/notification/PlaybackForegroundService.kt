@@ -71,8 +71,8 @@ class PlaybackForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
-        // Promote with a known-good notification first, then update with richer playback content.
-        promoteToForeground(buildFallbackNotification())
+        val initialNotification = latestNotification ?: buildFallbackNotification()
+        promoteToForeground(initialNotification)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -89,7 +89,7 @@ class PlaybackForegroundService : Service() {
             ACTION_UPDATE, null -> {
                 val notification = latestNotification ?: buildFallbackNotification()
                 if (!foregroundStarted) {
-                    promoteToForeground(buildFallbackNotification())
+                    promoteToForeground(notification)
                 }
                 notificationManager?.notify(NOTIFICATION_ID, notification)
                 foregroundServiceActive = true

@@ -6,6 +6,8 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.network.NetworkConnectionType
+import com.stillshelf.app.core.network.NetworkMonitor
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.SeriesStackSummary
@@ -41,6 +43,7 @@ import kotlinx.coroutines.launch
 class HomeViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
+    private val networkMonitor: NetworkMonitor,
     private val bookDownloadManager: BookDownloadManager,
     private val playbackController: PlaybackController,
     private val bookProgressActionCoordinator: BookProgressActionCoordinator
@@ -90,7 +93,20 @@ class HomeViewModel @Inject constructor(
         observeDownloadedState()
         observeActiveServerDataState()
         observeAppForegroundRefresh()
+        observeOfflineState()
         observeSilentRefreshTicker()
+    }
+
+    private fun observeOfflineState() {
+        viewModelScope.launch {
+            networkMonitor.observeConnectionType()
+                .distinctUntilChanged()
+                .collectLatest { type ->
+                    mutableUiState.update {
+                        it.copy(isOffline = type == NetworkConnectionType.Offline)
+                    }
+                }
+        }
     }
 
     private fun observeActiveLibrary() {
@@ -721,6 +737,7 @@ class HomeViewModel @Inject constructor(
 
 data class HomeUiState(
     val isLoading: Boolean = false,
+    val isOffline: Boolean = false,
     val libraryName: String = "Library",
     val continueListening: List<ContinueListeningItem> = emptyList(),
     val recentlyAdded: List<BookSummary> = emptyList(),

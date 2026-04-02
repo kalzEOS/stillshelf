@@ -834,6 +834,44 @@ fun HomeScreen(
                 }
             }
 
+            if (uiState.isOffline) {
+                item(key = "home-offline-warning") {
+                    Card(
+                        modifier = homeFullBleedModifier,
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f)
+                        ),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "You’re offline",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Some library pages may look incomplete until you reconnect. Previously opened books and details can still appear from cache, and downloaded audiobooks are available in Downloaded.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            TextButton(
+                                onClick = { onNavigateToRoute(BrowseRoute.DOWNLOADED) },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Open Downloaded")
+                            }
+                        }
+                    }
+                }
+            }
+
             item(key = "home-library-sections") {
                 val sectionContent: @Composable () -> Unit = {
                     Column(modifier = Modifier.fillMaxWidth()) {

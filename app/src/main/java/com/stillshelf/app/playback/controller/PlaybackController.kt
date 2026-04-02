@@ -142,11 +142,6 @@ class PlaybackController @Inject constructor(
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
         private const val BACKGROUND_SYNC_MIN_INTERVAL_MS = 2_000L
-        private const val PROGRESS_MATCH_EPSILON_SECONDS = 1.0
-        private const val LOCK_SCREEN_MODE_SKIP = "skip"
-        private const val LOCK_SCREEN_MODE_NEXT = "next"
-        private const val LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS = 1_500L
-        private const val LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS = 6_000L
         private const val LOCK_SCREEN_BOOK_NAV_PAGE_SIZE = 200
         private const val LOCK_SCREEN_BOOK_NAV_MAX_PAGES = 20
         private const val OUTPUT_SWITCH_RESTORE_DELAY_MS = 220L
@@ -260,13 +255,6 @@ class PlaybackController @Inject constructor(
         val hasArtwork: Boolean
     )
 
-    private data class PreviousRestartState(
-        val bookId: String,
-        val restartStartMs: Long,
-        val chapterMode: Boolean,
-        val triggeredAtElapsedMs: Long
-    )
-
     private data class ProgressSyncRequest(
         val serverId: String?,
         val bookId: String,
@@ -284,17 +272,6 @@ class PlaybackController @Inject constructor(
         val currentTimeSeconds: Double?,
         val shouldRestartFromBeginning: Boolean
     )
-
-    private data class PreferredPlaybackProgress(
-        val progress: PlaybackProgress?,
-        val source: PlaybackProgressSource
-    )
-
-    private enum class PlaybackProgressSource {
-        None,
-        Server,
-        Local
-    }
 
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
@@ -520,7 +497,7 @@ class PlaybackController @Inject constructor(
             serverId = observedActiveServerId,
             bookId = bookId
         )
-        val preferredProgress = preferLocalCheckpoint(
+        val preferredProgress = resolvePreferredPlaybackProgress(
             serverProgress = serverProgress,
             localCheckpoint = localCheckpoint
         )
@@ -541,7 +518,8 @@ class PlaybackController @Inject constructor(
                 allowBackgroundRetry = false
             )
         }
-        val shouldRestartFromBeginning = resolvedProgress.shouldRestartFromBeginning(
+        val shouldRestartFromBeginning = shouldRestartFromBeginning(
+            progress = resolvedProgress,
             defaultDurationSeconds = defaultDurationSeconds
         )
         return if (shouldRestartFromBeginning) {
@@ -559,88 +537,6 @@ class PlaybackController @Inject constructor(
                 shouldRestartFromBeginning = false
             )
         }
-    }
-
-    private fun preferLocalCheckpoint(
-        serverProgress: PlaybackProgress?,
-        localCheckpoint: PlaybackCheckpointSnapshot?
-    ): PreferredPlaybackProgress {
-        if (localCheckpoint == null) {
-            return PreferredPlaybackProgress(
-                progress = serverProgress,
-                source = if (serverProgress != null) PlaybackProgressSource.Server else PlaybackProgressSource.None
-            )
-        }
-        val localProgress = localCheckpoint.toPlaybackProgress()
-        if (serverProgress == null) {
-            return PreferredPlaybackProgress(
-                progress = localProgress,
-                source = PlaybackProgressSource.Local
-            )
-        }
-
-        val localUpdatedAtMs = localCheckpoint.savedAtMs.takeIf { it > 0L }
-        val serverUpdatedAtMs = serverProgress.updatedAtMs?.takeIf { it > 0L }
-        if (localUpdatedAtMs != null && serverUpdatedAtMs != null && localUpdatedAtMs != serverUpdatedAtMs) {
-            return if (localUpdatedAtMs > serverUpdatedAtMs) {
-                PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-            } else {
-                PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-            }
-        }
-
-        val localSeconds = localProgress.currentTimeSeconds
-        val serverSeconds = serverProgress.currentTimeSeconds
-        if (localSeconds != null && serverSeconds != null) {
-            return when {
-                abs(localSeconds - serverSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS -> {
-                    if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) {
-                        PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-                    } else {
-                        PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-                    }
-                }
-
-                localSeconds > serverSeconds -> {
-                    PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-                }
-
-                else -> {
-                    PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-                }
-            }
-        }
-
-        return if (localSeconds != null) {
-            PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-        } else {
-            PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-        }
-    }
-
-    private fun localCheckpointMatchesResolvedProgress(
-        localCheckpoint: PlaybackCheckpointSnapshot,
-        resolvedProgress: PlaybackProgress?
-    ): Boolean {
-        if (resolvedProgress == null) return false
-        if (localCheckpoint.isFinished) {
-            val resolvedPercent = resolvedProgress.progressPercent ?: 0.0
-            return resolvedPercent >= 0.995
-        }
-        val resolvedSeconds = resolvedProgress.currentTimeSeconds ?: return false
-        return abs(resolvedSeconds - localCheckpoint.currentTimeSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS
-    }
-
-    private fun PlaybackCheckpointSnapshot.toPlaybackProgress(): PlaybackProgress {
-        val progressPercent = durationSeconds
-            ?.takeIf { it > 0.0 }
-            ?.let { duration -> (currentTimeSeconds / duration).coerceIn(0.0, 1.0) }
-        return PlaybackProgress(
-            progressPercent = progressPercent,
-            currentTimeSeconds = currentTimeSeconds,
-            durationSeconds = durationSeconds,
-            updatedAtMs = savedAtMs.takeIf { it > 0L }
-        )
     }
 
     private fun PlaybackCheckpointSnapshot.toProgressSyncRequest(): ProgressSyncRequest {
@@ -842,24 +738,18 @@ class PlaybackController @Inject constructor(
             updateUiState { it.copy(isPlaying = false) }
         }
         val state = uiState.value
-        val resolvedDurationMs = resolveDisplayedDurationMs(player)
-            .takeIf { it > 0L }
-            ?: state.durationMs.takeIf { it > 0L }
-            ?: durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: 0L
-        val rawTargetMs = (currentTimeSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
-        val targetMs = if (resolvedDurationMs > 0L) {
-            rawTargetMs.coerceIn(0L, resolvedDurationMs)
-        } else {
-            rawTargetMs.coerceAtLeast(0L)
-        }
+        val restoredState = resolveRestoredPlaybackProgressState(
+            currentTimeSeconds = currentTimeSeconds,
+            displayedDurationMs = resolveDisplayedDurationMs(player).takeIf { it > 0L },
+            uiDurationMs = state.durationMs.takeIf { it > 0L },
+            requestedDurationSeconds = durationSeconds,
+            bookDurationSeconds = state.book?.durationSeconds,
+            isFinished = isFinished
+        )
+        val resolvedDurationMs = restoredState.resolvedDurationMs
+        val targetMs = restoredState.targetMs
         seekToPosition(targetMs = targetMs, forceSync = false)
-        val progressPercent = when {
-            isFinished -> 1.0
-            resolvedDurationMs > 0L -> (targetMs.toDouble() / resolvedDurationMs.toDouble()).coerceIn(0.0, 1.0)
-            else -> null
-        }
+        val progressPercent = restoredState.progressPercent
         updateUiState { latest ->
             val currentBook = latest.book
             if (currentBook != null && currentBook.id == bookId) {
@@ -910,16 +800,10 @@ class PlaybackController @Inject constructor(
     fun cyclePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.2f, 1.3f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextIndex = normalizedSteps.indexOfFirst { step -> step > (currentSpeed + 0.01f) }
-            .takeIf { it >= 0 }
-            ?: 0
-        val nextSpeed = normalizedSteps[nextIndex]
+        val nextSpeed = resolveCycledPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -927,14 +811,10 @@ class PlaybackController @Inject constructor(
     fun increasePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextSpeed = normalizedSteps.firstOrNull { it > (currentSpeed + 0.01f) }
-            ?: normalizedSteps.last()
+        val nextSpeed = resolveIncreasedPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -942,14 +822,10 @@ class PlaybackController @Inject constructor(
     fun decreasePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextSpeed = normalizedSteps.lastOrNull { it < (currentSpeed - 0.01f) }
-            ?: normalizedSteps.first()
+        val nextSpeed = resolveDecreasedPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -991,9 +867,10 @@ class PlaybackController @Inject constructor(
         val bookId = currentBookId ?: uiState.value.book?.id ?: return false
         val chapterBoundariesMs = resolveChapterBoundariesMs(bookId) ?: return false
         val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
-        val nextBoundaryMs = chapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (currentPositionMs + 200L)
-        } ?: return false
+        val nextBoundaryMs = resolveNextChapterBoundaryMs(
+            boundariesMs = chapterBoundariesMs,
+            positionMs = currentPositionMs
+        ) ?: return false
         val remainingMs = (nextBoundaryMs - currentPositionMs).coerceAtLeast(0L)
         if (remainingMs <= 750L) return false
         startSleepTimer(
@@ -1048,7 +925,7 @@ class PlaybackController @Inject constructor(
                 val result = sessionRepository.createBookmark(
                     bookId = bookId,
                     timeSeconds = timeSeconds,
-                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                    title = normalizeBookmarkTitle(title)
                 )
             ) {
                 is AppResult.Success -> updateUiState { it.copy(errorMessage = null) }
@@ -1594,19 +1471,6 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun PlaybackProgress?.shouldRestartFromBeginning(
-        defaultDurationSeconds: Double?
-    ): Boolean {
-        val progress = this ?: return false
-        val progressPercent = progress.progressPercent
-        if (progressPercent != null && progressPercent >= 0.995) {
-            return true
-        }
-        val current = progress.currentTimeSeconds ?: return false
-        val duration = (progress.durationSeconds ?: defaultDurationSeconds)?.takeIf { it > 0.0 } ?: return false
-        return (current / duration) >= 0.995
-    }
-
     private fun updateProgress(player: ExoPlayer) {
         if (player !== mediaPlayer) return
         val rawPositionMs = safePosition(player)
@@ -1916,30 +1780,21 @@ class PlaybackController @Inject constructor(
 
     private fun shouldSyncAsFinished(): Boolean {
         val state = uiState.value
-        if (state.book?.isFinished == true) {
-            return true
-        }
-        val durationMs = state.durationMs.takeIf { it > 0L }
-            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: return false
-        if (durationMs <= 0L) return false
-        return state.positionMs >= (durationMs * 0.995).toLong()
+        return shouldTreatPlaybackAsFinished(
+            bookIsFinished = state.book?.isFinished == true,
+            positionMs = state.positionMs,
+            durationMs = state.durationMs.takeIf { it > 0L },
+            bookDurationSeconds = state.book?.durationSeconds
+        )
     }
 
     private fun updateCachedFromUiState() {
         val state = uiState.value
         val currentBook = state.book ?: return
-        val durationSeconds = currentBook.durationSeconds
-            ?: state.durationMs.takeIf { it > 0L }?.div(1000.0)
-        val currentSeconds = state.positionMs.coerceAtLeast(0L) / 1000.0
-        val progressPercent = durationSeconds
-            ?.takeIf { it > 0.0 }
-            ?.let { (currentSeconds / it).coerceIn(0.0, 1.0) }
-
-        cachedContinueListeningItem = ContinueListeningItem(
+        cachedContinueListeningItem = buildContinueListeningItem(
             book = currentBook,
-            progressPercent = progressPercent,
-            currentTimeSeconds = currentSeconds
+            positionMs = state.positionMs,
+            fallbackDurationMs = state.durationMs.takeIf { it > 0L }
         )
     }
 
@@ -2150,20 +2005,8 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun resolveCurrentChapterIndex(chapterStartsMs: List<Long>, positionMs: Long): Int {
-        if (chapterStartsMs.isEmpty()) return 0
-        val seekPositionMs = positionMs.coerceAtLeast(0L) + 200L
-        return chapterStartsMs.indexOfLast { startMs -> startMs <= seekPositionMs }
-            .takeIf { index -> index >= 0 }
-            ?: 0
-    }
-
     private fun normalizeLockScreenControlMode(rawMode: String?): String {
-        return if (rawMode.equals(LOCK_SCREEN_MODE_NEXT, ignoreCase = true)) {
-            LOCK_SCREEN_MODE_NEXT
-        } else {
-            LOCK_SCREEN_MODE_SKIP
-        }
+        return com.stillshelf.app.playback.controller.normalizeLockScreenControlMode(rawMode)
     }
 
     private fun shouldGoToPreviousAfterRestart(
@@ -2172,17 +2015,18 @@ class PlaybackController @Inject constructor(
         chapterMode: Boolean,
         currentPositionMs: Long
     ): Boolean {
-        val state = previousRestartState ?: return false
-        if (state.bookId != bookId) return false
-        if (state.restartStartMs != restartStartMs) return false
-        if (state.chapterMode != chapterMode) return false
-        val elapsedSinceTriggerMs = SystemClock.elapsedRealtime() - state.triggeredAtElapsedMs
-        if (elapsedSinceTriggerMs > LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS) return false
-        return currentPositionMs <= (restartStartMs + LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS)
+        return com.stillshelf.app.playback.controller.shouldGoToPreviousAfterRestart(
+            previousRestartState = previousRestartState,
+            bookId = bookId,
+            restartStartMs = restartStartMs,
+            chapterMode = chapterMode,
+            currentPositionMs = currentPositionMs,
+            nowElapsedMs = SystemClock.elapsedRealtime()
+        )
     }
 
     private fun rememberRestart(bookId: String, restartStartMs: Long, chapterMode: Boolean) {
-        previousRestartState = PreviousRestartState(
+        previousRestartState = rememberRestartState(
             bookId = bookId,
             restartStartMs = restartStartMs.coerceAtLeast(0L),
             chapterMode = chapterMode,
@@ -2337,27 +2181,28 @@ class PlaybackController @Inject constructor(
     }
 
     private fun remainingToNextChapterBoundaryMs(positionMs: Long): Long {
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        val nextBoundaryMs = sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (safePositionMs + 200L)
-        }
-        return if (nextBoundaryMs == null) 0L else (nextBoundaryMs - safePositionMs).coerceAtLeast(0L)
+        return resolveRemainingToChapterBoundaryMs(
+            positionMs = positionMs,
+            targetBoundaryMs = resolveNextChapterBoundaryMs(
+                boundariesMs = sleepTimerChapterBoundariesMs,
+                positionMs = positionMs
+            )
+        )
     }
 
     private fun nextChapterBoundaryForPosition(positionMs: Long): Long? {
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        return sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (safePositionMs + 200L)
-        }
+        return resolveNextChapterBoundaryMs(
+            boundariesMs = sleepTimerChapterBoundariesMs,
+            positionMs = positionMs
+        )
     }
 
     private fun remainingToTargetChapterBoundaryMs(positionMs: Long): Long {
         val targetBoundaryMs = sleepTimerTargetBoundaryMs ?: return remainingToNextChapterBoundaryMs(positionMs)
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        if (safePositionMs >= targetBoundaryMs - 200L) {
-            return 0L
-        }
-        return (targetBoundaryMs - safePositionMs).coerceAtLeast(0L)
+        return resolveRemainingToChapterBoundaryMs(
+            positionMs = positionMs,
+            targetBoundaryMs = targetBoundaryMs
+        )
     }
 
     private fun queryOutputDevices(): List<PlaybackOutputDevice> {
@@ -2573,7 +2418,7 @@ class PlaybackController @Inject constructor(
 
     private fun applyBoostEffect() {
         val enhancer = loudnessEnhancer ?: return
-        val targetGainMb = (currentBoostLevel * 1800f).toInt().coerceIn(0, 2000)
+        val targetGainMb = resolveBoostGainMb(currentBoostLevel)
         runCatching {
             enhancer.setTargetGain(targetGainMb)
             enhancer.enabled = targetGainMb > 0
@@ -2589,11 +2434,14 @@ class PlaybackController @Inject constructor(
             val maxLevel = levelRange.getOrNull(1)?.toInt() ?: 1500
 
             for (band in 0 until bandCount) {
-                val ratio = if (bandCount <= 1) 0f else band.toFloat() / (bandCount - 1).toFloat()
-                val attenuationWeight = ((ratio - 0.35f) / 0.65f).coerceIn(0f, 1f)
-                val attenuationMb = (currentSoftToneLevel * attenuationWeight * 900f).toInt()
-                val targetLevel = (0 - attenuationMb).coerceIn(minLevel, maxLevel)
-                toneEq.setBandLevel(band.toShort(), targetLevel.toShort())
+                val targetLevel = resolveSoftToneBandLevel(
+                    softToneLevel = currentSoftToneLevel,
+                    bandIndex = band,
+                    bandCount = bandCount,
+                    minLevelMb = minLevel,
+                    maxLevelMb = maxLevel
+                )
+                toneEq.setBandLevel(band.toShort(), targetLevel)
             }
             toneEq.enabled = currentSoftToneLevel > 0f
         }

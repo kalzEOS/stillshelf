@@ -131,18 +131,27 @@ fun MiniPlayerBar(
             }
 
             IconButton(onClick = onPlayPause) {
+                val playButtonBackground = MaterialTheme.colorScheme.onSurface
                 Box(
                     modifier = Modifier
                         .size(30.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onSurface),
+                        .background(playButtonBackground),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = if (state.isPlaying) Icons.Outlined.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (state.isPlaying) "Pause" else "Play",
-                        tint = MaterialTheme.colorScheme.surface
-                    )
+                    if (state.isLoading) {
+                        PlaybackLoadingIndicator(
+                            modifier = Modifier.size(18.dp),
+                            baseTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.28f),
+                            sweepTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (state.isPlaying) Icons.Outlined.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (state.isPlaying) "Pause" else "Play",
+                            tint = MaterialTheme.colorScheme.surface
+                        )
+                    }
                 }
             }
         }

@@ -1,5 +1,8 @@
 package com.stillshelf.app.playback.navidrome
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -195,6 +198,7 @@ class NavidromePlayerController @Inject constructor(
         const val PLAYING_PROGRESS_UPDATE_INTERVAL_MS = 80L
         const val IDLE_PROGRESS_UPDATE_INTERVAL_MS = 250L
         const val CHANNEL_ID = "stillshelf_playback_v4"
+        const val CHANNEL_NAME = "Playback"
         const val NOTIFICATION_ID = 1101
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.navidrome.playback.action.PLAY_PAUSE"
         const val ACTION_PREVIOUS = "com.stillshelf.app.navidrome.playback.action.PREVIOUS"
@@ -340,6 +344,7 @@ class NavidromePlayerController @Inject constructor(
         appInForeground = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        createNotificationChannel()
         mediaSession.setFlags(
             MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
                 MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
@@ -1309,6 +1314,7 @@ class NavidromePlayerController @Inject constructor(
         state: NavidromePlayerState,
         track: NavidromeTrack
     ) {
+        createNotificationChannel()
         val notificationSignature = NotificationSignature(
             trackId = track.id,
             title = track.title,
@@ -1419,6 +1425,41 @@ class NavidromePlayerController @Inject constructor(
                 updatePlaybackSurface()
             }
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (
+            existing != null &&
+            (
+                existing.importance > NotificationManager.IMPORTANCE_LOW ||
+                    existing.shouldVibrate() ||
+                    existing.sound != null
+                )
+        ) {
+            val deleted = runCatching {
+                manager.deleteNotificationChannel(CHANNEL_ID)
+            }.isSuccess
+            if (!deleted) {
+                return
+            }
+        } else if (existing != null) {
+            return
+        }
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
+            vibrationPattern = longArrayOf(0L)
+        }
+        manager.createNotificationChannel(channel)
     }
 
     private fun NavidromeTrack.toJson(): JSONObject {

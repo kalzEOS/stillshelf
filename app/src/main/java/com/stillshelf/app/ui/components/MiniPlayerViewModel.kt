@@ -12,6 +12,8 @@ import com.stillshelf.app.ui.common.applyBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,10 +37,15 @@ class MiniPlayerViewModel @Inject constructor(
     private val playbackController: PlaybackController,
     private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
+    private companion object {
+        private const val PLAYBACK_START_TIMEOUT_MS = 6_000L
+    }
+
     private val mutableUiState = MutableStateFlow(MiniPlayerUiState())
     private var hadActivePlayback = false
     private val chapterCache = mutableMapOf<String, List<BookChapter>>()
     private var loadingChaptersForBookId: String? = null
+    private var playbackStartWatchdogJob: Job? = null
     val uiState: StateFlow<MiniPlayerUiState> = mutableUiState.asStateFlow()
 
     init {
@@ -54,11 +61,14 @@ class MiniPlayerViewModel @Inject constructor(
         val livePlaybackItem = playbackState.toMiniPlayerItem()
         if (livePlaybackItem != null) {
             hadActivePlayback = true
+            if (!playbackState.isLoading) {
+                cancelPlaybackStartWatchdog()
+            }
             playbackController.cacheContinueListeningItem(livePlaybackItem)
             ensureBookChapters(livePlaybackItem.book.id)
             mutableUiState.update {
                 it.copy(
-                    isLoading = false,
+                    isLoading = playbackState.isLoading,
                     item = livePlaybackItem,
                     displayTitle = resolvePlayerTitle(livePlaybackItem),
                     isPlaying = playbackState.isPlaying,
@@ -109,7 +119,15 @@ class MiniPlayerViewModel @Inject constructor(
         }
 
         val fallbackItem = uiState.value.item ?: return
+        mutableUiState.update {
+            it.copy(
+                isLoading = true,
+                isPlaying = false,
+                errorMessage = null
+            )
+        }
         playbackController.playBook(fallbackItem.book.id)
+        startPlaybackWatchdog(bookId = fallbackItem.book.id)
     }
 
     fun onRewindClick() {
@@ -136,11 +154,14 @@ class MiniPlayerViewModel @Inject constructor(
                 val livePlaybackItem = playbackState.toMiniPlayerItem()
                 if (livePlaybackItem != null) {
                     hadActivePlayback = true
+                    if (!playbackState.isLoading) {
+                        cancelPlaybackStartWatchdog()
+                    }
                     playbackController.cacheContinueListeningItem(livePlaybackItem)
                     ensureBookChapters(livePlaybackItem.book.id)
                     mutableUiState.update {
                         it.copy(
-                            isLoading = false,
+                            isLoading = playbackState.isLoading,
                             item = livePlaybackItem,
                             displayTitle = resolvePlayerTitle(livePlaybackItem),
                             isPlaying = playbackState.isPlaying,
@@ -148,14 +169,22 @@ class MiniPlayerViewModel @Inject constructor(
                         )
                     }
                 } else if (hadActivePlayback) {
+                    if (!playbackState.isLoading) {
+                        cancelPlaybackStartWatchdog()
+                    }
                     hadActivePlayback = false
                     refresh()
                 } else {
+                    if (!playbackState.isLoading) {
+                        cancelPlaybackStartWatchdog()
+                    }
                     mutableUiState.update { currentState ->
                         val cachedItem = currentState.item
                         currentState.copy(
+                            isLoading = playbackState.isLoading,
                             isPlaying = false,
-                            displayTitle = resolvePlayerTitle(cachedItem)
+                            displayTitle = resolvePlayerTitle(cachedItem),
+                            errorMessage = playbackState.errorMessage
                         )
                     }
                 }
@@ -230,6 +259,30 @@ class MiniPlayerViewModel @Inject constructor(
         } else {
             item.book.title
         }
+    }
+
+    private fun startPlaybackWatchdog(bookId: String) {
+        cancelPlaybackStartWatchdog()
+        playbackStartWatchdogJob = viewModelScope.launch {
+            delay(PLAYBACK_START_TIMEOUT_MS)
+            val playbackState = playbackController.uiState.value
+            val activeBookId = playbackState.book?.id
+            if (activeBookId == bookId || !playbackState.isLoading) {
+                return@launch
+            }
+            mutableUiState.update { currentState ->
+                currentState.copy(
+                    isLoading = false,
+                    isPlaying = false,
+                    errorMessage = playbackState.errorMessage ?: "Playback didn't start. Try again."
+                )
+            }
+        }
+    }
+
+    private fun cancelPlaybackStartWatchdog() {
+        playbackStartWatchdogJob?.cancel()
+        playbackStartWatchdogJob = null
     }
 }
 

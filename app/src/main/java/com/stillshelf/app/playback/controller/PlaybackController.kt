@@ -1238,9 +1238,9 @@ class PlaybackController @Inject constructor(
 
         runCatching {
             applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
-            val resolvedStream = resolveAbsPlaybackUri(trackSelection.streamUrl)
+            val sourceTarget = resolveAbsPlaybackSourceTarget(trackSelection.streamUrl)
             player.setMediaItem(
-                MediaItem.fromUri(resolvedStream),
+                MediaItem.fromUri(sourceTarget.playbackUrl),
                 trackSelection.localSeekMs.coerceAtLeast(0L)
             )
             player.prepare()
@@ -1292,11 +1292,8 @@ class PlaybackController @Inject constructor(
     }
 
     private fun createAbsPlayer(streamUrl: String): ExoPlayer {
-        val resolvedStream = splitAuthenticatedUrl(streamUrl)
-        val headers = resolvedStream.authToken
-            ?.takeIf { it.isNotBlank() }
-            ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
-            .orEmpty()
+        val sourceTarget = resolveAbsPlaybackSourceTarget(streamUrl)
+        val headers = sourceTarget.headers
         val builder = ExoPlayer.Builder(appContext)
         if (headers.isNotEmpty()) {
             val httpFactory = DefaultHttpDataSource.Factory()
@@ -1308,17 +1305,6 @@ class PlaybackController @Inject constructor(
             configurePlayerAudioAttributes(this)
             applyPreferredOutputDevice(this)
         }
-    }
-
-    private fun resolveAbsPlaybackUri(streamUrl: String): Uri {
-        val parsedUri = Uri.parse(streamUrl)
-        val isLocalUri = parsedUri.scheme.equals("file", ignoreCase = true) ||
-            parsedUri.scheme.equals("content", ignoreCase = true)
-        if (isLocalUri) {
-            return parsedUri
-        }
-        val resolvedStream = splitAuthenticatedUrl(streamUrl)
-        return Uri.parse(resolvedStream.cleanUrl)
     }
 
     private fun requestAudioFocusForPlayback(): Int {
@@ -1628,11 +1614,18 @@ class PlaybackController @Inject constructor(
         if (currentBookId.isNullOrBlank()) return
         val currentPositionMs = state.positionMs.coerceAtLeast(0L)
         val elapsedNow = SystemClock.elapsedRealtime()
-        val positionAdvancedEnough = abs(currentPositionMs - lastAppBackgroundSyncPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
-        val backgroundSyncRecentlyTriggered =
-            (elapsedNow - lastAppBackgroundSyncAtElapsedMs) < BACKGROUND_SYNC_MIN_INTERVAL_MS
-        if (backgroundSyncRecentlyTriggered && !positionAdvancedEnough) return
-        if (!state.isPlaying && currentPositionMs <= 0L && (book.currentTimeSeconds ?: 0.0) <= 0.0) return
+        if (
+            !shouldSyncProgressOnBackground(
+                isPlaying = state.isPlaying,
+                currentPositionMs = currentPositionMs,
+                bookCurrentTimeSeconds = book.currentTimeSeconds,
+                elapsedNowMs = elapsedNow,
+                lastBackgroundSyncAtElapsedMs = lastAppBackgroundSyncAtElapsedMs,
+                lastBackgroundSyncPositionMs = lastAppBackgroundSyncPositionMs
+            )
+        ) {
+            return
+        }
 
         lastAppBackgroundSyncAtElapsedMs = elapsedNow
         lastAppBackgroundSyncPositionMs = currentPositionMs
@@ -1648,10 +1641,13 @@ class PlaybackController @Inject constructor(
         val state = uiState.value
         val positionMs = state.positionMs.coerceAtLeast(0L)
         val elapsedNow = SystemClock.elapsedRealtime()
-        val shouldPersist = force ||
-            lastCheckpointPositionMs < 0L ||
-            abs(positionMs - lastCheckpointPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS ||
-            (elapsedNow - lastCheckpointSavedAtElapsedMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
+        val shouldPersist = shouldPersistPlaybackCheckpoint(
+            force = force,
+            positionMs = positionMs,
+            lastCheckpointPositionMs = lastCheckpointPositionMs,
+            elapsedNowMs = elapsedNow,
+            lastCheckpointSavedAtElapsedMs = lastCheckpointSavedAtElapsedMs
+        )
         if (!shouldPersist) return null
         val snapshot = PlaybackCheckpointSnapshot(
             serverId = observedActiveServerId,

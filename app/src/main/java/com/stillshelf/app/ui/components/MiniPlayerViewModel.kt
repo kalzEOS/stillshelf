@@ -8,6 +8,7 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.playback.controller.PlaybackController
+import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.applyBookProgressMutation
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -126,7 +127,15 @@ class MiniPlayerViewModel @Inject constructor(
                 errorMessage = null
             )
         }
-        playbackController.playBook(fallbackItem.book.id)
+        val fallbackStartPositionMs = secondsToPlaybackPositionMs(fallbackItem.currentTimeSeconds)
+        if (fallbackStartPositionMs != null && fallbackStartPositionMs > 0L) {
+            playbackController.playBookFromPosition(
+                bookId = fallbackItem.book.id,
+                startPositionMs = fallbackStartPositionMs
+            )
+        } else {
+            playbackController.playBook(fallbackItem.book.id)
+        }
         startPlaybackWatchdog(bookId = fallbackItem.book.id)
     }
 

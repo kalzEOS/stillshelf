@@ -777,6 +777,7 @@ fun NavidromeAppRoute(
                     onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
+                    onOpenDownloaded = { navController.navigate(NavidromeRoute.DOWNLOADED) },
                     onOpenFavorites = { navController.navigate(NavidromeRoute.FAVORITES) },
                     onOpenPlaylists = { navController.navigate(NavidromeRoute.PLAYLISTS) },
                     onOpenSearch = { navController.navigate(NavidromeRoute.SEARCH) },
@@ -801,9 +802,18 @@ fun NavidromeAppRoute(
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
                     onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
+                    onOpenDownloaded = { navController.navigate(NavidromeRoute.DOWNLOADED) },
                     onOpenFavoriteSongs = { navController.navigate(NavidromeRoute.FAVORITES) },
                     onOpenPlaylists = { navController.navigate(NavidromeRoute.PLAYLISTS) },
                     onOpenSettings = { navController.navigate(NavidromeRoute.SETTINGS) }
+                )
+            }
+            composable(NavidromeRoute.DOWNLOADED) {
+                NavidromeDownloadedRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction,
+                    onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
+                    onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
                 )
             }
             composable(NavidromeRoute.RADIOS) {
@@ -1038,6 +1048,7 @@ private fun NavidromeHomeRoute(
     onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
     onOpenSongs: () -> Unit,
+    onOpenDownloaded: () -> Unit,
     onOpenFavorites: () -> Unit,
     onOpenPlaylists: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -1124,6 +1135,7 @@ private fun NavidromeHomeRoute(
         onOpenNewestAlbums = onOpenNewestAlbums,
         onOpenRadios = onOpenRadios,
         onOpenSongs = onOpenSongs,
+        onOpenDownloaded = onOpenDownloaded,
         onOpenFavorites = onOpenFavorites,
         onOpenPlaylists = onOpenPlaylists,
         onOpenSearch = onOpenSearch,
@@ -1140,6 +1152,7 @@ private fun NavidromeHomeRoute(
         onPlayPause = onPlayPause,
         onPlayTrack = playerViewModel::playTrack,
         onPlayAlbum = playerViewModel::playAlbum,
+        onToggleTrackDownload = downloadsViewModel::toggleTrackDownload,
         onToggleAlbumDownload = downloadsViewModel::toggleAlbumDownload,
         onOpenPlayer = onOpenPlayer
     )
@@ -1167,6 +1180,7 @@ private fun NavidromeHomeScreen(
     onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
     onOpenSongs: () -> Unit,
+    onOpenDownloaded: () -> Unit,
     onOpenFavorites: () -> Unit,
     onOpenPlaylists: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -1183,6 +1197,7 @@ private fun NavidromeHomeScreen(
     onPlayPause: () -> Unit,
     onPlayTrack: (NavidromeTrack) -> Unit,
     onPlayAlbum: (String, Boolean) -> Unit,
+    onToggleTrackDownload: (NavidromeTrack) -> Unit,
     onToggleAlbumDownload: (NavidromeAlbum) -> Unit,
     onOpenPlayer: () -> Unit
 ) {
@@ -1252,6 +1267,12 @@ private fun NavidromeHomeScreen(
                 label = "Songs",
                 icon = Icons.Outlined.MusicNote,
                 onClick = onOpenSongs
+            ),
+            NavidromeListSectionIds.DOWNLOADED to NavidromeHomeDestination(
+                id = NavidromeListSectionIds.DOWNLOADED,
+                label = "Downloaded",
+                icon = Icons.Outlined.Download,
+                onClick = onOpenDownloaded
             ),
             NavidromeListSectionIds.FAVORITES to NavidromeHomeDestination(
                 id = NavidromeListSectionIds.FAVORITES,
@@ -1472,6 +1493,43 @@ private fun NavidromeHomeScreen(
                     }
                 }
             }
+            if (uiState.isOffline) {
+                item(key = "nav-home-offline-warning") {
+                    Card(
+                        modifier = homeFullBleedModifier,
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f)
+                        ),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "You’re offline",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Some library pages may look incomplete until you reconnect. Previously opened items can still appear from cache, and your downloaded music is available in Downloaded.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            TextButton(
+                                onClick = onOpenDownloaded,
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Open Downloaded")
+                            }
+                        }
+                    }
+                }
+            }
             if (uiState.lyricsCacheSizeBytes >= NAVIDROME_LYRICS_CACHE_SOFT_WARNING_BYTES) {
                 item(key = "nav-home-lyrics-cache-warning") {
                     val isStrongWarning = uiState.lyricsCacheSizeBytes >= NAVIDROME_LYRICS_CACHE_STRONG_WARNING_BYTES
@@ -1623,12 +1681,14 @@ private fun NavidromeHomeScreen(
                                                 track = track,
                                                 isCurrent = playerState.currentTrack?.id == track.id,
                                                 isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                                                isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
                                                 cardWidth = continueListeningCardWidth,
                                                 cardHeight = continueListeningCardHeight,
                                                 posterWidth = continueListeningPosterWidth,
                                                 posterHeight = continueListeningPosterHeight,
                                                 onPlayPause = onPlayPause,
                                                 onPlayTrack = { onPlayTrack(track) },
+                                                onToggleDownload = { onToggleTrackDownload(track) },
                                                 onClick = {
                                                     if (playerState.currentTrack?.id == track.id) {
                                                         onOpenPlayer()
@@ -1843,6 +1903,7 @@ private fun NavidromeHomeScreen(
             }
         )
     }
+
 }
 
 @Composable
@@ -2121,6 +2182,7 @@ private fun NavidromeLibraryRoute(
     onOpenRadios: () -> Unit,
     onOpenNewestAlbums: () -> Unit,
     onOpenSongs: () -> Unit,
+    onOpenDownloaded: () -> Unit,
     onOpenFavoriteSongs: () -> Unit,
     onOpenPlaylists: () -> Unit,
     onOpenSettings: () -> Unit
@@ -2133,6 +2195,7 @@ private fun NavidromeLibraryRoute(
             NavidromeLibraryDestination("Newest Albums", Icons.Outlined.Album, onOpenNewestAlbums),
             NavidromeLibraryDestination("Recently Played Albums", Icons.Outlined.Album, onOpenAlbums),
             NavidromeLibraryDestination("Songs", Icons.Outlined.MusicNote, onOpenSongs),
+            NavidromeLibraryDestination("Downloaded", Icons.Outlined.Download, onOpenDownloaded),
             NavidromeLibraryDestination("Favorite Songs", Icons.Outlined.Favorite, onOpenFavoriteSongs),
             NavidromeLibraryDestination("Playlists", Icons.Outlined.QueueMusic, onOpenPlaylists)
         )
@@ -2173,6 +2236,318 @@ private fun NavidromeLibraryRoute(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NavidromeDownloadedRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    onOpenAlbum: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
+    downloadsViewModel: NavidromeDownloadsViewModel = hiltViewModel(),
+    playerViewModel: NavidromePlayerViewModel = hiltViewModel(),
+    downloadedViewModel: NavidromeDownloadedViewModel = hiltViewModel()
+) {
+    val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val layoutMode by downloadedViewModel.layoutMode.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var pendingDownloadRemoval by remember { mutableStateOf<NavidromeHomeDownloadEntry?>(null) }
+    var showRemoveAllConfirmation by remember { mutableStateOf(false) }
+    var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    val collapseDistancePx = with(LocalDensity.current) {
+        NavidromeLargeTitleCollapseDistance.roundToPx()
+    }
+    val collapseFraction by remember(layoutMode, listState, gridState, collapseDistancePx) {
+        derivedStateOf {
+            when (layoutMode) {
+                NavidromeDownloadedLayoutMode.List -> calculateHeaderCollapseFraction(listState, collapseDistancePx)
+                NavidromeDownloadedLayoutMode.Grid -> calculateHeaderCollapseFraction(gridState, collapseDistancePx)
+            }
+        }
+    }
+
+    LaunchedEffect(downloadUiState.actionMessage) {
+        val message = downloadUiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(downloadUiState.errorMessage) {
+        val message = downloadUiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        downloadsViewModel.clearMessages()
+    }
+
+    NavidromeHeaderScaffold(
+        title = "Downloaded",
+        collapseFraction = collapseFraction,
+        onBack = onBack,
+        onHome = onHome,
+        stickyHeaderVisible = false,
+        stickyHeaderContent = null,
+        containerColor = MaterialTheme.colorScheme.background,
+        actions = {
+            Box {
+                RoundIconButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Downloaded options",
+                    onClick = { menuExpanded = true }
+                )
+                AppDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    AppDropdownMenuItem(
+                        text = { Text("Grid") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.GridView,
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
+                            if (layoutMode == NavidromeDownloadedLayoutMode.Grid) {
+                                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            downloadedViewModel.setLayoutMode(NavidromeDownloadedLayoutMode.Grid)
+                            menuExpanded = false
+                        }
+                    )
+                    AppDropdownMenuItem(
+                        text = { Text("List") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ViewList,
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
+                            if (layoutMode == NavidromeDownloadedLayoutMode.List) {
+                                Icon(imageVector = Icons.Filled.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            downloadedViewModel.setLayoutMode(NavidromeDownloadedLayoutMode.List)
+                            menuExpanded = false
+                        }
+                    )
+                    HorizontalDivider()
+                    AppDropdownMenuItem(
+                        text = { Text("Remove All Downloads") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Remove,
+                                contentDescription = null
+                            )
+                        },
+                        enabled = downloadUiState.homeDownloads.isNotEmpty(),
+                        onClick = {
+                            menuExpanded = false
+                            showRemoveAllConfirmation = true
+                        }
+                    )
+                }
+            }
+        }
+    ) { topInsetPadding ->
+        when {
+            downloadUiState.homeDownloads.isEmpty() || layoutMode == NavidromeDownloadedLayoutMode.List -> {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    item {
+                        NavidromeScrollingTitle(
+                            title = "Downloaded",
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    if (downloadUiState.homeDownloads.isEmpty()) {
+                        item {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp),
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "No downloads yet",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Downloaded songs and albums will show up here.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(downloadUiState.homeDownloads, key = { it.key }) { entry ->
+                            NavidromeHomeDownloadedRow(
+                                entry = entry,
+                                onClick = {
+                                    when (entry) {
+                                        is NavidromeHomeDownloadedAlbum -> onOpenAlbum(entry.album.id)
+                                        is NavidromeHomeDownloadedTrack -> playerViewModel.playTrack(entry.track)
+                                    }
+                                },
+                                onPlayEntry = {
+                                    when (entry) {
+                                        is NavidromeHomeDownloadedAlbum -> playerViewModel.playAlbum(entry.album.id, false)
+                                        is NavidromeHomeDownloadedTrack -> playerViewModel.playTrack(entry.track)
+                                    }
+                                },
+                                onShuffleAlbum = if (entry is NavidromeHomeDownloadedAlbum) {
+                                    { playerViewModel.playAlbum(entry.album.id, true) }
+                                } else {
+                                    null
+                                },
+                                onOpenAlbum = entry.albumId?.let { albumId ->
+                                    { onOpenAlbum(albumId) }
+                                },
+                                onOpenArtist = entry.artistId?.let { artistId ->
+                                    { onOpenArtist(artistId) }
+                                },
+                                onRequestRemove = { pendingDownloadRemoval = entry }
+                            )
+                        }
+                    }
+                }
+            }
+
+            else -> {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = NavidromeOverlayBottomContentPadding
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        NavidromeScrollingTitle(
+                            title = "Downloaded",
+                            collapseFraction = collapseFraction,
+                            topPadding = topInsetPadding
+                        )
+                    }
+                    items(downloadUiState.homeDownloads.size) { index ->
+                        val entry = downloadUiState.homeDownloads[index]
+                        NavidromeDownloadedGridCard(
+                            entry = entry,
+                            onClick = {
+                                when (entry) {
+                                    is NavidromeHomeDownloadedAlbum -> onOpenAlbum(entry.album.id)
+                                    is NavidromeHomeDownloadedTrack -> playerViewModel.playTrack(entry.track)
+                                }
+                            },
+                            onRequestRemove = { pendingDownloadRemoval = entry },
+                            onPlayEntry = {
+                                when (entry) {
+                                    is NavidromeHomeDownloadedAlbum -> playerViewModel.playAlbum(entry.album.id, false)
+                                    is NavidromeHomeDownloadedTrack -> playerViewModel.playTrack(entry.track)
+                                }
+                            },
+                            onShuffleAlbum = if (entry is NavidromeHomeDownloadedAlbum) {
+                                { playerViewModel.playAlbum(entry.album.id, true) }
+                            } else {
+                                null
+                            },
+                            onOpenAlbum = entry.albumId?.let { albumId ->
+                                { onOpenAlbum(albumId) }
+                            },
+                            onOpenArtist = entry.artistId?.let { artistId ->
+                                { onOpenArtist(artistId) }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    pendingDownloadRemoval?.let { entry ->
+        val title = when (entry) {
+            is NavidromeHomeDownloadedAlbum -> "Remove album download"
+            is NavidromeHomeDownloadedTrack -> "Remove song download"
+        }
+        AlertDialog(
+            onDismissRequest = { pendingDownloadRemoval = null },
+            title = { Text(title) },
+            text = {
+                Text(
+                    when (entry) {
+                        is NavidromeHomeDownloadedAlbum -> "Remove \"${entry.album.name}\" from downloads on this device?"
+                        is NavidromeHomeDownloadedTrack -> "Remove \"${entry.track.title}\" from downloads on this device?"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDownloadRemoval = null
+                        when (entry) {
+                            is NavidromeHomeDownloadedAlbum -> downloadsViewModel.removeAlbumDownload(entry.album.id)
+                            is NavidromeHomeDownloadedTrack -> downloadsViewModel.removeTrackDownload(entry.track.id)
+                        }
+                    },
+                    enabled = !downloadUiState.isSubmitting
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDownloadRemoval = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    if (showRemoveAllConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRemoveAllConfirmation = false },
+            title = { Text("Remove all downloads") },
+            text = { Text("Remove all downloaded music from this library on this device?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRemoveAllConfirmation = false
+                        downloadsViewModel.removeAllDownloads()
+                    },
+                    enabled = !downloadUiState.isSubmitting
+                ) {
+                    Text("Remove All")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveAllConfirmation = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -6702,12 +7077,14 @@ private fun NavidromeContinueListeningCard(
     track: NavidromeTrack,
     isCurrent: Boolean,
     isPlaying: Boolean,
+    isDownloaded: Boolean,
     cardWidth: Dp = 266.dp,
     cardHeight: Dp = 98.dp,
     posterWidth: Dp = 72.dp,
     posterHeight: Dp = 80.dp,
     onPlayPause: () -> Unit,
     onPlayTrack: () -> Unit,
+    onToggleDownload: () -> Unit,
     onClick: () -> Unit,
     onOpenAlbum: (() -> Unit)? = null,
     onOpenArtist: (() -> Unit)? = null
@@ -6751,7 +7128,8 @@ private fun NavidromeContinueListeningCard(
                     width = posterWidth,
                     height = posterHeight,
                     shape = RoundedCornerShape(6.dp),
-                    contentScale = ContentScale.Fit
+                    contentScale = ContentScale.Fit,
+                    showDownloadedIndicator = isDownloaded
                 )
                 Column(
                     modifier = Modifier
@@ -6836,6 +7214,11 @@ private fun NavidromeContinueListeningCard(
                         menuExpanded = false
                     },
                     playLabel = if (isCurrent && isPlaying) "Pause" else if (isCurrent) "Resume" else "Play Now",
+                    isDownloaded = isDownloaded,
+                    onToggleDownload = {
+                        onToggleDownload()
+                        menuExpanded = false
+                    },
                     onShowAlbum = onOpenAlbum?.let { action ->
                         {
                             action()
@@ -6851,6 +7234,300 @@ private fun NavidromeContinueListeningCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NavidromeHomeDownloadedRow(
+    entry: NavidromeHomeDownloadEntry,
+    onClick: () -> Unit,
+    onPlayEntry: () -> Unit,
+    onShuffleAlbum: (() -> Unit)?,
+    onOpenAlbum: (() -> Unit)?,
+    onOpenArtist: (() -> Unit)?,
+    onRequestRemove: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(14.dp))
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AlbumArt(
+                url = entry.coverUrl,
+                size = 52.dp,
+                showDownloadedIndicator = true
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = entry.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = entry.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreHoriz,
+                        contentDescription = "Downloaded item actions"
+                    )
+                }
+                NavidromeDownloadedHomeActionsMenu(
+                    entry = entry,
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    onPlayEntry = {
+                        menuExpanded = false
+                        onPlayEntry()
+                    },
+                    onShuffleAlbum = onShuffleAlbum?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    },
+                    onRequestRemove = {
+                        menuExpanded = false
+                        onRequestRemove()
+                    },
+                    onOpenAlbum = onOpenAlbum?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    },
+                    onOpenArtist = onOpenArtist?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    }
+                )
+            }
+        }
+        DividerLine()
+    }
+}
+
+@Composable
+private fun NavidromeDownloadedHomeActionsMenu(
+    entry: NavidromeHomeDownloadEntry,
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    onPlayEntry: () -> Unit,
+    onShuffleAlbum: (() -> Unit)?,
+    onRequestRemove: () -> Unit,
+    onOpenAlbum: (() -> Unit)?,
+    onOpenArtist: (() -> Unit)?
+) {
+    AppDropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest
+    ) {
+        AppDropdownMenuItem(
+            text = {
+                Text(
+                    when (entry) {
+                        is NavidromeHomeDownloadedAlbum -> "Play Album"
+                        is NavidromeHomeDownloadedTrack -> "Play Song"
+                    }
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.PlayArrow,
+                    contentDescription = null
+                )
+            },
+            onClick = onPlayEntry
+        )
+        if (entry is NavidromeHomeDownloadedAlbum && onShuffleAlbum != null) {
+            AppDropdownMenuItem(
+                text = { Text("Shuffle Album") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Shuffle,
+                        contentDescription = null
+                    )
+                },
+                onClick = onShuffleAlbum
+            )
+        }
+        HorizontalDivider()
+        AppDropdownMenuItem(
+            text = { Text("Remove Download") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.Download,
+                    contentDescription = null
+                )
+            },
+            onClick = onRequestRemove
+        )
+        when (entry) {
+            is NavidromeHomeDownloadedAlbum -> {
+                HorizontalDivider()
+                AppDropdownMenuItem(
+                    text = { Text("Show Album") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Album,
+                            contentDescription = null
+                        )
+                    },
+                    enabled = onOpenAlbum != null,
+                    onClick = { onOpenAlbum?.invoke() }
+                )
+                AppDropdownMenuItem(
+                    text = { Text("Show Artist") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = null
+                        )
+                    },
+                    enabled = onOpenArtist != null,
+                    onClick = { onOpenArtist?.invoke() }
+                )
+            }
+
+            is NavidromeHomeDownloadedTrack -> {
+                if (onOpenAlbum != null || onOpenArtist != null) {
+                    HorizontalDivider()
+                }
+                AppDropdownMenuItem(
+                    text = { Text("Show Album") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Album,
+                            contentDescription = null
+                        )
+                    },
+                    enabled = onOpenAlbum != null,
+                    onClick = { onOpenAlbum?.invoke() }
+                )
+                AppDropdownMenuItem(
+                    text = { Text("Show Artist") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = null
+                        )
+                    },
+                    enabled = onOpenArtist != null,
+                    onClick = { onOpenArtist?.invoke() }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavidromeDownloadedGridCard(
+    entry: NavidromeHomeDownloadEntry,
+    onClick: () -> Unit,
+    onRequestRemove: () -> Unit,
+    onPlayEntry: () -> Unit,
+    onShuffleAlbum: (() -> Unit)?,
+    onOpenAlbum: (() -> Unit)?,
+    onOpenArtist: (() -> Unit)?
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box {
+            AlbumArt(
+                url = entry.coverUrl,
+                size = 168.dp,
+                showDownloadedIndicator = false
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                    tonalElevation = 2.dp,
+                    shadowElevation = 0.dp
+                ) {
+                    IconButton(
+                        onClick = { menuExpanded = true },
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreHoriz,
+                            contentDescription = "Downloaded item actions",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+                NavidromeDownloadedHomeActionsMenu(
+                    entry = entry,
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    onPlayEntry = {
+                        menuExpanded = false
+                        onPlayEntry()
+                    },
+                    onShuffleAlbum = onShuffleAlbum?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    },
+                    onRequestRemove = {
+                        menuExpanded = false
+                        onRequestRemove()
+                    },
+                    onOpenAlbum = onOpenAlbum?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    },
+                    onOpenArtist = onOpenArtist?.let { action ->
+                        {
+                            menuExpanded = false
+                            action()
+                        }
+                    }
+                )
+            }
+        }
+        Text(
+            text = entry.title,
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = entry.subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

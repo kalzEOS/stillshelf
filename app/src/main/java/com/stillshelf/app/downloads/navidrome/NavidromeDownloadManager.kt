@@ -183,6 +183,65 @@ class NavidromeDownloadManager @Inject constructor(
         )
     }
 
+    suspend fun removeTrackDownload(trackId: String): AppResult<NavidromeDownloadToggleResult> = mutex.withLock {
+        val selection = resolveActiveSelection()
+            ?: return@withLock AppResult.Error("Select a Navidrome server first.")
+        val existing = mutableItems.value.firstOrNull {
+            it.serverId == selection.serverId &&
+                it.libraryId == selection.libraryId &&
+                it.trackId == trackId &&
+                it.status != NavidromeDownloadStatus.Failed
+        } ?: return@withLock AppResult.Error("Download not found.")
+        removeItem(existing)
+        AppResult.Success(
+            NavidromeDownloadToggleResult(
+                nowDownloaded = false,
+                message = "Download removed"
+            )
+        )
+    }
+
+    suspend fun removeAlbumDownload(albumId: String): AppResult<NavidromeDownloadToggleResult> = mutex.withLock {
+        val selection = resolveActiveSelection()
+            ?: return@withLock AppResult.Error("Select a Navidrome server first.")
+        val existingItems = mutableItems.value.filter {
+            it.serverId == selection.serverId &&
+                it.libraryId == selection.libraryId &&
+                it.albumId == albumId &&
+                it.status != NavidromeDownloadStatus.Failed
+        }
+        if (existingItems.isEmpty()) {
+            return@withLock AppResult.Error("Download not found.")
+        }
+        existingItems.forEach(::removeItem)
+        AppResult.Success(
+            NavidromeDownloadToggleResult(
+                nowDownloaded = false,
+                message = "Album download removed"
+            )
+        )
+    }
+
+    suspend fun removeAllDownloads(): AppResult<NavidromeDownloadToggleResult> = mutex.withLock {
+        val selection = resolveActiveSelection()
+            ?: return@withLock AppResult.Error("Select a Navidrome server first.")
+        val existingItems = mutableItems.value.filter {
+            it.serverId == selection.serverId &&
+                it.libraryId == selection.libraryId &&
+                it.status != NavidromeDownloadStatus.Failed
+        }
+        if (existingItems.isEmpty()) {
+            return@withLock AppResult.Error("No downloads to remove.")
+        }
+        existingItems.forEach(::removeItem)
+        AppResult.Success(
+            NavidromeDownloadToggleResult(
+                nowDownloaded = false,
+                message = "All downloads removed"
+            )
+        )
+    }
+
     fun localPlaybackUri(track: NavidromeTrack): String? {
         val selection = mutableActiveSelection.value
         if (selection.serverId.isBlank()) return null

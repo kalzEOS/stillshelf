@@ -2,6 +2,8 @@ package com.stillshelf.app.ui.screens
 
 import com.stillshelf.app.core.model.BookDetail
 import com.stillshelf.app.core.model.BookSummary
+import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.downloads.manager.DownloadStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -40,6 +42,48 @@ class BookDetailUiStateTest {
         assertEquals(detail, updated.detail)
         assertEquals(detail.book.progressPercent, updated.progressPercent)
         assertEquals(detail.book.currentTimeSeconds, updated.currentTimeSeconds)
+    }
+
+    @Test
+    fun applyPersistedDetail_nullDoesNotClearExistingCachedDetail() {
+        val detail = sampleDetail()
+        val initial = BookDetailUiState(
+            isLoading = true,
+            isRefreshing = true,
+            detail = detail
+        )
+
+        val updated = initial.applyPersistedDetail(null)
+
+        assertFalse(updated.isLoading)
+        assertFalse(updated.isRefreshing)
+        assertEquals(detail, updated.detail)
+    }
+
+    @Test
+    fun resolveOfflineBookDetail_buildsFallbackFromCompletedDownload() {
+        val detail = resolveOfflineBookDetail(
+            download = DownloadItem(
+                serverId = "server-1",
+                libraryId = "library-1",
+                bookId = "book-1",
+                title = "Offline Sample",
+                authorName = "Offline Author",
+                coverUrl = "file:///cover.jpg",
+                durationSeconds = 900.0,
+                status = DownloadStatus.Completed,
+                progressPercent = 100,
+                localPath = "/tmp/book.mp3"
+            ),
+            currentDetail = null
+        )
+
+        assertEquals("Offline Sample", detail.book.title)
+        assertEquals("Offline Author", detail.book.authorName)
+        assertEquals("library-1", detail.book.libraryId)
+        assertEquals(900.0, detail.book.durationSeconds)
+        assertTrue(detail.chapters.isEmpty())
+        assertTrue(detail.bookmarks.isEmpty())
     }
 
     private fun sampleDetail(): BookDetail {

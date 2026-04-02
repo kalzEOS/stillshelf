@@ -139,6 +139,7 @@ object NavidromeRoute {
     const val NEWEST_ALBUMS = "navidrome/library/albums/newest"
     const val RADIOS = "navidrome/library/radios"
     const val SONGS = "navidrome/library/songs"
+    const val DOWNLOADED = "navidrome/library/downloaded"
     const val FAVORITES = "navidrome/library/favorites"
     const val PLAYLISTS = "navidrome/library/playlists"
     const val PLAYLIST_ID_ARG = "playlistId"

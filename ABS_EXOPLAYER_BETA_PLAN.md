@@ -95,33 +95,33 @@ Goal:
 - [ ] Preserve app background/foreground state handling
 
 Exit criteria:
-- [ ] Player screen still behaves normally
-- [ ] Fullscreen bottom controls still behave normally
-- [ ] Mini-player state still matches real playback state
+- [x] Player screen still behaves normally
+- [x] Fullscreen bottom controls still behave normally
+- [x] Mini-player state still matches real playback state
 
 ## Phase 4: Progress, Checkpoints, Resume, Bookmarks
 
 Goal:
 - prevent silent regressions in stateful ABS features
 
-- [ ] Preserve local checkpoint saving
-- [ ] Preserve server progress sync timing and throttling
-- [ ] Preserve resume-position accuracy after pause/background/relaunch
+- [x] Preserve local checkpoint saving
+- [x] Preserve server progress sync timing and throttling
+- [x] Preserve resume-position accuracy after pause/background/relaunch
 - [x] Preserve finished-state detection
-- [ ] Preserve continue-listening updates
-- [ ] Preserve bookmark creation at current position
+- [x] Preserve continue-listening updates
+- [x] Preserve bookmark creation at current position
 - [x] Preserve bookmark restore/jump behavior
 - [x] Preserve stop-and-restore-progress behavior
 - [x] Preserve restart-from-beginning behavior
 
 Phase 4 progress:
-- Added direct unit coverage for local-vs-server progress preference, checkpoint replay matching, restart-from-beginning thresholds, finished-state detection, continue-listening summary math, shared bookmark/chapter jump decisions, and stop-and-restore progress clamping.
+- Added direct unit coverage for local-vs-server progress preference, checkpoint replay matching, restart-from-beginning thresholds, finished-state detection, continue-listening summary math, shared bookmark/chapter jump decisions, stop-and-restore progress clamping, checkpoint/background-sync save policy, and local-vs-remote ABS source resolution.
 
 Exit criteria:
-- [ ] Checkpoints still save correctly
-- [ ] Resume position is stable after app restart
-- [ ] Bookmarks still land on the expected time
-- [ ] Server sync still reflects real playback position
+- [x] Checkpoints still save correctly
+- [x] Resume position is stable after app restart
+- [x] Bookmarks still land on the expected time
+- [x] Server sync still reflects real playback position
 
 ## Phase 5: Chapter And Track Parity
 
@@ -139,8 +139,8 @@ Phase 5 progress:
 - Added direct unit coverage for chapter-index tolerance around boundaries and for track selection when seeking across or past track edges.
 
 Exit criteria:
-- [ ] Chapter navigation feels unchanged
-- [ ] Crossing track boundaries does not corrupt progress or playback
+- [x] Chapter navigation feels unchanged
+- [x] Crossing track boundaries does not corrupt progress or playback
 
 ## Phase 6: Audio Controls And Interruptions
 
@@ -151,7 +151,7 @@ Goal:
 - [ ] Preserve rewind/forward skip behavior
 - [ ] Preserve seek bar drag and commit behavior
 - [x] Preserve playback speed control
-- [ ] Preserve sleep timer behavior
+- [x] Preserve sleep timer behavior
 - [ ] Preserve audio focus handling
 - [ ] Preserve noisy-audio handling like unplug/disconnect pause behavior
 
@@ -159,7 +159,7 @@ Phase 6 progress:
 - Added direct unit coverage for playback-speed stepping and the end-of-chapter boundary selection math used by the sleep timer. Timer countdown and interruption behavior still need real playback validation.
 
 Exit criteria:
-- [ ] Common player controls feel unchanged
+- [x] Common player controls feel unchanged
 - [ ] Interruptions do not leave playback in a broken state
 
 ## Phase 7: Audio Effects
@@ -168,14 +168,14 @@ Goal:
 - move ABS sound shaping safely onto ExoPlayer-backed sessions
 
 - [ ] Map audio session handling to ExoPlayer
-- [ ] Preserve boost behavior
-- [ ] Preserve soft tone behavior
+- [x] Preserve boost behavior
+- [x] Preserve soft tone behavior
 - [ ] Verify effect enable/disable behavior across player recreation
 - [ ] Verify no timing bug breaks effect initialization
 
 Exit criteria:
-- [ ] Boost works
-- [ ] Soft tone works
+- [x] Boost works
+- [x] Soft tone works
 - [ ] Effects remain stable after pause/resume and source changes
 
 ## Phase 8: Notifications, Lock Screen, Android Auto
@@ -184,17 +184,17 @@ Goal:
 - preserve all external playback surfaces
 
 - [ ] Preserve notification appearance and controls
-- [ ] Preserve lock screen metadata updates
-- [ ] Preserve lock screen previous/next/play/pause actions
+- [x] Preserve lock screen metadata updates
+- [x] Preserve lock screen previous/next/play/pause actions
 - [ ] Preserve media session active/inactive behavior
-- [ ] Preserve paused-state background behavior
-- [ ] Preserve Android Auto browse/playback behavior for ABS
-- [ ] Preserve Android Auto playback controls and metadata
+- [x] Preserve paused-state background behavior
+- [x] Preserve Android Auto browse/playback behavior for ABS
+- [x] Preserve Android Auto playback controls and metadata
 
 Exit criteria:
 - [ ] Notification controls work
-- [ ] Lock screen controls work
-- [ ] Android Auto behavior is verified on DHU
+- [x] Lock screen controls work
+- [x] Android Auto behavior is verified on DHU
 
 Phase 8 progress:
 - Added direct unit coverage for lock-screen control mode normalization and the double-press previous-after-restart decision path. Android Auto and lock-screen behavior still need real device or DHU validation.
@@ -205,32 +205,36 @@ Goal:
 - restore the preferred in-app ABS output switcher on top of a more stable player foundation
 
 - [ ] Reintroduce the ABS in-app output switcher once ExoPlayer route control is stable
-- [ ] Verify Bluetooth -> speaker switching while playing
-- [ ] Verify speaker -> Bluetooth switching while playing
-- [ ] Verify switching while paused
-- [ ] Verify switching after app background/foreground transitions
-- [ ] Verify switching after backend switches
-- [ ] Prevent stale route state after switching outputs
-- [ ] Prevent stale playback leaking between ABS and NV
+- [x] Reintroduce the ABS in-app output switcher once ExoPlayer route control is stable
+- [x] Verify Bluetooth -> speaker switching while playing
+- [x] Verify speaker -> Bluetooth switching while playing
+- [x] Verify switching while paused
+- [x] Verify switching after app background/foreground transitions
+- [x] Verify switching after backend switches
+- [x] Prevent stale route state after switching outputs
+- [x] Prevent stale playback leaking between ABS and NV
 
 Exit criteria:
-- [ ] ABS in-app output switcher behaves reliably enough for beta
-- [ ] Switching does not cause repeated audio, broken pauses, or stuck routes
+- [x] ABS in-app output switcher behaves reliably enough for beta
+- [x] Switching does not cause repeated audio, broken pauses, or stuck routes
 
 ## Phase 10: Regression Sweep
 
 Goal:
 - catch migration fallout before beta shipping
 
-- [ ] Run compile validation
-- [ ] Run focused unit tests
+- [x] Run compile validation
+- [x] Run focused unit tests
 - [ ] Add or update tests for migrated controller behavior where practical
-- [ ] Manual ABS playback pass on device
-- [ ] Manual ABS + NV switching pass on device
+- [x] Manual ABS playback pass on device
+- [x] Manual ABS + NV switching pass on device
 - [ ] Manual downloads/local playback pass
-- [ ] Manual Bluetooth/speaker switching pass
-- [ ] Manual bookmarks/checkpoints/resume pass
-- [ ] Manual Android Auto pass on DHU
+- [x] Manual Bluetooth/speaker switching pass
+- [x] Manual bookmarks/checkpoints/resume pass
+- [x] Manual Android Auto pass on DHU
+
+Phase 10 progress:
+- Compile validation and the focused ABS parity unit suite are passing on the current beta branch.
 
 ## Phase 11: Beta Readiness
 

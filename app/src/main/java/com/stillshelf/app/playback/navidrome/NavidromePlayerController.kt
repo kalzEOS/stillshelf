@@ -135,9 +135,9 @@ internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
     if (id.isBlank()) return null
     return NavidromeTrack(
         id = id,
-        title = title.ifBlank { "Unknown track" },
-        artistName = artistName.ifBlank { "Unknown artist" },
-        albumName = albumName.ifBlank { "Unknown album" },
+        title = title.normalizeNavidromeText().ifBlank { "Unknown track" },
+        artistName = artistName.normalizeNavidromeText().ifBlank { "Unknown artist" },
+        albumName = albumName.normalizeNavidromeText().ifBlank { "Unknown album" },
         albumId = albumId?.takeIf { it.isNotBlank() },
         artistId = artistId?.takeIf { it.isNotBlank() },
         trackNumber = trackNumber?.takeIf { it > 0 },
@@ -171,9 +171,9 @@ internal fun serializeNavidromeTrackSnapshot(track: NavidromeTrack): JSONObject 
 internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
     return NavidromeTrackSnapshotPayload(
         id = item.optString("id").trim(),
-        title = item.optString("title"),
-        artistName = item.optString("artistName"),
-        albumName = item.optString("albumName"),
+        title = item.optString("title").normalizeNavidromeText(),
+        artistName = item.optString("artistName").normalizeNavidromeText(),
+        albumName = item.optString("albumName").normalizeNavidromeText(),
         albumId = item.optString("albumId").ifBlank { null },
         artistId = item.optString("artistId").ifBlank { null },
         trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber"),
@@ -183,6 +183,24 @@ internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
         formatLabel = item.optString("formatLabel").ifBlank { null },
         bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
     ).toTrack()
+}
+
+private fun String.normalizeNavidromeText(): String {
+    return trim()
+        .replace("Â’", "'")
+        .replace("Â'", "'")
+        .replace("â€™", "'")
+        .replace("â€˜", "'")
+        .replace("â€œ", "\"")
+        .replace("â€�", "\"")
+        .replace("Â\"", "\"")
+        .replace('\u0091', '\'')
+        .replace('\u0092', '\'')
+        .replace('\u0093', '"')
+        .replace('\u0094', '"')
+        .replace(Regex("(?<=[\\p{L}\\p{N}])\uFFFD(?=[\\p{L}\\p{N}])"), "'")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }
 
 @Singleton

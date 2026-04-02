@@ -114,6 +114,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.PlaybackLoadingIndicator
 import com.stillshelf.app.ui.components.UpdateNotesDialogContent
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -8012,7 +8013,7 @@ fun PlayerScreen(
                         mainPlayButtonIconTint
                     }
                     if (playbackUiState.isLoading) {
-                        MainPlayButtonLoadingIndicator(
+                        PlaybackLoadingIndicator(
                             modifier = Modifier.size(width = 36.dp, height = 36.dp),
                             baseTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
                                 Color.Black.copy(alpha = 0.24f)
@@ -10431,58 +10432,6 @@ private fun ChapterPlaybackIndicator(
                 .clip(RoundedCornerShape(2.dp))
                 .background(tint)
         )
-    }
-}
-
-@Composable
-private fun MainPlayButtonLoadingIndicator(
-    modifier: Modifier = Modifier,
-    baseTint: Color,
-    sweepTint: Color
-) {
-    val transition = rememberInfiniteTransition(label = "main-play-button-loading")
-    val sweepProgress by transition.animateFloat(
-        initialValue = -0.25f,
-        targetValue = 1.25f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "main-play-button-loading-sweep"
-    )
-    val barHeights = remember { listOf(0.48f, 0.74f, 1f, 0.74f, 0.48f) }
-
-    Canvas(modifier = modifier) {
-        val barCount = barHeights.size
-        if (barCount == 0) return@Canvas
-        val clusterWidth = size.width * 0.68f
-        val spacingRatio = 0.52f
-        val barWidth = (
-            clusterWidth / (barCount + (barCount - 1) * spacingRatio)
-            ).coerceAtLeast(1f)
-        val spacing = barWidth * spacingRatio
-        val clusterStartX = (size.width - clusterWidth) / 2f
-        val cornerRadius = barWidth / 2f
-        val sweepCenterX = size.width * sweepProgress
-        val sweepRadius = barWidth * 1.8f
-        val maxBarHeight = size.height * 0.82f
-
-        barHeights.forEachIndexed { index, heightFraction ->
-            val left = clusterStartX + index * (barWidth + spacing)
-            val barHeight = (maxBarHeight * heightFraction).coerceAtLeast(size.height * 0.3f)
-            val top = (size.height - barHeight) / 2f
-            val barCenterX = left + (barWidth / 2f)
-            val distanceFraction = ((barCenterX - sweepCenterX) / sweepRadius).let { kotlin.math.abs(it) }
-            val sweepStrength = (1f - distanceFraction.coerceIn(0f, 1f)).let { it * it }
-            val tint = lerp(baseTint, sweepTint, sweepStrength)
-
-            drawRoundRect(
-                color = tint,
-                topLeft = androidx.compose.ui.geometry.Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius)
-            )
-        }
     }
 }
 

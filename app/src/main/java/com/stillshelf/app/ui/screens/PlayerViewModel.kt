@@ -249,7 +249,7 @@ class PlayerViewModel @Inject constructor(
     fun selectAudioOutputDevice(deviceId: Int?) {
         val applied = playbackController.selectAudioOutputDevice(deviceId)
         if (!applied) {
-            mutableActionMessage.value = "Unable to switch output on this device."
+            mutableActionMessage.value = "Couldn't switch audio output. Still playing on the current device."
         }
     }
 

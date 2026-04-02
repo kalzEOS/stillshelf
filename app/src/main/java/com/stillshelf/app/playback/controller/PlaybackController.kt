@@ -8,13 +8,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.AudioAttributes
+import android.media.AudioAttributes as PlatformAudioAttributes
 import android.media.AudioFocusRequest
 import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.MediaPlayer
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
@@ -32,6 +31,15 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
@@ -141,6 +149,11 @@ class PlaybackController @Inject constructor(
         private const val LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS = 6_000L
         private const val LOCK_SCREEN_BOOK_NAV_PAGE_SIZE = 200
         private const val LOCK_SCREEN_BOOK_NAV_MAX_PAGES = 20
+        private const val OUTPUT_SWITCH_RESTORE_DELAY_MS = 220L
+        private const val SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS = 450L
+        private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
+        private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
+        private const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
         const val ACTION_FORWARD = "com.stillshelf.app.playback.action.FORWARD"
@@ -148,7 +161,7 @@ class PlaybackController @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutableUiState = MutableStateFlow(PlaybackUiState())
-    private var mediaPlayer: MediaPlayer? = null
+    private var mediaPlayer: ExoPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
     private var currentBookId: String? = null
@@ -169,6 +182,8 @@ class PlaybackController @Inject constructor(
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
+    private var outputRecoveryJob: Job? = null
+    private var suppressRefreshRoutingUntilElapsedMs: Long = 0L
     private val attemptedAutoAdvanceTargetsMs = mutableSetOf<Long>()
     private var suppressNextAutoAdvanceOnCompletion = false
     private var lastNotificationSignature: NotificationSignature? = null
@@ -176,10 +191,16 @@ class PlaybackController @Inject constructor(
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfPlayback")
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private val playbackAudioAttributes: AudioAttributes by lazy {
-        AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+    private val playbackAudioAttributes: Media3AudioAttributes by lazy {
+        Media3AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+            .build()
+    }
+    private val audioFocusAudioAttributes: PlatformAudioAttributes by lazy {
+        PlatformAudioAttributes.Builder()
+            .setUsage(PlatformAudioAttributes.USAGE_MEDIA)
+            .setContentType(PlatformAudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
     }
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -1099,8 +1120,11 @@ class PlaybackController @Inject constructor(
         if (preferredOutputDeviceId != resolvedPreferredId) {
             preferredOutputDeviceId = resolvedPreferredId
         }
+        val shouldSkipRoutingApply = SystemClock.elapsedRealtime() < suppressRefreshRoutingUntilElapsedMs
         mediaPlayer?.let { player ->
-            applyPreferredOutputDevice(player)
+            if (!shouldSkipRoutingApply) {
+                applyPreferredOutputDevice(player)
+            }
         }
         updateUiState {
             it.copy(
@@ -1117,31 +1141,37 @@ class PlaybackController @Inject constructor(
             refreshAudioOutputDevices()
             return false
         }
+        val previousPreferredId = preferredOutputDeviceId
         preferredOutputDeviceId = deviceId
-        val player = mediaPlayer
-        if (player != null) {
-            if (deviceId == null) {
-                applySystemDefaultOutputRouting(player)
-            } else {
-                applySystemDefaultOutputRouting(player)
-                val isSpeakerTarget = isSpeakerOutputDevice(displayedDeviceId = deviceId)
-                var applied = if (isSpeakerTarget) {
-                    applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
-                } else {
-                    applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
-                }
-                if (!applied) {
-                    applied = if (isSpeakerTarget) {
-                        applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
-                    } else {
-                        applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
-                    }
-                }
-                if (!applied) {
-                    refreshAudioOutputDevices()
-                    return false
-                }
+        val activePlayer = mediaPlayer
+        if (activePlayer == null) {
+            refreshAudioOutputDevices()
+            return true
+        }
+        if (deviceId == null) {
+            val applied = performMutedOutputSwitch(
+                player = activePlayer,
+                block = { applySystemDefaultOutputRouting(activePlayer) },
+                toSpeakerRoute = false
+            )
+            if (!applied) {
+                preferredOutputDeviceId = previousPreferredId
+                updateOutputSelectionWithoutRouting(available)
+                return false
             }
+            refreshAudioOutputDevices()
+            return true
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
+        val applied = performMutedOutputSwitch(
+            player = activePlayer,
+            block = { applyTargetedOutputRouting(activePlayer, deviceId) },
+            toSpeakerRoute = speakerTarget
+        )
+        if (!applied) {
+            preferredOutputDeviceId = previousPreferredId
+            updateOutputSelectionWithoutRouting(available)
+            return false
         }
         refreshAudioOutputDevices()
         return true
@@ -1169,7 +1199,7 @@ class PlaybackController @Inject constructor(
         } else {
             localTargetMs
         }
-        runCatching { player.seekTo(clampedLocalMs.toInt()) }
+            runCatching { player.seekTo(clampedLocalMs) }
         updateUiState {
             it.copy(
                 positionMs = currentTrackStartOffsetMs + clampedLocalMs,
@@ -1203,7 +1233,7 @@ class PlaybackController @Inject constructor(
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             pendingPlayAfterAudioFocusGain = false
             pendingPlayStartsProgressUpdates = false
-            runCatching { player.start() }
+            runCatching { player.play() }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
             if (progressUpdateMode == ResumeProgressUpdateMode.Immediate) {
                 startProgressUpdates()
@@ -1235,7 +1265,7 @@ class PlaybackController @Inject constructor(
         }
 
         val trackSelection = resolvePlaybackTrackSelection(playbackSource, resumeMs)
-        val player = MediaPlayer()
+        val player = createAbsPlayer(trackSelection.streamUrl)
         mediaPlayer = player
         currentBookId = bookId
         currentPlaybackSource = playbackSource
@@ -1246,8 +1276,6 @@ class PlaybackController @Inject constructor(
         lastCheckpointSavedAtElapsedMs = 0L
         lastAppBackgroundSyncAtElapsedMs = 0L
         lastAppBackgroundSyncPositionMs = -1L
-        configurePlayerAudioAttributes(player)
-        applyPreferredOutputDevice(player)
         updateUiState {
             it.copy(
                 isLoading = true,
@@ -1264,86 +1292,81 @@ class PlaybackController @Inject constructor(
         }
         updateCachedFromUiState()
 
-        player.setOnPreparedListener { prepared ->
-            if (prepared !== mediaPlayer) return@setOnPreparedListener
-            applyPlaybackSpeed(player = prepared, speed = currentPlaybackSpeed)
-            applyAudioEffects(prepared)
-            val duration = safeDuration(prepared)
-            currentBookDurationMs = maxOf(currentBookDurationMs, currentTrackStartOffsetMs + duration)
-            val clampedResume = if (duration > 0L) {
-                trackSelection.localSeekMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
-            } else {
-                trackSelection.localSeekMs.coerceAtLeast(0L)
-            }
-            if (clampedResume > 0L) {
-                runCatching { prepared.seekTo(clampedResume.toInt()) }
-            }
-            updateUiState {
-                it.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    playbackSpeed = currentPlaybackSpeed,
-                    positionMs = currentTrackStartOffsetMs + clampedResume,
-                    durationMs = resolveDisplayedDurationMs(prepared)
-                )
-            }
-            updateCachedFromUiState()
-            persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
-            val focusResult = requestAudioFocusForPlayback()
-            when (focusResult) {
-                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
-                    pendingPlayAfterAudioFocusGain = false
-                    pendingPlayStartsProgressUpdates = false
-                    runCatching { prepared.start() }
-                    updateUiState { it.copy(isPlaying = true, errorMessage = null) }
-                    startProgressUpdates()
-                }
+        var initialReadyHandled = false
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (player !== mediaPlayer) return
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        if (initialReadyHandled) return
+                        initialReadyHandled = true
+                        applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
+                        applyAudioEffects(player)
+                        val duration = safeDuration(player)
+                        currentBookDurationMs = maxOf(currentBookDurationMs, currentTrackStartOffsetMs + duration)
+                        updateUiState {
+                            it.copy(
+                                isLoading = false,
+                                isPlaying = false,
+                                playbackSpeed = currentPlaybackSpeed,
+                                positionMs = safePosition(player),
+                                durationMs = resolveDisplayedDurationMs(player)
+                            )
+                        }
+                        updateCachedFromUiState()
+                        persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
+                        val focusResult = requestAudioFocusForPlayback()
+                        when (focusResult) {
+                            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                                pendingPlayAfterAudioFocusGain = false
+                                pendingPlayStartsProgressUpdates = false
+                                runCatching { player.play() }
+                                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+                                startProgressUpdates()
+                            }
 
-                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
-                    pendingPlayAfterAudioFocusGain = true
-                    pendingPlayStartsProgressUpdates = true
-                }
+                            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                                pendingPlayAfterAudioFocusGain = true
+                                pendingPlayStartsProgressUpdates = true
+                            }
 
-                else -> {
-                    pendingPlayAfterAudioFocusGain = false
-                    pendingPlayStartsProgressUpdates = false
-                    updateUiState {
-                        it.copy(errorMessage = "Could not take audio output right now.")
+                            else -> {
+                                pendingPlayAfterAudioFocusGain = false
+                                pendingPlayStartsProgressUpdates = false
+                                updateUiState {
+                                    it.copy(errorMessage = "Could not take audio output right now.")
+                                }
+                            }
+                        }
+                    }
+
+                    Player.STATE_ENDED -> {
+                        val duration = currentTrackStartOffsetMs + safeDuration(player)
+                        handleCompletion(book = book, durationMs = duration)
                     }
                 }
             }
-        }
-        player.setOnCompletionListener { completed ->
-            if (completed !== mediaPlayer) return@setOnCompletionListener
-            val duration = currentTrackStartOffsetMs + safeDuration(completed)
-            handleCompletion(book = book, durationMs = duration)
-        }
-        player.setOnErrorListener { _, _, _ ->
-            updateUiState {
-                it.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    errorMessage = "Playback failed. Try another book."
-                )
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (player !== mediaPlayer) return
+                updateUiState {
+                    it.copy(
+                        isLoading = false,
+                        isPlaying = false,
+                        errorMessage = error.message ?: "Playback failed. Try another book."
+                    )
+                }
             }
-            true
-        }
+        })
 
         runCatching {
-            val parsedUri = Uri.parse(trackSelection.streamUrl)
-            val isLocalUri = parsedUri.scheme.equals("file", ignoreCase = true) ||
-                parsedUri.scheme.equals("content", ignoreCase = true)
-            if (isLocalUri) {
-                player.setDataSource(appContext, parsedUri)
-            } else {
-                val resolvedStream = splitAuthenticatedUrl(trackSelection.streamUrl)
-                val headers = resolvedStream.authToken
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
-                    .orEmpty()
-                player.setDataSource(appContext, Uri.parse(resolvedStream.cleanUrl), headers)
-            }
-            player.prepareAsync()
+            applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
+            val resolvedStream = resolveAbsPlaybackUri(trackSelection.streamUrl)
+            player.setMediaItem(
+                MediaItem.fromUri(resolvedStream),
+                trackSelection.localSeekMs.coerceAtLeast(0L)
+            )
+            player.prepare()
         }.onFailure { throwable ->
             abandonAudioFocus()
             updateUiState {
@@ -1385,17 +1408,47 @@ class PlaybackController @Inject constructor(
         updateUiState { it.copy(isPlaying = false) }
     }
 
-    private fun configurePlayerAudioAttributes(player: MediaPlayer) {
+    private fun configurePlayerAudioAttributes(player: ExoPlayer) {
         runCatching {
-            player.setAudioAttributes(playbackAudioAttributes)
+            player.setAudioAttributes(playbackAudioAttributes, false)
         }
+    }
+
+    private fun createAbsPlayer(streamUrl: String): ExoPlayer {
+        val resolvedStream = splitAuthenticatedUrl(streamUrl)
+        val headers = resolvedStream.authToken
+            ?.takeIf { it.isNotBlank() }
+            ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
+            .orEmpty()
+        val builder = ExoPlayer.Builder(appContext)
+        if (headers.isNotEmpty()) {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(headers)
+            val dataSourceFactory = DefaultDataSource.Factory(appContext, httpFactory)
+            builder.setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        }
+        return builder.build().apply {
+            configurePlayerAudioAttributes(this)
+            applyPreferredOutputDevice(this)
+        }
+    }
+
+    private fun resolveAbsPlaybackUri(streamUrl: String): Uri {
+        val parsedUri = Uri.parse(streamUrl)
+        val isLocalUri = parsedUri.scheme.equals("file", ignoreCase = true) ||
+            parsedUri.scheme.equals("content", ignoreCase = true)
+        if (isLocalUri) {
+            return parsedUri
+        }
+        val resolvedStream = splitAuthenticatedUrl(streamUrl)
+        return Uri.parse(resolvedStream.cleanUrl)
     }
 
     private fun requestAudioFocusForPlayback(): Int {
         if (hasAudioFocus) return AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         val requestResult = if (SDK_INT >= Build.VERSION_CODES.O) {
             val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(playbackAudioAttributes)
+                .setAudioAttributes(audioFocusAudioAttributes)
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener(audioFocusChangeListener, Handler(Looper.getMainLooper()))
                 .build()
@@ -1438,7 +1491,7 @@ class PlaybackController @Inject constructor(
                         val shouldStartProgress = pendingPlayStartsProgressUpdates
                         pendingPlayStartsProgressUpdates = false
                         wasPausedForTransientAudioFocusLoss = false
-                        runCatching { player.start() }
+                        runCatching { player.play() }
                         updateUiState { it.copy(isPlaying = true, errorMessage = null) }
                         if (shouldStartProgress) {
                             startProgressUpdates()
@@ -1487,16 +1540,16 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun applyDucking(player: MediaPlayer) {
+    private fun applyDucking(player: ExoPlayer) {
         runCatching {
-            player.setVolume(0.30f, 0.30f)
+            player.volume = 0.30f
             isDuckedForAudioFocus = true
         }
     }
 
-    private fun clearDucking(player: MediaPlayer?) {
+    private fun clearDucking(player: ExoPlayer?) {
         if (!isDuckedForAudioFocus || player == null) return
-        runCatching { player.setVolume(1.0f, 1.0f) }
+        runCatching { player.volume = 1.0f }
         isDuckedForAudioFocus = false
     }
 
@@ -1554,7 +1607,7 @@ class PlaybackController @Inject constructor(
         return (current / duration) >= 0.995
     }
 
-    private fun updateProgress(player: MediaPlayer) {
+    private fun updateProgress(player: ExoPlayer) {
         if (player !== mediaPlayer) return
         val rawPositionMs = safePosition(player)
         val guardedPositionMs = applyPendingAutoAdvanceUiGuard(rawPositionMs)
@@ -1606,17 +1659,18 @@ class PlaybackController @Inject constructor(
         return targetPositionMs
     }
 
-    private fun safePosition(player: MediaPlayer): Long {
+    private fun safePosition(player: ExoPlayer): Long {
         return currentTrackStartOffsetMs +
-            runCatching { player.currentPosition.toLong().coerceAtLeast(0L) }.getOrDefault(0L)
+            runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
     }
 
-    private fun safeDuration(player: MediaPlayer): Long {
-        val duration = runCatching { player.duration.toLong() }.getOrDefault(0L)
+    private fun safeDuration(player: ExoPlayer): Long {
+        val duration = runCatching { player.duration }.getOrDefault(C.TIME_UNSET)
+        if (duration == C.TIME_UNSET) return 0L
         return duration.coerceAtLeast(0L)
     }
 
-    private fun resolveDisplayedDurationMs(player: MediaPlayer): Long {
+    private fun resolveDisplayedDurationMs(player: ExoPlayer): Long {
         return maxOf(
             currentBookDurationMs,
             currentTrackStartOffsetMs + safeDuration(player)
@@ -1640,6 +1694,7 @@ class PlaybackController @Inject constructor(
         pendingPlayAfterAudioFocusGain = false
         pendingPlayStartsProgressUpdates = false
         wasPausedForTransientAudioFocusLoss = false
+        cancelOutputRecovery()
         releaseAudioEffects()
         clearDucking(mediaPlayer)
         mediaPlayer?.runCatching { release() }
@@ -2488,23 +2543,20 @@ class PlaybackController @Inject constructor(
         val device: AudioDeviceInfo
     )
 
-    private fun applyPlaybackSpeed(player: MediaPlayer, speed: Float) {
+    private fun applyPlaybackSpeed(player: ExoPlayer, speed: Float) {
         runCatching {
-            val params = player.playbackParams ?: android.media.PlaybackParams()
-            player.playbackParams = params
-                .setSpeed(speed)
-                .setPitch(1.0f)
+            player.playbackParameters = PlaybackParameters(speed, 1.0f)
         }
     }
 
-    private fun applyAudioEffects(player: MediaPlayer) {
+    private fun applyAudioEffects(player: ExoPlayer) {
         ensureAudioEffects(player)
         applyBoostEffect()
         applySoftToneEffect()
     }
 
-    private fun ensureAudioEffects(player: MediaPlayer) {
-        val sessionId = runCatching { player.audioSessionId }.getOrDefault(0)
+    private fun ensureAudioEffects(player: ExoPlayer) {
+        val sessionId = runCatching { player.audioSessionId }.getOrDefault(C.AUDIO_SESSION_ID_UNSET)
         if (sessionId <= 0) return
         if (audioEffectsSessionId == sessionId) return
 
@@ -2555,7 +2607,7 @@ class PlaybackController @Inject constructor(
         audioEffectsSessionId = null
     }
 
-    private fun applyPreferredOutputDevice(player: MediaPlayer) {
+    private fun applyPreferredOutputDevice(player: ExoPlayer) {
         val preferredId = preferredOutputDeviceId
         if (preferredId == null) {
             applySystemDefaultOutputRouting(player)
@@ -2572,7 +2624,7 @@ class PlaybackController @Inject constructor(
         return candidates.firstOrNull()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
     }
 
-    private fun applySystemDefaultOutputRouting(player: MediaPlayer): Boolean {
+    private fun applySystemDefaultOutputRouting(player: ExoPlayer): Boolean {
         val preferredCleared = clearPreferredOutputDevice(player)
         val communicationCleared = if (SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
@@ -2609,21 +2661,154 @@ class PlaybackController @Inject constructor(
             }
     }
 
-    private fun applyPreferredOutputForDisplayedId(player: MediaPlayer, displayedDeviceId: Int): Boolean {
+    private fun applyPreferredOutputForDisplayedId(player: ExoPlayer, displayedDeviceId: Int): Boolean {
         val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
         return candidates.any { targetDevice ->
             setPreferredOutputDevice(player, targetDevice)
         }
     }
 
-    private fun clearPreferredOutputDevice(player: MediaPlayer): Boolean {
-        if (SDK_INT < Build.VERSION_CODES.P) return false
-        return runCatching { player.setPreferredDevice(null) }.getOrDefault(false)
+    private fun applyTargetedOutputRouting(player: ExoPlayer, deviceId: Int?): Boolean {
+        if (deviceId == null) {
+            return applySystemDefaultOutputRouting(player)
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
+        return if (speakerTarget) {
+            prepareForSpeakerPreferredRouting(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        } else {
+            clearSpeakerRouteOverride(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        }
     }
 
-    private fun setPreferredOutputDevice(player: MediaPlayer, targetDevice: AudioDeviceInfo): Boolean {
-        if (SDK_INT < Build.VERSION_CODES.P) return false
-        return runCatching { player.setPreferredDevice(targetDevice) }.getOrDefault(false)
+    private fun performMutedOutputSwitch(player: ExoPlayer, block: () -> Boolean, toSpeakerRoute: Boolean): Boolean {
+        cancelOutputRecovery()
+        suppressRefreshRoutingUntilElapsedMs =
+            SystemClock.elapsedRealtime() + resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute)
+        val originalVolume = player.volume
+        val shouldResumePlayback = player.isPlaying || player.playWhenReady
+        if (shouldResumePlayback) {
+            runCatching { player.pause() }
+            updateUiState { it.copy(isPlaying = false, errorMessage = null) }
+        }
+        runCatching { player.volume = 0f }
+        val applied = block()
+        if (!applied) {
+            suppressRefreshRoutingUntilElapsedMs = 0L
+            runCatching { player.volume = originalVolume }
+            if (shouldResumePlayback) {
+                runCatching { player.play() }
+                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            }
+            return false
+        }
+        scheduleOutputSwitchRecovery(player, originalVolume, shouldResumePlayback, toSpeakerRoute)
+        return applied
+    }
+
+    private fun scheduleOutputSwitchRecovery(
+        player: ExoPlayer,
+        volume: Float,
+        shouldResumePlayback: Boolean,
+        toSpeakerRoute: Boolean
+    ) {
+        outputRecoveryJob = scope.launch {
+            delay(if (toSpeakerRoute) SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS else OUTPUT_SWITCH_RESTORE_DELAY_MS)
+            if (mediaPlayer !== player) {
+                outputRecoveryJob = null
+                return@launch
+            }
+            if (shouldResumePlayback) {
+                runCatching { player.play() }
+                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            }
+            if (toSpeakerRoute) {
+                val targetVolume = volume.coerceAtLeast(0f)
+                repeat(SPEAKER_OUTPUT_VOLUME_RAMP_STEPS) { step ->
+                    if (mediaPlayer !== player) {
+                        outputRecoveryJob = null
+                        return@launch
+                    }
+                    val progress = (step + 1).toFloat() / SPEAKER_OUTPUT_VOLUME_RAMP_STEPS.toFloat()
+                    runCatching { player.volume = targetVolume * progress }
+                    if (step < SPEAKER_OUTPUT_VOLUME_RAMP_STEPS - 1) {
+                        delay(SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS)
+                    }
+                }
+            } else {
+                runCatching { player.volume = volume }
+            }
+            outputRecoveryJob = null
+        }
+    }
+
+    private fun cancelOutputRecovery() {
+        outputRecoveryJob?.cancel()
+        outputRecoveryJob = null
+        suppressRefreshRoutingUntilElapsedMs = 0L
+    }
+
+    private fun resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute: Boolean): Long {
+        val restoreDelayMs = if (toSpeakerRoute) {
+            SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS
+        } else {
+            OUTPUT_SWITCH_RESTORE_DELAY_MS
+        }
+        return restoreDelayMs + OUTPUT_SWITCH_REFRESH_GRACE_MS
+    }
+
+    private fun updateOutputSelectionWithoutRouting(available: List<PlaybackOutputDevice>) {
+        updateUiState {
+            it.copy(
+                outputDevices = available,
+                selectedOutputDeviceId = preferredOutputDeviceId
+            )
+        }
+    }
+
+    private fun clearPreferredOutputDevice(player: ExoPlayer): Boolean {
+        return runCatching {
+            player.setPreferredAudioDevice(null)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun setPreferredOutputDevice(player: ExoPlayer, targetDevice: AudioDeviceInfo): Boolean {
+        return runCatching {
+            player.setPreferredAudioDevice(targetDevice)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearCommunicationRouteOverride(): Boolean {
+        if (SDK_INT < Build.VERSION_CODES.S) return true
+        return runCatching {
+            audioManager.clearCommunicationDevice()
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearSpeakerRouteOverride(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputDevice(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
+    }
+
+    private fun prepareForSpeakerPreferredRouting(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputDevice(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
     }
 
     private fun applyOutputViaAudioManagerFallback(displayedDeviceId: Int): Boolean {

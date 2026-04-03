@@ -89,35 +89,13 @@ class PlayerViewModel @Inject constructor(
         observeControlPrefs()
         observeDownloads()
         observeBookProgressMutations()
-        val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
-        val startSeconds = savedStateHandle
-            .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
-            ?.toDoubleOrNull()
-            ?.coerceAtLeast(0.0)
-        val startPositionMs = startSeconds?.let { (it * 1000.0).toLong() }
-        if (bookId.isNotBlank()) {
-            loadBookMetadata(bookId, forceRefresh = true)
-            playbackController.playBook(bookId, startPositionMs = startPositionMs)
-        } else if (playbackController.uiState.value.book == null) {
-            val cachedItem = playbackController.getCachedContinueListeningItem()
-            if (cachedItem != null) {
-                mutablePreviewItem.value = cachedItem
-                loadBookMetadata(cachedItem.book.id, forceRefresh = true)
-                syncCurrentDownloadState()
-            } else {
-                viewModelScope.launch {
-                    when (val result = sessionRepository.fetchMiniPlayerItem()) {
-                        is AppResult.Success -> {
-                            mutablePreviewItem.value = result.value
-                            result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
-                            syncCurrentDownloadState()
-                        }
-
-                        is AppResult.Error -> Unit
-                    }
-                }
-            }
-        }
+        openPlayer(
+            bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG),
+            startSeconds = savedStateHandle
+                .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
+                ?.toDoubleOrNull()
+                ?.coerceAtLeast(0.0)
+        )
 
         viewModelScope.launch {
             playbackController.uiState.collect { playbackState ->
@@ -127,6 +105,35 @@ class PlayerViewModel @Inject constructor(
                     applyPendingSleepTimerRequestIfNeeded()
                 }
                 syncCurrentDownloadState()
+            }
+        }
+    }
+
+    fun openPlayer(bookId: String? = null, startSeconds: Double? = null) {
+        val normalizedBookId = bookId?.trim().orEmpty()
+        val startPositionMs = startSeconds?.coerceAtLeast(0.0)?.let { (it * 1000.0).toLong() }
+        if (normalizedBookId.isNotBlank()) {
+            loadBookMetadata(normalizedBookId, forceRefresh = true)
+            playbackController.playBook(normalizedBookId, startPositionMs = startPositionMs)
+            return
+        }
+        if (playbackController.uiState.value.book != null) return
+        val cachedItem = playbackController.getCachedContinueListeningItem()
+        if (cachedItem != null) {
+            mutablePreviewItem.value = cachedItem
+            loadBookMetadata(cachedItem.book.id, forceRefresh = true)
+            syncCurrentDownloadState()
+            return
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.fetchMiniPlayerItem()) {
+                is AppResult.Success -> {
+                    mutablePreviewItem.value = result.value
+                    result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
+                    syncCurrentDownloadState()
+                }
+
+                is AppResult.Error -> Unit
             }
         }
     }

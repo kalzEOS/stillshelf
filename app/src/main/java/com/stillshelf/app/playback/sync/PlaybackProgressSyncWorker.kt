@@ -78,7 +78,7 @@ class PlaybackProgressSyncWorker(
             PlaybackProgressSyncScheduler.ALLOW_BACKGROUND_RETRY_KEY,
             false
         )
-        val checkpoints = sessionPreferences.getPlaybackCheckpoints()
+        val checkpoints = sessionPreferences.getPendingPlaybackCheckpoints()
             .sortedBy { checkpoint -> checkpoint.savedAtMs }
         if (checkpoints.isEmpty()) {
             return Result.success()
@@ -105,7 +105,11 @@ class PlaybackProgressSyncWorker(
                 )
             ) {
                 is AppResult.Success -> {
-                    sessionPreferences.clearPlaybackCheckpoint(serverId = serverId, bookId = checkpoint.bookId)
+                    sessionPreferences.markPlaybackCheckpointSynced(
+                        serverId = serverId,
+                        bookId = checkpoint.bookId,
+                        savedAtMs = checkpoint.savedAtMs
+                    )
                 }
 
                 is AppResult.Error -> {
@@ -117,7 +121,7 @@ class PlaybackProgressSyncWorker(
         return if (
             shouldRetryPlaybackCheckpointSync(
                 allowBackgroundRetry = allowBackgroundRetry,
-                hasPendingCheckpoints = sessionPreferences.getPlaybackCheckpoints().isNotEmpty()
+                hasPendingCheckpoints = sessionPreferences.getPendingPlaybackCheckpoints().isNotEmpty()
             )
         ) {
             Result.retry()

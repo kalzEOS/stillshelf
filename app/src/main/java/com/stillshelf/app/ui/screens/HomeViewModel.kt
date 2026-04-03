@@ -140,7 +140,9 @@ class HomeViewModel @Inject constructor(
                             )
                         }
                     } else if (readyLibraryId.isNullOrBlank()) {
-                        mutableUiState.update { HomeUiState() }
+                        mutableUiState.update { current ->
+                            HomeUiState(isOffline = current.isOffline)
+                        }
                     } else {
                         loadCachedThenMaybeRefresh()
                     }

@@ -1793,11 +1793,12 @@ class PlaybackController @Inject constructor(
                 bookId = request.bookId
             ) ?: return@launch
             if (checkpoint.savedAtMs != request.checkpointSavedAtMs) return@launch
-            sessionPreferences.clearPlaybackCheckpoint(
+            sessionPreferences.markPlaybackCheckpointSynced(
                 serverId = request.serverId,
-                bookId = request.bookId
+                bookId = request.bookId,
+                savedAtMs = checkpoint.savedAtMs
             )
-            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+            if (sessionPreferences.getPendingPlaybackCheckpoints().isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
             }
         }
@@ -3096,7 +3097,7 @@ class PlaybackController @Inject constructor(
 
     private fun syncPendingPlaybackCheckpointsOnForeground() {
         scope.launch(Dispatchers.IO) {
-            val checkpoints = sessionPreferences.getPlaybackCheckpoints()
+            val checkpoints = sessionPreferences.getPendingPlaybackCheckpoints()
                 .sortedBy { checkpoint -> checkpoint.savedAtMs }
             if (checkpoints.isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
@@ -3122,16 +3123,17 @@ class PlaybackController @Inject constructor(
                     )
                 ) {
                     is AppResult.Success -> {
-                        sessionPreferences.clearPlaybackCheckpoint(
+                        sessionPreferences.markPlaybackCheckpointSynced(
                             serverId = serverId,
-                            bookId = checkpoint.bookId
+                            bookId = checkpoint.bookId,
+                            savedAtMs = checkpoint.savedAtMs
                         )
                     }
 
                     is AppResult.Error -> Unit
                 }
             }
-            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+            if (sessionPreferences.getPendingPlaybackCheckpoints().isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
             }
         }

@@ -988,6 +988,10 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun getPendingPlaybackCheckpoints(): List<PlaybackCheckpointSnapshot> {
+        return getPlaybackCheckpoints().filter { it.pendingSync }
+    }
+
     suspend fun getPlaybackCheckpoints(): List<PlaybackCheckpointSnapshot> {
         val raw = dataStore.data.first()[playbackCheckpointSnapshotKey] ?: return emptyList()
         return runCatching {
@@ -1003,7 +1007,8 @@ class SessionPreferences @Inject constructor(
                             ?.optDouble("durationSeconds")
                             ?.takeIf { it > 0.0 },
                         isFinished = node.optBoolean("isFinished"),
-                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L),
+                        pendingSync = node.optBoolean("pendingSync", true)
                     )
                     if (checkpoint.bookId.isNotBlank()) {
                         add(checkpoint)
@@ -1036,6 +1041,29 @@ class SessionPreferences @Inject constructor(
                 )
             )
             prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+        }
+    }
+
+    suspend fun markPlaybackCheckpointSynced(serverId: String?, bookId: String, savedAtMs: Long? = null) {
+        val normalizedBookId = bookId.trim()
+        if (normalizedBookId.isBlank()) return
+        val normalizedServerId = serverId?.trim().takeIf { !it.isNullOrBlank() }
+        dataStore.edit { prefs ->
+            val updated = parsePlaybackCheckpoints(prefs[playbackCheckpointSnapshotKey]).map { checkpoint ->
+                val isTarget = checkpoint.bookId == normalizedBookId &&
+                    checkpoint.serverId == normalizedServerId &&
+                    (savedAtMs == null || checkpoint.savedAtMs == savedAtMs)
+                if (isTarget) {
+                    checkpoint.copy(pendingSync = false)
+                } else {
+                    checkpoint
+                }
+            }
+            if (updated.isEmpty()) {
+                prefs.remove(playbackCheckpointSnapshotKey)
+            } else {
+                prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+            }
         }
     }
 
@@ -1615,7 +1643,8 @@ class SessionPreferences @Inject constructor(
                             ?.optDouble("durationSeconds")
                             ?.takeIf { it > 0.0 },
                         isFinished = node.optBoolean("isFinished"),
-                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L),
+                        pendingSync = node.optBoolean("pendingSync", true)
                     )
                     if (checkpoint.bookId.isNotBlank()) {
                         add(checkpoint)
@@ -1665,6 +1694,7 @@ class SessionPreferences @Inject constructor(
                         .put("currentTimeSeconds", checkpoint.currentTimeSeconds.coerceAtLeast(0.0))
                         .put("isFinished", checkpoint.isFinished)
                         .put("savedAtMs", checkpoint.savedAtMs.coerceAtLeast(0L))
+                        .put("pendingSync", checkpoint.pendingSync)
                         .apply {
                             checkpoint.serverId?.trim()?.takeIf { it.isNotBlank() }?.let { put("serverId", it) }
                             checkpoint.durationSeconds?.takeIf { it > 0.0 }?.let { put("durationSeconds", it) }
@@ -1975,7 +2005,8 @@ data class PlaybackCheckpointSnapshot(
     val currentTimeSeconds: Double,
     val durationSeconds: Double?,
     val isFinished: Boolean,
-    val savedAtMs: Long
+    val savedAtMs: Long,
+    val pendingSync: Boolean = true
 )
 
 data class PendingBookmarkCreateSnapshot(

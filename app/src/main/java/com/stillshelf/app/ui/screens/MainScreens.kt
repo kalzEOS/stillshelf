@@ -1,5 +1,8 @@
 package com.stillshelf.app.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -171,6 +174,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -188,6 +192,7 @@ import kotlin.math.roundToInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -7312,9 +7317,12 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onGoToBook: ((String) -> Unit)? = null,
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
-    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel(),
+    topContentInset: Dp = 0.dp,
+    manageStatusBarAppearance: Boolean = false
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val hapticFeedback = LocalHapticFeedback.current
     val playbackUiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -7678,6 +7686,36 @@ fun PlayerScreen(
     val bottomToolsBottomPadding = (effectiveHeightDp * 0.004f).dp.coerceIn(1.dp, 4.dp)
     val playerTopOffset = (effectiveHeightDp * 0.02f).dp.coerceIn(8.dp, 16.dp)
     val controlsAreaMinHeight = (effectiveHeightDp * 0.17f).dp.coerceIn(116.dp, 148.dp)
+    val playerWindow = remember(view) { view.context.findActivity()?.window }
+    val statusBarBackgroundColor = if (immersiveEnabled) {
+        Color.Black
+    } else {
+        MaterialTheme.colorScheme.background
+    }
+
+    DisposableEffect(playerWindow, view, immersiveEnabled, statusBarBackgroundColor, manageStatusBarAppearance) {
+        if (!manageStatusBarAppearance) {
+            onDispose { }
+        } else {
+            val window = playerWindow
+            if (window == null) {
+                onDispose { }
+            } else {
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                val previousStatusBarColor = window.statusBarColor
+                val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+                @Suppress("DEPRECATION")
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                insetsController.isAppearanceLightStatusBars = !immersiveEnabled &&
+                    statusBarBackgroundColor.luminance() > 0.5f
+                onDispose {
+                    @Suppress("DEPRECATION")
+                    window.statusBarColor = previousStatusBarColor
+                    insetsController.isAppearanceLightStatusBars = previousLightStatusBars
+                }
+            }
+        }
+    }
 
     LaunchedEffect(actionMessage) {
         val latest = actionMessage ?: return@LaunchedEffect
@@ -7724,6 +7762,7 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .offset { IntOffset(x = 0, y = playerDragOffsetPx.roundToInt()) }
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
             .draggable(
                 state = verticalDragState,
                 orientation = androidx.compose.foundation.gestures.Orientation.Vertical,
@@ -7786,7 +7825,12 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding()
-                .padding(horizontal = playerHorizontalPadding, vertical = playerVerticalPadding)
+                .padding(
+                    start = playerHorizontalPadding,
+                    end = playerHorizontalPadding,
+                    top = playerVerticalPadding + topContentInset,
+                    bottom = playerVerticalPadding
+                )
         ) {
         Box(
             modifier = Modifier
@@ -11846,6 +11890,14 @@ private fun formatSecondsAsHms(seconds: Double): String {
         "%d:%02d:%02d".format(hours, minutes, secs)
     } else {
         "%d:%02d".format(minutes, secs)
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

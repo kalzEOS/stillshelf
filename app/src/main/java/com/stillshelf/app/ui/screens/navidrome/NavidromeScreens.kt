@@ -652,6 +652,7 @@ fun NavidromeAppRoute(
     )
     var showPlayerSheet by rememberSaveable { mutableStateOf(false) }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    val scope = rememberCoroutineScope()
     val view = LocalView.current
     val density = LocalDensity.current
     val systemInsets = ViewCompat.getRootWindowInsets(view)
@@ -683,21 +684,31 @@ fun NavidromeAppRoute(
     } else {
         { navigateHome() }
     }
+    fun dismissPlayerSheet(afterDismiss: (() -> Unit)? = null) {
+        scope.launch {
+            if (playerSheetState.currentValue != SheetValue.Hidden) {
+                playerSheetState.hide()
+            }
+            showPlayerSheet = false
+            afterDismiss?.invoke()
+        }
+    }
 
     if (showPlayerSheet && playerState.currentTrack != null) {
         ModalBottomSheet(
             onDismissRequest = {
                 if (!lockPlayerSheetDismiss) {
-                    showPlayerSheet = false
+                    dismissPlayerSheet()
                 }
             },
             sheetState = playerSheetState,
             dragHandle = null,
-            containerColor = MaterialTheme.colorScheme.background
+            containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) }
         ) {
             NavidromeExpandedPlayerSheet(
                 state = playerState,
-                onDismiss = { showPlayerSheet = false },
+                onDismiss = { dismissPlayerSheet() },
                 onPrevious = playerViewModel::playPrevious,
                 onPlayPause = playerViewModel::togglePlayPause,
                 onNext = playerViewModel::playNext,
@@ -724,8 +735,16 @@ fun NavidromeAppRoute(
                 onDismissLyrics = playerViewModel::dismissLyrics,
                 onClearLyricsCache = playerViewModel::clearLyricsCache,
                 onLyricsModeChanged = { visible -> lockPlayerSheetDismiss = visible },
-                onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) },
-                onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) }
+                onOpenAlbum = { albumId ->
+                    dismissPlayerSheet {
+                        navController.navigate(NavidromeRoute.album(albumId))
+                    }
+                },
+                onOpenArtist = { artistId ->
+                    dismissPlayerSheet {
+                        navController.navigate(NavidromeRoute.artist(artistId))
+                    }
+                }
             )
         }
     }
@@ -9735,7 +9754,7 @@ private fun NavidromeExpandedPlayerSheet(
                 insetsController.isAppearanceLightStatusBars = currentColorScheme.background.luminance() > 0.5f
             }
             @Suppress("DEPRECATION")
-            window.navigationBarColor = currentColorScheme.surface.toArgb()
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
             insetsController.isAppearanceLightNavigationBars = currentColorScheme.surface.luminance() > 0.5f
             onDispose {
                 @Suppress("DEPRECATION")
@@ -10162,7 +10181,6 @@ private fun NavidromeExpandedPlayerSheet(
                             },
                             onClick = {
                                 isMenuExpanded = false
-                                onDismiss()
                                 openAlbum(track.albumId!!)
                             }
                         )
@@ -10175,7 +10193,6 @@ private fun NavidromeExpandedPlayerSheet(
                             },
                             onClick = {
                                 isMenuExpanded = false
-                                onDismiss()
                                 openArtist(track.artistId!!)
                             }
                         )

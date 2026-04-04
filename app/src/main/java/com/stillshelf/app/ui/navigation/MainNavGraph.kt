@@ -188,6 +188,17 @@ private fun MainShell(
         }
     }
 
+    val showMiniPlayer = !playerVisible &&
+        currentRoute != MainTab.Search.route &&
+        currentRoute != MainTab.Settings.route &&
+        currentRoute != MainRoute.SETTINGS &&
+        currentRoute != MainRoute.ABOUT &&
+        currentRoute != MainRoute.SERVERS &&
+        currentRoute != MainRoute.LIBRARY_PICKER &&
+        currentRoute?.startsWith("auth/") != true
+    val showMiniPlayerHomeButton = showMiniPlayer && currentRoute != MainTab.Home.route
+    val screenHomeClick: (() -> Unit)? = if (showMiniPlayerHomeButton) null else onHomeClick
+
     Box(modifier = Modifier.fillMaxSize()) {
         RootScaffold(
             currentTab = currentTab,
@@ -201,23 +212,16 @@ private fun MainShell(
                 }
             },
             miniPlayerState = miniPlayerState,
-            onMiniPlayerHomeClick = if (currentTab != MainTab.Home) onHomeClick else null,
+            onMiniPlayerHomeClick = if (showMiniPlayerHomeButton) onHomeClick else null,
             onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
             onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,
             onMiniPlayerClick = { showPlayer() },
-            showMiniPlayer = !playerVisible &&
-                currentRoute != MainTab.Search.route &&
-                currentRoute != MainTab.Settings.route &&
-                currentRoute != MainRoute.SETTINGS &&
-                currentRoute != MainRoute.ABOUT &&
-                currentRoute != MainRoute.SERVERS &&
-                currentRoute != MainRoute.LIBRARY_PICKER &&
-                currentRoute?.startsWith("auth/") != true
+            showMiniPlayer = showMiniPlayer
         ) { paddingValues ->
             MainTabsNavHost(
                 paddingValues = paddingValues,
                 navController = tabsNavController,
-                onHomeClick = onHomeClick,
+                onHomeClick = screenHomeClick,
                 onOpenSelectedBook = ::handleBookSelection
             )
         }
@@ -268,7 +272,7 @@ private tailrec fun Context.findActivity(): Activity? {
 private fun MainTabsNavHost(
     paddingValues: PaddingValues,
     navController: androidx.navigation.NavHostController,
-    onHomeClick: () -> Unit,
+    onHomeClick: (() -> Unit)?,
     onOpenSelectedBook: (String?, Double?) -> Unit
 ) {
     NavHost(

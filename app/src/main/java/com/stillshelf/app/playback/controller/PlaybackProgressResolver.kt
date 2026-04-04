@@ -35,7 +35,6 @@ internal fun resolvePreferredPlaybackProgress(
             source = PlaybackProgressSource.Local
         )
     }
-
     val localUpdatedAtMs = localCheckpoint.savedAtMs.takeIf { it > 0L }
     val serverUpdatedAtMs = serverProgress.updatedAtMs?.takeIf { it > 0L }
     if (localUpdatedAtMs != null && serverUpdatedAtMs != null && localUpdatedAtMs != serverUpdatedAtMs) {
@@ -51,7 +50,9 @@ internal fun resolvePreferredPlaybackProgress(
     if (localSeconds != null && serverSeconds != null) {
         return when {
             abs(localSeconds - serverSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS -> {
-                if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) {
+                if (!localCheckpoint.pendingSync) {
+                    PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
+                } else if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) {
                     PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
                 } else {
                     PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)

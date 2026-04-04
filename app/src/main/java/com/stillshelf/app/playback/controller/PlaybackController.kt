@@ -201,6 +201,8 @@ class PlaybackController @Inject constructor(
     private val attemptedAutoAdvanceTargetsMs = mutableSetOf<Long>()
     private var suppressNextAutoAdvanceOnCompletion = false
     private var lastNotificationSignature: NotificationSignature? = null
+    private var observedActiveLibraryId: String? = null
+    private var hasObservedActiveLibraryId: Boolean = false
 
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfPlayback")
     private val audioManager: AudioManager =
@@ -349,7 +351,7 @@ class PlaybackController @Inject constructor(
             .isAtLeast(Lifecycle.State.STARTED)
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         observePlaybackPreferences()
-        observeActiveServerSelection()
+        observeActiveSessionSelection()
     }
 
     fun playBook(bookId: String, startPositionMs: Long? = null) {
@@ -1853,21 +1855,74 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun observeActiveServerSelection() {
+    private fun observeActiveSessionSelection() {
         scope.launch {
             sessionPreferences.state.collect { pref ->
                 val nextServerId = pref.activeServerId
-                if (!hasObservedActiveServerId) {
+                val nextLibraryId = pref.activeLibraryId
+                if (!hasObservedActiveServerId || !hasObservedActiveLibraryId) {
                     observedActiveServerId = nextServerId
+                    observedActiveLibraryId = nextLibraryId
                     hasObservedActiveServerId = true
+                    hasObservedActiveLibraryId = true
                     return@collect
                 }
                 val previousServerId = observedActiveServerId
+                val previousLibraryId = observedActiveLibraryId
                 observedActiveServerId = nextServerId
+                observedActiveLibraryId = nextLibraryId
                 if (previousServerId != nextServerId) {
                     clearPlaybackForServerSwitch()
+                } else if (previousLibraryId != nextLibraryId) {
+                    clearPlaybackForLibrarySwitch()
                 }
             }
+        }
+    }
+
+    private suspend fun clearPlaybackForLibrarySwitch() {
+        val hadBook = uiState.value.book != null
+        if (hadBook) {
+            updateCachedFromUiState()
+        }
+        if (hadBook) {
+            if (uiState.value.isPlaying) {
+                pause(reason = PauseReason.Internal)
+            } else {
+                saveProgressSnapshot()
+            }
+            syncQueueJob?.join()
+        }
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        releasePlayer(syncProgressBeforeRelease = false)
+        currentBookId = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
+        cachedContinueListeningItem = null
+        attemptedAutoAdvanceTargetsMs.clear()
+        previousRestartState = null
+        playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
+        suppressNextAutoAdvanceOnCompletion = false
+        cancelSleepTimer(updateUi = false)
+        updateUiState { state ->
+            state.copy(
+                isLoading = false,
+                book = null,
+                isPlaying = false,
+                positionMs = 0L,
+                durationMs = 0L,
+                errorMessage = null,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false
+            )
         }
     }
 

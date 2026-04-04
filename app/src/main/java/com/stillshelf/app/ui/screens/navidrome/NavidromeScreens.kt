@@ -25,6 +25,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.MarqueeSpacing
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -76,6 +78,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
@@ -166,10 +169,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
@@ -9439,6 +9444,7 @@ private fun NavidromeTransportHeader(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun NavidromeMiniPlayerBar(
     state: NavidromePlayerState,
     onPrevious: () -> Unit,
@@ -9451,6 +9457,8 @@ private fun NavidromeMiniPlayerBar(
     val isRadio = remember(track.id) { track.id.startsWith("radio:") }
     val shape = RoundedCornerShape(24.dp)
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
+    val transportButtonWidth = 32.dp
+    val transportButtonHeight = 48.dp
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -9479,7 +9487,14 @@ private fun NavidromeMiniPlayerBar(
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Visible,
+                    modifier = Modifier.basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        animationMode = androidx.compose.foundation.MarqueeAnimationMode.Immediately,
+                        repeatDelayMillis = 2000,
+                        initialDelayMillis = 1200,
+                        spacing = MarqueeSpacing(36.dp)
+                    )
                 )
                 Text(
                     text = track.artistName,
@@ -9489,10 +9504,20 @@ private fun NavidromeMiniPlayerBar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onPrevious, modifier = Modifier.size(32.dp)) {
+            IconButton(
+                onClick = onPrevious,
+                modifier = Modifier
+                    .width(transportButtonWidth)
+                    .height(transportButtonHeight)
+            ) {
                 Icon(Icons.Outlined.SkipPrevious, contentDescription = "Previous")
             }
-            IconButton(onClick = onPlayPause, modifier = Modifier.size(32.dp)) {
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier
+                    .width(transportButtonWidth)
+                    .height(transportButtonHeight)
+            ) {
                 Box(
                     modifier = Modifier
                         .size(30.dp)
@@ -9515,7 +9540,12 @@ private fun NavidromeMiniPlayerBar(
                     )
                 }
             }
-            IconButton(onClick = onNext, modifier = Modifier.size(32.dp)) {
+            IconButton(
+                onClick = onNext,
+                modifier = Modifier
+                    .width(transportButtonWidth)
+                    .height(transportButtonHeight)
+            ) {
                 Icon(Icons.Outlined.SkipNext, contentDescription = "Next")
             }
         }
@@ -10529,8 +10559,12 @@ private fun NavidromeExpandedPlayerSheet(
                 uiState = lyricsUiState,
                 playbackPositionMs = state.positionMs,
                 isPlaying = state.isPlaying,
+                isRadio = isRadio,
                 durationMs = state.durationMs,
                 coverUrl = track.coverUrl,
+                onPrevious = onPrevious,
+                onPlayPause = onPlayPause,
+                onNext = onNext,
                 onDismiss = ::dismissLyricsMode,
                 immersiveEnabled = immersiveEnabled,
                 immersiveBaseColor = immersiveBaseColor
@@ -10598,8 +10632,12 @@ private fun NavidromeLyricsSheetContent(
     uiState: NavidromeLyricsUiState,
     playbackPositionMs: Int,
     isPlaying: Boolean,
+    isRadio: Boolean,
     durationMs: Int,
     coverUrl: String?,
+    onPrevious: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
     onDismiss: () -> Unit,
     immersiveEnabled: Boolean = false,
     immersiveBaseColor: Color = Color(0xFF26343B)
@@ -10638,6 +10676,31 @@ private fun NavidromeLyricsSheetContent(
     val closeButtonShellColor = syncButtonColor
     val closeButtonIconColor = syncButtonContentColor
     val closeButtonBorderColor = syncButtonBorderColor
+    val lyricsHeaderTransportTint = closeButtonIconColor
+    val lyricsHeaderTransportShellColor = closeButtonShellColor
+    val lyricsHeaderTransportShellBorderColor = closeButtonBorderColor
+    val lyricsHeaderTransportButtonColor = if (immersiveEnabled) {
+        Color.White.copy(alpha = 0.12f)
+    } else {
+        syncButtonContentColor.copy(alpha = 0.12f)
+    }
+    val lyricsHeaderTransportProgressTrackColor = if (immersiveEnabled) {
+        closeButtonIconColor.copy(alpha = 0.14f)
+    } else {
+        closeButtonIconColor.copy(alpha = 0.22f)
+    }
+    val lyricsHeaderTransportProgressColor = if (immersiveEnabled) {
+        closeButtonIconColor.copy(alpha = 0.42f)
+    } else {
+        closeButtonIconColor.copy(alpha = 0.72f)
+    }
+    val lyricsProgressFraction = remember(playbackPositionMs, durationMs) {
+        if (durationMs > 0) {
+            (playbackPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+    }
     val lyricsWindow = remember(view) {
         (view.parent as? DialogWindowProvider)?.window
     }
@@ -10645,6 +10708,8 @@ private fun NavidromeLyricsSheetContent(
     val plainLyricsScrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
     var autoSyncLyrics by remember(uiState.trackTitle, uiState.artistName) { mutableStateOf(true) }
+    val showSyncLyricsButton = uiState.isSynced && !autoSyncLyrics
+    val syncLyricsReservedWidth = 164.dp
     var contentHeightPx by remember { mutableIntStateOf(0) }
     val latestPlaybackPositionMs by rememberUpdatedState(playbackPositionMs)
     val density = LocalDensity.current
@@ -10868,56 +10933,130 @@ private fun NavidromeLyricsSheetContent(
                 .padding(
                     start = 22.dp,
                     end = 22.dp,
-                    top = 30.dp,
+                    top = 16.dp,
                     bottom = 18.dp
                 ),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
                     Text(
                         text = "Lyrics",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = headerMetaColor
+                        color = headerMetaColor,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(top = 2.dp)
                     )
-                    if (uiState.trackTitle.isNotBlank()) {
-                        Text(
-                            text = uiState.trackTitle,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = headerTitleColor
-                        )
-                        if (uiState.albumName.isNotBlank()) {
-                            Text(
-                                text = uiState.albumName,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = headerAlbumColor
-                            )
-                        }
-                        if (uiState.artistName.isNotBlank()) {
-                            Text(
-                                text = uiState.artistName,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = headerMetaColor
-                            )
+                    // ########## NV lyrics header transport controls start ##########
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 0.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        color = lyricsHeaderTransportShellColor,
+                        border = BorderStroke(1.dp, lyricsHeaderTransportShellBorderColor),
+                        tonalElevation = 0.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                modifier = Modifier.size(44.dp),
+                                shape = CircleShape,
+                                color = lyricsHeaderTransportButtonColor,
+                                tonalElevation = 0.dp
+                            ) {
+                                NavidromeTransportIconButton(
+                                    onClick = onPrevious,
+                                    modifier = Modifier.fillMaxSize(),
+                                    icon = Icons.Outlined.SkipPrevious,
+                                    contentDescription = "Previous",
+                                    tint = lyricsHeaderTransportTint,
+                                    iconSize = 24.dp
+                                )
+                            }
+                            Surface(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .drawWithCache {
+                                        val strokeWidth = 2.dp.toPx()
+                                        val inset = strokeWidth / 2f
+                                        val arcSize = Size(
+                                            width = size.width - strokeWidth,
+                                            height = size.height - strokeWidth
+                                        )
+                                        onDrawWithContent {
+                                            drawContent()
+                                            drawArc(
+                                                color = lyricsHeaderTransportProgressTrackColor,
+                                                startAngle = -90f,
+                                                sweepAngle = 360f,
+                                                useCenter = false,
+                                                topLeft = Offset(inset, inset),
+                                                size = arcSize,
+                                                style = Stroke(width = strokeWidth)
+                                            )
+                                            if (lyricsProgressFraction > 0f) {
+                                                drawArc(
+                                                    color = lyricsHeaderTransportProgressColor,
+                                                    startAngle = -90f,
+                                                    sweepAngle = 360f * lyricsProgressFraction,
+                                                    useCenter = false,
+                                                    topLeft = Offset(inset, inset),
+                                                    size = arcSize,
+                                                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                                                )
+                                            }
+                                        }
+                                    },
+                                shape = CircleShape,
+                                color = lyricsHeaderTransportButtonColor,
+                                tonalElevation = 0.dp
+                            ) {
+                                IconButton(onClick = onPlayPause, modifier = Modifier.fillMaxSize()) {
+                                    Icon(
+                                        imageVector = when {
+                                            isRadio && isPlaying -> Icons.Outlined.Stop
+                                            isPlaying -> Icons.Outlined.Pause
+                                            else -> Icons.Outlined.PlayArrow
+                                        },
+                                        contentDescription = when {
+                                            isRadio && isPlaying -> "Stop"
+                                            isPlaying -> "Pause"
+                                            else -> "Play"
+                                        },
+                                        tint = lyricsHeaderTransportTint,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                            }
+                            Surface(
+                                modifier = Modifier.size(44.dp),
+                                shape = CircleShape,
+                                color = lyricsHeaderTransportButtonColor,
+                                tonalElevation = 0.dp
+                            ) {
+                                NavidromeTransportIconButton(
+                                    onClick = onNext,
+                                    modifier = Modifier.fillMaxSize(),
+                                    icon = Icons.Outlined.SkipNext,
+                                    contentDescription = "Next",
+                                    tint = lyricsHeaderTransportTint,
+                                    iconSize = 24.dp
+                                )
+                            }
                         }
                     }
-                }
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
+                    // ########## NV lyrics header transport controls end ##########
                     Surface(
+                        modifier = Modifier.align(Alignment.TopEnd),
                         shape = CircleShape,
                         color = closeButtonShellColor,
                         border = BorderStroke(1.dp, closeButtonBorderColor),
@@ -10931,9 +11070,41 @@ private fun NavidromeLyricsSheetContent(
                             )
                         }
                     }
-                    if (uiState.isSynced && !autoSyncLyrics) {
+                }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = if (showSyncLyricsButton) syncLyricsReservedWidth else 0.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (uiState.trackTitle.isNotBlank()) {
+                            Text(
+                                text = uiState.trackTitle,
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = headerTitleColor
+                            )
+                            if (uiState.albumName.isNotBlank()) {
+                                Text(
+                                    text = uiState.albumName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = headerAlbumColor
+                                )
+                            }
+                            if (uiState.artistName.isNotBlank()) {
+                                Text(
+                                    text = uiState.artistName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = headerMetaColor
+                                )
+                            }
+                        }
+                    }
+                    if (showSyncLyricsButton) {
                         Surface(
                             modifier = Modifier
+                                .align(Alignment.TopEnd)
                                 .clickable {
                                     autoSyncLyrics = true
                                     scope.launch {

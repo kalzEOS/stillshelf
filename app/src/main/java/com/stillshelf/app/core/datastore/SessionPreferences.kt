@@ -33,6 +33,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DEFAULT_NAVIDROME_LYRICS_SOURCE_ID = "default-lrclib"
+private const val MAX_SYNCED_PLAYBACK_CHECKPOINTS = 200
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -1040,7 +1041,12 @@ class SessionPreferences @Inject constructor(
                     bookId = normalizedBookId
                 )
             )
-            prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+            prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(
+                prunePlaybackCheckpoints(
+                    values = updated,
+                    pinnedBookIds = pinnedPlaybackCheckpointBookIds(prefs)
+                )
+            )
         }
     }
 
@@ -1062,7 +1068,12 @@ class SessionPreferences @Inject constructor(
             if (updated.isEmpty()) {
                 prefs.remove(playbackCheckpointSnapshotKey)
             } else {
-                prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+                prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(
+                    prunePlaybackCheckpoints(
+                        values = updated,
+                        pinnedBookIds = pinnedPlaybackCheckpointBookIds(prefs)
+                    )
+                )
             }
         }
     }
@@ -1702,6 +1713,42 @@ class SessionPreferences @Inject constructor(
                 )
             }
         }.toString()
+    }
+
+    private fun pinnedPlaybackCheckpointBookIds(prefs: Preferences): Set<String> {
+        val downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey])
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+        val lastPlayedBookId = prefs[lastPlayedBookIdKey]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        return if (lastPlayedBookId == null) {
+            downloadedBookIds
+        } else {
+            downloadedBookIds + lastPlayedBookId
+        }
+    }
+
+    private fun prunePlaybackCheckpoints(
+        values: List<PlaybackCheckpointSnapshot>,
+        pinnedBookIds: Set<String>
+    ): List<PlaybackCheckpointSnapshot> {
+        if (values.isEmpty()) return emptyList()
+        val pending = values
+            .filter { it.pendingSync }
+            .sortedByDescending { it.savedAtMs }
+        val pinnedSynced = values
+            .filterNot { it.pendingSync }
+            .filter { it.bookId in pinnedBookIds }
+            .sortedByDescending { it.savedAtMs }
+        val synced = values
+            .filterNot { it.pendingSync }
+            .filterNot { it.bookId in pinnedBookIds }
+            .sortedByDescending { it.savedAtMs }
+            .take(MAX_SYNCED_PLAYBACK_CHECKPOINTS)
+        return (pending + pinnedSynced + synced)
+            .sortedByDescending { it.savedAtMs }
     }
 
     private fun encodePendingBookmarkCreates(values: List<PendingBookmarkCreateSnapshot>): String {

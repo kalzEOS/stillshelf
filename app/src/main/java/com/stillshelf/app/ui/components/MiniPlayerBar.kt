@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -49,6 +51,7 @@ fun MiniPlayerBar(
     onRewind15: () -> Unit,
     onPlayPause: () -> Unit,
     onClick: () -> Unit,
+    compactMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val item = state.item
@@ -62,11 +65,19 @@ fun MiniPlayerBar(
     val shape = RoundedCornerShape(24.dp)
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
     val frostedFill = MaterialTheme.colorScheme.surface
+    val outerHorizontalPadding = if (compactMode) 3.dp else 8.dp
+    val rowHorizontalPadding = if (compactMode) 8.dp else 10.dp
+    val rowVerticalPadding = 6.dp
+    val rowSpacing = if (compactMode) 5.dp else 8.dp
+    val coverSize = 30.dp
+    val actionButtonWidth = if (compactMode) 40.dp else 48.dp
+    val actionButtonHeight = 48.dp
+    val actionGlyphTint = MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = outerHorizontalPadding, vertical = 4.dp)
             .clip(shape)
             .background(frostedFill)
             .border(width = 1.5.dp, color = borderColor, shape = shape)
@@ -75,14 +86,14 @@ fun MiniPlayerBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .padding(horizontal = rowHorizontalPadding, vertical = rowVerticalPadding),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(rowSpacing)
         ) {
             if (item?.book?.coverUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(coverSize)
                         .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 )
@@ -91,13 +102,17 @@ fun MiniPlayerBar(
                     model = rememberCoverImageModel(item?.book?.coverUrl),
                     contentDescription = item?.book?.title,
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(coverSize)
                         .clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop
                 )
             }
 
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = if (compactMode) 0.dp else 2.dp)
+            ) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodySmall,
@@ -122,15 +137,25 @@ fun MiniPlayerBar(
                 )
             }
 
-            IconButton(onClick = onRewind15) {
+            IconButton(
+                onClick = onRewind15,
+                modifier = Modifier
+                    .width(actionButtonWidth)
+                    .height(actionButtonHeight)
+            ) {
                 MiniSeek15Glyph(
                     forward = false,
                     seconds = state.rewindSeconds,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = actionGlyphTint
                 )
             }
 
-            IconButton(onClick = onPlayPause) {
+            IconButton(
+                onClick = onPlayPause,
+                modifier = Modifier
+                    .width(actionButtonWidth)
+                    .height(actionButtonHeight)
+            ) {
                 val playButtonBackground = MaterialTheme.colorScheme.onSurface
                 Box(
                     modifier = Modifier

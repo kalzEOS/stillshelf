@@ -186,6 +186,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -10712,6 +10713,11 @@ private fun NavidromeLyricsSheetContent(
     val syncLyricsReservedWidth = 164.dp
     var contentHeightPx by remember { mutableIntStateOf(0) }
     val latestPlaybackPositionMs by rememberUpdatedState(playbackPositionMs)
+    val markLyricsAsManuallyScrolled: (NestedScrollSource, Float) -> Unit = { source, deltaY ->
+        if (source == NestedScrollSource.UserInput && deltaY != 0f) {
+            autoSyncLyrics = false
+        }
+    }
     val density = LocalDensity.current
     val centerPadding = remember(contentHeightPx, density) {
         with(density) {
@@ -10723,10 +10729,25 @@ private fun NavidromeLyricsSheetContent(
     val lyricsScrollConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                markLyricsAsManuallyScrolled(source, available.y)
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                markLyricsAsManuallyScrolled(source, consumed.y)
+                markLyricsAsManuallyScrolled(source, available.y)
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (available.y != 0f) {
                     autoSyncLyrics = false
                 }
-                return Offset.Zero
+                return Velocity.Zero
             }
         }
     }
@@ -10943,15 +10964,6 @@ private fun NavidromeLyricsSheetContent(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "Lyrics",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = headerMetaColor,
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(top = 2.dp)
-                    )
                     // ########## NV lyrics header transport controls start ##########
                     Surface(
                         modifier = Modifier

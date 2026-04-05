@@ -1,6 +1,6 @@
 # StillShelf
 
-StillShelf is an Android audiobook player for Audiobookshelf.
+StillShelf Android audiobook/music player for Audiobookshelf/Navidrome.
 
 This project is heavily inspired by the iOS app Still.
 

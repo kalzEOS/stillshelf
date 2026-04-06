@@ -4678,6 +4678,9 @@ private fun NavidromeAlbumDetailRoute(
                     downloadProgressPercent = downloadUiState.albumProgressById[detail.album.id],
                     onToggleDownload = {
                         downloadsViewModel.toggleAlbumDownload(detail.album, detail.tracks)
+                    },
+                    onOpenArtist = detail.album.artistId?.let { artistId ->
+                        { onOpenArtist?.invoke(artistId) }
                     }
                 )
             }
@@ -9250,7 +9253,8 @@ private fun AlbumDetailHero(
     onAddToPlaylist: (() -> Unit)? = null,
     isDownloaded: Boolean = false,
     downloadProgressPercent: Int? = null,
-    onToggleDownload: (() -> Unit)? = null
+    onToggleDownload: (() -> Unit)? = null,
+    onOpenArtist: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -9269,12 +9273,29 @@ private fun AlbumDetailHero(
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center
         )
-        Text(
-            text = detail.album.artistName,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
+        Row(
+            modifier = Modifier.clickable(enabled = onOpenArtist != null) {
+                onOpenArtist?.invoke()
+            },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = detail.album.artistName,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            if (onOpenArtist != null) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = "Open artist",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
         Text(
             text = listOfNotNull(
                 detail.album.year?.toString(),

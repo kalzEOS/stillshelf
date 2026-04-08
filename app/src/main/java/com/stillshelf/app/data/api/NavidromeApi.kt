@@ -69,7 +69,8 @@ data class NavidromeTrackDto(
     val coverArtId: String?,
     val suffix: String?,
     val contentType: String?,
-    val bitRateKbps: Int?
+    val bitRateKbps: Int?,
+    val sizeBytes: Long? = null
 )
 
 data class NavidromeLyricsLineDto(
@@ -727,6 +728,7 @@ class NavidromeApi @Inject constructor(
         val duration = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it > 0 }
         val trackNumber = item.takeIf { it.has("track") }?.optInt("track")?.takeIf { it > 0 }
         val bitRateKbps = item.takeIf { it.has("bitRate") }?.optInt("bitRate")?.takeIf { it > 0 }
+        val sizeBytes = item.takeIf { it.has("size") }?.optLong("size")?.takeIf { it > 0L }
         return NavidromeTrackDto(
             id = item.optString("id"),
             title = item.optString("title").normalizeNavidromeText().ifBlank { "Unknown track" },
@@ -741,7 +743,8 @@ class NavidromeApi @Inject constructor(
             coverArtId = item.optString("coverArt").ifBlank { null },
             suffix = item.optString("suffix").ifBlank { null },
             contentType = item.optString("contentType").ifBlank { null },
-            bitRateKbps = bitRateKbps
+            bitRateKbps = bitRateKbps,
+            sizeBytes = sizeBytes
         )
     }
 

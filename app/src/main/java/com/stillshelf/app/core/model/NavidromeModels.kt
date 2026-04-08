@@ -90,7 +90,8 @@ data class NavidromeTrack(
     val coverUrl: String?,
     val streamUrl: String,
     val formatLabel: String?,
-    val bitRateKbps: Int?
+    val bitRateKbps: Int?,
+    val sizeBytes: Long? = null
 )
 
 data class NavidromeLyricsLine(

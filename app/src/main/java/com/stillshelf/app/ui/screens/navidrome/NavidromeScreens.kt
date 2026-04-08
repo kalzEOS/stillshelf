@@ -15,7 +15,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -96,6 +100,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -166,10 +171,11 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shape
@@ -223,6 +229,7 @@ import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
 import com.stillshelf.app.core.model.navidromeEqualizerBandFrequenciesHz
 import kotlin.math.abs
+import kotlin.math.PI
 import androidx.navigation.navArgument
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.ViewCompat
@@ -266,6 +273,7 @@ import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import java.net.URI
 import java.util.Locale
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -1250,6 +1258,7 @@ private fun NavidromeHomeScreen(
     var randomAlbumsVersion by rememberSaveable { mutableIntStateOf(0) }
     var renameTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
     var deleteTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
+    var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     var playlistNameInput by rememberSaveable { mutableStateOf("") }
     val randomAlbums = remember(randomAlbumsVersion, uiState.recentAlbums) {
         uiState.recentAlbums.shuffled().take(min(12, uiState.recentAlbums.size))
@@ -1726,6 +1735,9 @@ private fun NavidromeHomeScreen(
                                                 },
                                                 onOpenArtist = track.artistId?.let { artistId ->
                                                     { onOpenArtist(artistId) }
+                                                },
+                                                onShowTrackDetails = {
+                                                    trackDetailsTarget = track
                                                 }
                                             )
                                         }
@@ -1926,6 +1938,14 @@ private fun NavidromeHomeScreen(
                     Text("Cancel")
                 }
             }
+        )
+    }
+
+    trackDetailsTarget?.let { track ->
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = (track.durationSeconds ?: 0) * 1000,
+            onDismiss = { trackDetailsTarget = null }
         )
     }
 
@@ -3960,6 +3980,7 @@ private fun NavidromeSongsRoute(
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
     val showSearchField = searchExpanded || uiState.searchQuery.isNotBlank()
@@ -4124,6 +4145,10 @@ private fun NavidromeSongsRoute(
                                         onOpenArtist(artistId)
                                     }
                                 },
+                                onShowTrackDetails = {
+                                    rowMenuExpanded = false
+                                    trackDetailsTarget = track
+                                },
                                 extraActions = {
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
@@ -4164,6 +4189,13 @@ private fun NavidromeSongsRoute(
         onDismiss = { pendingPlaylistRequest = null },
         viewModel = playlistPickerViewModel
     )
+    trackDetailsTarget?.let { track ->
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = (track.durationSeconds ?: 0) * 1000,
+            onDismiss = { trackDetailsTarget = null }
+        )
+    }
 }
 
 @Composable
@@ -4646,6 +4678,7 @@ private fun NavidromeAlbumDetailRoute(
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    var albumTrackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     LaunchedEffect(downloadUiState.actionMessage) {
         val message = downloadUiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -4724,6 +4757,10 @@ private fun NavidromeAlbumDetailRoute(
                                         }
                                     }
                                 },
+                                onShowTrackDetails = {
+                                    rowMenuExpanded = false
+                                    albumTrackDetailsTarget = track
+                                },
                                 extraActions = {
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
@@ -4754,6 +4791,13 @@ private fun NavidromeAlbumDetailRoute(
         onDismiss = { pendingPlaylistRequest = null },
         viewModel = playlistPickerViewModel
     )
+    albumTrackDetailsTarget?.let { track ->
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = (track.durationSeconds ?: 0) * 1000,
+            onDismiss = { albumTrackDetailsTarget = null }
+        )
+    }
 }
 
 @Composable
@@ -7115,7 +7159,8 @@ private fun NavidromeContinueListeningCard(
     onToggleDownload: () -> Unit,
     onClick: () -> Unit,
     onOpenAlbum: (() -> Unit)? = null,
-    onOpenArtist: (() -> Unit)? = null
+    onOpenArtist: (() -> Unit)? = null,
+    onShowTrackDetails: (() -> Unit)? = null
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val fallbackCardColor = Color(0xFF665A2E)
@@ -7254,6 +7299,12 @@ private fun NavidromeContinueListeningCard(
                         }
                     },
                     onShowArtist = onOpenArtist?.let { action ->
+                        {
+                            action()
+                            menuExpanded = false
+                        }
+                    },
+                    onShowTrackDetails = onShowTrackDetails?.let { action ->
                         {
                             action()
                             menuExpanded = false
@@ -7740,6 +7791,7 @@ private fun NavidromeTrackActionsMenu(
     onToggleDownload: (() -> Unit)? = null,
     onShowAlbum: (() -> Unit)?,
     onShowArtist: (() -> Unit)?,
+    onShowTrackDetails: (() -> Unit)? = null,
     extraActions: (@Composable ColumnScope.() -> Unit)? = null
 ) {
     AppDropdownMenu(
@@ -7790,6 +7842,18 @@ private fun NavidromeTrackActionsMenu(
             enabled = onShowArtist != null,
             onClick = { onShowArtist?.invoke() }
         )
+        if (onShowTrackDetails != null) {
+            AppDropdownMenuItem(
+                text = { Text("Track Details") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null
+                    )
+                },
+                onClick = onShowTrackDetails
+            )
+        }
         extraActions?.invoke(this)
     }
 }
@@ -8566,6 +8630,7 @@ private fun RadioRow(
     val subtitle = remember(radio.homePageUrl, radio.streamUrl) {
         formatRadioSubtitle(radio)
     }
+    val nowPlayingAccentColor = navidromeNowPlayingAccentColor()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -8614,10 +8679,9 @@ private fun RadioRow(
                 )
             }
             if (isCurrent) {
-                Text(
-                    text = if (isPlaying) "Playing" else "Paused",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFFF5A5F)
+                NavidromeNowPlayingVisualizer(
+                    isPlaying = isPlaying,
+                    color = nowPlayingAccentColor
                 )
             } else {
                 Icon(
@@ -8640,6 +8704,7 @@ private fun TrackRow(
     onClick: () -> Unit,
     trailingContent: (@Composable () -> Unit)? = null
 ) {
+    val nowPlayingAccentColor = navidromeNowPlayingAccentColor()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -8655,6 +8720,25 @@ private fun TrackRow(
                         Color.Transparent
                     }
                 )
+                .drawWithCache {
+                    val markerWidth = 3.dp.toPx()
+                    val markerInset = 8.dp.toPx()
+                    val markerCornerRadius = markerWidth / 2f
+                    onDrawWithContent {
+                        drawContent()
+                        if (isCurrent) {
+                            drawRoundRect(
+                                color = nowPlayingAccentColor,
+                                topLeft = Offset(0f, markerInset),
+                                size = Size(
+                                    width = markerWidth,
+                                    height = size.height - (markerInset * 2f)
+                                ),
+                                cornerRadius = CornerRadius(markerCornerRadius, markerCornerRadius)
+                            )
+                        }
+                    }
+                }
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -8685,10 +8769,9 @@ private fun TrackRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (isPlaying) "Playing" else "Paused",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFFF5A5F)
+                        NavidromeNowPlayingVisualizer(
+                            isPlaying = isPlaying,
+                            color = nowPlayingAccentColor
                         )
                         trailingContent()
                     }
@@ -8697,10 +8780,9 @@ private fun TrackRow(
                     trailingContent()
                 }
                 isCurrent -> {
-                    Text(
-                        text = if (isPlaying) "Playing" else "Paused",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFFF5A5F)
+                    NavidromeNowPlayingVisualizer(
+                        isPlaying = isPlaying,
+                        color = nowPlayingAccentColor
                     )
                 }
                 else -> {
@@ -9479,8 +9561,19 @@ private fun NavidromeMiniPlayerBar(
     val isRadio = remember(track.id) { track.id.startsWith("radio:") }
     val shape = RoundedCornerShape(24.dp)
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
+    val progressColor = MaterialTheme.colorScheme.primary
     val transportButtonWidth = 32.dp
     val transportButtonHeight = 48.dp
+    val resolvedDurationMs = remember(state.durationMs, track.durationSeconds) {
+        state.durationMs.takeIf { it > 0 } ?: ((track.durationSeconds ?: 0) * 1000)
+    }
+    val playbackProgress = remember(state.positionMs, resolvedDurationMs) {
+        if (resolvedDurationMs > 0) {
+            state.positionMs.toFloat().div(resolvedDurationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -9569,6 +9662,21 @@ private fun NavidromeMiniPlayerBar(
                     .height(transportButtonHeight)
             ) {
                 Icon(Icons.Outlined.SkipNext, contentDescription = "Next")
+            }
+        }
+        if (playbackProgress > 0f) {
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(horizontal = 1.5.dp, vertical = 1.5.dp)
+                    .fillMaxWidth()
+                    .height(3.dp)
+            ) {
+                drawRoundRect(
+                    color = progressColor,
+                    size = Size(width = size.width * playbackProgress, height = size.height),
+                    cornerRadius = CornerRadius(size.height / 2f, size.height / 2f)
+                )
             }
         }
     }
@@ -9961,6 +10069,9 @@ private fun NavidromeExpandedPlayerSheet(
         val transportSectionTopGap by animateDpAsState(targetValue = targetTransportSectionTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportSectionTopGap")
         val toolRowTopGap by animateDpAsState(targetValue = targetToolRowTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerToolRowTopGap")
         val progressSection: @Composable () -> Unit = {
+            val elapsedSeconds = (sliderPosition.roundToInt().coerceAtLeast(0) / 1000)
+            val totalDurationSeconds = (resolvedDurationMs.coerceAtLeast(0) / 1000)
+            val remainingSeconds = (totalDurationSeconds - elapsedSeconds).coerceAtLeast(0)
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -9990,23 +10101,23 @@ private fun NavidromeExpandedPlayerSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = formatDurationMillis(sliderPosition.roundToInt()),
-                        modifier = Modifier.weight(1f),
+                        text = formatDuration(elapsedSeconds),
+                        modifier = Modifier.width(56.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryTextColor
                     )
                     Text(
                         text = formatTrackTechnicalDetails(track),
                         modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelSmall,
                         color = secondaryTextColor,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = formatDurationMillis(resolvedDurationMs),
-                        modifier = Modifier.weight(1f),
+                        text = "-${formatDuration(remainingSeconds)}",
+                        modifier = Modifier.width(56.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color = secondaryTextColor,
                         textAlign = TextAlign.End
@@ -10455,10 +10566,12 @@ private fun NavidromeExpandedPlayerSheet(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 items(displayedQueueItems, key = { it.queueIndex }) { item ->
+                                    val itemIsCurrent = item.queueIndex == state.currentIndex ||
+                                        (state.currentIndex !in state.queue.indices && item.track.id == track.id)
                                         PlayerQueueRow(
                                             track = item.track,
-                                            isCurrent = item.queueIndex == state.currentIndex ||
-                                                (state.currentIndex !in state.queue.indices && item.track.id == track.id),
+                                            isCurrent = itemIsCurrent,
+                                            isPlaying = itemIsCurrent && state.isPlaying,
                                             isDownloaded = item.track.id in downloadedTrackIds,
                                             downloadProgressPercent = trackProgressById[item.track.id],
                                             immersiveEnabled = immersiveEnabled,
@@ -10611,40 +10724,10 @@ private fun NavidromeExpandedPlayerSheet(
         }
     }
     if (showTrackDetails) {
-        AlertDialog(
-            onDismissRequest = { showTrackDetails = false },
-            confirmButton = {
-                TextButton(onClick = { showTrackDetails = false }) {
-                    Text("Done")
-                }
-            },
-            title = {
-                Text(
-                    text = "Track Details",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    PlayerMetadataRow(label = "Title", value = track.title)
-                    PlayerMetadataRow(label = "Artist", value = track.artistName)
-                    PlayerMetadataRow(label = "Album", value = track.albumName)
-                    track.trackNumber?.let { trackNumber ->
-                        PlayerMetadataRow(label = "Track", value = trackNumber.toString())
-                    }
-                    track.formatLabel?.takeIf { it.isNotBlank() }?.let { formatLabel ->
-                        PlayerMetadataRow(label = "Format", value = formatLabel)
-                    }
-                    track.bitRateKbps?.takeIf { it > 0 }?.let { bitRate ->
-                        PlayerMetadataRow(label = "Bitrate", value = "$bitRate kbps")
-                    }
-                    PlayerMetadataRow(
-                        label = "Length",
-                        value = formatDurationMillis(resolvedDurationMs)
-                    )
-                }
-            }
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = resolvedDurationMs,
+            onDismiss = { showTrackDetails = false }
         )
     }
 }
@@ -11472,6 +11555,52 @@ private fun PlayerMetadataRow(
     }
 }
 
+@Composable
+private fun NavidromeTrackDetailsDialog(
+    track: NavidromeTrack,
+    durationMs: Int,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Done")
+            }
+        },
+        title = {
+            Text(
+                text = "Track Details",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                PlayerMetadataRow(label = "Title", value = track.title)
+                PlayerMetadataRow(label = "Artist", value = track.artistName)
+                PlayerMetadataRow(label = "Album", value = track.albumName)
+                track.trackNumber?.let { trackNumber ->
+                    PlayerMetadataRow(label = "Track", value = trackNumber.toString())
+                }
+                track.formatLabel?.takeIf { it.isNotBlank() }?.let { formatLabel ->
+                    PlayerMetadataRow(label = "Format", value = formatLabel)
+                }
+                track.bitRateKbps?.takeIf { it > 0 }?.let { bitRate ->
+                    PlayerMetadataRow(label = "Bitrate", value = "$bitRate kbps")
+                }
+                track.sizeBytes?.takeIf { it > 0L }?.let { sizeBytes ->
+                    PlayerMetadataRow(label = "Size", value = formatNavidromeFileSize(sizeBytes))
+                }
+                PlayerMetadataRow(
+                    label = "Length",
+                    value = formatDurationMillis(durationMs)
+                )
+            }
+        }
+    )
+}
+
 private fun playerOutputToolIcon(typeLabel: String?): ImageVector {
     val label = typeLabel?.trim()?.lowercase(Locale.ROOT).orEmpty()
     return when {
@@ -11616,6 +11745,7 @@ private fun PlayerStatPill(
 private fun PlayerQueueRow(
     track: NavidromeTrack,
     isCurrent: Boolean,
+    isPlaying: Boolean,
     isDownloaded: Boolean = false,
     downloadProgressPercent: Int? = null,
     immersiveEnabled: Boolean = false,
@@ -11632,6 +11762,7 @@ private fun PlayerQueueRow(
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val nowPlayingAccentColor = navidromeNowPlayingAccentColor(immersiveEnabled = immersiveEnabled)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -11644,6 +11775,25 @@ private fun PlayerQueueRow(
                     Color.Transparent
                 }
             )
+            .drawWithCache {
+                val markerWidth = 3.dp.toPx()
+                val markerInset = 8.dp.toPx()
+                val markerCornerRadius = markerWidth / 2f
+                onDrawWithContent {
+                    drawContent()
+                    if (isCurrent) {
+                        drawRoundRect(
+                            color = nowPlayingAccentColor,
+                            topLeft = Offset(0f, markerInset),
+                            size = Size(
+                                width = markerWidth,
+                                height = size.height - (markerInset * 2f)
+                            ),
+                            cornerRadius = CornerRadius(markerCornerRadius, markerCornerRadius)
+                        )
+                    }
+                }
+            }
             .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -11671,15 +11821,71 @@ private fun PlayerQueueRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Text(
-            text = if (isCurrent) "Playing" else track.durationSeconds?.let(::formatDuration) ?: "--:--",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (isCurrent) {
-                if (immersiveEnabled) Color.White else Color(0xFFFF5A5F)
-            } else {
-                secondaryTextColor
-            }
+        if (isCurrent) {
+            NavidromeNowPlayingVisualizer(
+                isPlaying = isPlaying,
+                color = nowPlayingAccentColor
+            )
+        } else {
+            Text(
+                text = track.durationSeconds?.let(::formatDuration) ?: "--:--",
+                style = MaterialTheme.typography.bodySmall,
+                color = secondaryTextColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun navidromeNowPlayingAccentColor(immersiveEnabled: Boolean = false): Color {
+    val materialDesignEnabled = LocalMaterialDesignEnabled.current
+    return when {
+        immersiveEnabled -> Color.White
+        materialDesignEnabled -> MaterialTheme.colorScheme.primary
+        else -> Color(0xFFFF5A5F)
+    }
+}
+
+@Composable
+private fun NavidromeNowPlayingVisualizer(
+    isPlaying: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val phase = if (isPlaying) {
+        val transition = rememberInfiniteTransition(label = "navidromeNowPlayingVisualizer")
+        val animatedPhase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 720, easing = LinearEasing)
+            ),
+            label = "navidromeNowPlayingVisualizerPhase"
         )
+        animatedPhase
+    } else {
+        0f
+    }
+    val offsets = remember { listOf(0f, 0.28f, 0.56f, 0.82f) }
+    val pausedFractions = remember { listOf(0.32f, 0.58f, 0.42f, 0.72f) }
+    Row(
+        modifier = modifier
+            .width(24.dp)
+            .height(18.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        offsets.forEachIndexed { index, offset ->
+            val animatedFraction = ((sin((phase + offset) * (2.0 * PI)).toFloat() + 1f) / 2f)
+            val pausedFraction = pausedFractions[index]
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(lerp(5.dp, 18.dp, if (isPlaying) animatedFraction else pausedFraction))
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(color.copy(alpha = if (isPlaying) 1f else 0.7f))
+            )
+        }
     }
 }
 
@@ -11789,8 +11995,18 @@ private fun formatTrackTechnicalDetails(track: NavidromeTrack): String {
     val parts = buildList {
         track.formatLabel?.takeIf { it.isNotBlank() }?.let(::add)
         track.bitRateKbps?.takeIf { it > 0 }?.let { add("$it kbps") }
+        track.sizeBytes?.takeIf { it > 0L }?.let { add(formatNavidromeFileSize(it)) }
     }
     return parts.joinToString(separator = " • ")
+}
+
+private fun formatNavidromeFileSize(bytes: Long): String {
+    val mb = bytes / (1024.0 * 1024.0)
+    return if (mb >= 1024.0) {
+        String.format(Locale.getDefault(), "%.1f GB", mb / 1024.0)
+    } else {
+        String.format(Locale.getDefault(), "%.0f MB", mb)
+    }
 }
 
 private fun isHttpUrl(baseUrl: String): Boolean {

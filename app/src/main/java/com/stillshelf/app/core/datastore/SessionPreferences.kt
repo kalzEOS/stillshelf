@@ -1401,7 +1401,8 @@ class SessionPreferences @Inject constructor(
                                     coverUrl = item.optString("coverUrl").ifBlank { null },
                                     streamUrl = streamUrl,
                                     formatLabel = item.optString("formatLabel").ifBlank { null },
-                                    bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+                                    bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
+                                    sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
                                 )
                             )
                         }
@@ -1502,6 +1503,7 @@ class SessionPreferences @Inject constructor(
                         .put("streamUrl", normalizedStreamUrl)
                         .put("formatLabel", track.formatLabel)
                         .put("bitRateKbps", track.bitRateKbps)
+                        .put("sizeBytes", track.sizeBytes)
                 )
             }
             if (array.length() > 0) {

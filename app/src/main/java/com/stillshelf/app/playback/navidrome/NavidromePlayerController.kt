@@ -111,7 +111,8 @@ internal data class NavidromeTrackSnapshotPayload(
     val coverUrl: String?,
     val streamUrl: String,
     val formatLabel: String?,
-    val bitRateKbps: Int?
+    val bitRateKbps: Int?,
+    val sizeBytes: Long? = null
 )
 
 internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
@@ -127,7 +128,8 @@ internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
         coverUrl = coverUrl,
         streamUrl = streamUrl,
         formatLabel = formatLabel,
-        bitRateKbps = bitRateKbps
+        bitRateKbps = bitRateKbps,
+        sizeBytes = sizeBytes
     )
 }
 
@@ -145,7 +147,8 @@ internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
         coverUrl = coverUrl?.takeIf { it.isNotBlank() },
         streamUrl = streamUrl.trim(),
         formatLabel = formatLabel?.takeIf { it.isNotBlank() },
-        bitRateKbps = bitRateKbps?.takeIf { it > 0 }
+        bitRateKbps = bitRateKbps?.takeIf { it > 0 },
+        sizeBytes = sizeBytes?.takeIf { it > 0L }
     )
 }
 
@@ -165,6 +168,7 @@ internal fun serializeNavidromeTrackSnapshot(track: NavidromeTrack): JSONObject 
             payload.coverUrl?.let { put("coverUrl", it) }
             payload.formatLabel?.let { put("formatLabel", it) }
             payload.bitRateKbps?.let { put("bitRateKbps", it) }
+            payload.sizeBytes?.let { put("sizeBytes", it) }
         }
 }
 
@@ -181,7 +185,8 @@ internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
         coverUrl = item.optString("coverUrl").ifBlank { null },
         streamUrl = item.optString("streamUrl").trim(),
         formatLabel = item.optString("formatLabel").ifBlank { null },
-        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
+        sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
     ).toTrack()
 }
 

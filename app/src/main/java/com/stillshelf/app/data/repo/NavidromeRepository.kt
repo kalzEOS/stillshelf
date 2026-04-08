@@ -2646,7 +2646,8 @@ class NavidromeRepository @Inject constructor(
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?.uppercase(),
-            bitRateKbps = bitRateKbps
+            bitRateKbps = bitRateKbps,
+            sizeBytes = sizeBytes
         )
     }
 

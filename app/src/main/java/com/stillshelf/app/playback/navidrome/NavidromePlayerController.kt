@@ -254,6 +254,11 @@ class NavidromePlayerController @Inject constructor(
         val positionMs: Int
     )
 
+    private data class NavidromeEqualizerSettingsSnapshot(
+        val enabled: Boolean,
+        val bandLevelsDb: List<Float>
+    )
+
     private val mutableState = MutableStateFlow(NavidromePlayerState())
     val state: StateFlow<NavidromePlayerState> = mutableState.asStateFlow()
 
@@ -284,6 +289,10 @@ class NavidromePlayerController @Inject constructor(
     private var artworkJob: Job? = null
     private var lastNotificationSignature: NotificationSignature? = null
     private val navidromeEqualizerAudioProcessor = NavidromeEqualizerAudioProcessor()
+    private var lastNavidromeEqualizerSettings = NavidromeEqualizerSettingsSnapshot(
+        enabled = false,
+        bandLevelsDb = emptyList()
+    )
 
     private val playbackAudioAttributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
@@ -1215,11 +1224,41 @@ class NavidromePlayerController @Inject constructor(
                 val activeProfileId = preferences.navidromeEqualizerActiveProfileId
                     ?.takeIf { activeId -> profiles.any { it.id == activeId } }
                 val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
-                navidromeEqualizerAudioProcessor.updateSettings(
+                val updatedSettings = NavidromeEqualizerSettingsSnapshot(
                     enabled = preferences.navidromeEqualizerEnabled,
                     bandLevelsDb = activeProfile?.effectiveBandLevelsDb().orEmpty()
                 )
+                val settingsChanged = updatedSettings != lastNavidromeEqualizerSettings
+                lastNavidromeEqualizerSettings = updatedSettings
+
+                navidromeEqualizerAudioProcessor.updateSettings(
+                    enabled = updatedSettings.enabled,
+                    bandLevelsDb = updatedSettings.bandLevelsDb
+                )
+
+                val activePlayer = player
+                if (settingsChanged && activePlayer != null) {
+                    flushNavidromeEqualizerPlayback(activePlayer)
+                }
             }
+        }
+    }
+
+    private fun flushNavidromeEqualizerPlayback(activePlayer: ExoPlayer) {
+        val currentIndex = activePlayer.currentMediaItemIndex
+            .takeIf { it in queueTracks.indices }
+            ?: return
+        val currentTrack = queueTracks.getOrNull(currentIndex)
+        if (currentTrack.isRadioTrack() || !activePlayer.isCurrentMediaItemSeekable) {
+            return
+        }
+        val currentPositionMs = activePlayer.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = activePlayer.playWhenReady
+        activePlayer.seekTo(currentIndex, currentPositionMs)
+        if (wasPlaying) {
+            activePlayer.play()
+        } else {
+            activePlayer.pause()
         }
     }
 

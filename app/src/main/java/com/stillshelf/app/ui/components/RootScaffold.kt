@@ -40,6 +40,7 @@ fun RootScaffold(
     currentTab: MainTab,
     onTabSelected: (MainTab) -> Unit,
     miniPlayerState: MiniPlayerUiState,
+    applyTopSafeInset: Boolean = true,
     onMiniPlayerHomeClick: (() -> Unit)? = null,
     onMiniPlayerRewind15: () -> Unit,
     onMiniPlayerPlayPause: () -> Unit,
@@ -63,7 +64,7 @@ fun RootScaffold(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = safeTopInset)
+                .padding(top = if (applyTopSafeInset) safeTopInset else 0.dp)
         ) {
             content(PaddingValues(bottom = contentBottomInset))
         }

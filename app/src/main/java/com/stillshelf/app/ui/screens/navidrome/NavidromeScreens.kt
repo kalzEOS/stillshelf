@@ -409,20 +409,21 @@ fun NavidromeLoginRoute(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .statusBarsPadding()
                 .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.Center)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .align(Alignment.TopCenter),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (!uiState.showCredentialsStep) {
                     Text(
                         text = "Add Navidrome Server",
-                        style = MaterialTheme.typography.headlineMedium
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.padding(top = 8.dp)
                     )
 
                     OutlinedTextField(
@@ -512,7 +513,8 @@ fun NavidromeLoginRoute(
                 } else {
                     Text(
                         text = "Sign In",
-                        style = MaterialTheme.typography.headlineMedium
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.padding(top = 8.dp)
                     )
                     Text(
                         text = trimmedServerName.ifBlank { "Navidrome" },

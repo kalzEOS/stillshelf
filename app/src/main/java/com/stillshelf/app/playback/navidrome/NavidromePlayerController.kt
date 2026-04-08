@@ -10,8 +10,6 @@ import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.audiofx.Equalizer
-import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -33,17 +31,18 @@ import androidx.media3.common.Player
 import androidx.media3.common.Player.REPEAT_MODE_ALL
 import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.REPEAT_MODE_ONE
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.stillshelf.app.MainActivity
 import com.stillshelf.app.core.datastore.SessionPreferences
-import com.stillshelf.app.core.model.NavidromeEqualizerProfile
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
 import com.stillshelf.app.core.model.NavidromeTrack
-import com.stillshelf.app.core.model.navidromeEqualizerBandFrequenciesHz
 import com.stillshelf.app.data.repo.NavidromeRepository
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
@@ -63,7 +62,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 
 internal fun shouldScheduleNavidromePausedPlayerRelease(
     currentTrack: NavidromeTrack?,
@@ -78,18 +76,6 @@ internal fun shouldScheduleNavidromePausedPlayerRelease(
         !isPlaying &&
         !playWhenReady &&
         playbackState != Player.STATE_BUFFERING
-}
-
-internal fun resolveNavidromeEqualizerBandLevelDb(
-    effectCenterFrequencyMilliHz: Int,
-    desiredLevels: List<Float>
-): Float {
-    if (desiredLevels.isEmpty()) return 0f
-    val centerFrequencyHz = effectCenterFrequencyMilliHz / 1000f
-    val nearestIndex = navidromeEqualizerBandFrequenciesHz.indices.minByOrNull { index ->
-        abs(navidromeEqualizerBandFrequenciesHz[index] - centerFrequencyHz)
-    } ?: return desiredLevels.last()
-    return desiredLevels.getOrElse(nearestIndex) { 0f }
 }
 
 internal fun isNavidromeOutputSwitchInFlight(
@@ -232,7 +218,6 @@ class NavidromePlayerController @Inject constructor(
         const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
         const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
         const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
-        const val NAVIDROME_PREAMP_MAX_GAIN_MB = 1200
     }
 
     private enum class OutputRefreshReason {
@@ -269,6 +254,11 @@ class NavidromePlayerController @Inject constructor(
         val positionMs: Int
     )
 
+    private data class NavidromeEqualizerSettingsSnapshot(
+        val enabled: Boolean,
+        val bandLevelsDb: List<Float>
+    )
+
     private val mutableState = MutableStateFlow(NavidromePlayerState())
     val state: StateFlow<NavidromePlayerState> = mutableState.asStateFlow()
 
@@ -298,13 +288,11 @@ class NavidromePlayerController @Inject constructor(
     private var artworkTrackId: String? = null
     private var artworkJob: Job? = null
     private var lastNotificationSignature: NotificationSignature? = null
-    private var navidromeEqualizerSessionId: Int? = null
-    private var navidromeEqualizer: Equalizer? = null
-    private var navidromePreamp: LoudnessEnhancer? = null
-    private var navidromeEqualizerEnabled = false
-    private var navidromeActiveEqualizerProfileId: String? = null
-    private var navidromeEqualizerProfiles: List<NavidromeEqualizerProfile> = emptyList()
-    private var navidromeEqualizerPreampLevel = 0f
+    private val navidromeEqualizerAudioProcessor = NavidromeEqualizerAudioProcessor()
+    private var lastNavidromeEqualizerSettings = NavidromeEqualizerSettingsSnapshot(
+        enabled = false,
+        bandLevelsDb = emptyList()
+    )
 
     private val playbackAudioAttributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
@@ -386,13 +374,25 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun createPlayer(): ExoPlayer {
-        return ExoPlayer.Builder(appContext)
+        val renderersFactory = object : DefaultRenderersFactory(appContext) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean
+            ): AudioSink {
+                return DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                    .setAudioProcessors(arrayOf(navidromeEqualizerAudioProcessor))
+                    .build()
+            }
+        }
+        return ExoPlayer.Builder(appContext, renderersFactory)
             .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {
                 setAudioAttributes(playbackAudioAttributes, true)
                 addListener(playerListener)
-                ensureNavidromeAudioEffects(this)
             }
     }
 
@@ -833,7 +833,6 @@ class NavidromePlayerController @Inject constructor(
         if (activePlayer != null) {
             stopProgressUpdates()
             cancelOutputRecovery()
-            releaseNavidromeAudioEffects()
             runCatching { activePlayer.removeListener(playerListener) }
             runCatching { activePlayer.release() }
             player = null
@@ -1050,7 +1049,6 @@ class NavidromePlayerController @Inject constructor(
             ensureProgressUpdates()
             return
         }
-        ensureNavidromeAudioEffects(activePlayer)
         val previousState = mutableState.value
         val fallbackIndex = previousState.currentIndex.takeIf { it in queueTracks.indices } ?: 0
         val currentIndex = activePlayer.currentMediaItemIndex
@@ -1222,115 +1220,46 @@ class NavidromePlayerController @Inject constructor(
     private fun observeEqualizerPreferences() {
         scope.launch {
             sessionPreferences.state.collect { preferences ->
-                navidromeEqualizerEnabled = preferences.navidromeEqualizerEnabled
-                navidromeEqualizerProfiles = preferences.navidromeEqualizerProfiles
-                navidromeActiveEqualizerProfileId = preferences.navidromeEqualizerActiveProfileId
-                    ?.takeIf { activeId -> navidromeEqualizerProfiles.any { it.id == activeId } }
-                navidromeEqualizerPreampLevel = preferences.navidromeEqualizerPreampLevel
+                val profiles = preferences.navidromeEqualizerProfiles
+                val activeProfileId = preferences.navidromeEqualizerActiveProfileId
+                    ?.takeIf { activeId -> profiles.any { it.id == activeId } }
+                val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
+                val updatedSettings = NavidromeEqualizerSettingsSnapshot(
+                    enabled = preferences.navidromeEqualizerEnabled,
+                    bandLevelsDb = activeProfile?.effectiveBandLevelsDb().orEmpty()
+                )
+                val settingsChanged = updatedSettings != lastNavidromeEqualizerSettings
+                lastNavidromeEqualizerSettings = updatedSettings
+
+                navidromeEqualizerAudioProcessor.updateSettings(
+                    enabled = updatedSettings.enabled,
+                    bandLevelsDb = updatedSettings.bandLevelsDb
+                )
 
                 val activePlayer = player
-                if (activePlayer != null) {
-                    ensureNavidromeAudioEffects(activePlayer)
-                } else {
-                    releaseNavidromeAudioEffects()
+                if (settingsChanged && activePlayer != null) {
+                    flushNavidromeEqualizerPlayback(activePlayer)
                 }
             }
         }
     }
 
-    private fun ensureNavidromeAudioEffects(player: ExoPlayer) {
-        if (!shouldApplyNavidromeAudioEffects()) {
-            releaseNavidromeAudioEffects()
+    private fun flushNavidromeEqualizerPlayback(activePlayer: ExoPlayer) {
+        val currentIndex = activePlayer.currentMediaItemIndex
+            .takeIf { it in queueTracks.indices }
+            ?: return
+        val currentTrack = queueTracks.getOrNull(currentIndex)
+        if (currentTrack.isRadioTrack() || !activePlayer.isCurrentMediaItemSeekable) {
             return
         }
-        val sessionId = runCatching { player.audioSessionId }.getOrDefault(C.AUDIO_SESSION_ID_UNSET)
-        if (sessionId == C.AUDIO_SESSION_ID_UNSET || sessionId <= 0) return
-        if (navidromeEqualizerSessionId != sessionId) {
-            releaseNavidromeAudioEffects()
-            navidromeEqualizerSessionId = sessionId
-            navidromeEqualizer = runCatching {
-                Equalizer(0, sessionId).apply { enabled = false }
-            }.getOrNull()
-            navidromePreamp = runCatching {
-                LoudnessEnhancer(sessionId).apply { enabled = false }
-            }.getOrNull()
-        }
-        applyNavidromeAudioEffects()
-    }
-
-    private fun applyNavidromeAudioEffects() {
-        if (!shouldApplyNavidromeAudioEffects()) {
-            releaseNavidromeAudioEffects()
-            return
-        }
-        applyNavidromeEqualizer()
-        applyNavidromePreamp()
-    }
-
-    private fun applyNavidromeEqualizer() {
-        val effect = navidromeEqualizer ?: return
-        val profile = navidromeEqualizerProfiles.firstOrNull { it.id == navidromeActiveEqualizerProfileId }
-        if (!shouldApplyNavidromeEqualizer() || profile == null) {
-            runCatching { effect.enabled = false }
-            return
-        }
-        val desiredLevels = profile.effectiveBandLevelsDb()
-
-        val bandCount = runCatching { effect.numberOfBands.toInt() }.getOrDefault(0)
-        val levelRange = runCatching { effect.bandLevelRange }.getOrNull()
-        val minLevel = levelRange?.getOrNull(0)?.toInt() ?: -1500
-        val maxLevel = levelRange?.getOrNull(1)?.toInt() ?: 1500
-
-        for (band in 0 until bandCount) {
-            val centerFrequencyMilliHz = runCatching {
-                effect.getCenterFreq(band.toShort())
-            }.getOrDefault(navidromeEqualizerBandFrequenciesHz.getOrElse(band) { 1_000 } * 1000)
-            val targetLevelMillibels = (resolveNavidromeEqualizerBandLevelDb(
-                effectCenterFrequencyMilliHz = centerFrequencyMilliHz,
-                desiredLevels = desiredLevels
-            ) * 100f).toInt().coerceIn(minLevel, maxLevel)
-            runCatching {
-                effect.setBandLevel(band.toShort(), targetLevelMillibels.toShort())
-            }
-        }
-        runCatching { effect.enabled = true }
-    }
-
-    private fun shouldApplyNavidromeEqualizer(): Boolean {
-        if (!navidromeEqualizerEnabled) return false
-        val profile = navidromeEqualizerProfiles.firstOrNull { it.id == navidromeActiveEqualizerProfileId } ?: return false
-        return !profile.isFlat()
-    }
-
-    private fun shouldApplyNavidromePreamp(): Boolean {
-        return navidromeEqualizerEnabled && navidromeEqualizerPreampLevel > 0f
-    }
-
-    private fun shouldApplyNavidromeAudioEffects(): Boolean {
-        return shouldApplyNavidromeEqualizer() || shouldApplyNavidromePreamp()
-    }
-
-    private fun applyNavidromePreamp() {
-        val effect = navidromePreamp ?: return
-        val targetGainMb = if (shouldApplyNavidromePreamp()) {
-            (navidromeEqualizerPreampLevel.coerceIn(0f, 1f) * NAVIDROME_PREAMP_MAX_GAIN_MB)
-                .toInt()
-                .coerceIn(0, NAVIDROME_PREAMP_MAX_GAIN_MB)
+        val currentPositionMs = activePlayer.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = activePlayer.playWhenReady
+        activePlayer.seekTo(currentIndex, currentPositionMs)
+        if (wasPlaying) {
+            activePlayer.play()
         } else {
-            0
+            activePlayer.pause()
         }
-        runCatching {
-            effect.setTargetGain(targetGainMb)
-            effect.enabled = targetGainMb > 0
-        }
-    }
-
-    private fun releaseNavidromeAudioEffects() {
-        runCatching { navidromeEqualizer?.release() }
-        runCatching { navidromePreamp?.release() }
-        navidromeEqualizer = null
-        navidromePreamp = null
-        navidromeEqualizerSessionId = null
     }
 
     private fun showPlaybackNotification(

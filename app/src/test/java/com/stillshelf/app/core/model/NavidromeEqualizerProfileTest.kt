@@ -1,6 +1,7 @@
 package com.stillshelf.app.core.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,7 +22,7 @@ class NavidromeEqualizerProfileTest {
     }
 
     @Test
-    fun effectiveBandLevels_removeSharedOffsetAcrossBands() {
+    fun effectiveBandLevels_applyBandLevelsDirectly() {
         val profile = NavidromeEqualizerProfile(
             id = "eq-2",
             name = "Offset",
@@ -29,14 +30,14 @@ class NavidromeEqualizerProfileTest {
         )
 
         assertEquals(
-            listOf(0f, -2f, -4f, -6f, -8f, -6f, -6f, -6f, -6f, -6f),
+            listOf(6f, 4f, 2f, 0f, -2f, 0f, 0f, 0f, 0f, 0f),
             profile.effectiveBandLevelsDb()
         )
     }
 
     @Test
-    fun flatProfile_detectsUniformBoostAsFlatCurve() {
-        assertTrue(
+    fun flatProfile_doesNotTreatUniformBoostAsFlatCurve() {
+        assertFalse(
             NavidromeEqualizerProfile(
                 id = "eq-3",
                 name = "Uniform boost",

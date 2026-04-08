@@ -178,9 +178,7 @@ data class NavidromeEqualizerProfile(
     }
 
     fun effectiveBandLevelsDb(): List<Float> {
-        val normalizedLevels = normalizedBandLevelsDb()
-        val peakLevel = normalizedLevels.maxOrNull() ?: 0f
-        return normalizedLevels.map { level -> level - peakLevel }
+        return normalizedBandLevelsDb()
     }
 
     fun isFlat(): Boolean = effectiveBandLevelsDb().all { abs(it) < 0.001f }

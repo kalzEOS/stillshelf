@@ -212,6 +212,7 @@ private fun MainShell(
                 }
             },
             miniPlayerState = miniPlayerState,
+            applyTopSafeInset = currentRoute?.startsWith("auth/") != true,
             onMiniPlayerHomeClick = if (showMiniPlayerHomeButton) onHomeClick else null,
             onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
             onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,

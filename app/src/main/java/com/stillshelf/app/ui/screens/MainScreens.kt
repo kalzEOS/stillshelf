@@ -5879,7 +5879,7 @@ fun ServersManagementScreen(
     var advancedUrlDialogTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var advancedUrlDraft by rememberSaveable { mutableStateOf("") }
     var advancedUrlError by rememberSaveable { mutableStateOf<String?>(null) }
-    val screenContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f)
+    val screenContainerColor = MaterialTheme.colorScheme.background
     val sectionCardColor = MaterialTheme.colorScheme.surfaceContainerHigh
     val sectionCardBorder: BorderStroke? =
         BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
@@ -8000,13 +8000,16 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(modifier = Modifier.height(progressMetaGap))
-        val currentDisplaySeconds = chapterLocalSeconds.coerceAtLeast(0.0).toLong()
+        val currentDisplaySeconds = chapterLocalSeconds
+            .coerceAtLeast(0.0)
+            .toInt()
+            .coerceAtLeast(0)
         val chapterDisplayDurationSeconds = chapterDurationSeconds
             .coerceAtLeast(0.0)
-            .toLong()
+            .toInt()
             .coerceAtLeast(currentDisplaySeconds)
         val remainingDisplaySeconds = (chapterDisplayDurationSeconds - currentDisplaySeconds)
-            .coerceAtLeast(0L)
+            .coerceAtLeast(0)
         val wholeBookProgressPercent = formatProgressPercentLabel(progress)
         val wholeBookRemainingSeconds = (durationSeconds - positionSeconds)
             .coerceAtLeast(0.0)

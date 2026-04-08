@@ -143,7 +143,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SheetValue
@@ -410,20 +409,21 @@ fun NavidromeLoginRoute(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .statusBarsPadding()
                 .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.Center)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .align(Alignment.TopCenter),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (!uiState.showCredentialsStep) {
                     Text(
                         text = "Add Navidrome Server",
-                        style = MaterialTheme.typography.headlineMedium
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.padding(top = 8.dp)
                     )
 
                     OutlinedTextField(
@@ -513,7 +513,8 @@ fun NavidromeLoginRoute(
                 } else {
                     Text(
                         text = "Sign In",
-                        style = MaterialTheme.typography.headlineMedium
+                        style = MaterialTheme.typography.headlineMedium,
+                        modifier = Modifier.padding(top = 8.dp)
                     )
                     Text(
                         text = trimmedServerName.ifBlank { "Navidrome" },
@@ -5119,7 +5120,6 @@ private fun NavidromeEqualizerRoute(
     var activeMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var editorMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var editorExpanded by rememberSaveable { mutableStateOf(false) }
-    var showPreampDialog by rememberSaveable { mutableStateOf(false) }
     var showNameDialog by rememberSaveable { mutableStateOf(false) }
     var nameDraft by rememberSaveable(uiState.editorProfile.id) { mutableStateOf(uiState.editorProfile.name) }
 
@@ -5190,13 +5190,6 @@ private fun NavidromeEqualizerRoute(
                         }
                     }
                 }
-                DividerLine()
-                NavidromeSettingsRow(
-                    title = "Preamp",
-                    value = formatNavidromePreampLevelLabel(uiState.preampLevel),
-                    valueTextAlign = TextAlign.End,
-                    onClick = { showPreampDialog = true }
-                )
             }
         }
         item {
@@ -5332,15 +5325,6 @@ private fun NavidromeEqualizerRoute(
         )
     }
 
-    if (showPreampDialog) {
-        NavidromeEffectSliderDialog(
-            title = "Preamp",
-            subtitle = "Increase overall playback loudness after EQ.",
-            value = uiState.preampLevel,
-            onValueChange = viewModel::setPreampLevel,
-            onDismiss = { showPreampDialog = false }
-        )
-    }
 }
 
 @Composable
@@ -5363,53 +5347,6 @@ private fun NavidromeEqualizerActionRow(
             color = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         )
     }
-}
-
-@Composable
-private fun NavidromeEffectSliderDialog(
-    title: String,
-    subtitle: String,
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Done")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = {
-                    onValueChange(0f)
-                    onDismiss()
-                }
-            ) {
-                Text("Reset")
-            }
-        },
-        title = { Text(title) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = formatNavidromePreampLevelLabel(value),
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Slider(
-                    value = value.coerceIn(0f, 1f),
-                    onValueChange = { onValueChange(it.coerceIn(0f, 1f)) },
-                    valueRange = 0f..1f
-                )
-            }
-        }
-    )
 }
 
 @Composable
@@ -5787,11 +5724,6 @@ private fun formatNavidromeEqualizerFrequencyLabel(frequencyHz: Int): String {
     } else {
         frequencyHz.toString()
     }
-}
-
-private fun formatNavidromePreampLevelLabel(level: Float): String {
-    val percent = (level.coerceIn(0f, 1f) * 100f).roundToInt()
-    return "$percent%"
 }
 
 @Composable

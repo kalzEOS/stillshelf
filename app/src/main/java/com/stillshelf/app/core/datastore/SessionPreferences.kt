@@ -47,6 +47,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeLyricsSourcesPayloadKey = stringPreferencesKey("navidrome_lyrics_sources_payload")
     private val activeNavidromeLyricsSourceIdKey = stringPreferencesKey("active_navidrome_lyrics_source_id")
     private val navidromeLyricsSourcesSeededKey = booleanPreferencesKey("navidrome_lyrics_sources_seeded")
+    private val navidromeDirectEqualizerGainMigratedKey = booleanPreferencesKey("navidrome_direct_equalizer_gain_migrated")
     private val navidromeLegacySessionMigratedKey = booleanPreferencesKey("navidrome_legacy_session_migrated")
     private val activeNavidromeServerIdKey = stringPreferencesKey("active_navidrome_server_id")
     private val navidromeActiveLibraryIdsKey = stringPreferencesKey("navidrome_active_library_ids")
@@ -135,6 +136,7 @@ class SessionPreferences @Inject constructor(
     init {
         scope.launch {
             ensureDefaultNavidromeLyricsSourceSeeded()
+            ensureNavidromeDirectEqualizerGainMigrated()
         }
     }
 
@@ -228,6 +230,15 @@ class SessionPreferences @Inject constructor(
             }
 
             prefs[navidromeLyricsSourcesSeededKey] = true
+        }
+    }
+
+    suspend fun ensureNavidromeDirectEqualizerGainMigrated() {
+        dataStore.edit { prefs ->
+            if (prefs[navidromeDirectEqualizerGainMigratedKey] == true) return@edit
+
+            prefs.remove(navidromeEqualizerPreampLevelKey)
+            prefs[navidromeDirectEqualizerGainMigratedKey] = true
         }
     }
 
@@ -1881,7 +1892,11 @@ class SessionPreferences @Inject constructor(
             navidromeEqualizerProfiles = parseNavidromeEqualizerProfiles(
                 this[navidromeEqualizerProfilesKey]
             ),
-            navidromeEqualizerPreampLevel = (this[navidromeEqualizerPreampLevelKey] ?: 0f).coerceIn(0f, 1f),
+            navidromeEqualizerPreampLevel = if (this[navidromeDirectEqualizerGainMigratedKey] == true) {
+                (this[navidromeEqualizerPreampLevelKey] ?: 0f).coerceIn(0f, 1f)
+            } else {
+                0f
+            },
             navidromeThemeMode = this[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = this[navidromeMaterialDesignEnabledKey] ?: false,
             navidromeImmersivePlayerEnabled = this[navidromeImmersivePlayerEnabledKey] ?: false,

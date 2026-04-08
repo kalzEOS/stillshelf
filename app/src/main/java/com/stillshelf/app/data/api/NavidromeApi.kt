@@ -1,6 +1,10 @@
 package com.stillshelf.app.data.api
 
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -65,7 +69,8 @@ data class NavidromeTrackDto(
     val coverArtId: String?,
     val suffix: String?,
     val contentType: String?,
-    val bitRateKbps: Int?
+    val bitRateKbps: Int?,
+    val sizeBytes: Long? = null
 )
 
 data class NavidromeLyricsLineDto(
@@ -113,6 +118,43 @@ data class NavidromeSearchDto(
     val albums: List<NavidromeAlbumDto>,
     val tracks: List<NavidromeTrackDto>
 )
+
+internal fun decodeNavidromeResponseBody(
+    bytes: ByteArray,
+    declaredCharset: Charset?
+): String {
+    if (bytes.isEmpty()) return ""
+    decodeStrictUtf8OrNull(bytes)?.let { return it }
+
+    val candidates = buildList {
+        declaredCharset?.let(::add)
+        add(Charset.forName("windows-1252"))
+        add(StandardCharsets.ISO_8859_1)
+    }.distinct()
+
+    return candidates
+        .map { charset -> charset to String(bytes, charset) }
+        .minByOrNull { (_, text) -> scoreDecodedNavidromeText(text) }
+        ?.second
+        .orEmpty()
+}
+
+internal fun scoreDecodedNavidromeText(text: String): Int {
+    val replacementCount = text.count { it == '\uFFFD' }
+    val controlCount = text.count { it.code in 0x80..0x9F }
+    return (replacementCount * 10) + controlCount
+}
+
+private fun decodeStrictUtf8OrNull(bytes: ByteArray): String? {
+    return runCatching {
+        StandardCharsets.UTF_8
+            .newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+    }.getOrNull()
+}
 
 @Singleton
 class NavidromeApi @Inject constructor(
@@ -513,7 +555,10 @@ class NavidromeApi @Inject constructor(
 
     private fun execute(request: Request): JSONObject {
         okHttpClient.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
+            val body = decodeNavidromeResponseBody(
+                bytes = response.body?.bytes() ?: ByteArray(0),
+                declaredCharset = response.body?.contentType()?.charset()
+            )
             if (!response.isSuccessful) {
                 throw IOException("Navidrome request failed with HTTP ${response.code}.")
             }
@@ -605,7 +650,7 @@ class NavidromeApi @Inject constructor(
     private fun parseArtist(item: JSONObject): NavidromeArtistDto {
         return NavidromeArtistDto(
             id = item.optString("id"),
-            name = item.optString("name").ifBlank { "Unknown artist" },
+            name = item.optString("name").normalizeNavidromeText().ifBlank { "Unknown artist" },
             albumCount = item.optInt("albumCount", 0),
             coverArtId = item.optString("coverArt").ifBlank { null },
             artistImageUrl = item.optString("artistImageUrl").ifBlank { null }
@@ -618,7 +663,7 @@ class NavidromeApi @Inject constructor(
         repeat(items.length()) { index ->
             val item = items.optJSONObject(index) ?: return@repeat
             val id = item.optString("id").trim()
-            val name = item.optString("name").trim()
+            val name = item.optString("name").normalizeNavidromeText().trim()
             if (id.isNotBlank()) {
                 results += NavidromeMusicFolderDto(
                     id = id,
@@ -650,19 +695,20 @@ class NavidromeApi @Inject constructor(
 
         return NavidromeAlbumDto(
             id = item.optString("id"),
-            name = item.optString("name").ifBlank { "Unknown album" },
-            artistName = item.optString("displayArtist").ifBlank {
-                item.optString("artist").ifBlank { "Unknown artist" }
+            name = item.optString("name").normalizeNavidromeText().ifBlank { "Unknown album" },
+            artistName = item.optString("displayArtist").normalizeNavidromeText().ifBlank {
+                item.optString("artist").normalizeNavidromeText().ifBlank { "Unknown artist" }
             },
             artistId = primaryArtistId,
             year = year,
             songCount = item.optInt("songCount", 0),
             durationSeconds = duration,
             coverArtId = item.optString("coverArt").ifBlank { null },
-            genre = item.optString("genre").ifBlank {
+            genre = item.optString("genre").normalizeNavidromeText().ifBlank {
                 item.optJSONArray("genres")
                     ?.optJSONObject(0)
                     ?.optString("name")
+                    ?.normalizeNavidromeText()
                     ?.ifBlank { null }
             }
         )
@@ -682,13 +728,14 @@ class NavidromeApi @Inject constructor(
         val duration = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it > 0 }
         val trackNumber = item.takeIf { it.has("track") }?.optInt("track")?.takeIf { it > 0 }
         val bitRateKbps = item.takeIf { it.has("bitRate") }?.optInt("bitRate")?.takeIf { it > 0 }
+        val sizeBytes = item.takeIf { it.has("size") }?.optLong("size")?.takeIf { it > 0L }
         return NavidromeTrackDto(
             id = item.optString("id"),
-            title = item.optString("title").ifBlank { "Unknown track" },
-            artistName = item.optString("displayArtist").ifBlank {
-                item.optString("artist").ifBlank { "Unknown artist" }
+            title = item.optString("title").normalizeNavidromeText().ifBlank { "Unknown track" },
+            artistName = item.optString("displayArtist").normalizeNavidromeText().ifBlank {
+                item.optString("artist").normalizeNavidromeText().ifBlank { "Unknown artist" }
             },
-            albumName = item.optString("album").ifBlank { "Unknown album" },
+            albumName = item.optString("album").normalizeNavidromeText().ifBlank { "Unknown album" },
             albumId = item.optString("albumId").ifBlank { null },
             artistId = item.optString("artistId").ifBlank { null },
             trackNumber = trackNumber,
@@ -696,7 +743,8 @@ class NavidromeApi @Inject constructor(
             coverArtId = item.optString("coverArt").ifBlank { null },
             suffix = item.optString("suffix").ifBlank { null },
             contentType = item.optString("contentType").ifBlank { null },
-            bitRateKbps = bitRateKbps
+            bitRateKbps = bitRateKbps,
+            sizeBytes = sizeBytes
         )
     }
 
@@ -709,7 +757,7 @@ class NavidromeApi @Inject constructor(
                 val sourceLines = item.optJSONArray("line") ?: JSONArray()
                 repeat(sourceLines.length()) { lineIndex ->
                     val line = sourceLines.optJSONObject(lineIndex) ?: return@repeat
-                    val value = line.optString("value").trim()
+                    val value = line.optString("value").normalizeNavidromeText().trim()
                     if (value.isBlank()) return@repeat
                     add(
                         NavidromeLyricsLineDto(
@@ -737,9 +785,11 @@ class NavidromeApi @Inject constructor(
         val value = sequenceOf(directNode, arrayNode)
             .mapNotNull { node ->
                 node?.optString("value")
+                    ?.normalizeNavidromeText()
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
                     ?: node?.optString("lyrics")
+                        ?.normalizeNavidromeText()
                         ?.trim()
                         ?.takeIf { it.isNotBlank() }
             }
@@ -750,7 +800,7 @@ class NavidromeApi @Inject constructor(
     private fun parsePlaylist(item: JSONObject): NavidromePlaylistDto {
         return NavidromePlaylistDto(
             id = item.optString("id"),
-            name = item.optString("name").ifBlank { "Playlist" },
+            name = item.optString("name").normalizeNavidromeText().ifBlank { "Playlist" },
             songCount = item.takeIf { it.has("songCount") }?.optInt("songCount")?.takeIf { it >= 0 },
             durationSeconds = item.takeIf { it.has("duration") }?.optInt("duration")?.takeIf { it >= 0 }
         )
@@ -794,7 +844,7 @@ class NavidromeApi @Inject constructor(
                 ?: return@repeat
             results += NavidromeRadioDto(
                 id = item.optString("id"),
-                name = item.optString("name").ifBlank { "Radio" },
+                name = item.optString("name").normalizeNavidromeText().ifBlank { "Radio" },
                 streamUrl = streamUrl,
                 homePageUrl = item.optString("homePageUrl")
                     .ifBlank { item.optString("homepageUrl") }
@@ -802,6 +852,24 @@ class NavidromeApi @Inject constructor(
             )
         }
         return results
+    }
+
+    private fun String.normalizeNavidromeText(): String {
+        return trim()
+            .replace("Â’", "'")
+            .replace("Â'", "'")
+            .replace("â€™", "'")
+            .replace("â€˜", "'")
+            .replace("â€œ", "\"")
+            .replace("â€�", "\"")
+            .replace("Â\"", "\"")
+            .replace('\u0091', '\'')
+            .replace('\u0092', '\'')
+            .replace('\u0093', '"')
+            .replace('\u0094', '"')
+            .replace(Regex("(?<=[\\p{L}\\p{N}])\uFFFD(?=[\\p{L}\\p{N}])"), "'")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private companion object {

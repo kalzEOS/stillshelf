@@ -34,6 +34,7 @@ import com.stillshelf.app.core.model.RealtimeInvalidation
 import com.stillshelf.app.core.model.SearchResults
 import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.datastore.SecureTokenStorage
+import com.stillshelf.app.core.datastore.PendingBookmarkCreateSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.Library
@@ -864,6 +865,7 @@ class SessionRepositoryImpl @Inject constructor(
         }
 
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -890,6 +892,17 @@ class SessionRepositoryImpl @Inject constructor(
             if (!staleCache.isNullOrEmpty()) {
                 return AppResult.Success(staleCache)
             }
+            val persisted = readPersistedBookSummaries(
+                serverId = connection.server.id,
+                libraryId = library.id
+            )
+            if (persisted.isNotEmpty() || page > 0) {
+                val offset = (page.coerceAtLeast(0) * limit.coerceAtLeast(0)).coerceAtLeast(0)
+                val paged = persisted.drop(offset).let { books ->
+                    if (limit > 0) books.take(limit) else books
+                }
+                return AppResult.Success(paged)
+            }
             return AppResult.Error(
                 message = itemsResult.exceptionOrNull()?.message ?: "Unable to load books.",
                 cause = itemsResult.exceptionOrNull()
@@ -915,6 +928,14 @@ class SessionRepositoryImpl @Inject constructor(
                 .withLocalProgressOverride(connection.server.id)
         }
         putCache(booksCache, cacheKey, books)
+        detailCacheDao.upsertBookSummaries(
+            books.map { book ->
+                book.toEntity(
+                    serverId = connection.server.id,
+                    updatedAtMs = System.currentTimeMillis()
+                )
+            }
+        )
         clearServerDataState(connection.server.id)
 
         return AppResult.Success(books)
@@ -930,6 +951,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -952,6 +974,15 @@ class SessionRepositoryImpl @Inject constructor(
         if (result.isFailure) {
             if (!staleCache.isNullOrEmpty()) {
                 return AppResult.Success(staleCache)
+            }
+            val derivedAuthors = buildAuthorSummariesFromBooks(
+                readPersistedBookSummaries(
+                    serverId = connection.server.id,
+                    libraryId = library.id
+                )
+            )
+            if (derivedAuthors.isNotEmpty()) {
+                return AppResult.Success(derivedAuthors)
             }
             return AppResult.Error(
                 message = result.exceptionOrNull()?.message ?: "Unable to load authors.",
@@ -979,6 +1010,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -1005,6 +1037,9 @@ class SessionRepositoryImpl @Inject constructor(
             if (result.isFailure) {
                 if (!staleCache.isNullOrEmpty()) {
                     return AppResult.Success(staleCache)
+                }
+                if (derivedNarrators.isNotEmpty()) {
+                    return AppResult.Success(derivedNarrators)
                 }
                 return AppResult.Error(
                     message = result.exceptionOrNull()?.message ?: "Unable to load narrators.",
@@ -1048,6 +1083,7 @@ class SessionRepositoryImpl @Inject constructor(
         forceRefresh: Boolean
     ): AppResult<List<NamedEntitySummary>> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -1070,6 +1106,30 @@ class SessionRepositoryImpl @Inject constructor(
         if (result.isFailure) {
             if (!staleCache.isNullOrEmpty()) {
                 return AppResult.Success(staleCache)
+            }
+            val persistedSeries = readPersistedSeriesSummaries(
+                serverId = connection.server.id,
+                libraryId = library.id
+            )
+            if (persistedSeries.isNotEmpty() || page > 0) {
+                val offset = (page.coerceAtLeast(0) * limit.coerceAtLeast(0)).coerceAtLeast(0)
+                val paged = persistedSeries.drop(offset).let { entries ->
+                    if (limit > 0) entries.take(limit) else entries
+                }
+                return AppResult.Success(paged)
+            }
+            val derivedSeries = buildSeriesSummariesFromBooks(
+                readPersistedBookSummaries(
+                    serverId = connection.server.id,
+                    libraryId = library.id
+                )
+            )
+            if (derivedSeries.isNotEmpty()) {
+                val offset = (page.coerceAtLeast(0) * limit.coerceAtLeast(0)).coerceAtLeast(0)
+                val paged = derivedSeries.drop(offset).let { entries ->
+                    if (limit > 0) entries.take(limit) else entries
+                }
+                return AppResult.Success(paged)
             }
             return AppResult.Error(
                 message = result.exceptionOrNull()?.message ?: "Unable to load series.",
@@ -1697,6 +1757,7 @@ class SessionRepositoryImpl @Inject constructor(
         forceRefresh: Boolean
     ): AppResult<List<BookSummary>> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val cacheKey = contentCacheKey(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -1724,6 +1785,13 @@ class SessionRepositoryImpl @Inject constructor(
             if (itemsResult.isFailure) {
                 if (!staleCache.isNullOrEmpty()) {
                     return AppResult.Success(staleCache)
+                }
+                val persisted = readPersistedBookSummaries(
+                    serverId = connection.server.id,
+                    libraryId = library.id
+                )
+                if (persisted.isNotEmpty()) {
+                    return AppResult.Success(persisted)
                 }
                 val throwable = itemsResult.exceptionOrNull()
                 return AppResult.Error(
@@ -1764,6 +1832,14 @@ class SessionRepositoryImpl @Inject constructor(
                     .withLocalProgressOverride(connection.server.id)
             }
         putCache(booksCache, cacheKey, books)
+        detailCacheDao.upsertBookSummaries(
+            books.map { book ->
+                book.toEntity(
+                    serverId = connection.server.id,
+                    updatedAtMs = System.currentTimeMillis()
+                )
+            }
+        )
         clearServerDataState(connection.server.id)
         return AppResult.Success(books)
     }
@@ -2225,6 +2301,7 @@ class SessionRepositoryImpl @Inject constructor(
         forceRefresh: Boolean
     ): AppResult<BookDetail> {
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val persistedLocal = if (forceRefresh) {
             null
         } else {
@@ -2359,6 +2436,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
+        syncPendingBookmarkCreates(connection)
         val persistedLocal = readPersistedBookDetail(
             serverId = connection.server.id,
             libraryId = library.id,
@@ -2589,6 +2667,36 @@ class SessionRepositoryImpl @Inject constructor(
             title = title
         )
         if (createResult.isFailure) {
+            val persistedBook = detailCacheDao.getBookSummary(connection.server.id, library.id, bookId)
+            if (persistedBook != null) {
+                val localBookmarkId = "local-${UUID.randomUUID()}"
+                val createdAtMs = System.currentTimeMillis()
+                detailCacheDao.insertBookBookmarks(
+                    listOf(
+                        BookBookmarkEntity(
+                            serverId = connection.server.id,
+                            libraryId = library.id,
+                            bookId = bookId,
+                            id = localBookmarkId,
+                            title = title,
+                            timeSeconds = timeSeconds.coerceAtLeast(0.0),
+                            createdAtMs = createdAtMs
+                        )
+                    )
+                )
+                sessionPreferences.addPendingBookmarkCreate(
+                    PendingBookmarkCreateSnapshot(
+                        serverId = connection.server.id,
+                        libraryId = library.id,
+                        bookId = bookId,
+                        localBookmarkId = localBookmarkId,
+                        timeSeconds = timeSeconds.coerceAtLeast(0.0),
+                        title = title,
+                        createdAtMs = createdAtMs
+                    )
+                )
+                return AppResult.Success(Unit)
+            }
             return AppResult.Error(
                 message = createResult.exceptionOrNull()?.message ?: "Unable to add bookmark.",
                 cause = createResult.exceptionOrNull()
@@ -2605,10 +2713,19 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
+        syncPendingBookmarkCreates(connection)
+        val library = connection.library ?: return AppResult.Error("No active library selected.")
 
         val books = when (val booksResult = fetchAllBooksForActiveLibrary(forceRefresh = forceRefresh)) {
             is AppResult.Success -> booksResult.value
             is AppResult.Error -> {
+                val persistedEntries = readPersistedBookmarkEntries(
+                    serverId = connection.server.id,
+                    libraryId = library.id
+                )
+                if (persistedEntries.isNotEmpty()) {
+                    return AppResult.Success(persistedEntries)
+                }
                 return AppResult.Error(
                     message = booksResult.message,
                     cause = booksResult.cause
@@ -2621,6 +2738,13 @@ class SessionRepositoryImpl @Inject constructor(
             authToken = connection.token
         )
         if (bookmarksResult.isFailure) {
+            val persistedEntries = readPersistedBookmarkEntries(
+                serverId = connection.server.id,
+                libraryId = library.id
+            )
+            if (persistedEntries.isNotEmpty()) {
+                return AppResult.Success(persistedEntries)
+            }
             return AppResult.Error(
                 message = bookmarksResult.exceptionOrNull()?.message ?: "Unable to load bookmarks.",
                 cause = bookmarksResult.exceptionOrNull()
@@ -2645,6 +2769,34 @@ class SessionRepositoryImpl @Inject constructor(
 
         clearServerDataState(connection.server.id)
         return AppResult.Success(bookmarkEntries)
+    }
+
+    private suspend fun syncPendingBookmarkCreates(connection: ActiveConnection) {
+        val library = connection.library ?: return
+        val pendingCreates = sessionPreferences.getPendingBookmarkCreates()
+            .filter { snapshot ->
+                snapshot.serverId == connection.server.id && snapshot.libraryId == library.id
+            }
+        if (pendingCreates.isEmpty()) return
+
+        pendingCreates.forEach { snapshot ->
+            val createResult = audiobookshelfApi.createBookmark(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = snapshot.bookId,
+                timeSeconds = snapshot.timeSeconds.coerceAtLeast(0.0),
+                title = snapshot.title
+            )
+            if (createResult.isFailure) {
+                return@forEach
+            }
+            sessionPreferences.removePendingBookmarkCreate(snapshot.localBookmarkId)
+            refreshPersistedBookDetail(
+                connection = connection,
+                libraryId = library.id,
+                bookId = snapshot.bookId
+            )
+        }
     }
 
     override suspend fun updateBookmark(
@@ -4455,6 +4607,54 @@ class SessionRepositoryImpl @Inject constructor(
         }
     }
 
+    private suspend fun readPersistedBookSummaries(
+        serverId: String,
+        libraryId: String
+    ): List<BookSummary> {
+        return buildList {
+            detailCacheDao.getBookSummariesForLibrary(serverId, libraryId).forEach { entity ->
+                add(entity.toModel().withLocalProgressOverride(serverId))
+            }
+        }
+    }
+
+    private suspend fun readPersistedSeriesSummaries(
+        serverId: String,
+        libraryId: String
+    ): List<NamedEntitySummary> {
+        return detailCacheDao.getSeriesSummariesForLibrary(serverId, libraryId)
+            .map { entity -> entity.toModel() }
+    }
+
+    private suspend fun readPersistedBookmarkEntries(
+        serverId: String,
+        libraryId: String
+    ): List<BookmarkEntry> {
+        val booksById = detailCacheDao.getBookSummariesForLibrary(serverId, libraryId)
+            .associateBy { summary -> summary.id }
+        return buildList {
+            detailCacheDao.getBookBookmarksForLibrary(serverId, libraryId).forEach { bookmark ->
+                val bookEntity = booksById[bookmark.bookId] ?: return@forEach
+                add(
+                    BookmarkEntry(
+                        book = bookEntity.toModel().withLocalProgressOverride(serverId),
+                        bookmark = BookBookmark(
+                            id = bookmark.id,
+                            libraryItemId = bookmark.bookId,
+                            title = bookmark.title,
+                            timeSeconds = bookmark.timeSeconds,
+                            createdAtMs = bookmark.createdAtMs
+                        )
+                    )
+                )
+            }
+        }.sortedWith(
+            compareByDescending<BookmarkEntry> { it.bookmark.createdAtMs ?: Long.MIN_VALUE }
+                .thenByDescending { it.bookmark.timeSeconds ?: Double.MIN_VALUE }
+                .thenBy { it.book.title.lowercase() }
+        )
+    }
+
     private fun seriesResourceVariant(collapseSubseries: Boolean): String {
         return "collapseSubseries=$collapseSubseries"
     }
@@ -4486,6 +4686,70 @@ class SessionRepositoryImpl @Inject constructor(
             .map { (key, value) ->
                 NamedEntitySummary(
                     id = key,
+                    name = value.first,
+                    subtitle = "${value.second} books"
+                )
+            }
+            .sortedWith(compareBy<NamedEntitySummary> { it.name.lowercase() }.thenBy { it.id })
+    }
+
+    private fun buildAuthorSummariesFromBooks(books: List<BookSummary>): List<NamedEntitySummary> {
+        val countsByKey = linkedMapOf<String, Pair<String, Int>>()
+        books.forEach { book ->
+            authorCandidatesForBook(book).forEach { authorName ->
+                val normalizedKey = normalizeAuthorKey(authorName)
+                if (normalizedKey.isBlank()) return@forEach
+                val existing = countsByKey[normalizedKey]
+                countsByKey[normalizedKey] = if (existing == null) {
+                    authorName to 1
+                } else {
+                    existing.first to (existing.second + 1)
+                }
+            }
+        }
+        return countsByKey.entries
+            .map { (key, value) ->
+                NamedEntitySummary(
+                    id = "offline-author:$key",
+                    name = value.first,
+                    subtitle = "${value.second} books"
+                )
+            }
+            .sortedWith(compareBy<NamedEntitySummary> { it.name.lowercase() }.thenBy { it.id })
+    }
+
+    private fun authorCandidatesForBook(book: BookSummary): List<String> {
+        return book.authorName
+            .split(Regex("\\s*(?:,|&| and )\\s*", RegexOption.IGNORE_CASE))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+    }
+
+    private fun buildSeriesSummariesFromBooks(books: List<BookSummary>): List<NamedEntitySummary> {
+        val countsByKey = linkedMapOf<String, Pair<String, Int>>()
+        books.forEach { book ->
+            val seriesNames = buildList {
+                book.seriesName?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+                book.seriesNames.forEach { seriesName ->
+                    seriesName.trim().takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }.distinctBy { it.lowercase() }
+            seriesNames.forEach { seriesName ->
+                val normalizedKey = normalizeSeriesKey(seriesName)
+                if (normalizedKey.isBlank()) return@forEach
+                val existing = countsByKey[normalizedKey]
+                countsByKey[normalizedKey] = if (existing == null) {
+                    seriesName to 1
+                } else {
+                    existing.first to (existing.second + 1)
+                }
+            }
+        }
+        return countsByKey.entries
+            .map { (key, value) ->
+                NamedEntitySummary(
+                    id = "offline-series:$key",
                     name = value.first,
                     subtitle = "${value.second} books"
                 )

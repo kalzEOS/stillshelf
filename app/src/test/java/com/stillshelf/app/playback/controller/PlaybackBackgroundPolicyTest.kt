@@ -1,6 +1,7 @@
 package com.stillshelf.app.playback.controller
 
 import android.media.AudioManager
+import androidx.media3.common.Player
 import com.stillshelf.app.core.model.BookSummary
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -35,6 +36,50 @@ class PlaybackBackgroundPolicyTest {
             shouldKeepPlaybackSessionActive(
                 book = sampleBook(),
                 hasActivePlayer = true
+            )
+        )
+    }
+
+    @Test
+    fun shouldScheduleAbsPausedPlayerRelease_requiresBackgroundPausedPlayer() {
+        assertTrue(
+            shouldScheduleAbsPausedPlayerRelease(
+                book = sampleBook(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = false,
+                playbackState = Player.STATE_READY,
+                appInForeground = false
+            )
+        )
+        assertFalse(
+            shouldScheduleAbsPausedPlayerRelease(
+                book = sampleBook(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = false,
+                playbackState = Player.STATE_READY,
+                appInForeground = true
+            )
+        )
+        assertFalse(
+            shouldScheduleAbsPausedPlayerRelease(
+                book = sampleBook(),
+                hasActivePlayer = true,
+                isPlaying = true,
+                playWhenReady = true,
+                playbackState = Player.STATE_READY,
+                appInForeground = false
+            )
+        )
+        assertFalse(
+            shouldScheduleAbsPausedPlayerRelease(
+                book = sampleBook(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = false,
+                playbackState = Player.STATE_BUFFERING,
+                appInForeground = false
             )
         )
     }

@@ -1,5 +1,8 @@
 package com.stillshelf.app.playback.navidrome
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -108,7 +111,8 @@ internal data class NavidromeTrackSnapshotPayload(
     val coverUrl: String?,
     val streamUrl: String,
     val formatLabel: String?,
-    val bitRateKbps: Int?
+    val bitRateKbps: Int?,
+    val sizeBytes: Long? = null
 )
 
 internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
@@ -124,7 +128,8 @@ internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
         coverUrl = coverUrl,
         streamUrl = streamUrl,
         formatLabel = formatLabel,
-        bitRateKbps = bitRateKbps
+        bitRateKbps = bitRateKbps,
+        sizeBytes = sizeBytes
     )
 }
 
@@ -132,9 +137,9 @@ internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
     if (id.isBlank()) return null
     return NavidromeTrack(
         id = id,
-        title = title.ifBlank { "Unknown track" },
-        artistName = artistName.ifBlank { "Unknown artist" },
-        albumName = albumName.ifBlank { "Unknown album" },
+        title = title.normalizeNavidromeText().ifBlank { "Unknown track" },
+        artistName = artistName.normalizeNavidromeText().ifBlank { "Unknown artist" },
+        albumName = albumName.normalizeNavidromeText().ifBlank { "Unknown album" },
         albumId = albumId?.takeIf { it.isNotBlank() },
         artistId = artistId?.takeIf { it.isNotBlank() },
         trackNumber = trackNumber?.takeIf { it > 0 },
@@ -142,7 +147,8 @@ internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
         coverUrl = coverUrl?.takeIf { it.isNotBlank() },
         streamUrl = streamUrl.trim(),
         formatLabel = formatLabel?.takeIf { it.isNotBlank() },
-        bitRateKbps = bitRateKbps?.takeIf { it > 0 }
+        bitRateKbps = bitRateKbps?.takeIf { it > 0 },
+        sizeBytes = sizeBytes?.takeIf { it > 0L }
     )
 }
 
@@ -162,15 +168,16 @@ internal fun serializeNavidromeTrackSnapshot(track: NavidromeTrack): JSONObject 
             payload.coverUrl?.let { put("coverUrl", it) }
             payload.formatLabel?.let { put("formatLabel", it) }
             payload.bitRateKbps?.let { put("bitRateKbps", it) }
+            payload.sizeBytes?.let { put("sizeBytes", it) }
         }
 }
 
 internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
     return NavidromeTrackSnapshotPayload(
         id = item.optString("id").trim(),
-        title = item.optString("title"),
-        artistName = item.optString("artistName"),
-        albumName = item.optString("albumName"),
+        title = item.optString("title").normalizeNavidromeText(),
+        artistName = item.optString("artistName").normalizeNavidromeText(),
+        albumName = item.optString("albumName").normalizeNavidromeText(),
         albumId = item.optString("albumId").ifBlank { null },
         artistId = item.optString("artistId").ifBlank { null },
         trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber"),
@@ -178,8 +185,27 @@ internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
         coverUrl = item.optString("coverUrl").ifBlank { null },
         streamUrl = item.optString("streamUrl").trim(),
         formatLabel = item.optString("formatLabel").ifBlank { null },
-        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+        bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
+        sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
     ).toTrack()
+}
+
+private fun String.normalizeNavidromeText(): String {
+    return trim()
+        .replace("Â’", "'")
+        .replace("Â'", "'")
+        .replace("â€™", "'")
+        .replace("â€˜", "'")
+        .replace("â€œ", "\"")
+        .replace("â€�", "\"")
+        .replace("Â\"", "\"")
+        .replace('\u0091', '\'')
+        .replace('\u0092', '\'')
+        .replace('\u0093', '"')
+        .replace('\u0094', '"')
+        .replace(Regex("(?<=[\\p{L}\\p{N}])\uFFFD(?=[\\p{L}\\p{N}])"), "'")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }
 
 @Singleton
@@ -195,6 +221,7 @@ class NavidromePlayerController @Inject constructor(
         const val PLAYING_PROGRESS_UPDATE_INTERVAL_MS = 80L
         const val IDLE_PROGRESS_UPDATE_INTERVAL_MS = 250L
         const val CHANNEL_ID = "stillshelf_playback_v4"
+        const val CHANNEL_NAME = "Playback"
         const val NOTIFICATION_ID = 1101
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.navidrome.playback.action.PLAY_PAUSE"
         const val ACTION_PREVIOUS = "com.stillshelf.app.navidrome.playback.action.PREVIOUS"
@@ -340,6 +367,7 @@ class NavidromePlayerController @Inject constructor(
         appInForeground = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        createNotificationChannel()
         mediaSession.setFlags(
             MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
                 MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
@@ -1309,6 +1337,7 @@ class NavidromePlayerController @Inject constructor(
         state: NavidromePlayerState,
         track: NavidromeTrack
     ) {
+        createNotificationChannel()
         val notificationSignature = NotificationSignature(
             trackId = track.id,
             title = track.title,
@@ -1419,6 +1448,41 @@ class NavidromePlayerController @Inject constructor(
                 updatePlaybackSurface()
             }
         }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        if (
+            existing != null &&
+            (
+                existing.importance > NotificationManager.IMPORTANCE_LOW ||
+                    existing.shouldVibrate() ||
+                    existing.sound != null
+                )
+        ) {
+            val deleted = runCatching {
+                manager.deleteNotificationChannel(CHANNEL_ID)
+            }.isSuccess
+            if (!deleted) {
+                return
+            }
+        } else if (existing != null) {
+            return
+        }
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setShowBadge(false)
+            setSound(null, null)
+            enableVibration(false)
+            vibrationPattern = longArrayOf(0L)
+        }
+        manager.createNotificationChannel(channel)
     }
 
     private fun NavidromeTrack.toJson(): JSONObject {

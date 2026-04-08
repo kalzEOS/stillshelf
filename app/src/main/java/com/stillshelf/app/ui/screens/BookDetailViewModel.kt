@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookDetail
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.resolveUnfinishedProgressState
@@ -13,8 +14,12 @@ import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.domain.usecase.SkipIntroOutroUseCase
 import com.stillshelf.app.domain.usecase.toUserMessage
 import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.playback.controller.PlaybackPositionCommand
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.playback.controller.resolvePlaybackPositionCommand
+import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.downloadProgressForBook
@@ -64,19 +69,75 @@ internal fun BookDetailUiState.applyPersistedDetail(
     detail: BookDetail?
 ): BookDetailUiState {
     return if (detail == null) {
-        copy(
-            detail = null,
-            isLoading = isLoading && this.detail == null
-        )
+        if (this.detail != null) {
+            copy(
+                isLoading = false,
+                isRefreshing = false
+            )
+        } else {
+            copy(
+                detail = null,
+                isLoading = isLoading
+            )
+        }
     } else {
         copy(
             isLoading = false,
+            isRefreshing = false,
             detail = detail,
             errorMessage = null,
             progressPercent = detail.book.progressPercent,
             currentTimeSeconds = detail.book.currentTimeSeconds
         )
     }
+}
+
+internal fun BookDetailUiState.applyOfflineFallbackDetail(
+    detail: BookDetail
+): BookDetailUiState {
+    return copy(
+        isLoading = false,
+        isRefreshing = false,
+        detail = detail,
+        errorMessage = null,
+        progressPercent = detail.book.progressPercent ?: progressPercent,
+        currentTimeSeconds = detail.book.currentTimeSeconds ?: currentTimeSeconds
+    )
+}
+
+internal fun resolveOfflineBookDetail(
+    download: DownloadItem,
+    currentDetail: BookDetail?
+): BookDetail {
+    val existingBook = currentDetail?.book
+    return BookDetail(
+        book = BookSummary(
+            id = download.bookId,
+            libraryId = download.libraryId,
+            title = download.title.ifBlank { existingBook?.title.orEmpty() },
+            authorName = download.authorName.ifBlank { existingBook?.authorName.orEmpty() },
+            narratorName = existingBook?.narratorName,
+            narratorNames = existingBook?.narratorNames.orEmpty(),
+            durationSeconds = download.durationSeconds ?: existingBook?.durationSeconds,
+            coverUrl = download.coverUrl ?: existingBook?.coverUrl,
+            seriesName = existingBook?.seriesName,
+            seriesNames = existingBook?.seriesNames.orEmpty(),
+            seriesIds = existingBook?.seriesIds.orEmpty(),
+            seriesSequence = existingBook?.seriesSequence,
+            genres = existingBook?.genres.orEmpty(),
+            publishedYear = existingBook?.publishedYear,
+            addedAtMs = existingBook?.addedAtMs,
+            authorIds = existingBook?.authorIds.orEmpty(),
+            progressPercent = existingBook?.progressPercent,
+            currentTimeSeconds = existingBook?.currentTimeSeconds,
+            isFinished = existingBook?.isFinished == true
+        ),
+        description = currentDetail?.description,
+        publishedYear = currentDetail?.publishedYear ?: existingBook?.publishedYear,
+        sizeBytes = currentDetail?.sizeBytes,
+        chapters = currentDetail?.chapters.orEmpty(),
+        bookmarks = currentDetail?.bookmarks.orEmpty()
+    )
 }
 
 @HiltViewModel
@@ -143,12 +204,22 @@ class BookDetailViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    mutableUiState.update { state ->
-                        state.copy(
-                            isLoading = false,
-                            isRefreshing = false,
-                            errorMessage = if (silent && state.detail != null) state.errorMessage else result.message
+                    val offlineFallbackDetail = bookDownloadManager.getCompletedDownload(bookId)?.let { download ->
+                        resolveOfflineBookDetail(
+                            download = download,
+                            currentDetail = mutableUiState.value.detail
                         )
+                    }
+                    mutableUiState.update { state ->
+                        if (state.detail == null && offlineFallbackDetail != null) {
+                            state.applyOfflineFallbackDetail(offlineFallbackDetail)
+                        } else {
+                            state.copy(
+                                isLoading = false,
+                                isRefreshing = false,
+                                errorMessage = if (silent && state.detail != null) state.errorMessage else result.message
+                            )
+                        }
                     }
                 }
             }
@@ -440,15 +511,29 @@ class BookDetailViewModel @Inject constructor(
 
     fun playChapter(startSeconds: Double) {
         if (bookId.isBlank()) return
-        val positionMs = (startSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(startSeconds) ?: return
         val playbackState = playbackUiState.value
-        if (playbackState.book?.id == bookId) {
-            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
-            if (!playbackState.isPlaying) {
-                playbackController.togglePlayPause()
+        when (
+            val command = resolvePlaybackPositionCommand(
+                activeBookId = playbackState.book?.id,
+                targetBookId = bookId,
+                targetPositionMs = positionMs,
+                isPlaying = playbackState.isPlaying
+            )
+        ) {
+            is PlaybackPositionCommand.SeekCurrentBook -> {
+                playbackController.seekToPositionMs(positionMs = command.positionMs, commit = true)
+                if (command.shouldResume) {
+                    playbackController.togglePlayPause()
+                }
             }
-        } else {
-            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+
+            is PlaybackPositionCommand.StartBookAtPosition -> {
+                playbackController.playBookFromPosition(
+                    bookId = command.bookId,
+                    startPositionMs = command.positionMs
+                )
+            }
         }
     }
 
@@ -474,15 +559,14 @@ class BookDetailViewModel @Inject constructor(
             mutableUiState.update { it.copy(actionMessage = message) }
             return
         }
-        val positionMs = (targetSeconds * 1000.0).toLong().coerceAtLeast(0L)
+        val positionMs = secondsToPlaybackPositionMs(targetSeconds) ?: return
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
         mutableUiState.update { it.copy(actionMessage = "Skipped chapter.") }
     }
 
     fun playBookmark(bookmark: BookBookmark) {
         if (bookId.isBlank()) return
-        val bookmarkSeconds = bookmark.timeSeconds ?: return
-        val positionMs = (bookmarkSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(bookmark.timeSeconds) ?: return
         playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
     }
 

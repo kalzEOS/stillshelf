@@ -100,7 +100,7 @@ interface DetailCacheDao {
         SELECT * FROM book_summaries
         WHERE serverId = :serverId
           AND libraryId = :libraryId
-          AND seriesName = :seriesName COLLATE NOCASE
+        AND seriesName = :seriesName COLLATE NOCASE
         LIMIT 1
         """
     )
@@ -109,6 +109,24 @@ interface DetailCacheDao {
         libraryId: String,
         seriesName: String
     ): BookSummaryEntity?
+
+    @Query(
+        """
+        SELECT * FROM book_summaries
+        WHERE serverId = :serverId AND libraryId = :libraryId
+        ORDER BY title COLLATE NOCASE ASC
+        """
+    )
+    suspend fun getBookSummariesForLibrary(serverId: String, libraryId: String): List<BookSummaryEntity>
+
+    @Query(
+        """
+        SELECT * FROM book_bookmarks
+        WHERE serverId = :serverId AND libraryId = :libraryId
+        ORDER BY createdAtMs DESC, timeSeconds DESC
+        """
+    )
+    suspend fun getBookBookmarksForLibrary(serverId: String, libraryId: String): List<BookBookmarkEntity>
 
     @Query(
         """
@@ -164,6 +182,18 @@ interface DetailCacheDao {
         libraryId: String,
         seriesName: String
     ): SeriesSummaryEntity?
+
+    @Query(
+        """
+        SELECT * FROM series_summaries
+        WHERE serverId = :serverId AND libraryId = :libraryId
+        ORDER BY name COLLATE NOCASE ASC
+        """
+    )
+    suspend fun getSeriesSummariesForLibrary(
+        serverId: String,
+        libraryId: String
+    ): List<SeriesSummaryEntity>
 
     @Query(
         """

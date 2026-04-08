@@ -65,9 +65,9 @@ class NavidromeDownloadStorage @Inject constructor(
                             albumSongCount = node.takeIf { it.has("albumSongCount") }?.optInt("albumSongCount")
                                 ?.takeIf { it > 0 },
                             artistId = node.optString("artistId").ifBlank { null },
-                            title = node.optString("title"),
-                            artistName = node.optString("artistName"),
-                            albumName = node.optString("albumName"),
+                            title = node.optString("title").normalizeNavidromeText(),
+                            artistName = node.optString("artistName").normalizeNavidromeText(),
+                            albumName = node.optString("albumName").normalizeNavidromeText(),
                             coverUrl = node.optString("coverUrl").ifBlank { null },
                             durationSeconds = node.takeIf { it.has("durationSeconds") }?.optInt("durationSeconds")
                                 ?.takeIf { it >= 0 },
@@ -114,5 +114,23 @@ class NavidromeDownloadStorage @Inject constructor(
             }
         }.toString()
         prefs.edit().putString(PREF_KEY_ITEMS, payload).apply()
+    }
+
+    private fun String.normalizeNavidromeText(): String {
+        return trim()
+            .replace("Â’", "'")
+            .replace("Â'", "'")
+            .replace("â€™", "'")
+            .replace("â€˜", "'")
+            .replace("â€œ", "\"")
+            .replace("â€�", "\"")
+            .replace("Â\"", "\"")
+            .replace('\u0091', '\'')
+            .replace('\u0092', '\'')
+            .replace('\u0093', '"')
+            .replace('\u0094', '"')
+            .replace(Regex("(?<=[\\p{L}\\p{N}])\uFFFD(?=[\\p{L}\\p{N}])"), "'")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 }

@@ -8,13 +8,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.AudioAttributes
+import android.media.AudioAttributes as PlatformAudioAttributes
 import android.media.AudioFocusRequest
 import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.MediaPlayer
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
@@ -30,8 +29,18 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
@@ -105,6 +114,22 @@ internal fun shouldKeepPlaybackSessionActive(
     hasActivePlayer: Boolean
 ): Boolean = book != null && hasActivePlayer
 
+internal fun shouldScheduleAbsPausedPlayerRelease(
+    book: BookSummary?,
+    hasActivePlayer: Boolean,
+    isPlaying: Boolean,
+    playWhenReady: Boolean,
+    playbackState: Int,
+    appInForeground: Boolean
+): Boolean {
+    return book != null &&
+        hasActivePlayer &&
+        !appInForeground &&
+        !isPlaying &&
+        !playWhenReady &&
+        playbackState != Player.STATE_BUFFERING
+}
+
 internal enum class ResumeProgressUpdateMode {
     Immediate,
     OnAudioFocusGain,
@@ -130,17 +155,18 @@ class PlaybackController @Inject constructor(
         private const val CHANNEL_ID = "stillshelf_playback_v4"
         private const val CHANNEL_NAME = "Playback"
         private const val NOTIFICATION_ID = 1101
+        private const val PAUSED_PLAYER_RELEASE_DELAY_MS = 10 * 60 * 1000L
         private const val ACTIVE_PLAYBACK_SYNC_INTERVAL_MS = 15_000L
         private const val LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS = 2_000L
         private const val PROGRESS_SYNC_RETRY_DELAY_MS = 3_000L
         private const val BACKGROUND_SYNC_MIN_INTERVAL_MS = 2_000L
-        private const val PROGRESS_MATCH_EPSILON_SECONDS = 1.0
-        private const val LOCK_SCREEN_MODE_SKIP = "skip"
-        private const val LOCK_SCREEN_MODE_NEXT = "next"
-        private const val LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS = 1_500L
-        private const val LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS = 6_000L
         private const val LOCK_SCREEN_BOOK_NAV_PAGE_SIZE = 200
         private const val LOCK_SCREEN_BOOK_NAV_MAX_PAGES = 20
+        private const val OUTPUT_SWITCH_RESTORE_DELAY_MS = 220L
+        private const val SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS = 450L
+        private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
+        private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
+        private const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
         const val ACTION_FORWARD = "com.stillshelf.app.playback.action.FORWARD"
@@ -148,9 +174,10 @@ class PlaybackController @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutableUiState = MutableStateFlow(PlaybackUiState())
-    private var mediaPlayer: MediaPlayer? = null
+    private var mediaPlayer: ExoPlayer? = null
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
+    private var pausedReleaseJob: Job? = null
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -169,17 +196,27 @@ class PlaybackController @Inject constructor(
     private var outputRouteDeviceIdsByRouteKey: Map<String, List<Int>> = emptyMap()
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
+    private var outputRecoveryJob: Job? = null
+    private var suppressRefreshRoutingUntilElapsedMs: Long = 0L
     private val attemptedAutoAdvanceTargetsMs = mutableSetOf<Long>()
     private var suppressNextAutoAdvanceOnCompletion = false
     private var lastNotificationSignature: NotificationSignature? = null
+    private var observedActiveLibraryId: String? = null
+    private var hasObservedActiveLibraryId: Boolean = false
 
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfPlayback")
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    private val playbackAudioAttributes: AudioAttributes by lazy {
-        AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+    private val playbackAudioAttributes: Media3AudioAttributes by lazy {
+        Media3AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+            .build()
+    }
+    private val audioFocusAudioAttributes: PlatformAudioAttributes by lazy {
+        PlatformAudioAttributes.Builder()
+            .setUsage(PlatformAudioAttributes.USAGE_MEDIA)
+            .setContentType(PlatformAudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
     }
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -230,6 +267,7 @@ class PlaybackController @Inject constructor(
     private var hasObservedActiveServerId: Boolean = false
     private var pendingAutoAdvanceUiBookId: String? = null
     private var pendingAutoAdvanceUiPositionMs: Long? = null
+    private var appInForeground: Boolean = false
 
     private data class NotificationSignature(
         val bookId: String,
@@ -237,13 +275,6 @@ class PlaybackController @Inject constructor(
         val author: String?,
         val isPlaying: Boolean,
         val hasArtwork: Boolean
-    )
-
-    private data class PreviousRestartState(
-        val bookId: String,
-        val restartStartMs: Long,
-        val chapterMode: Boolean,
-        val triggeredAtElapsedMs: Long
     )
 
     private data class ProgressSyncRequest(
@@ -264,27 +295,20 @@ class PlaybackController @Inject constructor(
         val shouldRestartFromBeginning: Boolean
     )
 
-    private data class PreferredPlaybackProgress(
-        val progress: PlaybackProgress?,
-        val source: PlaybackProgressSource
-    )
-
-    private enum class PlaybackProgressSource {
-        None,
-        Server,
-        Local
-    }
-
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
+            appInForeground = true
             lastAppBackgroundSyncAtElapsedMs = 0L
             lastAppBackgroundSyncPositionMs = -1L
             syncPendingPlaybackCheckpointsOnForeground()
+            ensurePausedPlayerReleasePolicy()
         }
 
         override fun onStop(owner: LifecycleOwner) {
+            appInForeground = false
             scope.launch(Dispatchers.Main.immediate) {
                 syncProgressOnAppBackgroundIfNeeded()
+                ensurePausedPlayerReleasePolicy()
             }
         }
     }
@@ -321,9 +345,13 @@ class PlaybackController @Inject constructor(
         registerNoisyAudioReceiver()
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+        appInForeground = ProcessLifecycleOwner.get()
+            .lifecycle
+            .currentState
+            .isAtLeast(Lifecycle.State.STARTED)
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         observePlaybackPreferences()
-        observeActiveServerSelection()
+        observeActiveSessionSelection()
     }
 
     fun playBook(bookId: String, startPositionMs: Long? = null) {
@@ -499,7 +527,7 @@ class PlaybackController @Inject constructor(
             serverId = observedActiveServerId,
             bookId = bookId
         )
-        val preferredProgress = preferLocalCheckpoint(
+        val preferredProgress = resolvePreferredPlaybackProgress(
             serverProgress = serverProgress,
             localCheckpoint = localCheckpoint
         )
@@ -520,7 +548,8 @@ class PlaybackController @Inject constructor(
                 allowBackgroundRetry = false
             )
         }
-        val shouldRestartFromBeginning = resolvedProgress.shouldRestartFromBeginning(
+        val shouldRestartFromBeginning = shouldRestartFromBeginning(
+            progress = resolvedProgress,
             defaultDurationSeconds = defaultDurationSeconds
         )
         return if (shouldRestartFromBeginning) {
@@ -538,88 +567,6 @@ class PlaybackController @Inject constructor(
                 shouldRestartFromBeginning = false
             )
         }
-    }
-
-    private fun preferLocalCheckpoint(
-        serverProgress: PlaybackProgress?,
-        localCheckpoint: PlaybackCheckpointSnapshot?
-    ): PreferredPlaybackProgress {
-        if (localCheckpoint == null) {
-            return PreferredPlaybackProgress(
-                progress = serverProgress,
-                source = if (serverProgress != null) PlaybackProgressSource.Server else PlaybackProgressSource.None
-            )
-        }
-        val localProgress = localCheckpoint.toPlaybackProgress()
-        if (serverProgress == null) {
-            return PreferredPlaybackProgress(
-                progress = localProgress,
-                source = PlaybackProgressSource.Local
-            )
-        }
-
-        val localUpdatedAtMs = localCheckpoint.savedAtMs.takeIf { it > 0L }
-        val serverUpdatedAtMs = serverProgress.updatedAtMs?.takeIf { it > 0L }
-        if (localUpdatedAtMs != null && serverUpdatedAtMs != null && localUpdatedAtMs != serverUpdatedAtMs) {
-            return if (localUpdatedAtMs > serverUpdatedAtMs) {
-                PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-            } else {
-                PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-            }
-        }
-
-        val localSeconds = localProgress.currentTimeSeconds
-        val serverSeconds = serverProgress.currentTimeSeconds
-        if (localSeconds != null && serverSeconds != null) {
-            return when {
-                abs(localSeconds - serverSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS -> {
-                    if ((localUpdatedAtMs ?: 0L) >= (serverUpdatedAtMs ?: 0L)) {
-                        PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-                    } else {
-                        PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-                    }
-                }
-
-                localSeconds > serverSeconds -> {
-                    PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-                }
-
-                else -> {
-                    PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-                }
-            }
-        }
-
-        return if (localSeconds != null) {
-            PreferredPlaybackProgress(progress = localProgress, source = PlaybackProgressSource.Local)
-        } else {
-            PreferredPlaybackProgress(progress = serverProgress, source = PlaybackProgressSource.Server)
-        }
-    }
-
-    private fun localCheckpointMatchesResolvedProgress(
-        localCheckpoint: PlaybackCheckpointSnapshot,
-        resolvedProgress: PlaybackProgress?
-    ): Boolean {
-        if (resolvedProgress == null) return false
-        if (localCheckpoint.isFinished) {
-            val resolvedPercent = resolvedProgress.progressPercent ?: 0.0
-            return resolvedPercent >= 0.995
-        }
-        val resolvedSeconds = resolvedProgress.currentTimeSeconds ?: return false
-        return abs(resolvedSeconds - localCheckpoint.currentTimeSeconds) <= PROGRESS_MATCH_EPSILON_SECONDS
-    }
-
-    private fun PlaybackCheckpointSnapshot.toPlaybackProgress(): PlaybackProgress {
-        val progressPercent = durationSeconds
-            ?.takeIf { it > 0.0 }
-            ?.let { duration -> (currentTimeSeconds / duration).coerceIn(0.0, 1.0) }
-        return PlaybackProgress(
-            progressPercent = progressPercent,
-            currentTimeSeconds = currentTimeSeconds,
-            durationSeconds = durationSeconds,
-            updatedAtMs = savedAtMs.takeIf { it > 0L }
-        )
     }
 
     private fun PlaybackCheckpointSnapshot.toProgressSyncRequest(): ProgressSyncRequest {
@@ -821,24 +768,18 @@ class PlaybackController @Inject constructor(
             updateUiState { it.copy(isPlaying = false) }
         }
         val state = uiState.value
-        val resolvedDurationMs = resolveDisplayedDurationMs(player)
-            .takeIf { it > 0L }
-            ?: state.durationMs.takeIf { it > 0L }
-            ?: durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: 0L
-        val rawTargetMs = (currentTimeSeconds.coerceAtLeast(0.0) * 1000.0).toLong()
-        val targetMs = if (resolvedDurationMs > 0L) {
-            rawTargetMs.coerceIn(0L, resolvedDurationMs)
-        } else {
-            rawTargetMs.coerceAtLeast(0L)
-        }
+        val restoredState = resolveRestoredPlaybackProgressState(
+            currentTimeSeconds = currentTimeSeconds,
+            displayedDurationMs = resolveDisplayedDurationMs(player).takeIf { it > 0L },
+            uiDurationMs = state.durationMs.takeIf { it > 0L },
+            requestedDurationSeconds = durationSeconds,
+            bookDurationSeconds = state.book?.durationSeconds,
+            isFinished = isFinished
+        )
+        val resolvedDurationMs = restoredState.resolvedDurationMs
+        val targetMs = restoredState.targetMs
         seekToPosition(targetMs = targetMs, forceSync = false)
-        val progressPercent = when {
-            isFinished -> 1.0
-            resolvedDurationMs > 0L -> (targetMs.toDouble() / resolvedDurationMs.toDouble()).coerceIn(0.0, 1.0)
-            else -> null
-        }
+        val progressPercent = restoredState.progressPercent
         updateUiState { latest ->
             val currentBook = latest.book
             if (currentBook != null && currentBook.id == bookId) {
@@ -889,16 +830,10 @@ class PlaybackController @Inject constructor(
     fun cyclePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.2f, 1.3f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextIndex = normalizedSteps.indexOfFirst { step -> step > (currentSpeed + 0.01f) }
-            .takeIf { it >= 0 }
-            ?: 0
-        val nextSpeed = normalizedSteps[nextIndex]
+        val nextSpeed = resolveCycledPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -906,14 +841,10 @@ class PlaybackController @Inject constructor(
     fun increasePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextSpeed = normalizedSteps.firstOrNull { it > (currentSpeed + 0.01f) }
-            ?: normalizedSteps.last()
+        val nextSpeed = resolveIncreasedPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -921,14 +852,10 @@ class PlaybackController @Inject constructor(
     fun decreasePlaybackSpeed(
         steps: List<Float> = listOf(0.5f, 1.0f, 1.2f, 1.5f, 2.0f)
     ): Float {
-        val normalizedSteps = steps
-            .map { it.coerceIn(0.5f, 2.0f) }
-            .distinct()
-            .sorted()
-        if (normalizedSteps.isEmpty()) return uiState.value.playbackSpeed
-        val currentSpeed = uiState.value.playbackSpeed
-        val nextSpeed = normalizedSteps.lastOrNull { it < (currentSpeed - 0.01f) }
-            ?: normalizedSteps.first()
+        val nextSpeed = resolveDecreasedPlaybackSpeed(
+            currentSpeed = uiState.value.playbackSpeed,
+            steps = steps
+        )
         setPlaybackSpeed(nextSpeed)
         return nextSpeed
     }
@@ -970,9 +897,10 @@ class PlaybackController @Inject constructor(
         val bookId = currentBookId ?: uiState.value.book?.id ?: return false
         val chapterBoundariesMs = resolveChapterBoundariesMs(bookId) ?: return false
         val currentPositionMs = uiState.value.positionMs.coerceAtLeast(0L)
-        val nextBoundaryMs = chapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (currentPositionMs + 200L)
-        } ?: return false
+        val nextBoundaryMs = resolveNextChapterBoundaryMs(
+            boundariesMs = chapterBoundariesMs,
+            positionMs = currentPositionMs
+        ) ?: return false
         val remainingMs = (nextBoundaryMs - currentPositionMs).coerceAtLeast(0L)
         if (remainingMs <= 750L) return false
         startSleepTimer(
@@ -1027,7 +955,7 @@ class PlaybackController @Inject constructor(
                 val result = sessionRepository.createBookmark(
                     bookId = bookId,
                     timeSeconds = timeSeconds,
-                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                    title = normalizeBookmarkTitle(title)
                 )
             ) {
                 is AppResult.Success -> updateUiState { it.copy(errorMessage = null) }
@@ -1099,8 +1027,11 @@ class PlaybackController @Inject constructor(
         if (preferredOutputDeviceId != resolvedPreferredId) {
             preferredOutputDeviceId = resolvedPreferredId
         }
+        val shouldSkipRoutingApply = SystemClock.elapsedRealtime() < suppressRefreshRoutingUntilElapsedMs
         mediaPlayer?.let { player ->
-            applyPreferredOutputDevice(player)
+            if (!shouldSkipRoutingApply) {
+                applyPreferredOutputDevice(player)
+            }
         }
         updateUiState {
             it.copy(
@@ -1117,31 +1048,37 @@ class PlaybackController @Inject constructor(
             refreshAudioOutputDevices()
             return false
         }
+        val previousPreferredId = preferredOutputDeviceId
         preferredOutputDeviceId = deviceId
-        val player = mediaPlayer
-        if (player != null) {
-            if (deviceId == null) {
-                applySystemDefaultOutputRouting(player)
-            } else {
-                applySystemDefaultOutputRouting(player)
-                val isSpeakerTarget = isSpeakerOutputDevice(displayedDeviceId = deviceId)
-                var applied = if (isSpeakerTarget) {
-                    applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
-                } else {
-                    applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
-                }
-                if (!applied) {
-                    applied = if (isSpeakerTarget) {
-                        applyPreferredOutputForDisplayedId(player = player, displayedDeviceId = deviceId)
-                    } else {
-                        applyOutputViaAudioManagerFallback(displayedDeviceId = deviceId)
-                    }
-                }
-                if (!applied) {
-                    refreshAudioOutputDevices()
-                    return false
-                }
+        val activePlayer = mediaPlayer
+        if (activePlayer == null) {
+            refreshAudioOutputDevices()
+            return true
+        }
+        if (deviceId == null) {
+            val applied = performMutedOutputSwitch(
+                player = activePlayer,
+                block = { applySystemDefaultOutputRouting(activePlayer) },
+                toSpeakerRoute = false
+            )
+            if (!applied) {
+                preferredOutputDeviceId = previousPreferredId
+                updateOutputSelectionWithoutRouting(available)
+                return false
             }
+            refreshAudioOutputDevices()
+            return true
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
+        val applied = performMutedOutputSwitch(
+            player = activePlayer,
+            block = { applyTargetedOutputRouting(activePlayer, deviceId) },
+            toSpeakerRoute = speakerTarget
+        )
+        if (!applied) {
+            preferredOutputDeviceId = previousPreferredId
+            updateOutputSelectionWithoutRouting(available)
+            return false
         }
         refreshAudioOutputDevices()
         return true
@@ -1169,7 +1106,7 @@ class PlaybackController @Inject constructor(
         } else {
             localTargetMs
         }
-        runCatching { player.seekTo(clampedLocalMs.toInt()) }
+            runCatching { player.seekTo(clampedLocalMs) }
         updateUiState {
             it.copy(
                 positionMs = currentTrackStartOffsetMs + clampedLocalMs,
@@ -1203,7 +1140,7 @@ class PlaybackController @Inject constructor(
         if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             pendingPlayAfterAudioFocusGain = false
             pendingPlayStartsProgressUpdates = false
-            runCatching { player.start() }
+            runCatching { player.play() }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
             if (progressUpdateMode == ResumeProgressUpdateMode.Immediate) {
                 startProgressUpdates()
@@ -1235,7 +1172,7 @@ class PlaybackController @Inject constructor(
         }
 
         val trackSelection = resolvePlaybackTrackSelection(playbackSource, resumeMs)
-        val player = MediaPlayer()
+        val player = createAbsPlayer(trackSelection.streamUrl)
         mediaPlayer = player
         currentBookId = bookId
         currentPlaybackSource = playbackSource
@@ -1246,8 +1183,6 @@ class PlaybackController @Inject constructor(
         lastCheckpointSavedAtElapsedMs = 0L
         lastAppBackgroundSyncAtElapsedMs = 0L
         lastAppBackgroundSyncPositionMs = -1L
-        configurePlayerAudioAttributes(player)
-        applyPreferredOutputDevice(player)
         updateUiState {
             it.copy(
                 isLoading = true,
@@ -1264,86 +1199,81 @@ class PlaybackController @Inject constructor(
         }
         updateCachedFromUiState()
 
-        player.setOnPreparedListener { prepared ->
-            if (prepared !== mediaPlayer) return@setOnPreparedListener
-            applyPlaybackSpeed(player = prepared, speed = currentPlaybackSpeed)
-            applyAudioEffects(prepared)
-            val duration = safeDuration(prepared)
-            currentBookDurationMs = maxOf(currentBookDurationMs, currentTrackStartOffsetMs + duration)
-            val clampedResume = if (duration > 0L) {
-                trackSelection.localSeekMs.coerceIn(0L, (duration - 1_000L).coerceAtLeast(0L))
-            } else {
-                trackSelection.localSeekMs.coerceAtLeast(0L)
-            }
-            if (clampedResume > 0L) {
-                runCatching { prepared.seekTo(clampedResume.toInt()) }
-            }
-            updateUiState {
-                it.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    playbackSpeed = currentPlaybackSpeed,
-                    positionMs = currentTrackStartOffsetMs + clampedResume,
-                    durationMs = resolveDisplayedDurationMs(prepared)
-                )
-            }
-            updateCachedFromUiState()
-            persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
-            val focusResult = requestAudioFocusForPlayback()
-            when (focusResult) {
-                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
-                    pendingPlayAfterAudioFocusGain = false
-                    pendingPlayStartsProgressUpdates = false
-                    runCatching { prepared.start() }
-                    updateUiState { it.copy(isPlaying = true, errorMessage = null) }
-                    startProgressUpdates()
-                }
+        var initialReadyHandled = false
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (player !== mediaPlayer) return
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        if (initialReadyHandled) return
+                        initialReadyHandled = true
+                        applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
+                        applyAudioEffects(player)
+                        val duration = safeDuration(player)
+                        currentBookDurationMs = maxOf(currentBookDurationMs, currentTrackStartOffsetMs + duration)
+                        updateUiState {
+                            it.copy(
+                                isLoading = false,
+                                isPlaying = false,
+                                playbackSpeed = currentPlaybackSpeed,
+                                positionMs = safePosition(player),
+                                durationMs = resolveDisplayedDurationMs(player)
+                            )
+                        }
+                        updateCachedFromUiState()
+                        persistPlaybackCheckpointIfNeeded(force = true, isFinished = false)
+                        val focusResult = requestAudioFocusForPlayback()
+                        when (focusResult) {
+                            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                                pendingPlayAfterAudioFocusGain = false
+                                pendingPlayStartsProgressUpdates = false
+                                runCatching { player.play() }
+                                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+                                startProgressUpdates()
+                            }
 
-                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
-                    pendingPlayAfterAudioFocusGain = true
-                    pendingPlayStartsProgressUpdates = true
-                }
+                            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                                pendingPlayAfterAudioFocusGain = true
+                                pendingPlayStartsProgressUpdates = true
+                            }
 
-                else -> {
-                    pendingPlayAfterAudioFocusGain = false
-                    pendingPlayStartsProgressUpdates = false
-                    updateUiState {
-                        it.copy(errorMessage = "Could not take audio output right now.")
+                            else -> {
+                                pendingPlayAfterAudioFocusGain = false
+                                pendingPlayStartsProgressUpdates = false
+                                updateUiState {
+                                    it.copy(errorMessage = "Could not take audio output right now.")
+                                }
+                            }
+                        }
+                    }
+
+                    Player.STATE_ENDED -> {
+                        val duration = currentTrackStartOffsetMs + safeDuration(player)
+                        handleCompletion(book = book, durationMs = duration)
                     }
                 }
             }
-        }
-        player.setOnCompletionListener { completed ->
-            if (completed !== mediaPlayer) return@setOnCompletionListener
-            val duration = currentTrackStartOffsetMs + safeDuration(completed)
-            handleCompletion(book = book, durationMs = duration)
-        }
-        player.setOnErrorListener { _, _, _ ->
-            updateUiState {
-                it.copy(
-                    isLoading = false,
-                    isPlaying = false,
-                    errorMessage = "Playback failed. Try another book."
-                )
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (player !== mediaPlayer) return
+                updateUiState {
+                    it.copy(
+                        isLoading = false,
+                        isPlaying = false,
+                        errorMessage = error.message ?: "Playback failed. Try another book."
+                    )
+                }
             }
-            true
-        }
+        })
 
         runCatching {
-            val parsedUri = Uri.parse(trackSelection.streamUrl)
-            val isLocalUri = parsedUri.scheme.equals("file", ignoreCase = true) ||
-                parsedUri.scheme.equals("content", ignoreCase = true)
-            if (isLocalUri) {
-                player.setDataSource(appContext, parsedUri)
-            } else {
-                val resolvedStream = splitAuthenticatedUrl(trackSelection.streamUrl)
-                val headers = resolvedStream.authToken
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { token -> mapOf("Authorization" to authorizationHeaderValue(token)) }
-                    .orEmpty()
-                player.setDataSource(appContext, Uri.parse(resolvedStream.cleanUrl), headers)
-            }
-            player.prepareAsync()
+            applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
+            val sourceTarget = resolveAbsPlaybackSourceTarget(trackSelection.streamUrl)
+            player.setMediaItem(
+                MediaItem.fromUri(sourceTarget.playbackUrl),
+                trackSelection.localSeekMs.coerceAtLeast(0L)
+            )
+            player.prepare()
         }.onFailure { throwable ->
             abandonAudioFocus()
             updateUiState {
@@ -1385,9 +1315,25 @@ class PlaybackController @Inject constructor(
         updateUiState { it.copy(isPlaying = false) }
     }
 
-    private fun configurePlayerAudioAttributes(player: MediaPlayer) {
+    private fun configurePlayerAudioAttributes(player: ExoPlayer) {
         runCatching {
-            player.setAudioAttributes(playbackAudioAttributes)
+            player.setAudioAttributes(playbackAudioAttributes, false)
+        }
+    }
+
+    private fun createAbsPlayer(streamUrl: String): ExoPlayer {
+        val sourceTarget = resolveAbsPlaybackSourceTarget(streamUrl)
+        val headers = sourceTarget.headers
+        val builder = ExoPlayer.Builder(appContext)
+        if (headers.isNotEmpty()) {
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(headers)
+            val dataSourceFactory = DefaultDataSource.Factory(appContext, httpFactory)
+            builder.setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+        }
+        return builder.build().apply {
+            configurePlayerAudioAttributes(this)
+            applyPreferredOutputDevice(this)
         }
     }
 
@@ -1395,7 +1341,7 @@ class PlaybackController @Inject constructor(
         if (hasAudioFocus) return AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         val requestResult = if (SDK_INT >= Build.VERSION_CODES.O) {
             val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(playbackAudioAttributes)
+                .setAudioAttributes(audioFocusAudioAttributes)
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener(audioFocusChangeListener, Handler(Looper.getMainLooper()))
                 .build()
@@ -1438,7 +1384,7 @@ class PlaybackController @Inject constructor(
                         val shouldStartProgress = pendingPlayStartsProgressUpdates
                         pendingPlayStartsProgressUpdates = false
                         wasPausedForTransientAudioFocusLoss = false
-                        runCatching { player.start() }
+                        runCatching { player.play() }
                         updateUiState { it.copy(isPlaying = true, errorMessage = null) }
                         if (shouldStartProgress) {
                             startProgressUpdates()
@@ -1487,16 +1433,16 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun applyDucking(player: MediaPlayer) {
+    private fun applyDucking(player: ExoPlayer) {
         runCatching {
-            player.setVolume(0.30f, 0.30f)
+            player.volume = 0.30f
             isDuckedForAudioFocus = true
         }
     }
 
-    private fun clearDucking(player: MediaPlayer?) {
+    private fun clearDucking(player: ExoPlayer?) {
         if (!isDuckedForAudioFocus || player == null) return
-        runCatching { player.setVolume(1.0f, 1.0f) }
+        runCatching { player.volume = 1.0f }
         isDuckedForAudioFocus = false
     }
 
@@ -1541,20 +1487,7 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun PlaybackProgress?.shouldRestartFromBeginning(
-        defaultDurationSeconds: Double?
-    ): Boolean {
-        val progress = this ?: return false
-        val progressPercent = progress.progressPercent
-        if (progressPercent != null && progressPercent >= 0.995) {
-            return true
-        }
-        val current = progress.currentTimeSeconds ?: return false
-        val duration = (progress.durationSeconds ?: defaultDurationSeconds)?.takeIf { it > 0.0 } ?: return false
-        return (current / duration) >= 0.995
-    }
-
-    private fun updateProgress(player: MediaPlayer) {
+    private fun updateProgress(player: ExoPlayer) {
         if (player !== mediaPlayer) return
         val rawPositionMs = safePosition(player)
         val guardedPositionMs = applyPendingAutoAdvanceUiGuard(rawPositionMs)
@@ -1606,17 +1539,18 @@ class PlaybackController @Inject constructor(
         return targetPositionMs
     }
 
-    private fun safePosition(player: MediaPlayer): Long {
+    private fun safePosition(player: ExoPlayer): Long {
         return currentTrackStartOffsetMs +
-            runCatching { player.currentPosition.toLong().coerceAtLeast(0L) }.getOrDefault(0L)
+            runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
     }
 
-    private fun safeDuration(player: MediaPlayer): Long {
-        val duration = runCatching { player.duration.toLong() }.getOrDefault(0L)
+    private fun safeDuration(player: ExoPlayer): Long {
+        val duration = runCatching { player.duration }.getOrDefault(C.TIME_UNSET)
+        if (duration == C.TIME_UNSET) return 0L
         return duration.coerceAtLeast(0L)
     }
 
-    private fun resolveDisplayedDurationMs(player: MediaPlayer): Long {
+    private fun resolveDisplayedDurationMs(player: ExoPlayer): Long {
         return maxOf(
             currentBookDurationMs,
             currentTrackStartOffsetMs + safeDuration(player)
@@ -1628,6 +1562,7 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        cancelPausedPlayerRelease()
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -1640,6 +1575,7 @@ class PlaybackController @Inject constructor(
         pendingPlayAfterAudioFocusGain = false
         pendingPlayStartsProgressUpdates = false
         wasPausedForTransientAudioFocusLoss = false
+        cancelOutputRecovery()
         releaseAudioEffects()
         clearDucking(mediaPlayer)
         mediaPlayer?.runCatching { release() }
@@ -1709,11 +1645,18 @@ class PlaybackController @Inject constructor(
         if (currentBookId.isNullOrBlank()) return
         val currentPositionMs = state.positionMs.coerceAtLeast(0L)
         val elapsedNow = SystemClock.elapsedRealtime()
-        val positionAdvancedEnough = abs(currentPositionMs - lastAppBackgroundSyncPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
-        val backgroundSyncRecentlyTriggered =
-            (elapsedNow - lastAppBackgroundSyncAtElapsedMs) < BACKGROUND_SYNC_MIN_INTERVAL_MS
-        if (backgroundSyncRecentlyTriggered && !positionAdvancedEnough) return
-        if (!state.isPlaying && currentPositionMs <= 0L && (book.currentTimeSeconds ?: 0.0) <= 0.0) return
+        if (
+            !shouldSyncProgressOnBackground(
+                isPlaying = state.isPlaying,
+                currentPositionMs = currentPositionMs,
+                bookCurrentTimeSeconds = book.currentTimeSeconds,
+                elapsedNowMs = elapsedNow,
+                lastBackgroundSyncAtElapsedMs = lastAppBackgroundSyncAtElapsedMs,
+                lastBackgroundSyncPositionMs = lastAppBackgroundSyncPositionMs
+            )
+        ) {
+            return
+        }
 
         lastAppBackgroundSyncAtElapsedMs = elapsedNow
         lastAppBackgroundSyncPositionMs = currentPositionMs
@@ -1729,10 +1672,13 @@ class PlaybackController @Inject constructor(
         val state = uiState.value
         val positionMs = state.positionMs.coerceAtLeast(0L)
         val elapsedNow = SystemClock.elapsedRealtime()
-        val shouldPersist = force ||
-            lastCheckpointPositionMs < 0L ||
-            abs(positionMs - lastCheckpointPositionMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS ||
-            (elapsedNow - lastCheckpointSavedAtElapsedMs) >= LOCAL_PLAYBACK_CHECKPOINT_DELTA_MS
+        val shouldPersist = shouldPersistPlaybackCheckpoint(
+            force = force,
+            positionMs = positionMs,
+            lastCheckpointPositionMs = lastCheckpointPositionMs,
+            elapsedNowMs = elapsedNow,
+            lastCheckpointSavedAtElapsedMs = lastCheckpointSavedAtElapsedMs
+        )
         if (!shouldPersist) return null
         val snapshot = PlaybackCheckpointSnapshot(
             serverId = observedActiveServerId,
@@ -1849,11 +1795,12 @@ class PlaybackController @Inject constructor(
                 bookId = request.bookId
             ) ?: return@launch
             if (checkpoint.savedAtMs != request.checkpointSavedAtMs) return@launch
-            sessionPreferences.clearPlaybackCheckpoint(
+            sessionPreferences.markPlaybackCheckpointSynced(
                 serverId = request.serverId,
-                bookId = request.bookId
+                bookId = request.bookId,
+                savedAtMs = checkpoint.savedAtMs
             )
-            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+            if (sessionPreferences.getPendingPlaybackCheckpoints().isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
             }
         }
@@ -1861,30 +1808,21 @@ class PlaybackController @Inject constructor(
 
     private fun shouldSyncAsFinished(): Boolean {
         val state = uiState.value
-        if (state.book?.isFinished == true) {
-            return true
-        }
-        val durationMs = state.durationMs.takeIf { it > 0L }
-            ?: state.book?.durationSeconds?.times(1000.0)?.toLong()?.coerceAtLeast(0L)
-            ?: return false
-        if (durationMs <= 0L) return false
-        return state.positionMs >= (durationMs * 0.995).toLong()
+        return shouldTreatPlaybackAsFinished(
+            bookIsFinished = state.book?.isFinished == true,
+            positionMs = state.positionMs,
+            durationMs = state.durationMs.takeIf { it > 0L },
+            bookDurationSeconds = state.book?.durationSeconds
+        )
     }
 
     private fun updateCachedFromUiState() {
         val state = uiState.value
         val currentBook = state.book ?: return
-        val durationSeconds = currentBook.durationSeconds
-            ?: state.durationMs.takeIf { it > 0L }?.div(1000.0)
-        val currentSeconds = state.positionMs.coerceAtLeast(0L) / 1000.0
-        val progressPercent = durationSeconds
-            ?.takeIf { it > 0.0 }
-            ?.let { (currentSeconds / it).coerceIn(0.0, 1.0) }
-
-        cachedContinueListeningItem = ContinueListeningItem(
+        cachedContinueListeningItem = buildContinueListeningItem(
             book = currentBook,
-            progressPercent = progressPercent,
-            currentTimeSeconds = currentSeconds
+            positionMs = state.positionMs,
+            fallbackDurationMs = state.durationMs.takeIf { it > 0L }
         )
     }
 
@@ -1917,21 +1855,74 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun observeActiveServerSelection() {
+    private fun observeActiveSessionSelection() {
         scope.launch {
             sessionPreferences.state.collect { pref ->
                 val nextServerId = pref.activeServerId
-                if (!hasObservedActiveServerId) {
+                val nextLibraryId = pref.activeLibraryId
+                if (!hasObservedActiveServerId || !hasObservedActiveLibraryId) {
                     observedActiveServerId = nextServerId
+                    observedActiveLibraryId = nextLibraryId
                     hasObservedActiveServerId = true
+                    hasObservedActiveLibraryId = true
                     return@collect
                 }
                 val previousServerId = observedActiveServerId
+                val previousLibraryId = observedActiveLibraryId
                 observedActiveServerId = nextServerId
+                observedActiveLibraryId = nextLibraryId
                 if (previousServerId != nextServerId) {
                     clearPlaybackForServerSwitch()
+                } else if (previousLibraryId != nextLibraryId) {
+                    clearPlaybackForLibrarySwitch()
                 }
             }
+        }
+    }
+
+    private suspend fun clearPlaybackForLibrarySwitch() {
+        val hadBook = uiState.value.book != null
+        if (hadBook) {
+            updateCachedFromUiState()
+        }
+        if (hadBook) {
+            if (uiState.value.isPlaying) {
+                pause(reason = PauseReason.Internal)
+            } else {
+                saveProgressSnapshot()
+            }
+            syncQueueJob?.join()
+        }
+        playRequestJob?.cancel()
+        playRequestToken += 1L
+        releasePlayer(syncProgressBeforeRelease = false)
+        currentBookId = null
+        currentPlaybackSource = null
+        currentTrackStartOffsetMs = 0L
+        currentBookDurationMs = 0L
+        cachedContinueListeningItem = null
+        attemptedAutoAdvanceTargetsMs.clear()
+        previousRestartState = null
+        playbackSyncGate.reset()
+        lastCheckpointPositionMs = -1L
+        lastCheckpointSavedAtElapsedMs = 0L
+        lastAppBackgroundSyncAtElapsedMs = 0L
+        lastAppBackgroundSyncPositionMs = -1L
+        suppressNextAutoAdvanceOnCompletion = false
+        cancelSleepTimer(updateUi = false)
+        updateUiState { state ->
+            state.copy(
+                isLoading = false,
+                book = null,
+                isPlaying = false,
+                positionMs = 0L,
+                durationMs = 0L,
+                errorMessage = null,
+                sleepTimerMode = SleepTimerMode.Off,
+                sleepTimerRemainingMs = null,
+                sleepTimerTotalMs = null,
+                sleepTimerExpiredPromptVisible = false
+            )
         }
     }
 
@@ -2095,20 +2086,8 @@ class PlaybackController @Inject constructor(
         }
     }
 
-    private fun resolveCurrentChapterIndex(chapterStartsMs: List<Long>, positionMs: Long): Int {
-        if (chapterStartsMs.isEmpty()) return 0
-        val seekPositionMs = positionMs.coerceAtLeast(0L) + 200L
-        return chapterStartsMs.indexOfLast { startMs -> startMs <= seekPositionMs }
-            .takeIf { index -> index >= 0 }
-            ?: 0
-    }
-
     private fun normalizeLockScreenControlMode(rawMode: String?): String {
-        return if (rawMode.equals(LOCK_SCREEN_MODE_NEXT, ignoreCase = true)) {
-            LOCK_SCREEN_MODE_NEXT
-        } else {
-            LOCK_SCREEN_MODE_SKIP
-        }
+        return com.stillshelf.app.playback.controller.normalizeLockScreenControlMode(rawMode)
     }
 
     private fun shouldGoToPreviousAfterRestart(
@@ -2117,17 +2096,18 @@ class PlaybackController @Inject constructor(
         chapterMode: Boolean,
         currentPositionMs: Long
     ): Boolean {
-        val state = previousRestartState ?: return false
-        if (state.bookId != bookId) return false
-        if (state.restartStartMs != restartStartMs) return false
-        if (state.chapterMode != chapterMode) return false
-        val elapsedSinceTriggerMs = SystemClock.elapsedRealtime() - state.triggeredAtElapsedMs
-        if (elapsedSinceTriggerMs > LOCK_SCREEN_PREVIOUS_DOUBLE_PRESS_WINDOW_MS) return false
-        return currentPositionMs <= (restartStartMs + LOCK_SCREEN_SECOND_PREVIOUS_POSITION_WINDOW_MS)
+        return com.stillshelf.app.playback.controller.shouldGoToPreviousAfterRestart(
+            previousRestartState = previousRestartState,
+            bookId = bookId,
+            restartStartMs = restartStartMs,
+            chapterMode = chapterMode,
+            currentPositionMs = currentPositionMs,
+            nowElapsedMs = SystemClock.elapsedRealtime()
+        )
     }
 
     private fun rememberRestart(bookId: String, restartStartMs: Long, chapterMode: Boolean) {
-        previousRestartState = PreviousRestartState(
+        previousRestartState = rememberRestartState(
             bookId = bookId,
             restartStartMs = restartStartMs.coerceAtLeast(0L),
             chapterMode = chapterMode,
@@ -2282,27 +2262,28 @@ class PlaybackController @Inject constructor(
     }
 
     private fun remainingToNextChapterBoundaryMs(positionMs: Long): Long {
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        val nextBoundaryMs = sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (safePositionMs + 200L)
-        }
-        return if (nextBoundaryMs == null) 0L else (nextBoundaryMs - safePositionMs).coerceAtLeast(0L)
+        return resolveRemainingToChapterBoundaryMs(
+            positionMs = positionMs,
+            targetBoundaryMs = resolveNextChapterBoundaryMs(
+                boundariesMs = sleepTimerChapterBoundariesMs,
+                positionMs = positionMs
+            )
+        )
     }
 
     private fun nextChapterBoundaryForPosition(positionMs: Long): Long? {
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        return sleepTimerChapterBoundariesMs.firstOrNull { boundaryMs ->
-            boundaryMs > (safePositionMs + 200L)
-        }
+        return resolveNextChapterBoundaryMs(
+            boundariesMs = sleepTimerChapterBoundariesMs,
+            positionMs = positionMs
+        )
     }
 
     private fun remainingToTargetChapterBoundaryMs(positionMs: Long): Long {
         val targetBoundaryMs = sleepTimerTargetBoundaryMs ?: return remainingToNextChapterBoundaryMs(positionMs)
-        val safePositionMs = positionMs.coerceAtLeast(0L)
-        if (safePositionMs >= targetBoundaryMs - 200L) {
-            return 0L
-        }
-        return (targetBoundaryMs - safePositionMs).coerceAtLeast(0L)
+        return resolveRemainingToChapterBoundaryMs(
+            positionMs = positionMs,
+            targetBoundaryMs = targetBoundaryMs
+        )
     }
 
     private fun queryOutputDevices(): List<PlaybackOutputDevice> {
@@ -2488,23 +2469,20 @@ class PlaybackController @Inject constructor(
         val device: AudioDeviceInfo
     )
 
-    private fun applyPlaybackSpeed(player: MediaPlayer, speed: Float) {
+    private fun applyPlaybackSpeed(player: ExoPlayer, speed: Float) {
         runCatching {
-            val params = player.playbackParams ?: android.media.PlaybackParams()
-            player.playbackParams = params
-                .setSpeed(speed)
-                .setPitch(1.0f)
+            player.playbackParameters = PlaybackParameters(speed, 1.0f)
         }
     }
 
-    private fun applyAudioEffects(player: MediaPlayer) {
+    private fun applyAudioEffects(player: ExoPlayer) {
         ensureAudioEffects(player)
         applyBoostEffect()
         applySoftToneEffect()
     }
 
-    private fun ensureAudioEffects(player: MediaPlayer) {
-        val sessionId = runCatching { player.audioSessionId }.getOrDefault(0)
+    private fun ensureAudioEffects(player: ExoPlayer) {
+        val sessionId = runCatching { player.audioSessionId }.getOrDefault(C.AUDIO_SESSION_ID_UNSET)
         if (sessionId <= 0) return
         if (audioEffectsSessionId == sessionId) return
 
@@ -2521,7 +2499,7 @@ class PlaybackController @Inject constructor(
 
     private fun applyBoostEffect() {
         val enhancer = loudnessEnhancer ?: return
-        val targetGainMb = (currentBoostLevel * 1800f).toInt().coerceIn(0, 2000)
+        val targetGainMb = resolveBoostGainMb(currentBoostLevel)
         runCatching {
             enhancer.setTargetGain(targetGainMb)
             enhancer.enabled = targetGainMb > 0
@@ -2537,11 +2515,14 @@ class PlaybackController @Inject constructor(
             val maxLevel = levelRange.getOrNull(1)?.toInt() ?: 1500
 
             for (band in 0 until bandCount) {
-                val ratio = if (bandCount <= 1) 0f else band.toFloat() / (bandCount - 1).toFloat()
-                val attenuationWeight = ((ratio - 0.35f) / 0.65f).coerceIn(0f, 1f)
-                val attenuationMb = (currentSoftToneLevel * attenuationWeight * 900f).toInt()
-                val targetLevel = (0 - attenuationMb).coerceIn(minLevel, maxLevel)
-                toneEq.setBandLevel(band.toShort(), targetLevel.toShort())
+                val targetLevel = resolveSoftToneBandLevel(
+                    softToneLevel = currentSoftToneLevel,
+                    bandIndex = band,
+                    bandCount = bandCount,
+                    minLevelMb = minLevel,
+                    maxLevelMb = maxLevel
+                )
+                toneEq.setBandLevel(band.toShort(), targetLevel)
             }
             toneEq.enabled = currentSoftToneLevel > 0f
         }
@@ -2555,7 +2536,7 @@ class PlaybackController @Inject constructor(
         audioEffectsSessionId = null
     }
 
-    private fun applyPreferredOutputDevice(player: MediaPlayer) {
+    private fun applyPreferredOutputDevice(player: ExoPlayer) {
         val preferredId = preferredOutputDeviceId
         if (preferredId == null) {
             applySystemDefaultOutputRouting(player)
@@ -2572,7 +2553,7 @@ class PlaybackController @Inject constructor(
         return candidates.firstOrNull()?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
     }
 
-    private fun applySystemDefaultOutputRouting(player: MediaPlayer): Boolean {
+    private fun applySystemDefaultOutputRouting(player: ExoPlayer): Boolean {
         val preferredCleared = clearPreferredOutputDevice(player)
         val communicationCleared = if (SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
@@ -2609,21 +2590,154 @@ class PlaybackController @Inject constructor(
             }
     }
 
-    private fun applyPreferredOutputForDisplayedId(player: MediaPlayer, displayedDeviceId: Int): Boolean {
+    private fun applyPreferredOutputForDisplayedId(player: ExoPlayer, displayedDeviceId: Int): Boolean {
         val candidates = resolveOutputCandidatesForDisplayedId(displayedDeviceId)
         return candidates.any { targetDevice ->
             setPreferredOutputDevice(player, targetDevice)
         }
     }
 
-    private fun clearPreferredOutputDevice(player: MediaPlayer): Boolean {
-        if (SDK_INT < Build.VERSION_CODES.P) return false
-        return runCatching { player.setPreferredDevice(null) }.getOrDefault(false)
+    private fun applyTargetedOutputRouting(player: ExoPlayer, deviceId: Int?): Boolean {
+        if (deviceId == null) {
+            return applySystemDefaultOutputRouting(player)
+        }
+        val speakerTarget = isSpeakerOutputDevice(deviceId)
+        return if (speakerTarget) {
+            prepareForSpeakerPreferredRouting(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        } else {
+            clearSpeakerRouteOverride(player)
+            applyPreferredOutputForDisplayedId(player, deviceId) || applyOutputViaAudioManagerFallback(deviceId)
+        }
     }
 
-    private fun setPreferredOutputDevice(player: MediaPlayer, targetDevice: AudioDeviceInfo): Boolean {
-        if (SDK_INT < Build.VERSION_CODES.P) return false
-        return runCatching { player.setPreferredDevice(targetDevice) }.getOrDefault(false)
+    private fun performMutedOutputSwitch(player: ExoPlayer, block: () -> Boolean, toSpeakerRoute: Boolean): Boolean {
+        cancelOutputRecovery()
+        suppressRefreshRoutingUntilElapsedMs =
+            SystemClock.elapsedRealtime() + resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute)
+        val originalVolume = player.volume
+        val shouldResumePlayback = player.isPlaying || player.playWhenReady
+        if (shouldResumePlayback) {
+            runCatching { player.pause() }
+            updateUiState { it.copy(isPlaying = false, errorMessage = null) }
+        }
+        runCatching { player.volume = 0f }
+        val applied = block()
+        if (!applied) {
+            suppressRefreshRoutingUntilElapsedMs = 0L
+            runCatching { player.volume = originalVolume }
+            if (shouldResumePlayback) {
+                runCatching { player.play() }
+                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            }
+            return false
+        }
+        scheduleOutputSwitchRecovery(player, originalVolume, shouldResumePlayback, toSpeakerRoute)
+        return applied
+    }
+
+    private fun scheduleOutputSwitchRecovery(
+        player: ExoPlayer,
+        volume: Float,
+        shouldResumePlayback: Boolean,
+        toSpeakerRoute: Boolean
+    ) {
+        outputRecoveryJob = scope.launch {
+            delay(if (toSpeakerRoute) SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS else OUTPUT_SWITCH_RESTORE_DELAY_MS)
+            if (mediaPlayer !== player) {
+                outputRecoveryJob = null
+                return@launch
+            }
+            if (shouldResumePlayback) {
+                runCatching { player.play() }
+                updateUiState { it.copy(isPlaying = true, errorMessage = null) }
+            }
+            if (toSpeakerRoute) {
+                val targetVolume = volume.coerceAtLeast(0f)
+                repeat(SPEAKER_OUTPUT_VOLUME_RAMP_STEPS) { step ->
+                    if (mediaPlayer !== player) {
+                        outputRecoveryJob = null
+                        return@launch
+                    }
+                    val progress = (step + 1).toFloat() / SPEAKER_OUTPUT_VOLUME_RAMP_STEPS.toFloat()
+                    runCatching { player.volume = targetVolume * progress }
+                    if (step < SPEAKER_OUTPUT_VOLUME_RAMP_STEPS - 1) {
+                        delay(SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS)
+                    }
+                }
+            } else {
+                runCatching { player.volume = volume }
+            }
+            outputRecoveryJob = null
+        }
+    }
+
+    private fun cancelOutputRecovery() {
+        outputRecoveryJob?.cancel()
+        outputRecoveryJob = null
+        suppressRefreshRoutingUntilElapsedMs = 0L
+    }
+
+    private fun resolveOutputSwitchRefreshSuppressionMs(toSpeakerRoute: Boolean): Long {
+        val restoreDelayMs = if (toSpeakerRoute) {
+            SPEAKER_OUTPUT_SWITCH_RESTORE_DELAY_MS
+        } else {
+            OUTPUT_SWITCH_RESTORE_DELAY_MS
+        }
+        return restoreDelayMs + OUTPUT_SWITCH_REFRESH_GRACE_MS
+    }
+
+    private fun updateOutputSelectionWithoutRouting(available: List<PlaybackOutputDevice>) {
+        updateUiState {
+            it.copy(
+                outputDevices = available,
+                selectedOutputDeviceId = preferredOutputDeviceId
+            )
+        }
+    }
+
+    private fun clearPreferredOutputDevice(player: ExoPlayer): Boolean {
+        return runCatching {
+            player.setPreferredAudioDevice(null)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun setPreferredOutputDevice(player: ExoPlayer, targetDevice: AudioDeviceInfo): Boolean {
+        return runCatching {
+            player.setPreferredAudioDevice(targetDevice)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearCommunicationRouteOverride(): Boolean {
+        if (SDK_INT < Build.VERSION_CODES.S) return true
+        return runCatching {
+            audioManager.clearCommunicationDevice()
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun clearSpeakerRouteOverride(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputDevice(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
+    }
+
+    private fun prepareForSpeakerPreferredRouting(player: ExoPlayer): Boolean {
+        val preferredCleared = clearPreferredOutputDevice(player)
+        val communicationCleared = clearCommunicationRouteOverride()
+        val speakerReset = runCatching {
+            audioManager.mode = AudioManager.MODE_NORMAL
+            audioManager.isSpeakerphoneOn = false
+            true
+        }.getOrDefault(false)
+        return preferredCleared || communicationCleared || speakerReset
     }
 
     private fun applyOutputViaAudioManagerFallback(displayedDeviceId: Int): Boolean {
@@ -2738,6 +2852,51 @@ class PlaybackController @Inject constructor(
                 .build()
         )
         showPlaybackNotification(state)
+        ensurePausedPlayerReleasePolicy()
+    }
+
+    private fun cancelPausedPlayerRelease() {
+        pausedReleaseJob?.cancel()
+        pausedReleaseJob = null
+    }
+
+    private fun ensurePausedPlayerReleasePolicy() {
+        val player = mediaPlayer
+        val state = uiState.value
+        val shouldScheduleRelease = shouldScheduleAbsPausedPlayerRelease(
+            book = state.book,
+            hasActivePlayer = player != null,
+            isPlaying = player?.isPlaying == true,
+            playWhenReady = player?.playWhenReady == true,
+            playbackState = player?.playbackState ?: Player.STATE_IDLE,
+            appInForeground = appInForeground
+        )
+        if (!shouldScheduleRelease) {
+            cancelPausedPlayerRelease()
+            return
+        }
+        if (pausedReleaseJob?.isActive == true) return
+        pausedReleaseJob = scope.launch {
+            delay(PAUSED_PLAYER_RELEASE_DELAY_MS)
+            val playerToRelease = mediaPlayer
+            val currentState = uiState.value
+            val stillPaused = shouldScheduleAbsPausedPlayerRelease(
+                book = currentState.book,
+                hasActivePlayer = playerToRelease != null,
+                isPlaying = playerToRelease?.isPlaying == true,
+                playWhenReady = playerToRelease?.playWhenReady == true,
+                playbackState = playerToRelease?.playbackState ?: Player.STATE_IDLE,
+                appInForeground = appInForeground
+            )
+            if (!stillPaused) return@launch
+            releasePlayer(syncProgressBeforeRelease = true)
+            updateUiState {
+                it.copy(
+                    isPlaying = false,
+                    isLoading = false
+                )
+            }
+        }
     }
 
     private fun showPlaybackNotification(state: PlaybackUiState) {
@@ -2993,7 +3152,7 @@ class PlaybackController @Inject constructor(
 
     private fun syncPendingPlaybackCheckpointsOnForeground() {
         scope.launch(Dispatchers.IO) {
-            val checkpoints = sessionPreferences.getPlaybackCheckpoints()
+            val checkpoints = sessionPreferences.getPendingPlaybackCheckpoints()
                 .sortedBy { checkpoint -> checkpoint.savedAtMs }
             if (checkpoints.isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
@@ -3019,16 +3178,17 @@ class PlaybackController @Inject constructor(
                     )
                 ) {
                     is AppResult.Success -> {
-                        sessionPreferences.clearPlaybackCheckpoint(
+                        sessionPreferences.markPlaybackCheckpointSynced(
                             serverId = serverId,
-                            bookId = checkpoint.bookId
+                            bookId = checkpoint.bookId,
+                            savedAtMs = checkpoint.savedAtMs
                         )
                     }
 
                     is AppResult.Error -> Unit
                 }
             }
-            if (sessionPreferences.getPlaybackCheckpoints().isEmpty()) {
+            if (sessionPreferences.getPendingPlaybackCheckpoints().isEmpty()) {
                 PlaybackProgressSyncScheduler.cancel(appContext)
             }
         }

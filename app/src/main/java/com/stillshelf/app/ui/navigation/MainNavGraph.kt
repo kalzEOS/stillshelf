@@ -9,7 +9,11 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -19,9 +23,17 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
@@ -51,6 +63,7 @@ import com.stillshelf.app.ui.screens.HomeScreen
 import com.stillshelf.app.ui.screens.NarratorsBrowseScreen
 import com.stillshelf.app.ui.screens.NarratorDetailScreen
 import com.stillshelf.app.ui.screens.PlayerScreen
+import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
@@ -62,6 +75,7 @@ import com.stillshelf.app.ui.screens.SettingsScreen
 import com.stillshelf.app.ui.screens.auth.AddServerRoute
 import com.stillshelf.app.ui.screens.auth.LibraryPickerRoute
 import com.stillshelf.app.ui.screens.auth.LoginRoute
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
 fun NavGraphBuilder.mainNavGraph(
@@ -104,8 +118,12 @@ private fun MainShell(
     val currentRoute = currentBackStackEntry?.destination?.route
     val currentTab = MainTab.fromRoute(currentRoute)
     val miniPlayerViewModel: MiniPlayerViewModel = hiltViewModel()
+    val playerViewModel: PlayerViewModel = hiltViewModel()
     val serverConnectionViewModel: ServerConnectionViewModel = hiltViewModel()
     val miniPlayerState by miniPlayerViewModel.uiState.collectAsStateWithLifecycle()
+    val playerUiState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    var playerVisible by rememberSaveable { mutableStateOf(false) }
+    var pendingPlayerCloseAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val onHomeClick: () -> Unit = {
         if (!tabsNavController.popBackStack(MainTab.Home.route, inclusive = false)) {
             tabsNavController.navigate(MainTab.Home.route) {
@@ -116,6 +134,40 @@ private fun MainShell(
                 restoreState = true
             }
         }
+    }
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val statusBarTopInset = remember(view, density) {
+        with(density) {
+            (
+                ViewCompat.getRootWindowInsets(view)
+                    ?.getInsets(WindowInsetsCompat.Type.statusBars())
+                    ?.top
+                    ?: 0
+                ).toDp()
+        }
+    }
+    fun showPlayer(bookId: String? = null, startSeconds: Double? = null) {
+        playerViewModel.openPlayer(
+            bookId = bookId,
+            startSeconds = startSeconds
+        )
+        playerVisible = true
+    }
+    fun handleBookSelection(bookId: String? = null, startSeconds: Double? = null) {
+        val hasActivePlayback = playerUiState.book != null
+        if (hasActivePlayback || playerVisible) {
+            playerViewModel.openPlayer(
+                bookId = bookId,
+                startSeconds = startSeconds
+            )
+        } else {
+            showPlayer(bookId = bookId, startSeconds = startSeconds)
+        }
+    }
+    fun closePlayer(afterClose: (() -> Unit)? = null) {
+        pendingPlayerCloseAction = afterClose
+        playerVisible = false
     }
 
     LaunchedEffect(currentRoute) {
@@ -128,41 +180,83 @@ private fun MainShell(
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
+    LaunchedEffect(playerVisible, pendingPlayerCloseAction) {
+        if (!playerVisible && pendingPlayerCloseAction != null) {
+            delay(240L)
+            pendingPlayerCloseAction?.invoke()
+            pendingPlayerCloseAction = null
+        }
+    }
 
-    RootScaffold(
-        currentTab = currentTab,
-        onTabSelected = { tab ->
-            tabsNavController.navigate(tab.route) {
-                popUpTo(tabsNavController.graph.findStartDestination().id) {
-                    saveState = true
+    val showMiniPlayer = !playerVisible &&
+        currentRoute != MainTab.Search.route &&
+        currentRoute != MainTab.Settings.route &&
+        currentRoute != MainRoute.SETTINGS &&
+        currentRoute != MainRoute.ABOUT &&
+        currentRoute != MainRoute.SERVERS &&
+        currentRoute != MainRoute.LIBRARY_PICKER &&
+        currentRoute?.startsWith("auth/") != true
+    val showMiniPlayerHomeButton = showMiniPlayer && currentRoute != MainTab.Home.route
+    val screenHomeClick: (() -> Unit)? = if (showMiniPlayerHomeButton) null else onHomeClick
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        RootScaffold(
+            currentTab = currentTab,
+            onTabSelected = { tab ->
+                tabsNavController.navigate(tab.route) {
+                    popUpTo(tabsNavController.graph.findStartDestination().id) {
+                        saveState = true
+                    }
+                    launchSingleTop = true
+                    restoreState = true
                 }
-                launchSingleTop = true
-                restoreState = true
+            },
+            miniPlayerState = miniPlayerState,
+            onMiniPlayerHomeClick = if (showMiniPlayerHomeButton) onHomeClick else null,
+            onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
+            onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,
+            onMiniPlayerClick = { showPlayer() },
+            showMiniPlayer = showMiniPlayer
+        ) { paddingValues ->
+            MainTabsNavHost(
+                paddingValues = paddingValues,
+                navController = tabsNavController,
+                onHomeClick = screenHomeClick,
+                onOpenSelectedBook = ::handleBookSelection
+            )
+        }
+
+        AnimatedVisibility(
+            modifier = Modifier.fillMaxSize(),
+            visible = playerVisible,
+            enter = slideInVertically(
+                initialOffsetY = { fullHeight -> fullHeight },
+                animationSpec = tween(durationMillis = 280)
+            ),
+            exit = slideOutVertically(
+                targetOffsetY = { fullHeight -> fullHeight },
+                animationSpec = tween(durationMillis = 240)
+            )
+        ) {
+            BackHandler(enabled = true) {
+                closePlayer()
             }
-        },
-        miniPlayerState = miniPlayerState,
-        onMiniPlayerHomeClick = if (currentTab != MainTab.Home) onHomeClick else null,
-        onMiniPlayerRewind15 = miniPlayerViewModel::onRewindClick,
-        onMiniPlayerPlayPause = miniPlayerViewModel::onPlayPauseClick,
-        onMiniPlayerClick = {
-            tabsNavController.navigate(MainRoute.player()) {
-                launchSingleTop = true
-            }
-        },
-        showMiniPlayer = currentRoute?.startsWith(MainRoute.PLAYER) != true &&
-            currentRoute != MainTab.Search.route &&
-            currentRoute != MainTab.Settings.route &&
-            currentRoute != MainRoute.SETTINGS &&
-            currentRoute != MainRoute.ABOUT &&
-            currentRoute != MainRoute.SERVERS &&
-            currentRoute != MainRoute.LIBRARY_PICKER &&
-            currentRoute?.startsWith("auth/") != true
-    ) { paddingValues ->
-        MainTabsNavHost(
-            paddingValues = paddingValues,
-            navController = tabsNavController,
-            onHomeClick = onHomeClick
-        )
+            PlayerScreen(
+                onBackClick = { closePlayer() },
+                viewModel = playerViewModel,
+                onGoToBook = { bookId ->
+                    closePlayer(
+                        afterClose = {
+                            tabsNavController.navigate(DetailRoute.book(bookId)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                },
+                topContentInset = statusBarTopInset,
+                manageStatusBarAppearance = true
+            )
+        }
     }
 }
 
@@ -178,7 +272,8 @@ private tailrec fun Context.findActivity(): Activity? {
 private fun MainTabsNavHost(
     paddingValues: PaddingValues,
     navController: androidx.navigation.NavHostController,
-    onHomeClick: () -> Unit
+    onHomeClick: (() -> Unit)?,
+    onOpenSelectedBook: (String?, Double?) -> Unit
 ) {
     NavHost(
         navController = navController,
@@ -232,9 +327,7 @@ private fun MainTabsNavHost(
                     }
                 },
                 onOpenPlayer = { bookId ->
-                    navController.navigate(MainRoute.player(bookId)) {
-                        launchSingleTop = true
-                    }
+                    onOpenSelectedBook(bookId, null)
                 }
             )
         }
@@ -323,54 +416,6 @@ private fun MainTabsNavHost(
             AboutScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick
-            )
-        }
-        composable(
-            route = MainRoute.PLAYER_PATTERN,
-            arguments = listOf(
-                navArgument(MainRoute.PLAYER_BOOK_ID_ARG) {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                },
-                navArgument(MainRoute.PLAYER_START_SECONDS_ARG) {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
-            ),
-            enterTransition = {
-                slideInVertically(
-                    initialOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
-                )
-            },
-            exitTransition = {
-                slideOutVertically(
-                    targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 240)
-                )
-            },
-            popEnterTransition = {
-                slideInVertically(
-                    initialOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 280)
-                )
-            },
-            popExitTransition = {
-                slideOutVertically(
-                    targetOffsetY = { fullHeight -> fullHeight },
-                    animationSpec = tween(durationMillis = 240)
-                )
-            }
-        ) {
-            PlayerScreen(
-                onBackClick = { navController.popBackStack() },
-                onGoToBook = { bookId ->
-                    navController.navigate(DetailRoute.book(bookId)) {
-                        launchSingleTop = true
-                    }
-                }
             )
         }
         composable(MainRoute.SERVERS) {
@@ -534,9 +579,7 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onBookmarkClick = { bookId, startSeconds ->
-                    navController.navigate(MainRoute.player(bookId = bookId, startSeconds = startSeconds)) {
-                        launchSingleTop = true
-                    }
+                    onOpenSelectedBook(bookId, startSeconds)
                 }
             )
         }
@@ -575,9 +618,7 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onStartListening = { bookId ->
-                    navController.navigate(MainRoute.player(bookId)) {
-                        launchSingleTop = true
-                    }
+                    onOpenSelectedBook(bookId, null)
                 },
                 onOpenAuthor = { authorName ->
                     navController.navigate(DetailRoute.author(authorName)) {

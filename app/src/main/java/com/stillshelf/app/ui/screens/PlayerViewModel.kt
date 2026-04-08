@@ -15,8 +15,12 @@ import com.stillshelf.app.core.util.resolveUnfinishedProgressState
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.playback.controller.PlaybackPositionCommand
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
+import com.stillshelf.app.playback.controller.normalizeBookmarkTitle
+import com.stillshelf.app.playback.controller.resolvePlaybackPositionCommand
+import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.downloadProgressForBook
@@ -85,35 +89,13 @@ class PlayerViewModel @Inject constructor(
         observeControlPrefs()
         observeDownloads()
         observeBookProgressMutations()
-        val bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG).orEmpty()
-        val startSeconds = savedStateHandle
-            .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
-            ?.toDoubleOrNull()
-            ?.coerceAtLeast(0.0)
-        val startPositionMs = startSeconds?.let { (it * 1000.0).toLong() }
-        if (bookId.isNotBlank()) {
-            loadBookMetadata(bookId, forceRefresh = true)
-            playbackController.playBook(bookId, startPositionMs = startPositionMs)
-        } else if (playbackController.uiState.value.book == null) {
-            val cachedItem = playbackController.getCachedContinueListeningItem()
-            if (cachedItem != null) {
-                mutablePreviewItem.value = cachedItem
-                loadBookMetadata(cachedItem.book.id, forceRefresh = true)
-                syncCurrentDownloadState()
-            } else {
-                viewModelScope.launch {
-                    when (val result = sessionRepository.fetchMiniPlayerItem()) {
-                        is AppResult.Success -> {
-                            mutablePreviewItem.value = result.value
-                            result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
-                            syncCurrentDownloadState()
-                        }
-
-                        is AppResult.Error -> Unit
-                    }
-                }
-            }
-        }
+        openPlayer(
+            bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG),
+            startSeconds = savedStateHandle
+                .get<String>(MainRoute.PLAYER_START_SECONDS_ARG)
+                ?.toDoubleOrNull()
+                ?.coerceAtLeast(0.0)
+        )
 
         viewModelScope.launch {
             playbackController.uiState.collect { playbackState ->
@@ -123,6 +105,35 @@ class PlayerViewModel @Inject constructor(
                     applyPendingSleepTimerRequestIfNeeded()
                 }
                 syncCurrentDownloadState()
+            }
+        }
+    }
+
+    fun openPlayer(bookId: String? = null, startSeconds: Double? = null) {
+        val normalizedBookId = bookId?.trim().orEmpty()
+        val startPositionMs = startSeconds?.coerceAtLeast(0.0)?.let { (it * 1000.0).toLong() }
+        if (normalizedBookId.isNotBlank()) {
+            loadBookMetadata(normalizedBookId, forceRefresh = true)
+            playbackController.playBook(normalizedBookId, startPositionMs = startPositionMs)
+            return
+        }
+        if (playbackController.uiState.value.book != null) return
+        val cachedItem = playbackController.getCachedContinueListeningItem()
+        if (cachedItem != null) {
+            mutablePreviewItem.value = cachedItem
+            loadBookMetadata(cachedItem.book.id, forceRefresh = true)
+            syncCurrentDownloadState()
+            return
+        }
+        viewModelScope.launch {
+            when (val result = sessionRepository.fetchMiniPlayerItem()) {
+                is AppResult.Success -> {
+                    mutablePreviewItem.value = result.value
+                    result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
+                    syncCurrentDownloadState()
+                }
+
+                is AppResult.Error -> Unit
             }
         }
     }
@@ -249,7 +260,7 @@ class PlayerViewModel @Inject constructor(
     fun selectAudioOutputDevice(deviceId: Int?) {
         val applied = playbackController.selectAudioOutputDevice(deviceId)
         if (!applied) {
-            mutableActionMessage.value = "Unable to switch output on this device."
+            mutableActionMessage.value = "Couldn't switch audio output. Still playing on the current device."
         }
     }
 
@@ -374,15 +385,29 @@ class PlayerViewModel @Inject constructor(
 
     fun jumpToSeconds(seconds: Double) {
         val bookId = uiState.value.book?.id ?: previewItem.value?.book?.id ?: return
-        val positionMs = (seconds.coerceAtLeast(0.0) * 1000.0).toLong()
+        val positionMs = secondsToPlaybackPositionMs(seconds) ?: return
         val playbackState = uiState.value
-        if (playbackState.book?.id == bookId) {
-            playbackController.seekToPositionMs(positionMs = positionMs, commit = true)
-            if (!playbackState.isPlaying) {
-                playbackController.togglePlayPause()
+        when (
+            val command = resolvePlaybackPositionCommand(
+                activeBookId = playbackState.book?.id,
+                targetBookId = bookId,
+                targetPositionMs = positionMs,
+                isPlaying = playbackState.isPlaying
+            )
+        ) {
+            is PlaybackPositionCommand.SeekCurrentBook -> {
+                playbackController.seekToPositionMs(positionMs = command.positionMs, commit = true)
+                if (command.shouldResume) {
+                    playbackController.togglePlayPause()
+                }
             }
-        } else {
-            playbackController.playBookFromPosition(bookId = bookId, startPositionMs = positionMs)
+
+            is PlaybackPositionCommand.StartBookAtPosition -> {
+                playbackController.playBookFromPosition(
+                    bookId = command.bookId,
+                    startPositionMs = command.positionMs
+                )
+            }
         }
     }
 
@@ -397,7 +422,7 @@ class PlayerViewModel @Inject constructor(
                 val result = sessionRepository.createBookmark(
                     bookId = bookId,
                     timeSeconds = positionSeconds.coerceAtLeast(0.0),
-                    title = title?.trim().takeUnless { it.isNullOrBlank() }
+                    title = normalizeBookmarkTitle(title)
                 )
             ) {
                 is AppResult.Success -> {

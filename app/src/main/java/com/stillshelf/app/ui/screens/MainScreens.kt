@@ -1,5 +1,8 @@
 package com.stillshelf.app.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -114,6 +117,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.PlaybackLoadingIndicator
 import com.stillshelf.app.ui.components.UpdateNotesDialogContent
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -170,6 +174,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -187,6 +192,7 @@ import kotlin.math.roundToInt
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -827,6 +833,44 @@ fun HomeScreen(
                                 contentPadding = PaddingValues(0.dp)
                             ) {
                                 Text("Refresh")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (uiState.isOffline) {
+                item(key = "home-offline-warning") {
+                    Card(
+                        modifier = homeFullBleedModifier,
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.22f)
+                        ),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "You’re offline",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Some library pages may look incomplete until you reconnect. Previously opened books and details can still appear from cache, and downloaded audiobooks are available in Downloaded.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            TextButton(
+                                onClick = { onNavigateToRoute(BrowseRoute.DOWNLOADED) },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("Open Downloaded")
                             }
                         }
                     }
@@ -7273,9 +7317,12 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onGoToBook: ((String) -> Unit)? = null,
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
-    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel(),
+    topContentInset: Dp = 0.dp,
+    manageStatusBarAppearance: Boolean = false
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val hapticFeedback = LocalHapticFeedback.current
     val playbackUiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -7639,6 +7686,36 @@ fun PlayerScreen(
     val bottomToolsBottomPadding = (effectiveHeightDp * 0.004f).dp.coerceIn(1.dp, 4.dp)
     val playerTopOffset = (effectiveHeightDp * 0.02f).dp.coerceIn(8.dp, 16.dp)
     val controlsAreaMinHeight = (effectiveHeightDp * 0.17f).dp.coerceIn(116.dp, 148.dp)
+    val playerWindow = remember(view) { view.context.findActivity()?.window }
+    val statusBarBackgroundColor = if (immersiveEnabled) {
+        Color.Black
+    } else {
+        MaterialTheme.colorScheme.background
+    }
+
+    DisposableEffect(playerWindow, view, immersiveEnabled, statusBarBackgroundColor, manageStatusBarAppearance) {
+        if (!manageStatusBarAppearance) {
+            onDispose { }
+        } else {
+            val window = playerWindow
+            if (window == null) {
+                onDispose { }
+            } else {
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                val previousStatusBarColor = window.statusBarColor
+                val previousLightStatusBars = insetsController.isAppearanceLightStatusBars
+                @Suppress("DEPRECATION")
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                insetsController.isAppearanceLightStatusBars = !immersiveEnabled &&
+                    statusBarBackgroundColor.luminance() > 0.5f
+                onDispose {
+                    @Suppress("DEPRECATION")
+                    window.statusBarColor = previousStatusBarColor
+                    insetsController.isAppearanceLightStatusBars = previousLightStatusBars
+                }
+            }
+        }
+    }
 
     LaunchedEffect(actionMessage) {
         val latest = actionMessage ?: return@LaunchedEffect
@@ -7685,6 +7762,7 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .offset { IntOffset(x = 0, y = playerDragOffsetPx.roundToInt()) }
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
             .draggable(
                 state = verticalDragState,
                 orientation = androidx.compose.foundation.gestures.Orientation.Vertical,
@@ -7747,7 +7825,12 @@ fun PlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding()
-                .padding(horizontal = playerHorizontalPadding, vertical = playerVerticalPadding)
+                .padding(
+                    start = playerHorizontalPadding,
+                    end = playerHorizontalPadding,
+                    top = playerVerticalPadding + topContentInset,
+                    bottom = playerVerticalPadding
+                )
         ) {
         Box(
             modifier = Modifier
@@ -8012,7 +8095,7 @@ fun PlayerScreen(
                         mainPlayButtonIconTint
                     }
                     if (playbackUiState.isLoading) {
-                        MainPlayButtonLoadingIndicator(
+                        PlaybackLoadingIndicator(
                             modifier = Modifier.size(width = 36.dp, height = 36.dp),
                             baseTint = if (mainPlayButtonContainer.luminance() > 0.5f) {
                                 Color.Black.copy(alpha = 0.24f)
@@ -10435,58 +10518,6 @@ private fun ChapterPlaybackIndicator(
 }
 
 @Composable
-private fun MainPlayButtonLoadingIndicator(
-    modifier: Modifier = Modifier,
-    baseTint: Color,
-    sweepTint: Color
-) {
-    val transition = rememberInfiniteTransition(label = "main-play-button-loading")
-    val sweepProgress by transition.animateFloat(
-        initialValue = -0.25f,
-        targetValue = 1.25f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "main-play-button-loading-sweep"
-    )
-    val barHeights = remember { listOf(0.48f, 0.74f, 1f, 0.74f, 0.48f) }
-
-    Canvas(modifier = modifier) {
-        val barCount = barHeights.size
-        if (barCount == 0) return@Canvas
-        val clusterWidth = size.width * 0.68f
-        val spacingRatio = 0.52f
-        val barWidth = (
-            clusterWidth / (barCount + (barCount - 1) * spacingRatio)
-            ).coerceAtLeast(1f)
-        val spacing = barWidth * spacingRatio
-        val clusterStartX = (size.width - clusterWidth) / 2f
-        val cornerRadius = barWidth / 2f
-        val sweepCenterX = size.width * sweepProgress
-        val sweepRadius = barWidth * 1.8f
-        val maxBarHeight = size.height * 0.82f
-
-        barHeights.forEachIndexed { index, heightFraction ->
-            val left = clusterStartX + index * (barWidth + spacing)
-            val barHeight = (maxBarHeight * heightFraction).coerceAtLeast(size.height * 0.3f)
-            val top = (size.height - barHeight) / 2f
-            val barCenterX = left + (barWidth / 2f)
-            val distanceFraction = ((barCenterX - sweepCenterX) / sweepRadius).let { kotlin.math.abs(it) }
-            val sweepStrength = (1f - distanceFraction.coerceIn(0f, 1f)).let { it * it }
-            val tint = lerp(baseTint, sweepTint, sweepStrength)
-
-            drawRoundRect(
-                color = tint,
-                topLeft = androidx.compose.ui.geometry.Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius)
-            )
-        }
-    }
-}
-
-@Composable
 private fun rememberDominantCoverColor(
     coverUrl: String?,
     enabled: Boolean
@@ -11859,6 +11890,14 @@ private fun formatSecondsAsHms(seconds: Double): String {
         "%d:%02d:%02d".format(hours, minutes, secs)
     } else {
         "%d:%02d".format(minutes, secs)
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

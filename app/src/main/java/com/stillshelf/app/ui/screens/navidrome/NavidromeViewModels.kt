@@ -26,10 +26,13 @@ import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.EndpointReachabilityStatus
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
+import com.stillshelf.app.core.network.NetworkConnectionType
+import com.stillshelf.app.core.network.NetworkMonitor
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
 import com.stillshelf.app.data.repo.NavidromeRepository
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadItem
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadStatus
 import com.stillshelf.app.playback.navidrome.NavidromePlayerController
@@ -275,6 +278,7 @@ data class NavidromeHomeUiState(
     val playlists: List<NavidromePlaylist> = emptyList(),
     val radios: List<NavidromeRadio> = emptyList(),
     val lyricsCacheSizeBytes: Long = 0L,
+    val isOffline: Boolean = false,
     val isLoading: Boolean = true,
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
@@ -284,7 +288,8 @@ data class NavidromeHomeUiState(
 @HiltViewModel
 class NavidromeHomeViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val networkMonitor: NetworkMonitor
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(NavidromeHomeUiState())
     val uiState: StateFlow<NavidromeHomeUiState> = mutableUiState.asStateFlow()
@@ -296,6 +301,15 @@ class NavidromeHomeViewModel @Inject constructor(
                 .distinctUntilChanged()
                 .collect { sizeBytes ->
                     mutableUiState.update { it.copy(lyricsCacheSizeBytes = sizeBytes) }
+                }
+        }
+        viewModelScope.launch {
+            networkMonitor.observeConnectionType()
+                .distinctUntilChanged()
+                .collect { type ->
+                    mutableUiState.update {
+                        it.copy(isOffline = type == NetworkConnectionType.Offline)
+                    }
                 }
         }
     }
@@ -386,6 +400,7 @@ object NavidromeListSectionIds {
     const val RADIOS = "navidrome_radios"
     const val NEWEST_ALBUMS = "navidrome_newest_albums"
     const val SONGS = "navidrome_songs"
+    const val DOWNLOADED = "navidrome_downloaded"
     const val FAVORITES = "navidrome_favorites"
     const val PLAYLISTS = "navidrome_playlists"
 }
@@ -399,6 +414,11 @@ object NavidromeHomeSectionIds {
 }
 
 enum class NavidromeArtistsLayoutMode {
+    Grid,
+    List
+}
+
+enum class NavidromeDownloadedLayoutMode {
     Grid,
     List
 }
@@ -429,6 +449,7 @@ class NavidromeCustomizeViewModel @Inject constructor(
         ToggleSectionItem(NavidromeListSectionIds.RADIOS, "Radios"),
         ToggleSectionItem(NavidromeListSectionIds.NEWEST_ALBUMS, "Newest Albums"),
         ToggleSectionItem(NavidromeListSectionIds.SONGS, "Songs"),
+        ToggleSectionItem(NavidromeListSectionIds.DOWNLOADED, "Downloaded"),
         ToggleSectionItem(NavidromeListSectionIds.FAVORITES, "Favorite Songs"),
         ToggleSectionItem(NavidromeListSectionIds.PLAYLISTS, "Playlists")
     )
@@ -580,6 +601,32 @@ class NavidromeAlbumsViewModel @Inject constructor(
 
     fun onSearchQueryChange(value: String) {
         mutableSearchQuery.value = value
+    }
+}
+
+@HiltViewModel
+class NavidromeDownloadedViewModel @Inject constructor(
+    private val sessionPreferences: SessionPreferences
+) : ViewModel() {
+    private val mutableLayoutMode = MutableStateFlow(NavidromeDownloadedLayoutMode.List)
+    val layoutMode: StateFlow<NavidromeDownloadedLayoutMode> = mutableLayoutMode.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            sessionPreferences.state.collect { state ->
+                mutableLayoutMode.value = state.navidromeDownloadedLayoutMode
+                    ?.let { raw -> enumValueOrNull<NavidromeDownloadedLayoutMode>(raw) }
+                    ?: NavidromeDownloadedLayoutMode.List
+            }
+        }
+    }
+
+    fun setLayoutMode(value: NavidromeDownloadedLayoutMode) {
+        if (mutableLayoutMode.value == value) return
+        mutableLayoutMode.value = value
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeDownloadedLayoutMode(value.name)
+        }
     }
 }
 
@@ -1044,10 +1091,42 @@ data class NavidromeDownloadsUiState(
     val artistProgressById: Map<String, Int> = emptyMap(),
     val downloadedTrackCountByAlbumId: Map<String, Int> = emptyMap(),
     val fullyDownloadedAlbumCountByArtistId: Map<String, Int> = emptyMap(),
+    val homeDownloads: List<NavidromeHomeDownloadEntry> = emptyList(),
     val isSubmitting: Boolean = false,
     val actionMessage: String? = null,
     val errorMessage: String? = null
 )
+
+sealed interface NavidromeHomeDownloadEntry {
+    val key: String
+    val title: String
+    val subtitle: String
+    val coverUrl: String?
+    val albumId: String?
+    val artistId: String?
+}
+
+data class NavidromeHomeDownloadedAlbum(
+    val album: NavidromeAlbum,
+    override val subtitle: String
+) : NavidromeHomeDownloadEntry {
+    override val key: String = "album:${album.id}"
+    override val title: String = album.name
+    override val coverUrl: String? = album.coverUrl
+    override val albumId: String = album.id
+    override val artistId: String? = album.artistId
+}
+
+data class NavidromeHomeDownloadedTrack(
+    val track: NavidromeTrack,
+    override val subtitle: String
+) : NavidromeHomeDownloadEntry {
+    override val key: String = "track:${track.id}"
+    override val title: String = track.title
+    override val coverUrl: String? = track.coverUrl
+    override val albumId: String? = track.albumId
+    override val artistId: String? = track.artistId
+}
 
 @HiltViewModel
 class NavidromeDownloadsViewModel @Inject constructor(
@@ -1134,7 +1213,8 @@ class NavidromeDownloadsViewModel @Inject constructor(
             albumProgressById = albumProgressById,
             artistProgressById = artistProgressById,
             downloadedTrackCountByAlbumId = downloadedTrackCountByAlbumId,
-            fullyDownloadedAlbumCountByArtistId = fullyDownloadedAlbumCountByArtistId
+            fullyDownloadedAlbumCountByArtistId = fullyDownloadedAlbumCountByArtistId,
+            homeDownloads = buildNavidromeHomeDownloadEntries(completedItems)
         )
     }.stateIn(
         scope = viewModelScope,
@@ -1267,6 +1347,63 @@ class NavidromeDownloadsViewModel @Inject constructor(
                     downloadLabel = "artist"
                 )
             ) {
+                is AppResult.Success -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, actionMessage = result.value.message)
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeTrackDownload(trackId: String) {
+        viewModelScope.launch {
+            mutableFeedbackState.update { it.copy(isSubmitting = true, actionMessage = null, errorMessage = null) }
+            when (val result = downloadManager.removeTrackDownload(trackId)) {
+                is AppResult.Success -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, actionMessage = result.value.message)
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeAlbumDownload(albumId: String) {
+        viewModelScope.launch {
+            mutableFeedbackState.update { it.copy(isSubmitting = true, actionMessage = null, errorMessage = null) }
+            when (val result = downloadManager.removeAlbumDownload(albumId)) {
+                is AppResult.Success -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, actionMessage = result.value.message)
+                    }
+                }
+
+                is AppResult.Error -> {
+                    mutableFeedbackState.update {
+                        it.copy(isSubmitting = false, errorMessage = result.message)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeAllDownloads() {
+        viewModelScope.launch {
+            mutableFeedbackState.update { it.copy(isSubmitting = true, actionMessage = null, errorMessage = null) }
+            when (val result = downloadManager.removeAllDownloads()) {
                 is AppResult.Success -> {
                     mutableFeedbackState.update {
                         it.copy(isSubmitting = false, actionMessage = result.value.message)
@@ -1666,9 +1803,10 @@ class NavidromeSettingsViewModel @Inject constructor(
                 .map { it?.serverId }
                 .distinctUntilChanged()
                 .collect { serverId ->
-                    mutableLocalState.update { it.copy(libraries = emptyList()) }
                     if (serverId != null) {
                         refreshLibraries(forceRefresh = false)
+                    } else {
+                        mutableLocalState.update { it.copy(libraries = emptyList()) }
                     }
                 }
         }
@@ -2121,11 +2259,8 @@ class NavidromeSettingsViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
-                    mutableLocalState.update {
-                        it.copy(
-                            libraries = emptyList(),
-                            errorMessage = result.message
-                        )
+                    mutableLocalState.update { state ->
+                        state.copy(errorMessage = result.message)
                     }
                 }
             }
@@ -3031,7 +3166,7 @@ private fun parseHost(baseUrl: String): String {
 }
 
 internal fun computeFullyDownloadedAlbumCountByArtistId(
-    completedItems: List<com.stillshelf.app.downloads.navidrome.NavidromeDownloadItem>
+    completedItems: List<NavidromeDownloadItem>
 ): Map<String, Int> {
     return completedItems
         .filter { it.albumId != null && it.albumSongCount != null && it.artistId != null }
@@ -3046,6 +3181,105 @@ internal fun computeFullyDownloadedAlbumCountByArtistId(
         }
         .groupingBy { it }
         .eachCount()
+}
+
+internal fun buildNavidromeHomeDownloadEntries(
+    completedItems: List<NavidromeDownloadItem>
+): List<NavidromeHomeDownloadEntry> {
+    val uniqueCompletedItems = completedItems
+        .filter { it.status == NavidromeDownloadStatus.Completed }
+        .distinctBy { it.trackId }
+        .sortedByDescending { it.updatedAtMs }
+    if (uniqueCompletedItems.isEmpty()) return emptyList()
+
+    val fullyDownloadedAlbumIds = uniqueCompletedItems
+        .filter { it.albumId != null && it.albumSongCount != null }
+        .groupBy { it.albumId!! }
+        .mapNotNull { (albumId, albumItems) ->
+            val expectedSongCount = albumItems.firstNotNullOfOrNull { it.albumSongCount } ?: return@mapNotNull null
+            if (expectedSongCount > 0 && albumItems.size >= expectedSongCount) {
+                albumId
+            } else {
+                null
+            }
+        }
+        .toSet()
+
+    val albumEntries = uniqueCompletedItems
+        .filter { it.albumId in fullyDownloadedAlbumIds }
+        .groupBy { it.albumId!! }
+        .values
+        .mapNotNull { albumItems ->
+            val first = albumItems.maxByOrNull { it.updatedAtMs } ?: return@mapNotNull null
+            val albumId = first.albumId ?: return@mapNotNull null
+            NavidromeHomeDownloadedAlbum(
+                album = NavidromeAlbum(
+                    id = albumId,
+                    name = first.albumName.ifBlank { first.title },
+                    artistName = first.artistName,
+                    artistId = first.artistId,
+                    year = null,
+                    songCount = first.albumSongCount ?: albumItems.size,
+                    durationSeconds = albumItems.mapNotNull { it.durationSeconds }.takeIf { it.isNotEmpty() }?.sum(),
+                    coverUrl = first.coverUrl,
+                    genre = null
+                ),
+                subtitle = buildString {
+                    append(first.artistName.ifBlank { "Unknown artist" })
+                    append(" • Downloaded album")
+                }
+            )
+        }
+        .sortedByDescending { entry ->
+            uniqueCompletedItems
+                .filter { it.albumId == entry.album.id }
+                .maxOfOrNull { it.updatedAtMs }
+                ?: 0L
+        }
+
+    val trackEntries = uniqueCompletedItems
+        .filterNot { it.albumId in fullyDownloadedAlbumIds }
+        .map { item ->
+            NavidromeHomeDownloadedTrack(
+                track = NavidromeTrack(
+                    id = item.trackId,
+                    title = item.title,
+                    artistName = item.artistName,
+                    albumName = item.albumName,
+                    albumId = item.albumId,
+                    artistId = item.artistId,
+                    trackNumber = null,
+                    durationSeconds = item.durationSeconds,
+                    coverUrl = item.coverUrl,
+                    streamUrl = "",
+                    formatLabel = item.formatLabel,
+                    bitRateKbps = null
+                ),
+                subtitle = listOfNotNull(
+                    item.artistName.takeIf { it.isNotBlank() },
+                    item.albumName.takeIf { it.isNotBlank() }
+                ).joinToString(" • ").ifBlank { "Downloaded song" }
+            )
+        }
+
+    return (albumEntries + trackEntries)
+        .sortedByDescending { entry ->
+            when (entry) {
+                is NavidromeHomeDownloadedAlbum -> {
+                    uniqueCompletedItems
+                        .filter { it.albumId == entry.album.id }
+                        .maxOfOrNull { it.updatedAtMs }
+                        ?: 0L
+                }
+
+                is NavidromeHomeDownloadedTrack -> {
+                    uniqueCompletedItems
+                        .firstOrNull { it.trackId == entry.track.id }
+                        ?.updatedAtMs
+                        ?: 0L
+                }
+            }
+        }
 }
 
 private data class Quadruple<A, B, C, D>(

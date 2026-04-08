@@ -65,12 +65,14 @@ class PlaybackForegroundService : Service() {
     }
 
     private var foregroundStarted = false
+    private val notificationManager: NotificationManager?
+        get() = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
 
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
-        // Start foreground immediately to avoid startForegroundService timeout races.
-        startForegroundCompat(latestNotification ?: buildFallbackNotification())
+        val initialNotification = latestNotification ?: buildFallbackNotification()
+        promoteToForeground(initialNotification)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -86,14 +88,19 @@ class PlaybackForegroundService : Service() {
 
             ACTION_UPDATE, null -> {
                 val notification = latestNotification ?: buildFallbackNotification()
-                startForegroundCompat(notification)
+                if (!foregroundStarted) {
+                    promoteToForeground(notification)
+                }
+                notificationManager?.notify(NOTIFICATION_ID, notification)
+                foregroundServiceActive = true
+                foregroundServiceStartPending = false
                 return START_NOT_STICKY
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startForegroundCompat(notification: Notification) {
+    private fun promoteToForeground(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,

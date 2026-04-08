@@ -33,6 +33,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DEFAULT_NAVIDROME_LYRICS_SOURCE_ID = "default-lrclib"
+private const val MAX_SYNCED_PLAYBACK_CHECKPOINTS = 200
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -59,6 +60,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeArtistLayoutModeKey = stringPreferencesKey("navidrome_artist_layout_mode")
     private val navidromeArtistSortKey = stringPreferencesKey("navidrome_artist_sort")
     private val navidromeAlbumLayoutModeKey = stringPreferencesKey("navidrome_album_layout_mode")
+    private val navidromeDownloadedLayoutModeKey = stringPreferencesKey("navidrome_downloaded_layout_mode")
     private val navidromeSongSortKey = stringPreferencesKey("navidrome_song_sort")
     private val navidromePlaylistSortKey = stringPreferencesKey("navidrome_playlist_sort")
     private val navidromeFavoriteTracksPayloadKey = stringPreferencesKey("navidrome_favorite_tracks_payload")
@@ -118,6 +120,7 @@ class SessionPreferences @Inject constructor(
     private val acknowledgedUpgradeNoticeVersionKey = stringPreferencesKey("acknowledged_upgrade_notice_version")
     private val pendingFinishedRestoreSnapshotKey = stringPreferencesKey("pending_finished_restore_snapshot")
     private val playbackCheckpointSnapshotKey = stringPreferencesKey("playback_checkpoint_snapshot")
+    private val pendingBookmarkCreatesKey = stringPreferencesKey("pending_bookmark_creates")
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
     private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
 
@@ -486,6 +489,16 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(navidromeAlbumLayoutModeKey)
             } else {
                 prefs[navidromeAlbumLayoutModeKey] = mode
+            }
+        }
+    }
+
+    suspend fun setNavidromeDownloadedLayoutMode(mode: String) {
+        dataStore.edit { prefs ->
+            if (mode.isBlank()) {
+                prefs.remove(navidromeDownloadedLayoutModeKey)
+            } else {
+                prefs[navidromeDownloadedLayoutModeKey] = mode
             }
         }
     }
@@ -976,6 +989,10 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun getPendingPlaybackCheckpoints(): List<PlaybackCheckpointSnapshot> {
+        return getPlaybackCheckpoints().filter { it.pendingSync }
+    }
+
     suspend fun getPlaybackCheckpoints(): List<PlaybackCheckpointSnapshot> {
         val raw = dataStore.data.first()[playbackCheckpointSnapshotKey] ?: return emptyList()
         return runCatching {
@@ -991,7 +1008,8 @@ class SessionPreferences @Inject constructor(
                             ?.optDouble("durationSeconds")
                             ?.takeIf { it > 0.0 },
                         isFinished = node.optBoolean("isFinished"),
-                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L),
+                        pendingSync = node.optBoolean("pendingSync", true)
                     )
                     if (checkpoint.bookId.isNotBlank()) {
                         add(checkpoint)
@@ -1023,7 +1041,40 @@ class SessionPreferences @Inject constructor(
                     bookId = normalizedBookId
                 )
             )
-            prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+            prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(
+                prunePlaybackCheckpoints(
+                    values = updated,
+                    pinnedBookIds = pinnedPlaybackCheckpointBookIds(prefs)
+                )
+            )
+        }
+    }
+
+    suspend fun markPlaybackCheckpointSynced(serverId: String?, bookId: String, savedAtMs: Long? = null) {
+        val normalizedBookId = bookId.trim()
+        if (normalizedBookId.isBlank()) return
+        val normalizedServerId = serverId?.trim().takeIf { !it.isNullOrBlank() }
+        dataStore.edit { prefs ->
+            val updated = parsePlaybackCheckpoints(prefs[playbackCheckpointSnapshotKey]).map { checkpoint ->
+                val isTarget = checkpoint.bookId == normalizedBookId &&
+                    checkpoint.serverId == normalizedServerId &&
+                    (savedAtMs == null || checkpoint.savedAtMs == savedAtMs)
+                if (isTarget) {
+                    checkpoint.copy(pendingSync = false)
+                } else {
+                    checkpoint
+                }
+            }
+            if (updated.isEmpty()) {
+                prefs.remove(playbackCheckpointSnapshotKey)
+            } else {
+                prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(
+                    prunePlaybackCheckpoints(
+                        values = updated,
+                        pinnedBookIds = pinnedPlaybackCheckpointBookIds(prefs)
+                    )
+                )
+            }
         }
     }
 
@@ -1038,6 +1089,34 @@ class SessionPreferences @Inject constructor(
                 prefs.remove(playbackCheckpointSnapshotKey)
             } else {
                 prefs[playbackCheckpointSnapshotKey] = encodePlaybackCheckpoints(updated)
+            }
+        }
+    }
+
+    suspend fun getPendingBookmarkCreates(): List<PendingBookmarkCreateSnapshot> {
+        val raw = dataStore.data.first()[pendingBookmarkCreatesKey] ?: return emptyList()
+        return parsePendingBookmarkCreates(raw)
+    }
+
+    suspend fun addPendingBookmarkCreate(snapshot: PendingBookmarkCreateSnapshot) {
+        dataStore.edit { prefs ->
+            val updated = parsePendingBookmarkCreates(prefs[pendingBookmarkCreatesKey])
+                .filterNot { existing -> existing.localBookmarkId == snapshot.localBookmarkId }
+                .plus(snapshot)
+            prefs[pendingBookmarkCreatesKey] = encodePendingBookmarkCreates(updated)
+        }
+    }
+
+    suspend fun removePendingBookmarkCreate(localBookmarkId: String) {
+        val normalized = localBookmarkId.trim()
+        if (normalized.isBlank()) return
+        dataStore.edit { prefs ->
+            val updated = parsePendingBookmarkCreates(prefs[pendingBookmarkCreatesKey])
+                .filterNot { snapshot -> snapshot.localBookmarkId == normalized }
+            if (updated.isEmpty()) {
+                prefs.remove(pendingBookmarkCreatesKey)
+            } else {
+                prefs[pendingBookmarkCreatesKey] = encodePendingBookmarkCreates(updated)
             }
         }
     }
@@ -1312,9 +1391,9 @@ class SessionPreferences @Inject constructor(
                             add(
                                 NavidromeTrack(
                                     id = trackId,
-                                    title = title,
-                                    artistName = item.optString("artistName").ifBlank { "Unknown artist" },
-                                    albumName = item.optString("albumName").ifBlank { "Unknown album" },
+                                    title = title.normalizeNavidromeText(),
+                                    artistName = item.optString("artistName").normalizeNavidromeText().ifBlank { "Unknown artist" },
+                                    albumName = item.optString("albumName").normalizeNavidromeText().ifBlank { "Unknown album" },
                                     albumId = item.optString("albumId").ifBlank { null },
                                     artistId = item.optString("artistId").ifBlank { null },
                                     trackNumber = item.takeIf { it.has("trackNumber") }?.optInt("trackNumber"),
@@ -1322,7 +1401,8 @@ class SessionPreferences @Inject constructor(
                                     coverUrl = item.optString("coverUrl").ifBlank { null },
                                     streamUrl = streamUrl,
                                     formatLabel = item.optString("formatLabel").ifBlank { null },
-                                    bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps")
+                                    bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
+                                    sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
                                 )
                             )
                         }
@@ -1423,6 +1503,7 @@ class SessionPreferences @Inject constructor(
                         .put("streamUrl", normalizedStreamUrl)
                         .put("formatLabel", track.formatLabel)
                         .put("bitRateKbps", track.bitRateKbps)
+                        .put("sizeBytes", track.sizeBytes)
                 )
             }
             if (array.length() > 0) {
@@ -1575,10 +1656,40 @@ class SessionPreferences @Inject constructor(
                             ?.optDouble("durationSeconds")
                             ?.takeIf { it > 0.0 },
                         isFinished = node.optBoolean("isFinished"),
-                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L)
+                        savedAtMs = node.optLong("savedAtMs").coerceAtLeast(0L),
+                        pendingSync = node.optBoolean("pendingSync", true)
                     )
                     if (checkpoint.bookId.isNotBlank()) {
                         add(checkpoint)
+                    }
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parsePendingBookmarkCreates(raw: String?): List<PendingBookmarkCreateSnapshot> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val node = array.optJSONObject(index) ?: continue
+                    val snapshot = PendingBookmarkCreateSnapshot(
+                        serverId = node.optString("serverId").trim(),
+                        libraryId = node.optString("libraryId").trim(),
+                        bookId = node.optString("bookId").trim(),
+                        localBookmarkId = node.optString("localBookmarkId").trim(),
+                        timeSeconds = node.optDouble("timeSeconds").coerceAtLeast(0.0),
+                        title = node.optString("title").ifBlank { null },
+                        createdAtMs = node.optLong("createdAtMs").coerceAtLeast(0L)
+                    )
+                    if (
+                        snapshot.serverId.isNotBlank() &&
+                        snapshot.libraryId.isNotBlank() &&
+                        snapshot.bookId.isNotBlank() &&
+                        snapshot.localBookmarkId.isNotBlank()
+                    ) {
+                        add(snapshot)
                     }
                 }
             }
@@ -1596,9 +1707,73 @@ class SessionPreferences @Inject constructor(
                         .put("currentTimeSeconds", checkpoint.currentTimeSeconds.coerceAtLeast(0.0))
                         .put("isFinished", checkpoint.isFinished)
                         .put("savedAtMs", checkpoint.savedAtMs.coerceAtLeast(0L))
+                        .put("pendingSync", checkpoint.pendingSync)
                         .apply {
                             checkpoint.serverId?.trim()?.takeIf { it.isNotBlank() }?.let { put("serverId", it) }
                             checkpoint.durationSeconds?.takeIf { it > 0.0 }?.let { put("durationSeconds", it) }
+                        }
+                )
+            }
+        }.toString()
+    }
+
+    private fun pinnedPlaybackCheckpointBookIds(prefs: Preferences): Set<String> {
+        val downloadedBookIds = parseCsv(prefs[downloadedBookIdsKey])
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toSet()
+        val lastPlayedBookId = prefs[lastPlayedBookIdKey]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        return if (lastPlayedBookId == null) {
+            downloadedBookIds
+        } else {
+            downloadedBookIds + lastPlayedBookId
+        }
+    }
+
+    private fun prunePlaybackCheckpoints(
+        values: List<PlaybackCheckpointSnapshot>,
+        pinnedBookIds: Set<String>
+    ): List<PlaybackCheckpointSnapshot> {
+        if (values.isEmpty()) return emptyList()
+        val pending = values
+            .filter { it.pendingSync }
+            .sortedByDescending { it.savedAtMs }
+        val pinnedSynced = values
+            .filterNot { it.pendingSync }
+            .filter { it.bookId in pinnedBookIds }
+            .sortedByDescending { it.savedAtMs }
+        val synced = values
+            .filterNot { it.pendingSync }
+            .filterNot { it.bookId in pinnedBookIds }
+            .sortedByDescending { it.savedAtMs }
+            .take(MAX_SYNCED_PLAYBACK_CHECKPOINTS)
+        return (pending + pinnedSynced + synced)
+            .sortedByDescending { it.savedAtMs }
+    }
+
+    private fun encodePendingBookmarkCreates(values: List<PendingBookmarkCreateSnapshot>): String {
+        return JSONArray().apply {
+            values.forEach { snapshot ->
+                if (
+                    snapshot.serverId.isBlank() ||
+                    snapshot.libraryId.isBlank() ||
+                    snapshot.bookId.isBlank() ||
+                    snapshot.localBookmarkId.isBlank()
+                ) {
+                    return@forEach
+                }
+                put(
+                    JSONObject()
+                        .put("serverId", snapshot.serverId)
+                        .put("libraryId", snapshot.libraryId)
+                        .put("bookId", snapshot.bookId)
+                        .put("localBookmarkId", snapshot.localBookmarkId)
+                        .put("timeSeconds", snapshot.timeSeconds.coerceAtLeast(0.0))
+                        .put("createdAtMs", snapshot.createdAtMs.coerceAtLeast(0L))
+                        .apply {
+                            snapshot.title?.trim()?.takeIf { it.isNotBlank() }?.let { put("title", it) }
                         }
                 )
             }
@@ -1695,6 +1870,7 @@ class SessionPreferences @Inject constructor(
             navidromeArtistLayoutMode = this[navidromeArtistLayoutModeKey],
             navidromeArtistSort = this[navidromeArtistSortKey],
             navidromeAlbumLayoutMode = this[navidromeAlbumLayoutModeKey],
+            navidromeDownloadedLayoutMode = this[navidromeDownloadedLayoutModeKey],
             navidromeSongSort = this[navidromeSongSortKey],
             navidromePlaylistSort = this[navidromePlaylistSortKey],
             navidromeFavoriteTracksBySession = parseNavidromeFavoriteTracksBySession(
@@ -1771,6 +1947,7 @@ data class SessionPreferenceState(
     val navidromeArtistLayoutMode: String? = null,
     val navidromeArtistSort: String? = null,
     val navidromeAlbumLayoutMode: String? = null,
+    val navidromeDownloadedLayoutMode: String? = null,
     val navidromeSongSort: String? = null,
     val navidromePlaylistSort: String? = null,
     val navidromeFavoriteTracksBySession: Map<String, List<NavidromeTrack>> = emptyMap(),
@@ -1845,6 +2022,24 @@ data class CachedNavidromeLyricsPayload(
     val savedAtMs: Long
 )
 
+private fun String.normalizeNavidromeText(): String {
+    return trim()
+        .replace("Â’", "'")
+        .replace("Â'", "'")
+        .replace("â€™", "'")
+        .replace("â€˜", "'")
+        .replace("â€œ", "\"")
+        .replace("â€�", "\"")
+        .replace("Â\"", "\"")
+        .replace('\u0091', '\'')
+        .replace('\u0092', '\'')
+        .replace('\u0093', '"')
+        .replace('\u0094', '"')
+        .replace(Regex("(?<=[\\p{L}\\p{N}])\uFFFD(?=[\\p{L}\\p{N}])"), "'")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
 data class PendingFinishedRestoreSnapshot(
     val bookId: String,
     val currentTimeSeconds: Double,
@@ -1859,5 +2054,16 @@ data class PlaybackCheckpointSnapshot(
     val currentTimeSeconds: Double,
     val durationSeconds: Double?,
     val isFinished: Boolean,
-    val savedAtMs: Long
+    val savedAtMs: Long,
+    val pendingSync: Boolean = true
+)
+
+data class PendingBookmarkCreateSnapshot(
+    val serverId: String,
+    val libraryId: String,
+    val bookId: String,
+    val localBookmarkId: String,
+    val timeSeconds: Double,
+    val title: String?,
+    val createdAtMs: Long
 )

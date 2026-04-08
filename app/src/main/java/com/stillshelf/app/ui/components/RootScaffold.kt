@@ -2,12 +2,13 @@ package com.stillshelf.app.ui.components
 
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.animation.AnimatedVisibility
@@ -15,8 +16,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.Icon
@@ -24,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -85,9 +88,11 @@ fun RootScaffold(
                 animationSpec = tween(durationMillis = 260)
             )
         ) {
+            val compactMiniPlayer = onMiniPlayerHomeClick != null
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
                     .padding(horizontal = 12.dp)
                     .padding(bottom = safeBottomInset + 6.dp),
                 verticalAlignment = Alignment.Bottom
@@ -97,25 +102,38 @@ fun RootScaffold(
                     onRewind15 = onMiniPlayerRewind15,
                     onPlayPause = onMiniPlayerPlayPause,
                     onClick = onMiniPlayerClick,
+                    compactMode = compactMiniPlayer,
                     modifier = Modifier.weight(1f)
                 )
                 if (onMiniPlayerHomeClick != null) {
+                    val homeBubbleShape = RoundedCornerShape(24.dp)
+                    val homeBubbleBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)
                     Spacer(modifier = Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = CircleShape
-                            )
-                            .clickable(onClick = onMiniPlayerHomeClick),
+                            .fillMaxHeight()
+                            .width(54.dp)
+                            .padding(vertical = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Home,
-                            contentDescription = "Home",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(homeBubbleShape)
+                                .background(
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shape = homeBubbleShape
+                                )
+                                .border(width = 1.5.dp, color = homeBubbleBorderColor, shape = homeBubbleShape)
+                                .clickable(onClick = onMiniPlayerHomeClick),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Home,
+                                contentDescription = "Home",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }

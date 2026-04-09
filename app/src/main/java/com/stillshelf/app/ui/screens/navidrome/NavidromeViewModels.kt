@@ -2667,6 +2667,7 @@ class NavidromePlayerViewModel @Inject constructor(
                 it.copy(
                     isVisible = showSheet,
                     isLoading = true,
+                    loadingMessage = "Searching for lyrics...",
                     trackId = track.id,
                     trackTitle = track.title,
                     albumName = track.albumName,
@@ -2677,8 +2678,23 @@ class NavidromePlayerViewModel @Inject constructor(
                     errorMessage = null
                 )
             }
+            val loadingMessageJob = launch {
+                delay(4_000)
+                mutableLyricsUiState.update { current ->
+                    if (
+                        lyricsLoadRequestId != requestId ||
+                        current.trackId != track.id ||
+                        !current.isLoading
+                    ) {
+                        current
+                    } else {
+                        current.copy(loadingMessage = "Trying fallback sources...")
+                    }
+                }
+            }
             when (val result = navidromeRepository.fetchLyrics(track)) {
                 is AppResult.Success -> {
+                    loadingMessageJob.cancel()
                     mutableLyricsUiState.update { current ->
                         if (
                             lyricsLoadRequestId != requestId ||
@@ -2690,6 +2706,7 @@ class NavidromePlayerViewModel @Inject constructor(
                         current.copy(
                             isVisible = showSheet,
                             isLoading = false,
+                            loadingMessage = null,
                             sourceLabel = result.value.sourceLabel,
                             lyrics = result.value.lines,
                             isSynced = result.value.isSynced,
@@ -2699,6 +2716,7 @@ class NavidromePlayerViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    loadingMessageJob.cancel()
                     mutableLyricsUiState.update { current ->
                         if (
                             lyricsLoadRequestId != requestId ||
@@ -2710,6 +2728,7 @@ class NavidromePlayerViewModel @Inject constructor(
                         current.copy(
                             isVisible = showSheet,
                             isLoading = false,
+                            loadingMessage = null,
                             lyrics = emptyList(),
                             sourceLabel = null,
                             isSynced = false,
@@ -2728,6 +2747,7 @@ class NavidromePlayerViewModel @Inject constructor(
 data class NavidromeLyricsUiState(
     val isVisible: Boolean = false,
     val isLoading: Boolean = false,
+    val loadingMessage: String? = null,
     val trackId: String? = null,
     val trackTitle: String = "",
     val albumName: String = "",

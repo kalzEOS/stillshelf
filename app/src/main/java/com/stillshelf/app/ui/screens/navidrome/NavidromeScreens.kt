@@ -2628,17 +2628,6 @@ private fun NavidromeArtistsRoute(
             }
         }
     }
-    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
-        enabled = showSearchField,
-        firstVisibleItemIndex = when (layoutMode) {
-            NavidromeArtistsLayoutMode.Grid -> gridState.firstVisibleItemIndex
-            NavidromeArtistsLayoutMode.List -> listState.firstVisibleItemIndex
-        },
-        firstVisibleItemScrollOffset = when (layoutMode) {
-            NavidromeArtistsLayoutMode.Grid -> gridState.firstVisibleItemScrollOffset
-            NavidromeArtistsLayoutMode.List -> listState.firstVisibleItemScrollOffset
-        }
-    )
     val displayedArtists = remember(uiState.artists, sortOption, searchQuery) {
         val filteredArtists = uiState.artists.filter { artist ->
             searchQuery.isBlank() || artist.name.contains(searchQuery.trim(), ignoreCase = true)
@@ -2672,8 +2661,19 @@ private fun NavidromeArtistsRoute(
         collapseFraction = collapseFraction,
         onBack = onBack,
         onHome = onHome,
-        stickyHeaderVisible = false,
-        stickyHeaderContent = null,
+        stickyHeaderVisible = showSearchField,
+        stickyHeaderContent = if (showSearchField) {
+            {
+                NavidromeExpandableSearchField(
+                    visible = true,
+                    query = searchQuery,
+                    label = "Search artists",
+                    onQueryChange = artistsViewModel::onSearchQueryChange
+                )
+            }
+        } else {
+            null
+        },
         containerColor = MaterialTheme.colorScheme.background,
         actions = {
             RoundIconButton(
@@ -2771,16 +2771,6 @@ private fun NavidromeArtistsRoute(
                             topPadding = topInsetPadding
                         )
                     }
-                    if (showSearchField) {
-                        item {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search artists",
-                                onQueryChange = artistsViewModel::onSearchQueryChange
-                            )
-                        }
-                    }
                     item { LoadingCard() }
                 }
             }
@@ -2801,16 +2791,6 @@ private fun NavidromeArtistsRoute(
                             collapseFraction = collapseFraction,
                             topPadding = topInsetPadding
                         )
-                    }
-                    if (showSearchField) {
-                        item {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search artists",
-                                onQueryChange = artistsViewModel::onSearchQueryChange
-                            )
-                        }
                     }
                     when {
                         !uiState.errorMessage.isNullOrBlank() -> {
@@ -2883,16 +2863,6 @@ private fun NavidromeArtistsRoute(
                             topPadding = topInsetPadding
                         )
                     }
-                    if (showSearchField) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search artists",
-                                onQueryChange = artistsViewModel::onSearchQueryChange
-                            )
-                        }
-                    }
                     items(displayedArtists.size) { index ->
                         val artist = displayedArtists[index]
                         ArtistGridCard(
@@ -2942,17 +2912,6 @@ private fun NavidromeAlbumsRoute(
             }
         }
     }
-    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
-        enabled = showSearchField,
-        firstVisibleItemIndex = when (displayStyle) {
-            NavidromeAlbumsDisplayStyle.GRID -> gridState.firstVisibleItemIndex
-            NavidromeAlbumsDisplayStyle.LIST -> listState.firstVisibleItemIndex
-        },
-        firstVisibleItemScrollOffset = when (displayStyle) {
-            NavidromeAlbumsDisplayStyle.GRID -> gridState.firstVisibleItemScrollOffset
-            NavidromeAlbumsDisplayStyle.LIST -> listState.firstVisibleItemScrollOffset
-        }
-    )
     val displayedAlbums = remember(uiState.albums, uiState.albumSort, searchQuery) {
         val normalizedQuery = searchQuery.trim()
         uiState.albums.filter { album ->
@@ -2972,8 +2931,19 @@ private fun NavidromeAlbumsRoute(
         collapseFraction = collapseFraction,
         onBack = onBack,
         onHome = onHome,
-        stickyHeaderVisible = false,
-        stickyHeaderContent = null,
+        stickyHeaderVisible = showSearchField,
+        stickyHeaderContent = if (showSearchField) {
+            {
+                NavidromeExpandableSearchField(
+                    visible = true,
+                    query = searchQuery,
+                    label = "Search albums",
+                    onQueryChange = albumsViewModel::onSearchQueryChange
+                )
+            }
+        } else {
+            null
+        },
         containerColor = MaterialTheme.colorScheme.background,
         actions = {
             RoundIconButton(
@@ -3055,16 +3025,6 @@ private fun NavidromeAlbumsRoute(
                             topPadding = topInsetPadding
                         )
                     }
-                    if (showSearchField) {
-                        item {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search albums",
-                                onQueryChange = albumsViewModel::onSearchQueryChange
-                            )
-                        }
-                    }
                     item { LoadingCard() }
                 }
             }
@@ -3085,16 +3045,6 @@ private fun NavidromeAlbumsRoute(
                             collapseFraction = collapseFraction,
                             topPadding = topInsetPadding
                         )
-                    }
-                    if (showSearchField) {
-                        item {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search albums",
-                                onQueryChange = albumsViewModel::onSearchQueryChange
-                            )
-                        }
                     }
                     when {
                         !uiState.errorMessage.isNullOrBlank() -> {
@@ -3155,16 +3105,6 @@ private fun NavidromeAlbumsRoute(
                             collapseFraction = collapseFraction,
                             topPadding = topInsetPadding
                         )
-                    }
-                    if (showSearchField) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            NavidromeExpandableSearchField(
-                                visible = true,
-                                query = searchQuery,
-                                label = "Search albums",
-                                onQueryChange = albumsViewModel::onSearchQueryChange
-                            )
-                        }
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         NavidromeTransportHeader(
@@ -4023,6 +3963,16 @@ private fun NavidromeSongsRoute(
         title = "Songs",
         onBack = onBack,
         onHome = onHome,
+        stickySearchEnabled = showSearchField,
+        stickySearchAlwaysVisible = showSearchField,
+        stickySearchContent = {
+            NavidromeExpandableSearchField(
+                visible = true,
+                query = uiState.searchQuery,
+                label = "Search songs",
+                onQueryChange = viewModel::onSearchQueryChange
+            )
+        },
         actions = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 RoundIconButton(
@@ -4059,16 +4009,6 @@ private fun NavidromeSongsRoute(
             }
         }
     ) {
-        if (showSearchField) {
-            item {
-                NavidromeExpandableSearchField(
-                    visible = true,
-                    query = uiState.searchQuery,
-                    label = "Search songs",
-                    onQueryChange = viewModel::onSearchQueryChange
-                )
-            }
-        }
         if (displayedSongs.isNotEmpty()) {
             item {
                 NavidromeTransportHeader(
@@ -6615,6 +6555,7 @@ private fun StandardTopScreen(
     onHome: (() -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
     stickySearchEnabled: Boolean = false,
+    stickySearchAlwaysVisible: Boolean = false,
     stickySearchContent: (@Composable () -> Unit)? = null,
     topContent: (@Composable () -> Unit)? = null,
     containerColor: Color = MaterialTheme.colorScheme.background,
@@ -6633,11 +6574,16 @@ private fun StandardTopScreen(
             )
         }
     }
-    val stickySearchVisible = rememberNavidromeStickyHeaderVisibility(
-        enabled = stickySearchEnabled && stickySearchContent != null,
-        firstVisibleItemIndex = listState.firstVisibleItemIndex,
-        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
-    )
+    val stickySearchVisible = if (stickySearchAlwaysVisible && stickySearchEnabled && stickySearchContent != null) {
+        true
+    } else {
+        rememberNavidromeStickyHeaderVisibility(
+            enabled = stickySearchEnabled && stickySearchContent != null,
+            firstVisibleItemIndex = listState.firstVisibleItemIndex,
+            firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+            triggerOffsetPx = collapseDistancePx
+        )
+    }
     NavidromeHeaderScaffold(
         title = title,
         collapseFraction = collapseFraction,
@@ -6662,7 +6608,15 @@ private fun StandardTopScreen(
                 )
             }
             if (topContent != null) {
-                item { topContent() }
+                item {
+                    Box(
+                        modifier = Modifier.graphicsLayer {
+                            alpha = if (!stickySearchAlwaysVisible && stickySearchEnabled && stickySearchVisible) 0f else 1f
+                        }
+                    ) {
+                        topContent()
+                    }
+                }
             }
             content()
         }
@@ -6872,33 +6826,13 @@ private fun calculateHeaderCollapseFraction(
 private fun rememberNavidromeStickyHeaderVisibility(
     enabled: Boolean,
     firstVisibleItemIndex: Int,
-    firstVisibleItemScrollOffset: Int
+    firstVisibleItemScrollOffset: Int,
+    triggerOffsetPx: Int
 ): Boolean {
-    var visible by remember(enabled) { mutableStateOf(enabled) }
-    LaunchedEffect(enabled) {
-        visible = enabled
-    }
-    LaunchedEffect(enabled) {
-        if (!enabled) return@LaunchedEffect
-        var previousPosition = Long.MIN_VALUE
-        snapshotFlow { firstVisibleItemIndex to firstVisibleItemScrollOffset }
-            .collect { (index, offset) ->
-                val currentPosition = index.toLong() * 100_000L + offset.toLong()
-                if (previousPosition == Long.MIN_VALUE) {
-                    previousPosition = currentPosition
-                    visible = true
-                    return@collect
-                }
-                visible = when {
-                    index == 0 && offset <= 8 -> true
-                    currentPosition < previousPosition -> true
-                    currentPosition > previousPosition && currentPosition > 32L -> false
-                    else -> visible
-                }
-                previousPosition = currentPosition
-            }
-    }
-    return visible
+    return enabled && (
+        firstVisibleItemIndex > 0 ||
+            (firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset >= triggerOffsetPx)
+        )
 }
 
 @Composable
@@ -11799,24 +11733,28 @@ private fun NavidromeNowPlayingVisualizer(
         0f
     }
     val offsets = remember { listOf(0f, 0.28f, 0.56f, 0.82f) }
-    val pausedFractions = remember { listOf(0.32f, 0.58f, 0.42f, 0.72f) }
-    Row(
+    Box(
         modifier = modifier
             .width(24.dp)
-            .height(18.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .height(18.dp)
     ) {
-        offsets.forEachIndexed { index, offset ->
-            val animatedFraction = ((sin((phase + offset) * (2.0 * PI)).toFloat() + 1f) / 2f)
-            val pausedFraction = pausedFractions[index]
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .height(lerp(5.dp, 18.dp, if (isPlaying) animatedFraction else pausedFraction))
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(color.copy(alpha = if (isPlaying) 1f else 0.7f))
-            )
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 1.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            offsets.forEach { offset ->
+                val animatedFraction = ((sin((phase + offset) * (2.0 * PI)).toFloat() + 1f) / 2f)
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .align(Alignment.Bottom)
+                        .height(if (isPlaying) lerp(4.dp, 17.dp, animatedFraction) else 2.dp)
+                        .background(color.copy(alpha = if (isPlaying) 1f else 0.95f))
+                )
+            }
         }
     }
 }

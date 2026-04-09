@@ -66,22 +66,19 @@ import com.stillshelf.app.core.model.BackendProvider
 @Composable
 fun BackendSelectionScreen(
     hasAudiobookshelfSession: Boolean,
+    hasNavidromeSession: Boolean,
     onBackendSelected: (BackendProvider) -> Unit
 ) {
     val cards = listOf(
         BackendSelectionCardState(
             provider = BackendProvider.AUDIOBOOKSHELF,
-            eyebrow = if (hasAudiobookshelfSession) {
-                "Audiobooks"
-            } else {
-                "Audiobooks"
-            },
+            eyebrow = "Audiobooks",
             title = "Audiobookshelf",
             description = "Listen to audiobooks with libraries, chapters, bookmarks, sleep timer, and resume support.",
             detail = if (hasAudiobookshelfSession) {
-                "Your existing Audiobookshelf library and login are ready to use."
+                "Access your audiobooks."
             } else {
-                "Sign in to your Audiobookshelf server and keep the familiar StillShelf audiobook experience."
+                "Log into your Audiobookshelf server."
             },
             icon = Icons.Outlined.AutoStories,
             gradient = listOf(Color(0xFF1F2430), Color(0xFF3D4557))
@@ -91,7 +88,11 @@ fun BackendSelectionScreen(
             eyebrow = "Music",
             title = "Navidrome",
             description = "Browse and play music with artists, albums, songs, playlists, radios, favorites, and queue support.",
-            detail = "Connect to your Navidrome server and listen to your music library inside StillShelf.",
+            detail = if (hasNavidromeSession) {
+                "Access your music."
+            } else {
+                "Log into your Navidrome server."
+            },
             icon = Icons.Outlined.LibraryMusic,
             gradient = listOf(Color(0xFF0F5132), Color(0xFF198754))
         )
@@ -115,7 +116,7 @@ fun BackendSelectionScreen(
     ) {
         Text(
             text = "Choose what you want to open",
-            style = MaterialTheme.typography.displaySmall,
+            style = MaterialTheme.typography.headlineLarge,
             fontWeight = FontWeight.SemiBold
         )
 

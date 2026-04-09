@@ -101,6 +101,7 @@ fun RootNavGraph(
                 }
                 BackendSelectionScreen(
                     hasAudiobookshelfSession = uiState.hasActiveServer,
+                    hasNavidromeSession = uiState.hasNavidromeSession,
                     onBackendSelected = rootViewModel::selectBackend
                 )
             }

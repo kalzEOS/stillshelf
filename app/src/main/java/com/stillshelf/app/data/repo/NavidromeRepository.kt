@@ -1,6 +1,5 @@
 package com.stillshelf.app.data.repo
 
-import android.icu.text.Transliterator
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -71,7 +70,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.Normalizer
 import java.util.UUID
 
 enum class NavidromeAlbumSortOption(
@@ -192,10 +190,6 @@ class NavidromeRepository @Inject constructor(
         private const val LAN_FALLBACK_CONFIRMATION_DELAY_MS = 750L
         private const val HEALTH_PROBE_INTERVAL_MS = 30_000L
         private const val HEALTH_RETRY_INTERVAL_MS = 3_000L
-    }
-
-    private val arabicLatinTransliterator by lazy(LazyThreadSafetyMode.NONE) {
-        runCatching { Transliterator.getInstance("Arabic-Latin") }.getOrNull()
     }
 
     private data class TimedCacheEntry<T>(
@@ -1774,12 +1768,6 @@ class NavidromeRepository @Inject constructor(
         val compactArtist = compactLyricsField(normalizedArtist)
         val compactTrack = compactLyricsField(normalizedTrack)
         val compactAlbum = compactLyricsField(normalizedAlbum)
-        val hasArabicArtist = containsArabicScript(track.artistName)
-        val hasArabicTrack = containsArabicScript(track.title)
-        val hasArabicAlbum = containsArabicScript(track.albumName)
-        val romanizedArtists = buildArabicRomanizedLyricsVariants(track.artistName)
-        val romanizedTracks = buildArabicRomanizedLyricsVariants(track.title)
-        val romanizedAlbums = buildArabicRomanizedLyricsVariants(track.albumName)
         val lookups = buildList {
             add(
                 NavidromeLyricsLookup(
@@ -1830,53 +1818,6 @@ class NavidromeRepository @Inject constructor(
                         durationSeconds = null
                     )
                 )
-            }
-            if (romanizedArtists.isNotEmpty() || romanizedTracks.isNotEmpty() || romanizedAlbums.isNotEmpty()) {
-                val artistOptions = buildList {
-                    if (!hasArabicArtist) {
-                        add(track.artistName)
-                        add(normalizedArtist)
-                    }
-                    addAll(romanizedArtists)
-                }.filter { it.isNotBlank() }.distinct()
-                val trackOptions = buildList {
-                    if (!hasArabicTrack) {
-                        add(track.title)
-                        add(normalizedTrack)
-                    }
-                    addAll(romanizedTracks)
-                }.filter { it.isNotBlank() }.distinct()
-                val albumOptions = buildList<String?> {
-                    add(null)
-                    if (!hasArabicAlbum) {
-                        add(track.albumName.takeIf { it.isNotBlank() })
-                        add(normalizedAlbum.takeIf { it.isNotBlank() })
-                    }
-                    addAll(romanizedAlbums.map { it.takeIf(String::isNotBlank) })
-                }.distinct()
-
-                artistOptions.forEach { artistOption ->
-                    trackOptions.forEach { trackOption ->
-                        albumOptions.forEach { albumOption ->
-                            add(
-                                NavidromeLyricsLookup(
-                                    artistName = artistOption,
-                                    trackName = trackOption,
-                                    albumName = albumOption,
-                                    durationSeconds = track.durationSeconds
-                                )
-                            )
-                            add(
-                                NavidromeLyricsLookup(
-                                    artistName = artistOption,
-                                    trackName = trackOption,
-                                    albumName = albumOption,
-                                    durationSeconds = null
-                                )
-                            )
-                        }
-                    }
-                }
             }
             if (compactArtist.isNotBlank() && compactTrack.isNotBlank()) {
                 add(
@@ -2066,77 +2007,6 @@ class NavidromeRepository @Inject constructor(
             .lowercase()
             .replace("&", "and")
             .replace(Regex("""[^a-z0-9]+"""), "")
-    }
-
-    private fun containsArabicScript(raw: String): Boolean {
-        return raw.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.ARABIC }
-    }
-
-    private fun buildArabicRomanizedLyricsVariants(raw: String): List<String> {
-        if (!containsArabicScript(raw)) return emptyList()
-        val transliterated = arabicLatinTransliterator
-            ?.transliterate(normalizeArabicLyricsField(raw))
-            ?.simplifyRomanizedLyricsField()
-            .orEmpty()
-        if (transliterated.isBlank()) return emptyList()
-        return buildList {
-            add(transliterated)
-            add(transliterated.replace(Regex("""\bal\b"""), "el"))
-            add(transliterated.replace(Regex("""\bel\b"""), "al"))
-            add(transliterated.replace("j", "g"))
-            add(transliterated.replace("g", "j"))
-            add(transliterated.replace("o", "u"))
-            add(transliterated.replace("u", "o"))
-            add(transliterated.replace("e", "i"))
-            add(transliterated.replace("i", "e"))
-            add(
-                transliterated
-                    .replace("aa", "a")
-                    .replace("ee", "e")
-                    .replace("oo", "o")
-            )
-        }.map { it.simplifyRomanizedLyricsField() }
-            .filter { it.isNotBlank() }
-            .distinct()
-    }
-
-    private fun normalizeArabicLyricsField(raw: String): String {
-        return raw.trim()
-            .replace('أ', 'ا')
-            .replace('إ', 'ا')
-            .replace('آ', 'ا')
-            .replace('ٱ', 'ا')
-            .replace('ى', 'ي')
-            .replace('ؤ', 'و')
-            .replace('ئ', 'ي')
-            .replace('ة', 'ه')
-            .replace(Regex("""[ًٌٍَُِّْـ]"""), "")
-            .replace('٠', '0')
-            .replace('١', '1')
-            .replace('٢', '2')
-            .replace('٣', '3')
-            .replace('٤', '4')
-            .replace('٥', '5')
-            .replace('٦', '6')
-            .replace('٧', '7')
-            .replace('٨', '8')
-            .replace('٩', '9')
-            .replace(Regex("""\s+"""), " ")
-    }
-
-    private fun String.simplifyRomanizedLyricsField(): String {
-        return Normalizer.normalize(this, Normalizer.Form.NFD)
-            .replace(Regex("""\p{Mn}+"""), "")
-            .replace('ʿ', ' ')
-            .replace('ʾ', ' ')
-            .replace('ʼ', ' ')
-            .replace('`', ' ')
-            .replace(Regex("""[^A-Za-z0-9&'\- ]+"""), " ")
-            .replace("-", " ")
-            .replace("&", "and")
-            .lowercase()
-            .replace(Regex("""\s+"""), " ")
-            .trim()
     }
 
     private suspend fun fetchNetEaseLyrics(track: NavidromeTrack): NavidromeLyrics? = withContext(Dispatchers.IO) {

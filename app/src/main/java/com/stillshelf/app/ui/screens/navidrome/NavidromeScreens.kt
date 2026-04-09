@@ -9,6 +9,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -11119,50 +11120,53 @@ private fun NavidromeLyricsSheetContent(
                 }
             }
 
-            when {
-                uiState.isLoading -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(32.dp),
-                            strokeWidth = 2.5.dp,
-                            color = loadingIndicatorColor
-                        )
-                    }
-                }
+            val lyricsContentState = when {
+                uiState.isLoading -> "loading"
+                uiState.lyrics.isEmpty() -> "empty"
+                uiState.isSynced -> "synced"
+                else -> "plain"
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .onSizeChanged { contentHeightPx = it.height }
+            ) {
+                Crossfade(
+                    targetState = lyricsContentState,
+                    animationSpec = tween(durationMillis = 180),
+                    label = "navidromeLyricsContent"
+                ) { contentState ->
+                    when (contentState) {
+                        "loading" -> {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = uiState.loadingMessage ?: "Searching for lyrics...",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = emptyStateColor,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
 
-                uiState.lyrics.isEmpty() -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = uiState.errorMessage ?: "No lyrics found.",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = emptyStateColor,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
+                        "empty" -> {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = uiState.errorMessage ?: "No lyrics found.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = emptyStateColor,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
 
-                uiState.isSynced -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .onSizeChanged { contentHeightPx = it.height }
-                        ) {
+                        "synced" -> {
                             LazyColumn(
                                 state = lyricsListState,
                                 modifier = Modifier
@@ -11253,33 +11257,32 @@ private fun NavidromeLyricsSheetContent(
                                 }
                             }
                         }
-                    }
-                }
 
-                else -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .verticalScroll(plainLyricsScrollState)
-                            .padding(bottom = lyricsBottomPadding),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        uiState.lyrics.forEach { line ->
-                            Text(
-                                text = line.text,
+                        else -> {
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 18.dp),
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = if (immersiveEnabled) {
-                                    Color.White.copy(alpha = 0.92f)
-                                } else {
-                                    Color.Black.copy(alpha = 0.86f)
-                                },
-                                lineHeight = 34.sp,
-                                textAlign = TextAlign.Center
-                            )
+                                    .fillMaxSize()
+                                    .verticalScroll(plainLyricsScrollState)
+                                    .padding(bottom = lyricsBottomPadding),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                uiState.lyrics.forEach { line ->
+                                    Text(
+                                        text = line.text,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 18.dp),
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        color = if (immersiveEnabled) {
+                                            Color.White.copy(alpha = 0.92f)
+                                        } else {
+                                            Color.Black.copy(alpha = 0.86f)
+                                        },
+                                        lineHeight = 34.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
                         }
                     }
                 }

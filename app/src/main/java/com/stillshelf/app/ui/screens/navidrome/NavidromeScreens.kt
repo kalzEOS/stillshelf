@@ -153,6 +153,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -11721,6 +11722,14 @@ private fun NavidromeNowPlayingVisualizer(
     color: Color,
     modifier: Modifier = Modifier
 ) {
+    val playTransitionProgress by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (isPlaying) 260 else 420,
+            easing = FastOutSlowInEasing
+        ),
+        label = "navidromeNowPlayingVisualizerPlayState"
+    )
     val phase = if (isPlaying) {
         val transition = rememberInfiniteTransition(label = "navidromeNowPlayingVisualizer")
         val animatedPhase by transition.animateFloat(
@@ -11735,6 +11744,13 @@ private fun NavidromeNowPlayingVisualizer(
     } else {
         0f
     }
+    var pausedPhase by remember { mutableStateOf(0f) }
+    if (isPlaying) {
+        SideEffect {
+            pausedPhase = phase
+        }
+    }
+    val resolvedPhase = if (isPlaying) phase else pausedPhase
     val offsets = remember { listOf(0f, 0.28f, 0.56f, 0.82f) }
     Box(
         modifier = modifier
@@ -11749,12 +11765,13 @@ private fun NavidromeNowPlayingVisualizer(
             verticalAlignment = Alignment.Bottom
         ) {
             offsets.forEach { offset ->
-                val animatedFraction = ((sin((phase + offset) * (2.0 * PI)).toFloat() + 1f) / 2f)
+                val animatedFraction = ((sin((resolvedPhase + offset) * (2.0 * PI)).toFloat() + 1f) / 2f)
+                val targetHeight = lerp(4.dp, 17.dp, animatedFraction)
                 Box(
                     modifier = Modifier
                         .width(4.dp)
                         .align(Alignment.Bottom)
-                        .height(if (isPlaying) lerp(4.dp, 17.dp, animatedFraction) else 2.dp)
+                        .height(lerp(2.dp, targetHeight, playTransitionProgress))
                         .background(color.copy(alpha = if (isPlaying) 1f else 0.95f))
                 )
             }

@@ -37,6 +37,8 @@ The generated APKs will be located at:
 
 ## Screenshots
 
+### Audiobooks
+
 <p align="center">
   <img src="docs/screenshots/home.png" alt="StillShelf screenshot 1" width="240" />
   <img src="docs/screenshots/Home2.png" alt="StillShelf screenshot 2" width="240" />
@@ -59,6 +61,37 @@ The generated APKs will be located at:
 </p>
 <p align="center">
   <img src="docs/screenshots/Screenshot_20260306_181435.png" alt="StillShelf screenshot 13" width="240" />
+</p>
+
+### Navidrome
+
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_162925.png" alt="StillShelf Navidrome screenshot 1" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_162935.png" alt="StillShelf Navidrome screenshot 2" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_162948.png" alt="StillShelf Navidrome screenshot 3" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_163014.png" alt="StillShelf Navidrome screenshot 4" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163022.png" alt="StillShelf Navidrome screenshot 5" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163034.png" alt="StillShelf Navidrome screenshot 6" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_163056.png" alt="StillShelf Navidrome screenshot 7" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163112.png" alt="StillShelf Navidrome screenshot 8" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163126.png" alt="StillShelf Navidrome screenshot 9" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_163149.png" alt="StillShelf Navidrome screenshot 10" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163208.png" alt="StillShelf Navidrome screenshot 11" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163240.png" alt="StillShelf Navidrome screenshot 12" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_163250.png" alt="StillShelf Navidrome screenshot 13" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163313.png" alt="StillShelf Navidrome screenshot 14" width="240" />
+  <img src="docs/screenshots/nv_Screenshot_20260408_163331.png" alt="StillShelf Navidrome screenshot 15" width="240" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/nv_Screenshot_20260408_163406.png" alt="StillShelf Navidrome screenshot 16" width="240" />
 </p>
 
 ## License

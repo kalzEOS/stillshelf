@@ -8,6 +8,7 @@ import android.support.v4.media.MediaDescriptionCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import android.text.BidiFormatter
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.utils.MediaConstants
 import com.stillshelf.app.MainActivity
@@ -21,6 +22,7 @@ import com.stillshelf.app.core.model.NamedEntitySummary
 import com.stillshelf.app.core.model.NavidromeAlbum
 import com.stillshelf.app.core.model.NavidromeArtist
 import com.stillshelf.app.core.model.NavidromePlaylist
+import com.stillshelf.app.core.model.NavidromeRadio
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
@@ -237,6 +239,7 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 buildNavAlbumTrackItems(parentId.removePrefix(MEDIA_ID_NAV_ALBUM_PREFIX))
             }
             parentId == MEDIA_ID_NAV_SONGS && navAvailable -> buildNavSongItems()
+            parentId == MEDIA_ID_NAV_RADIOS && navAvailable -> buildNavRadioItems()
             parentId == MEDIA_ID_NAV_PLAYLISTS && navAvailable -> buildNavPlaylistItems()
             parentId.startsWith(MEDIA_ID_NAV_PLAYLIST_PREFIX) && navAvailable -> {
                 buildNavPlaylistTrackItems(parentId.removePrefix(MEDIA_ID_NAV_PLAYLIST_PREFIX))
@@ -605,6 +608,11 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 subtitle = "Browse all tracks"
             ),
             buildBrowsableItem(
+                mediaId = MEDIA_ID_NAV_RADIOS,
+                title = "Radios",
+                subtitle = "Browse internet radio stations"
+            ),
+            buildBrowsableItem(
                 mediaId = MEDIA_ID_NAV_PLAYLISTS,
                 title = "Playlists",
                 subtitle = "Browse your playlists"
@@ -752,6 +760,26 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         }
     }
 
+    private suspend fun buildNavRadioItems(): MutableList<MediaBrowserCompat.MediaItem> {
+        return when (val result = navidromeRepository.fetchRadios(forceRefresh = false)) {
+            is AppResult.Success -> {
+                val items = result.value
+                    .map(::buildNavRadioItem)
+                    .toMutableList()
+                if (items.isEmpty()) {
+                    items += buildMessageItem("message:nav_radios_empty", "No radios found.")
+                }
+                items
+            }
+            is AppResult.Error -> mutableListOf(
+                buildMessageItem(
+                    mediaId = "message:nav_radios_error",
+                    title = result.message
+                )
+            )
+        }
+    }
+
     private suspend fun buildNavPlaylistItems(): MutableList<MediaBrowserCompat.MediaItem> {
         return when (val result = navidromeRepository.fetchPlaylists(forceRefresh = false)) {
             is AppResult.Success -> {
@@ -880,8 +908,8 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 } else {
                     MediaMetadataCompat.Builder()
                         .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, encodeAbsBookMediaId(book.id))
-                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, book.title)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, book.authorName)
+                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, wrapForCarText(book.title))
+                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, wrapForCarText(book.authorName))
                         .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, book.coverUrl)
                         .putLong(
                             MediaMetadataCompat.METADATA_KEY_DURATION,
@@ -911,10 +939,13 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 } else {
                     MediaMetadataCompat.Builder()
                         .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, encodeNavSongsTrackMediaId(track.id))
-                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, track.title)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, track.artistName)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, track.albumName)
-                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, track.coverUrl)
+                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, wrapForCarText(track.title))
+                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, wrapForCarText(track.artistName))
+                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, wrapForCarText(track.albumName))
+                        .putString(
+                            MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI,
+                            track.coverUrl ?: if (track.isRadioTrackForCar()) navRadioPlaceholderUri() else null
+                        )
                         .putLong(
                             MediaMetadataCompat.METADATA_KEY_DURATION,
                             active.state.durationMs.toLong().coerceAtLeast(0L)
@@ -1135,6 +1166,18 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
                 when (val result = navidromeRepository.fetchSongs(forceRefresh = false)) {
                     is AppResult.Success -> {
                         playNavTrackFromQueue(result.value, trackId)
+                        publishCurrentSessionSnapshot()
+                    }
+                    is AppResult.Error -> Unit
+                }
+            }
+            mediaId.startsWith(MEDIA_ID_NAV_RADIO_PREFIX) -> {
+                carSelectedBackendOverride = BackendProvider.NAVIDROME
+                val radioId = mediaId.removePrefix(MEDIA_ID_NAV_RADIO_PREFIX)
+                when (val result = navidromeRepository.fetchRadios(forceRefresh = false)) {
+                    is AppResult.Success -> {
+                        val queue = result.value.map { it.toTrackForCar() }
+                        playNavTrackFromQueue(queue, "radio:$radioId")
                         publishCurrentSessionSnapshot()
                     }
                     is AppResult.Error -> Unit
@@ -1434,10 +1477,17 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return queue.mapIndexed { index, track ->
             MediaSessionCompat.QueueItem(
                 MediaDescriptionCompat.Builder()
-                    .setMediaId(encodeNavSongsTrackMediaId(track.id))
-                    .setTitle(track.title)
-                    .setSubtitle(track.artistName)
-                    .setIconUri(track.coverUrl?.let(android.net.Uri::parse))
+                    .setMediaId(
+                        if (track.isRadioTrackForCar()) {
+                            MEDIA_ID_NAV_RADIO_PREFIX + track.id.removePrefix("radio:")
+                        } else {
+                            encodeNavSongsTrackMediaId(track.id)
+                        }
+                    )
+                    .setTitle(wrapForCarText(track.title))
+                    .setSubtitle(wrapForCarText(track.artistName))
+                    .setIconUri((track.coverUrl ?: if (track.isRadioTrackForCar()) navRadioPlaceholderUri() else null)
+                        ?.let(android.net.Uri::parse))
                     .build(),
                 index.toLong()
             )
@@ -1592,6 +1642,15 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         )
     }
 
+    private fun buildNavRadioItem(radio: NavidromeRadio): MediaBrowserCompat.MediaItem {
+        return buildPlayableItem(
+            mediaId = MEDIA_ID_NAV_RADIO_PREFIX + radio.id,
+            title = radio.name,
+            subtitle = radio.homePageUrl?.ifBlank { null } ?: "Internet Radio",
+            iconUri = navRadioPlaceholderUri()
+        )
+    }
+
     private fun buildBrowsableItem(
         mediaId: String,
         title: String,
@@ -1601,8 +1660,8 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return MediaBrowserCompat.MediaItem(
             MediaDescriptionCompat.Builder()
                 .setMediaId(mediaId)
-                .setTitle(title)
-                .setSubtitle(subtitle)
+                .setTitle(wrapForCarText(title))
+                .setSubtitle(subtitle?.let(::wrapForCarText))
                 .setIconUri(iconUri?.let(android.net.Uri::parse))
                 .build(),
             MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
@@ -1618,8 +1677,8 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return MediaBrowserCompat.MediaItem(
             MediaDescriptionCompat.Builder()
                 .setMediaId(mediaId)
-                .setTitle(title)
-                .setSubtitle(subtitle)
+                .setTitle(wrapForCarText(title))
+                .setSubtitle(subtitle?.let(::wrapForCarText))
                 .setIconUri(iconUri?.let(android.net.Uri::parse))
                 .build(),
             MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
@@ -1634,8 +1693,8 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         return MediaBrowserCompat.MediaItem(
             MediaDescriptionCompat.Builder()
                 .setMediaId(mediaId)
-                .setTitle(title)
-                .setSubtitle(subtitle)
+                .setTitle(wrapForCarText(title))
+                .setSubtitle(subtitle?.let(::wrapForCarText))
                 .build(),
             0
         )
@@ -1662,6 +1721,35 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         }
     }
 
+    private fun wrapForCarText(value: String): String {
+        return BidiFormatter.getInstance(false).unicodeWrap(value.trim())
+    }
+
+    private fun navRadioPlaceholderUri(): String {
+        return "android.resource://$packageName/${R.drawable.ic_launcher_foreground}"
+    }
+
+    private fun NavidromeRadio.toTrackForCar(): NavidromeTrack {
+        return NavidromeTrack(
+            id = "radio:$id",
+            title = name,
+            artistName = "Internet Radio",
+            albumName = homePageUrl ?: "Live stream",
+            albumId = null,
+            artistId = null,
+            trackNumber = null,
+            durationSeconds = null,
+            coverUrl = navRadioPlaceholderUri(),
+            streamUrl = streamUrl,
+            formatLabel = null,
+            bitRateKbps = null
+        )
+    }
+
+    private fun NavidromeTrack?.isRadioTrackForCar(): Boolean {
+        return this?.id?.startsWith("radio:") == true
+    }
+
     private sealed interface ActiveSession {
         data class Audiobookshelf(val state: PlaybackUiState) : ActiveSession
         data class Navidrome(
@@ -1685,9 +1773,11 @@ class StillShelfCarMediaService : MediaBrowserServiceCompat() {
         private const val MEDIA_ID_NAV_ARTISTS = "nav_artists"
         private const val MEDIA_ID_NAV_ALBUMS = "nav_albums"
         private const val MEDIA_ID_NAV_SONGS = "nav_songs"
+        private const val MEDIA_ID_NAV_RADIOS = "nav_radios"
         private const val MEDIA_ID_NAV_PLAYLISTS = "nav_playlists"
         private const val MEDIA_ID_NAV_ARTIST_PREFIX = "nav_artist:"
         private const val MEDIA_ID_NAV_ALBUM_PREFIX = "nav_album:"
+        private const val MEDIA_ID_NAV_RADIO_PREFIX = "nav_radio:"
         private const val MEDIA_ID_NAV_PLAYLIST_PREFIX = "nav_playlist:"
         private const val MEDIA_ID_NAV_ARTIST_PLAY_PREFIX = "nav_artist_play:"
         private const val MEDIA_ID_NAV_ARTIST_SHUFFLE_PREFIX = "nav_artist_shuffle:"

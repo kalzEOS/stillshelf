@@ -11832,13 +11832,23 @@ private fun formatDurationMillis(totalMs: Int): String {
     return formatDuration((totalMs.coerceAtLeast(0)) / 1000)
 }
 
+private fun formatPlaylistDuration(totalSeconds: Int): String {
+    val safeSeconds = totalSeconds.coerceAtLeast(0)
+    if (safeSeconds < 3600) {
+        return formatDuration(safeSeconds)
+    }
+    val hours = safeSeconds / 3600
+    val minutes = (safeSeconds % 3600) / 60
+    return "${hours}h ${minutes}m"
+}
+
 private fun formatPlaylistSummary(playlist: NavidromePlaylist): String {
     val parts = buildList {
         playlist.songCount?.let { count ->
             add(if (count == 1) "1 song" else "$count songs")
         } ?: add("Playlist")
         playlist.durationSeconds?.takeIf { it > 0 }?.let { duration ->
-            add(formatDuration(duration))
+            add(formatPlaylistDuration(duration))
         }
     }
     return parts.joinToString(" • ")

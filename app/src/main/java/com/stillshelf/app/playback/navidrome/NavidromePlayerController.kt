@@ -85,6 +85,22 @@ internal fun isNavidromeOutputSwitchInFlight(
     return nowElapsedMs < suppressRefreshRoutingUntilElapsedMs
 }
 
+internal fun shouldPersistNavidromePlaybackCheckpoint(
+    currentTrackId: String?,
+    previousTrackId: String?,
+    currentPositionMs: Int,
+    previousPositionMs: Int,
+    elapsedSinceLastPersistMs: Long,
+    isNearStartAfterRewind: Boolean = false
+): Boolean {
+    if (currentTrackId.isNullOrBlank()) return false
+    if (currentTrackId != previousTrackId) return true
+    if (isNearStartAfterRewind) return true
+    if (currentPositionMs <= 0) return false
+    if (elapsedSinceLastPersistMs < 15_000L) return false
+    return kotlin.math.abs(currentPositionMs - previousPositionMs) >= 10_000
+}
+
 internal data class NavidromeTrackSnapshotPayload(
     val id: String,
     val title: String,
@@ -205,6 +221,7 @@ class NavidromePlayerController @Inject constructor(
         const val MAX_RECENT_TRACKS = 7
         const val PREVIOUS_RESTART_THRESHOLD_MS = 3_000
         const val PLAYING_PROGRESS_UPDATE_INTERVAL_MS = 80L
+        const val BACKGROUND_PLAYING_PROGRESS_UPDATE_INTERVAL_MS = 1_000L
         const val IDLE_PROGRESS_UPDATE_INTERVAL_MS = 250L
         const val CHANNEL_ID = "stillshelf_playback_v4"
         const val CHANNEL_NAME = "Playback"
@@ -281,6 +298,9 @@ class NavidromePlayerController @Inject constructor(
     private val forcedRemoteTrackIds = mutableSetOf<String>()
     private var playbackRecoveryTrackId: String? = null
     private var restorePlaybackGeneration: Long = 0L
+    private var lastPersistedSnapshotTrackId: String? = null
+    private var lastPersistedSnapshotPositionMs: Int = 0
+    private var lastPersistedSnapshotElapsedMs: Long = 0L
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
@@ -345,8 +365,8 @@ class NavidromePlayerController @Inject constructor(
 
         override fun onStop(owner: LifecycleOwner) {
             appInForeground = false
-            stopProgressUpdates()
-            persistPlaybackSnapshot()
+            persistPlaybackSnapshot(force = true)
+            ensureProgressUpdates()
             ensurePausedPlayerReleasePolicy()
         }
     }
@@ -488,7 +508,7 @@ class NavidromePlayerController @Inject constructor(
         activePlayer.prepare()
         activePlayer.play()
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
     }
 
@@ -516,7 +536,7 @@ class NavidromePlayerController @Inject constructor(
                 .build()
         })
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
     }
 
     fun appendTracksToQueue(tracks: List<NavidromeTrack>) {
@@ -535,7 +555,7 @@ class NavidromePlayerController @Inject constructor(
                 .build()
         })
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
     }
 
     fun togglePlayPause() {
@@ -562,7 +582,7 @@ class NavidromePlayerController @Inject constructor(
         if (activePlayer.isPlaying) return
         activePlayer.play()
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
     }
 
@@ -578,7 +598,7 @@ class NavidromePlayerController @Inject constructor(
         if (!activePlayer.isPlaying && activePlayer.playbackState != Player.STATE_BUFFERING) return
         activePlayer.pause()
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
     }
 
@@ -639,6 +659,9 @@ class NavidromePlayerController @Inject constructor(
         invalidatePendingPlaybackRestore()
         queueTracks = emptyList()
         lastRecordedTrackId = null
+        lastPersistedSnapshotTrackId = null
+        lastPersistedSnapshotPositionMs = 0
+        lastPersistedSnapshotElapsedMs = 0L
         forcedRemoteTrackIds.clear()
         playbackRecoveryTrackId = null
         releasePlayer(clearQueue = true)
@@ -670,7 +693,7 @@ class NavidromePlayerController @Inject constructor(
             positionMs = clampedPosition,
             durationMs = durationMs
         )
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
     }
 
     private fun startPlaybackAt(
@@ -714,7 +737,7 @@ class NavidromePlayerController @Inject constructor(
             durationMs = resolveTrackDurationMs(queueTracks[safeIndex]),
             errorMessage = null
         )
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
         updateStateFromPlayer()
         ensureProgressUpdates()
     }
@@ -824,7 +847,7 @@ class NavidromePlayerController @Inject constructor(
             errorMessage = null
         )
         updateStateFromPlayer()
-        persistPlaybackSnapshot()
+        persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
     }
 
@@ -843,8 +866,11 @@ class NavidromePlayerController @Inject constructor(
         }
     }
 
-    private fun persistPlaybackSnapshot() {
+    private fun persistPlaybackSnapshot(force: Boolean = false) {
         if (queueTracks.isEmpty()) {
+            lastPersistedSnapshotTrackId = null
+            lastPersistedSnapshotPositionMs = 0
+            lastPersistedSnapshotElapsedMs = 0L
             scope.launch(Dispatchers.IO) {
                 sessionPreferences.clearCachedNavidromePlayback()
             }
@@ -853,11 +879,32 @@ class NavidromePlayerController @Inject constructor(
         val state = mutableState.value
         val currentIndex = state.currentIndex.takeIf { it in queueTracks.indices } ?: 0
         val currentTrack = queueTracks.getOrNull(currentIndex)
+        val currentTrackId = currentTrack?.id
+        val currentPositionMs = if (currentTrack.isRadioTrack()) 0 else state.positionMs.coerceAtLeast(0)
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val isNearStartAfterRewind = currentTrackId != null &&
+            currentTrackId == lastPersistedSnapshotTrackId &&
+            currentPositionMs <= 5_000 &&
+            lastPersistedSnapshotPositionMs - currentPositionMs >= 30_000 &&
+            player?.playbackState == Player.STATE_READY
+        if (
+            !force &&
+            !shouldPersistNavidromePlaybackCheckpoint(
+                currentTrackId = currentTrackId,
+                previousTrackId = lastPersistedSnapshotTrackId,
+                currentPositionMs = currentPositionMs,
+                previousPositionMs = lastPersistedSnapshotPositionMs,
+                elapsedSinceLastPersistMs = nowElapsedMs - lastPersistedSnapshotElapsedMs,
+                isNearStartAfterRewind = isNearStartAfterRewind
+            )
+        ) {
+            return
+        }
         val payload = JSONObject()
             .put("currentIndex", currentIndex)
             .put(
                 "positionMs",
-                if (currentTrack.isRadioTrack()) 0 else state.positionMs.coerceAtLeast(0)
+                currentPositionMs
             )
             .put(
                 "queue",
@@ -873,6 +920,9 @@ class NavidromePlayerController @Inject constructor(
                 }
             )
             .toString()
+        lastPersistedSnapshotTrackId = currentTrackId
+        lastPersistedSnapshotPositionMs = currentPositionMs
+        lastPersistedSnapshotElapsedMs = nowElapsedMs
         scope.launch(Dispatchers.IO) {
             val sessionKey = navidromeRepository.currentPlaybackSessionKey()
             sessionPreferences.setCachedNavidromePlayback(
@@ -935,6 +985,9 @@ class NavidromePlayerController @Inject constructor(
                 val restoredIndex = snapshot.currentIndex.coerceIn(0, refreshedQueue.lastIndex)
                 val currentTrack = refreshedQueue.getOrNull(restoredIndex)
                 lastRecordedTrackId = currentTrack?.id
+                lastPersistedSnapshotTrackId = currentTrack?.id
+                lastPersistedSnapshotPositionMs = if (currentTrack.isRadioTrack()) 0 else snapshot.positionMs
+                lastPersistedSnapshotElapsedMs = SystemClock.elapsedRealtime()
                 mutableState.value = mutableState.value.copy(
                     queue = refreshedQueue,
                     queueDisplayMode = snapshot.queueDisplayMode,
@@ -963,7 +1016,11 @@ class NavidromePlayerController @Inject constructor(
                 val activePlayer = player
                 delay(
                     if (activePlayer?.isPlaying == true) {
-                        PLAYING_PROGRESS_UPDATE_INTERVAL_MS
+                        if (appInForeground) {
+                            PLAYING_PROGRESS_UPDATE_INTERVAL_MS
+                        } else {
+                            BACKGROUND_PLAYING_PROGRESS_UPDATE_INTERVAL_MS
+                        }
                     } else {
                         IDLE_PROGRESS_UPDATE_INTERVAL_MS
                     }
@@ -1009,7 +1066,7 @@ class NavidromePlayerController @Inject constructor(
                 playbackState = playerToRelease?.playbackState ?: Player.STATE_IDLE
             )
             if (!stillPaused) return@launch
-            persistPlaybackSnapshot()
+            persistPlaybackSnapshot(force = true)
             releasePlayer(clearQueue = false)
             mutableState.value = mutableState.value.copy(
                 isPlaying = false,
@@ -1021,8 +1078,7 @@ class NavidromePlayerController @Inject constructor(
 
     private fun ensureProgressUpdates() {
         val activePlayer = player
-        val shouldRun = appInForeground &&
-            queueTracks.isNotEmpty() &&
+        val shouldRun = queueTracks.isNotEmpty() &&
             activePlayer != null &&
             (activePlayer.isPlaying || activePlayer.playbackState == Player.STATE_BUFFERING)
         if (shouldRun) {
@@ -1090,6 +1146,7 @@ class NavidromePlayerController @Inject constructor(
                 null
             }
         )
+        persistPlaybackSnapshot()
         if ((activePlayer.isPlaying || playbackState == Player.STATE_READY) && currentTrack?.id == playbackRecoveryTrackId) {
             playbackRecoveryTrackId = null
         }
@@ -1139,7 +1196,7 @@ class NavidromePlayerController @Inject constructor(
                 durationMs = 0,
                 errorMessage = null
             )
-            persistPlaybackSnapshot()
+            persistPlaybackSnapshot(force = true)
             ensureProgressUpdates()
         } else {
             startPlaybackAt(index = currentIndex, positionMs = 0, playWhenReady = true)

@@ -113,7 +113,7 @@ tasks.register<JacocoReport>("jacocoTestReport") {
 
     val buildDir = layout.buildDirectory.get()
     classDirectories.setFrom(
-        fileTree("$buildDir/tmp/kotlin-classes/githubDebug") { exclude(excludes) },
+        fileTree("$buildDir/intermediates/built_in_kotlinc/githubDebug/compileGithubDebugKotlin/classes") { exclude(excludes) },
         fileTree("$buildDir/intermediates/javac/githubDebug/compileGithubDebugJavaWithJavac/classes") { exclude(excludes) }
     )
     sourceDirectories.setFrom(files("src/main/java", "src/main/kotlin"))

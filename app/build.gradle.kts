@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt.android)
+    jacoco
 }
 
 val keystoreProperties = Properties()
@@ -55,6 +56,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            enableUnitTestCoverage = true
+        }
         release {
             isMinifyEnabled = false
             if (hasReleaseSigning) {
@@ -64,6 +68,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
         }
     }
 
@@ -80,6 +91,37 @@ android {
 
 dependencyLocking {
     lockAllConfigurations()
+}
+
+// Run: ./gradlew jacocoTestReport
+// Output: app/build/reports/jacoco/jacocoTestReport/html/index.html
+tasks.register<JacocoReport>("jacocoTestReport") {
+    dependsOn("testGithubDebugUnitTest")
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+
+    val excludes = listOf(
+        "**/R.class", "**/R$*.class", "**/BuildConfig.*", "**/Manifest*.*",
+        "**/*Test*.*", "android/**/*.*",
+        "**/*_MembersInjector*.*", "**/*Dagger*.*", "**/*_Factory*.*",
+        "**/*Hilt*.*", "**/hilt_aggregated_deps/**",
+        "**/*ComposableSingletons*.*", "**/*_HiltModules*.*"
+    )
+
+    val buildDir = layout.buildDirectory.get()
+    classDirectories.setFrom(
+        fileTree("$buildDir/tmp/kotlin-classes/githubDebug") { exclude(excludes) },
+        fileTree("$buildDir/intermediates/javac/githubDebug/compileGithubDebugJavaWithJavac/classes") { exclude(excludes) }
+    )
+    sourceDirectories.setFrom(files("src/main/java", "src/main/kotlin"))
+    executionData.setFrom(
+        fileTree(buildDir) {
+            include("outputs/unit_test_code_coverage/githubDebugUnitTest/testGithubDebugUnitTest.exec")
+        }
+    )
 }
 
 dependencies {
@@ -123,6 +165,15 @@ dependencies {
 
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core.ktx)
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.mockk)
+
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.mockk.android)
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

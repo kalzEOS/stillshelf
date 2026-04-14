@@ -89,6 +89,7 @@ import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
@@ -752,6 +753,9 @@ fun NavidromeAppRoute(
                 onDismissLyrics = playerViewModel::dismissLyrics,
                 onClearLyricsCache = playerViewModel::clearLyricsCache,
                 onLyricsModeChanged = { visible -> lockPlayerSheetDismiss = visible },
+                onPlayNextTrack = { track -> playerViewModel.playTracksNext(listOf(track)) },
+                onAddToQueueTrack = { track -> playerViewModel.addTracksToQueue(listOf(track)) },
+                onRemoveFromQueueTrack = playerViewModel::removeQueueItem,
                 onOpenAlbum = { albumId ->
                     dismissPlayerSheet {
                         navController.navigate(NavidromeRoute.album(albumId))
@@ -3527,6 +3531,14 @@ private fun NavidromePlaylistDetailRoute(
                                         rowMenuExpanded = false
                                         playerViewModel.playTracks(detail.tracks, index)
                                     },
+                                    onPlayNext = {
+                                        rowMenuExpanded = false
+                                        playerViewModel.playTracksNext(listOf(track))
+                                    },
+                                    onAddToQueue = {
+                                        rowMenuExpanded = false
+                                        playerViewModel.addTracksToQueue(listOf(track))
+                                    },
                                     playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                     onShowAlbum = track.albumId?.let { albumId ->
                                         {
@@ -3775,6 +3787,14 @@ private fun NavidromeFavoriteSongsRoute(
                                 onPlayTrack = {
                                     rowMenuExpanded = false
                                     playerViewModel.playTracks(uiState.songs, index)
+                                },
+                                onPlayNext = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.playTracksNext(listOf(track))
+                                },
+                                onAddToQueue = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.addTracksToQueue(listOf(track))
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                 onShowAlbum = onOpenAlbum?.let { openAlbum ->
@@ -4070,6 +4090,14 @@ private fun NavidromeSongsRoute(
                                         queueDisplayMode = NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW
                                     )
                                 },
+                                onPlayNext = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.playTracksNext(listOf(track))
+                                },
+                                onAddToQueue = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.addTracksToQueue(listOf(track))
+                                },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                 isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
                                 onToggleDownload = {
@@ -4321,6 +4349,14 @@ private fun NavidromeSearchRoute(
                                         rowMenuExpanded = false
                                         viewModel.commitCurrentQuery()
                                         playerViewModel.playTracks(uiState.results.tracks, index)
+                                    },
+                                    onPlayNext = {
+                                        rowMenuExpanded = false
+                                        playerViewModel.playTracksNext(listOf(track))
+                                    },
+                                    onAddToQueue = {
+                                        rowMenuExpanded = false
+                                        playerViewModel.addTracksToQueue(listOf(track))
                                     },
                                     playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                     isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
@@ -4684,6 +4720,14 @@ private fun NavidromeAlbumDetailRoute(
                                 onPlayTrack = {
                                     rowMenuExpanded = false
                                     playerViewModel.playTracks(detail.tracks, index)
+                                },
+                                onPlayNext = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.playTracksNext(listOf(track))
+                                },
+                                onAddToQueue = {
+                                    rowMenuExpanded = false
+                                    playerViewModel.addTracksToQueue(listOf(track))
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
                                 isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
@@ -7024,6 +7068,8 @@ private fun NavidromeContinueListeningCard(
     posterHeight: Dp = 80.dp,
     onPlayPause: () -> Unit,
     onPlayTrack: () -> Unit,
+    onPlayNextTrack: ((NavidromeTrack) -> Unit)? = null,
+    onAddToQueueTrack: ((NavidromeTrack) -> Unit)? = null,
     onToggleDownload: () -> Unit,
     onClick: () -> Unit,
     onOpenAlbum: (() -> Unit)? = null,
@@ -7152,6 +7198,14 @@ private fun NavidromeContinueListeningCard(
                         } else {
                             onPlayTrack()
                         }
+                        menuExpanded = false
+                    },
+                    onPlayNext = {
+                        onPlayNextTrack?.invoke(track)
+                        menuExpanded = false
+                    },
+                    onAddToQueue = {
+                        onAddToQueueTrack?.invoke(track)
                         menuExpanded = false
                     },
                     playLabel = if (isCurrent && isPlaying) "Pause" else if (isCurrent) "Resume" else "Play Now",
@@ -7654,6 +7708,8 @@ private fun NavidromeTrackActionsMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
     onPlayTrack: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToQueue: () -> Unit,
     playLabel: String,
     isDownloaded: Boolean = false,
     onToggleDownload: (() -> Unit)? = null,
@@ -7662,6 +7718,7 @@ private fun NavidromeTrackActionsMenu(
     onShowTrackDetails: (() -> Unit)? = null,
     extraActions: (@Composable ColumnScope.() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     AppDropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest
@@ -7675,6 +7732,32 @@ private fun NavidromeTrackActionsMenu(
                 )
             },
             onClick = onPlayTrack
+        )
+        AppDropdownMenuItem(
+            text = { Text("Play Next") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
+                    contentDescription = null
+                )
+            },
+            onClick = {
+                onPlayNext()
+                Toast.makeText(context, "Playing next", Toast.LENGTH_SHORT).show()
+            }
+        )
+        AppDropdownMenuItem(
+            text = { Text("Add to Queue") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Outlined.QueueMusic,
+                    contentDescription = null
+                )
+            },
+            onClick = {
+                onAddToQueue()
+                Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+            }
         )
         if (onToggleDownload != null) {
             AppDropdownMenuItem(
@@ -9577,6 +9660,9 @@ private fun NavidromeExpandedPlayerSheet(
     onDismissLyrics: () -> Unit,
     onClearLyricsCache: () -> Unit,
     onLyricsModeChanged: (Boolean) -> Unit,
+    onPlayNextTrack: ((NavidromeTrack) -> Unit)? = null,
+    onAddToQueueTrack: ((NavidromeTrack) -> Unit)? = null,
+    onRemoveFromQueueTrack: (Int) -> Boolean,
     onOpenAlbum: ((String) -> Unit)? = null,
     onOpenArtist: ((String) -> Unit)? = null
 ) {
@@ -10443,7 +10529,92 @@ private fun NavidromeExpandedPlayerSheet(
                                             isDownloaded = item.track.id in downloadedTrackIds,
                                             downloadProgressPercent = trackProgressById[item.track.id],
                                             immersiveEnabled = immersiveEnabled,
-                                            onClick = { onSelectTrack(item.queueIndex) }
+                                            onClick = { onSelectTrack(item.queueIndex) },
+                                            trailingContent = if (onPlayNextTrack != null && onAddToQueueTrack != null) {
+                                                {
+                                                    var rowMenuExpanded by remember { mutableStateOf(false) }
+                                                    Box {
+                                                        IconButton(onClick = { rowMenuExpanded = true }) {
+                                                            Icon(
+                                                                imageVector = Icons.Outlined.MoreHoriz,
+                                                                contentDescription = "Queue item options"
+                                                            )
+                                                        }
+                                                        NavidromeTrackActionsMenu(
+                                                            expanded = rowMenuExpanded,
+                                                            onDismissRequest = { rowMenuExpanded = false },
+                                                            onPlayTrack = {
+                                                                rowMenuExpanded = false
+                                                                if (itemIsCurrent && state.isPlaying) {
+                                                                    onPlayPause()
+                                                                } else {
+                                                                    onSelectTrack(item.queueIndex)
+                                                                }
+                                                            },
+                                                            onPlayNext = {
+                                                                rowMenuExpanded = false
+                                                                onPlayNextTrack?.invoke(item.track)
+                                                            },
+                                                            onAddToQueue = {
+                                                                rowMenuExpanded = false
+                                                                onAddToQueueTrack?.invoke(item.track)
+                                                            },
+                                                            playLabel = when {
+                                                                itemIsCurrent && state.isPlaying -> "Pause"
+                                                                itemIsCurrent -> "Resume"
+                                                                else -> "Play Now"
+                                                            },
+                                                            isDownloaded = item.track.id in downloadedTrackIds,
+                                                            onToggleDownload = onToggleDownload?.let { toggle ->
+                                                                {
+                                                                    rowMenuExpanded = false
+                                                                    toggle(item.track)
+                                                                }
+                                                            },
+                                                            onShowAlbum = item.track.albumId?.let { albumId ->
+                                                                {
+                                                                    rowMenuExpanded = false
+                                                                    onOpenAlbum?.invoke(albumId)
+                                                                }
+                                                            },
+                                                            onShowArtist = item.track.artistId?.let { artistId ->
+                                                                {
+                                                                    rowMenuExpanded = false
+                                                                    onOpenArtist?.invoke(artistId)
+                                                                }
+                                                            },
+                                                            extraActions = if (!itemIsCurrent) {
+                                                                {
+                                                                    HorizontalDivider()
+                                                                    AppDropdownMenuItem(
+                                                                        text = { Text("Remove from queue") },
+                                                                        leadingIcon = {
+                                                                            Icon(
+                                                                                imageVector = Icons.Outlined.Remove,
+                                                                                contentDescription = null
+                                                                            )
+                                                                        },
+                                                                        onClick = {
+                                                                            rowMenuExpanded = false
+                                                                            if (onRemoveFromQueueTrack(item.queueIndex)) {
+                                                                                Toast.makeText(
+                                                                                    context,
+                                                                                    "Removed from queue",
+                                                                                    Toast.LENGTH_SHORT
+                                                                                ).show()
+                                                                            }
+                                                                        }
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                null
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            } else {
+                                                null
+                                            }
                                         )
                                 }
                             }
@@ -11619,7 +11790,8 @@ private fun PlayerQueueRow(
     isDownloaded: Boolean = false,
     downloadProgressPercent: Int? = null,
     immersiveEnabled: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    trailingContent: (@Composable () -> Unit)? = null
 ) {
     val currentBackgroundColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.10f)
@@ -11667,18 +11839,18 @@ private fun PlayerQueueRow(
             .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
-    ) {
-        AlbumArt(
-            url = track.coverUrl,
-            size = 44.dp,
-            showDownloadedIndicator = isDownloaded,
+        ) {
+            AlbumArt(
+                url = track.coverUrl,
+                size = 44.dp,
+                showDownloadedIndicator = isDownloaded,
             downloadProgressPercent = downloadProgressPercent
         )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = primaryTextColor,
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = primaryTextColor,
                 fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -11687,24 +11859,42 @@ private fun PlayerQueueRow(
                 text = track.artistName,
                 style = MaterialTheme.typography.bodySmall,
                 color = secondaryTextColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (isCurrent) {
-            NavidromeNowPlayingVisualizer(
-                isPlaying = isPlaying,
-                color = nowPlayingAccentColor
-            )
-        } else {
-            Text(
-                text = track.durationSeconds?.let(::formatDuration) ?: "--:--",
-                style = MaterialTheme.typography.bodySmall,
-                color = secondaryTextColor
-            )
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            when {
+                trailingContent != null && isCurrent -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NavidromeNowPlayingVisualizer(
+                            isPlaying = isPlaying,
+                            color = nowPlayingAccentColor
+                        )
+                        trailingContent()
+                    }
+                }
+                trailingContent != null -> {
+                    trailingContent()
+                }
+                isCurrent -> {
+                    NavidromeNowPlayingVisualizer(
+                        isPlaying = isPlaying,
+                        color = nowPlayingAccentColor
+                    )
+                }
+                else -> {
+                    Text(
+                        text = track.durationSeconds?.let(::formatDuration) ?: "--:--",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = secondaryTextColor
+                    )
+                }
+            }
         }
     }
-}
 
 @Composable
 private fun navidromeNowPlayingAccentColor(immersiveEnabled: Boolean = false): Color {

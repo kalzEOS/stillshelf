@@ -2545,6 +2545,10 @@ class NavidromePlayerViewModel @Inject constructor(
         playerController.appendTracksToQueue(tracks)
     }
 
+    fun removeQueueItem(index: Int): Boolean {
+        return playerController.removeTrackFromQueue(index)
+    }
+
     fun playRadio(radio: NavidromeRadio) {
         playerController.playTracks(listOf(radio.toTrack()), startIndex = 0)
     }

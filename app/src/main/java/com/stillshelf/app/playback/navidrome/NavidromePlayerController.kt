@@ -101,6 +101,31 @@ internal fun shouldPersistNavidromePlaybackCheckpoint(
     return kotlin.math.abs(currentPositionMs - previousPositionMs) >= 10_000
 }
 
+internal data class NavidromeQueueRemovalResult(
+    val queue: List<NavidromeTrack>,
+    val currentIndex: Int
+)
+
+internal fun removeNavidromeTrackFromQueue(
+    queue: List<NavidromeTrack>,
+    currentIndex: Int,
+    removeIndex: Int
+): NavidromeQueueRemovalResult? {
+    if (queue.isEmpty()) return null
+    if (currentIndex !in queue.indices) return null
+    if (removeIndex !in queue.indices) return null
+    if (removeIndex == currentIndex) return null
+
+    val updatedQueue = queue.toMutableList().apply {
+        removeAt(removeIndex)
+    }
+    val adjustedCurrentIndex = if (removeIndex < currentIndex) currentIndex - 1 else currentIndex
+    return NavidromeQueueRemovalResult(
+        queue = updatedQueue,
+        currentIndex = adjustedCurrentIndex.coerceIn(0, updatedQueue.lastIndex)
+    )
+}
+
 internal data class NavidromeTrackSnapshotPayload(
     val id: String,
     val title: String,
@@ -556,6 +581,48 @@ class NavidromePlayerController @Inject constructor(
         })
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
+    }
+
+    fun removeTrackFromQueue(index: Int): Boolean {
+        val currentIndex = resolveCurrentQueueIndex()
+            .takeIf { it in queueTracks.indices }
+            ?: mutableState.value.currentIndex.takeIf { it in queueTracks.indices }
+            ?: return false
+        val removal = removeNavidromeTrackFromQueue(
+            queue = queueTracks,
+            currentIndex = currentIndex,
+            removeIndex = index
+        ) ?: return false
+
+        invalidatePendingPlaybackRestore()
+        queueTracks = removal.queue
+
+        val activePlayer = player
+        if (activePlayer != null) {
+            activePlayer.removeMediaItem(index)
+            if (activePlayer.currentMediaItemIndex != removal.currentIndex) {
+                activePlayer.seekTo(removal.currentIndex, activePlayer.currentPosition.coerceAtLeast(0L))
+            }
+            updateStateFromPlayer()
+        } else {
+            val currentTrack = queueTracks.getOrNull(removal.currentIndex)
+            mutableState.value = mutableState.value.copy(
+                queue = queueTracks,
+                queueDisplayMode = queueDisplayMode,
+                currentIndex = removal.currentIndex,
+                currentTrack = currentTrack,
+                recentTracks = recentTracks,
+                isLoading = false,
+                isPlaying = false,
+                positionMs = mutableState.value.positionMs.coerceAtLeast(0),
+                durationMs = currentTrack?.let(::resolveTrackDurationMs) ?: 0,
+                errorMessage = null
+            )
+        }
+
+        persistPlaybackSnapshot(force = true)
+        ensureProgressUpdates()
+        return true
     }
 
     fun togglePlayPause() {

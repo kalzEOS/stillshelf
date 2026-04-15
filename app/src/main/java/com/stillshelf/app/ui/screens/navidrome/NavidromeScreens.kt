@@ -203,6 +203,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.ImeAction
@@ -10772,7 +10773,7 @@ private fun NavidromeExpandedPlayerSheet(
 }
 
 @Composable
-private fun NavidromeLyricsSheetContent(
+internal fun NavidromeLyricsSheetContent(
     uiState: NavidromeLyricsUiState,
     playbackPositionMs: Int,
     isPlaying: Boolean,
@@ -10810,6 +10811,11 @@ private fun NavidromeLyricsSheetContent(
     }
     val loadingIndicatorColor = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.primary
     val emptyStateColor = if (immersiveEnabled) Color.White.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant
+    val plainLyricsTextColor = if (immersiveEnabled) {
+        headerTitleColor.copy(alpha = 0.92f)
+    } else {
+        headerTitleColor.copy(alpha = 0.9f)
+    }
     val syncButtonColor = if (immersiveEnabled) {
         lerp(immersiveBaseColor, Color.Black, 0.18f).copy(alpha = 0.96f)
     } else {
@@ -10849,18 +10855,12 @@ private fun NavidromeLyricsSheetContent(
         (view.parent as? DialogWindowProvider)?.window
     }
     val lyricsListState = rememberLazyListState()
-    val plainLyricsScrollState = rememberScrollState()
     val scope = rememberCoroutineScope()
     var autoSyncLyrics by remember(uiState.trackTitle, uiState.artistName) { mutableStateOf(true) }
     val showSyncLyricsButton = uiState.isSynced && !autoSyncLyrics
     val syncLyricsReservedWidth = 164.dp
     var contentHeightPx by remember { mutableIntStateOf(0) }
     val latestPlaybackPositionMs by rememberUpdatedState(playbackPositionMs)
-    val markLyricsAsManuallyScrolled: (NestedScrollSource, Float) -> Unit = { source, deltaY ->
-        if (source == NestedScrollSource.UserInput && deltaY != 0f) {
-            autoSyncLyrics = false
-        }
-    }
     val density = LocalDensity.current
     val centerPadding = remember(contentHeightPx, density) {
         with(density) {
@@ -10869,31 +10869,6 @@ private fun NavidromeLyricsSheetContent(
         }
     }
     val lyricsBottomPadding = centerPadding + 96.dp
-    val lyricsScrollConnection = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                markLyricsAsManuallyScrolled(source, available.y)
-                return Offset.Zero
-            }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                markLyricsAsManuallyScrolled(source, consumed.y)
-                markLyricsAsManuallyScrolled(source, available.y)
-                return Offset.Zero
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                if (available.y != 0f) {
-                    autoSyncLyrics = false
-                }
-                return Velocity.Zero
-            }
-        }
-    }
     val smoothedPlaybackPositionMs by produceState(
         initialValue = playbackPositionMs,
         key1 = uiState.trackId,
@@ -10927,22 +10902,34 @@ private fun NavidromeLyricsSheetContent(
         )
     }
     val currentLineIndex = syncProgressState?.currentIndex ?: -1
-    val centeredVisibleIndex by remember(lyricsListState) {
-        derivedStateOf {
-            val layoutInfo = lyricsListState.layoutInfo
-            val visibleItems = layoutInfo.visibleItemsInfo
-            if (visibleItems.isEmpty()) {
-                -1
-            } else {
-                val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
-                visibleItems.minByOrNull { item ->
-                    abs((item.offset + item.size / 2) - viewportCenter)
-                }?.index ?: -1
+    val markLyricsAsManuallyScrolled: (NestedScrollSource, Float) -> Unit = { source, deltaY ->
+        if (source == NestedScrollSource.UserInput && deltaY != 0f && autoSyncLyrics) {
+            autoSyncLyrics = false
+        }
+    }
+    val lyricsScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                markLyricsAsManuallyScrolled(source, consumed.y)
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                markLyricsAsManuallyScrolled(NestedScrollSource.UserInput, available.y)
+                return Velocity.Zero
             }
         }
     }
-    val focusedLineIndex = if (uiState.isSynced) {
-        if (autoSyncLyrics) currentLineIndex.coerceAtLeast(0) else centeredVisibleIndex.coerceAtLeast(0)
+    val focusedLineIndex = if (uiState.isSynced && autoSyncLyrics) {
+        currentLineIndex.coerceAtLeast(0)
     } else {
         -1
     }
@@ -11021,9 +11008,6 @@ private fun NavidromeLyricsSheetContent(
         contentHeightPx = 0
         if (lyricsListState.firstVisibleItemIndex != 0 || lyricsListState.firstVisibleItemScrollOffset != 0) {
             lyricsListState.scrollToItem(0)
-        }
-        if (plainLyricsScrollState.value != 0) {
-            plainLyricsScrollState.scrollTo(0)
         }
     }
     Box(
@@ -11256,36 +11240,44 @@ private fun NavidromeLyricsSheetContent(
                             }
                         }
                     }
-                    if (showSyncLyricsButton) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .clickable {
-                                    autoSyncLyrics = true
-                                    scope.launch {
-                                        lyricsListState.animateScrollToItem(currentLineIndex.coerceAtLeast(0))
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        Crossfade(
+                            targetState = showSyncLyricsButton,
+                            animationSpec = tween(durationMillis = 180),
+                            label = "navidromeSyncLyricsButton"
+                        ) { syncButtonVisible ->
+                            if (syncButtonVisible) {
+                                Surface(
+                                    modifier = Modifier
+                                        .testTag("navidromeSyncLyricsButton")
+                                        .clickable {
+                                            autoSyncLyrics = true
+                                            scope.launch {
+                                                lyricsListState.animateScrollToItem(currentLineIndex.coerceAtLeast(0))
+                                            }
+                                        },
+                                    shape = RoundedCornerShape(18.dp),
+                                    color = syncButtonColor,
+                                    border = BorderStroke(1.dp, syncButtonBorderColor),
+                                    tonalElevation = 4.dp
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Refresh,
+                                            contentDescription = null,
+                                            tint = syncButtonContentColor
+                                        )
+                                        Text(
+                                            text = "Sync Lyrics",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = syncButtonContentColor
+                                        )
                                     }
-                                },
-                            shape = RoundedCornerShape(18.dp),
-                            color = syncButtonColor,
-                            border = BorderStroke(1.dp, syncButtonBorderColor),
-                            tonalElevation = 4.dp
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Refresh,
-                                    contentDescription = null,
-                                    tint = syncButtonContentColor
-                                )
-                                Text(
-                                    text = "Sync Lyrics",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = syncButtonContentColor
-                                )
+                                }
                             }
                         }
                     }
@@ -11343,6 +11335,7 @@ private fun NavidromeLyricsSheetContent(
                                 state = lyricsListState,
                                 modifier = Modifier
                                     .fillMaxSize()
+                                    .testTag("navidromeLyricsList")
                                     .nestedScroll(lyricsScrollConnection),
                                 contentPadding = PaddingValues(
                                     top = centerPadding,
@@ -11352,19 +11345,27 @@ private fun NavidromeLyricsSheetContent(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 itemsIndexed(uiState.lyrics) { index, line ->
-                                    val lineDistance = if (focusedLineIndex >= 0) {
+                                    val lineDistance = if (autoSyncLyrics && focusedLineIndex >= 0) {
                                         abs(index - focusedLineIndex)
                                     } else {
                                         Int.MAX_VALUE
                                     }
-                                    val isFocusedLine = index == focusedLineIndex
-                                    val targetBlurRadius = if (isFocusedLine) {
+                                    val isFocusedLine = autoSyncLyrics && index == focusedLineIndex
+                                    val targetBlurRadius = if (!autoSyncLyrics) {
+                                        0.dp
+                                    } else if (isFocusedLine) {
                                         if (isPreStartFocus) 1.5.dp else 0.dp
                                     } else {
                                         minOf(lineDistance.toFloat() * 1.6f, 8f).dp
                                     }
-                                    val targetScale = if (isFocusedLine) 1.08f else 0.92f
-                                    val targetColor = if (isFocusedLine) {
+                                    val targetScale = when {
+                                        !autoSyncLyrics -> 1f
+                                        isFocusedLine -> 1.08f
+                                        else -> 0.92f
+                                    }
+                                    val targetColor = if (!autoSyncLyrics) {
+                                        plainLyricsTextColor
+                                    } else if (isFocusedLine) {
                                         if (immersiveEnabled) {
                                             if (isPreStartFocus) Color.White.copy(alpha = 0.88f) else Color.White
                                         } else {
@@ -11431,25 +11432,20 @@ private fun NavidromeLyricsSheetContent(
                         }
 
                         else -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(plainLyricsScrollState)
-                                    .padding(bottom = lyricsBottomPadding),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(bottom = lyricsBottomPadding),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                uiState.lyrics.forEach { line ->
+                                items(uiState.lyrics) { line ->
                                     Text(
                                         text = line.text,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(horizontal = 18.dp),
                                         style = MaterialTheme.typography.headlineSmall,
-                                        color = if (immersiveEnabled) {
-                                            Color.White.copy(alpha = 0.92f)
-                                        } else {
-                                            Color.Black.copy(alpha = 0.86f)
-                                        },
+                                        color = plainLyricsTextColor,
                                         lineHeight = 34.sp,
                                         textAlign = TextAlign.Center
                                     )

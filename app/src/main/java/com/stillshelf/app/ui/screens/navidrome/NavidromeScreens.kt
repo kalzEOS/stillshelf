@@ -264,6 +264,7 @@ import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.PlaybackLoadingIndicator
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.common.StandardGridCoverHeight
 import com.stillshelf.app.ui.common.StandardGridCoverWidth
@@ -3399,6 +3400,7 @@ private fun NavidromePlaylistDetailRoute(
     var pendingTrackRemovalIndex by rememberSaveable { mutableStateOf<Int?>(null) }
     var nameInput by rememberSaveable { mutableStateOf("") }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
+    var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
 
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
@@ -3553,6 +3555,10 @@ private fun NavidromePlaylistDetailRoute(
                                             onOpenArtist(artistId)
                                         }
                                     },
+                                    onShowTrackDetails = {
+                                        rowMenuExpanded = false
+                                        trackDetailsTarget = track
+                                    },
                                     extraActions = {
                                         HorizontalDivider()
                                         AppDropdownMenuItem(
@@ -3570,6 +3576,12 @@ private fun NavidromePlaylistDetailRoute(
                                         )
                                         AppDropdownMenuItem(
                                             text = { Text("Remove from Playlist") },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Remove,
+                                                    contentDescription = null
+                                                )
+                                            },
                                             onClick = {
                                                 rowMenuExpanded = false
                                                 pendingTrackRemovalIndex = index
@@ -3674,6 +3686,13 @@ private fun NavidromePlaylistDetailRoute(
         onDismiss = { pendingPlaylistRequest = null },
         viewModel = playlistPickerViewModel
     )
+    trackDetailsTarget?.let { track ->
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = (track.durationSeconds ?: 0) * 1000,
+            onDismiss = { trackDetailsTarget = null }
+        )
+    }
 }
 
 @Composable
@@ -3726,6 +3745,7 @@ private fun NavidromeFavoriteSongsRoute(
     var pendingTrackRemoval by remember { mutableStateOf<NavidromeTrack?>(null) }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     var showClearAllConfirmation by remember { mutableStateOf(false) }
+    var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     LaunchedEffect(downloadUiState.actionMessage, downloadUiState.errorMessage) {
         val message = downloadUiState.actionMessage ?: downloadUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -3806,15 +3826,19 @@ private fun NavidromeFavoriteSongsRoute(
                                         }
                                     }
                                 },
-                                onShowArtist = onOpenArtist?.let { openArtist ->
-                                    track.artistId?.let { artistId ->
-                                        {
-                                            rowMenuExpanded = false
-                                            openArtist(artistId)
+                                    onShowArtist = onOpenArtist?.let { openArtist ->
+                                        track.artistId?.let { artistId ->
+                                            {
+                                                rowMenuExpanded = false
+                                                openArtist(artistId)
+                                            }
                                         }
-                                    }
-                                },
-                                extraActions = {
+                                    },
+                                    onShowTrackDetails = {
+                                        rowMenuExpanded = false
+                                        trackDetailsTarget = track
+                                    },
+                                    extraActions = {
                                     HorizontalDivider()
                                     AppDropdownMenuItem(
                                         text = {
@@ -3904,6 +3928,13 @@ private fun NavidromeFavoriteSongsRoute(
         onDismiss = { pendingPlaylistRequest = null },
         viewModel = playlistPickerViewModel
     )
+    trackDetailsTarget?.let { track ->
+        NavidromeTrackDetailsDialog(
+            track = track,
+            durationMs = (track.durationSeconds ?: 0) * 1000,
+            onDismiss = { trackDetailsTarget = null }
+        )
+    }
     if (showClearAllConfirmation) {
         AlertDialog(
             onDismissRequest = { showClearAllConfirmation = false },
@@ -9724,6 +9755,7 @@ private fun NavidromeExpandedPlayerSheet(
             currentIndex = state.currentIndex
         )
     }
+    var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     val displayedQueueItems = remember(state.queueDisplayMode, state.queue, queuePreview, track) {
         when (state.queueDisplayMode) {
             NavidromeQueueDisplayMode.SONGS_TAB_PREVIEW -> queuePreview.items
@@ -9822,6 +9854,17 @@ private fun NavidromeExpandedPlayerSheet(
         Color.White.copy(alpha = 0.18f)
     } else {
         Color.Transparent
+    }
+    var showLoadingIndicator by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isLoading) {
+        if (!state.isLoading) {
+            showLoadingIndicator = false
+            return@LaunchedEffect
+        }
+        delay(200)
+        if (state.isLoading) {
+            showLoadingIndicator = true
+        }
     }
     val toolButtonContainerColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.12f)
@@ -10102,23 +10145,41 @@ private fun NavidromeExpandedPlayerSheet(
                     tonalElevation = 4.dp
                 ) {
                     Box(
-                        modifier = Modifier.fillMaxSize().clickable(onClick = onPlayPause),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(enabled = !state.isLoading, onClick = onPlayPause),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = when {
-                                isRadio && state.isPlaying -> Icons.Outlined.Stop
-                                state.isPlaying -> Icons.Outlined.Pause
-                                else -> Icons.Outlined.PlayArrow
-                            },
-                            contentDescription = when {
-                                isRadio && state.isPlaying -> "Stop"
-                                state.isPlaying -> "Pause"
-                                else -> "Play"
-                            },
-                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(transportIconSize)
-                        )
+                        if (showLoadingIndicator) {
+                            PlaybackLoadingIndicator(
+                                modifier = Modifier.size(transportIconSize),
+                                baseTint = if (transportButtonColor.luminance() > 0.5f) {
+                                    Color.Black.copy(alpha = 0.24f)
+                                } else {
+                                    Color.White.copy(alpha = 0.28f)
+                                },
+                                sweepTint = if (transportButtonColor.luminance() > 0.5f) {
+                                    Color.Black.copy(alpha = 0.95f)
+                                } else {
+                                    Color.White.copy(alpha = 0.95f)
+                                }
+                            )
+                        } else {
+                            Icon(
+                                imageVector = when {
+                                    isRadio && state.isPlaying -> Icons.Outlined.Stop
+                                    state.isPlaying -> Icons.Outlined.Pause
+                                    else -> Icons.Outlined.PlayArrow
+                                },
+                                contentDescription = when {
+                                    isRadio && state.isPlaying -> "Stop"
+                                    state.isPlaying -> "Pause"
+                                    else -> "Play"
+                                },
+                                tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(transportIconSize)
+                            )
+                        }
                     }
                 }
                 NavidromeTransportIconButton(
@@ -10534,15 +10595,16 @@ private fun NavidromeExpandedPlayerSheet(
                                             trailingContent = if (onPlayNextTrack != null && onAddToQueueTrack != null) {
                                                 {
                                                     var rowMenuExpanded by remember { mutableStateOf(false) }
-                                                    Box {
-                                                        IconButton(onClick = { rowMenuExpanded = true }) {
-                                                            Icon(
-                                                                imageVector = Icons.Outlined.MoreHoriz,
-                                                                contentDescription = "Queue item options"
-                                                            )
-                                                        }
-                                                        NavidromeTrackActionsMenu(
-                                                            expanded = rowMenuExpanded,
+                            Box {
+                                IconButton(onClick = { rowMenuExpanded = true }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface,
+                                        contentDescription = "Queue item options"
+                                    )
+                                }
+                                NavidromeTrackActionsMenu(
+                                    expanded = rowMenuExpanded,
                                                             onDismissRequest = { rowMenuExpanded = false },
                                                             onPlayTrack = {
                                                                 rowMenuExpanded = false
@@ -10578,13 +10640,17 @@ private fun NavidromeExpandedPlayerSheet(
                                                                     onOpenAlbum?.invoke(albumId)
                                                                 }
                                                             },
-                                                            onShowArtist = item.track.artistId?.let { artistId ->
-                                                                {
-                                                                    rowMenuExpanded = false
-                                                                    onOpenArtist?.invoke(artistId)
-                                                                }
-                                                            },
-                                                            extraActions = if (!itemIsCurrent) {
+                                    onShowArtist = item.track.artistId?.let { artistId ->
+                                        {
+                                            rowMenuExpanded = false
+                                            onOpenArtist?.invoke(artistId)
+                                        }
+                                    },
+                                    onShowTrackDetails = {
+                                        rowMenuExpanded = false
+                                        trackDetailsTarget = item.track
+                                    },
+                                    extraActions = if (!itemIsCurrent) {
                                                                 {
                                                                     HorizontalDivider()
                                                                     AppDropdownMenuItem(
@@ -10745,6 +10811,13 @@ private fun NavidromeExpandedPlayerSheet(
                 immersiveBaseColor = immersiveBaseColor
             )
         }
+    }
+    trackDetailsTarget?.let { trackDetails ->
+        NavidromeTrackDetailsDialog(
+            track = trackDetails,
+            durationMs = (trackDetails.durationSeconds ?: 0) * 1000,
+            onDismiss = { trackDetailsTarget = null }
+        )
     }
     if (showOutputSheet) {
         ModalBottomSheet(

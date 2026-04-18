@@ -2666,17 +2666,13 @@ private fun NavidromeArtistsRoute(
         onBack = onBack,
         onHome = onHome,
         stickyHeaderVisible = showSearchField,
-        stickyHeaderContent = if (showSearchField) {
-            {
-                NavidromeExpandableSearchField(
-                    visible = true,
-                    query = searchQuery,
-                    label = "Search artists",
-                    onQueryChange = artistsViewModel::onSearchQueryChange
-                )
-            }
-        } else {
-            null
+        stickyHeaderContent = {
+            NavidromeExpandableSearchField(
+                visible = true,
+                query = searchQuery,
+                label = "Search artists",
+                onQueryChange = artistsViewModel::onSearchQueryChange
+            )
         },
         containerColor = MaterialTheme.colorScheme.background,
         actions = {
@@ -2936,17 +2932,13 @@ private fun NavidromeAlbumsRoute(
         onBack = onBack,
         onHome = onHome,
         stickyHeaderVisible = showSearchField,
-        stickyHeaderContent = if (showSearchField) {
-            {
-                NavidromeExpandableSearchField(
-                    visible = true,
-                    query = searchQuery,
-                    label = "Search albums",
-                    onQueryChange = albumsViewModel::onSearchQueryChange
-                )
-            }
-        } else {
-            null
+        stickyHeaderContent = {
+            NavidromeExpandableSearchField(
+                visible = true,
+                query = searchQuery,
+                label = "Search albums",
+                onQueryChange = albumsViewModel::onSearchQueryChange
+            )
         },
         containerColor = MaterialTheme.colorScheme.background,
         actions = {
@@ -3148,14 +3140,10 @@ private fun NavidromePlaylistsRoute(
     var deleteTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
     var nameInput by rememberSaveable { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
-    val playlists = remember(uiState.playlists, uiState.searchQuery, uiState.sortOption) {
-        val normalizedQuery = uiState.searchQuery.trim()
-        val filtered = uiState.playlists.filter { playlist ->
-            normalizedQuery.isBlank() || playlist.name.contains(normalizedQuery, ignoreCase = true)
-        }
+    val playlists = remember(uiState.playlists, uiState.sortOption) {
         when (uiState.sortOption) {
-            NavidromePlaylistSortOption.NAME -> filtered.sortedBy { it.name.lowercase(Locale.getDefault()) }
-            NavidromePlaylistSortOption.DURATION -> filtered.sortedWith(
+            NavidromePlaylistSortOption.NAME -> uiState.playlists.sortedBy { it.name.lowercase(Locale.getDefault()) }
+            NavidromePlaylistSortOption.DURATION -> uiState.playlists.sortedWith(
                 compareByDescending<NavidromePlaylist> { it.durationSeconds ?: -1 }
                     .thenBy { it.name.lowercase(Locale.getDefault()) }
             )
@@ -3178,18 +3166,6 @@ private fun NavidromePlaylistsRoute(
         title = "Playlists",
         onBack = onBack,
         onHome = onHome,
-        topContent = {
-            OutlinedTextField(
-                value = uiState.searchQuery,
-                onValueChange = viewModel::onSearchQueryChange,
-                singleLine = true,
-                label = { Text("Search playlists") },
-                leadingIcon = {
-                    Icon(Icons.Outlined.Search, contentDescription = null)
-                },
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
         actions = {
             Box {
                 RoundIconButton(
@@ -3397,6 +3373,23 @@ private fun NavidromePlaylistDetailRoute(
     var nameInput by rememberSaveable { mutableStateOf("") }
     var pendingPlaylistRequest by remember { mutableStateOf<NavidromePlaylistSelectionRequest?>(null) }
     var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val showSearchField = searchExpanded || searchQuery.isNotBlank()
+    val listState = rememberLazyListState()
+    val displayedPlaylistTracks = uiState.detail?.tracks?.withIndex()?.filter { (_, track) ->
+        val normalizedQuery = searchQuery.trim()
+        normalizedQuery.isBlank() ||
+            track.title.contains(normalizedQuery, ignoreCase = true) ||
+            track.artistName.contains(normalizedQuery, ignoreCase = true) ||
+            track.albumName.contains(normalizedQuery, ignoreCase = true)
+    }.orEmpty()
+    val firstMatchingTrackIndex = displayedPlaylistTracks.firstOrNull()?.index
+
+    LaunchedEffect(searchQuery, firstMatchingTrackIndex) {
+        if (searchQuery.isBlank() || firstMatchingTrackIndex == null) return@LaunchedEffect
+        listState.animateScrollToItem(firstMatchingTrackIndex + 1)
+    }
 
     LaunchedEffect(uiState.actionMessage) {
         val message = uiState.actionMessage ?: return@LaunchedEffect
@@ -3419,7 +3412,25 @@ private fun NavidromePlaylistDetailRoute(
         title = "Playlist",
         onBack = onBack,
         onHome = onHome,
+        imePaddingEnabled = true,
+        listState = listState,
+        stickySearchEnabled = showSearchField,
+        stickySearchAlwaysVisible = showSearchField,
+        stickySearchContent = {
+            NavidromeExpandableSearchField(
+                visible = true,
+                query = searchQuery,
+                label = "Search playlist songs",
+                onQueryChange = { searchQuery = it }
+            )
+        },
         actions = {
+            RoundIconButton(
+                icon = Icons.Outlined.Search,
+                contentDescription = if (showSearchField) "Hide playlist search" else "Show playlist search",
+                onClick = { searchExpanded = !showSearchField }
+            )
+            Spacer(modifier = Modifier.width(10.dp))
             Box {
                 RoundIconButton(
                     icon = Icons.Outlined.MoreHoriz,
@@ -3507,8 +3518,10 @@ private fun NavidromePlaylistDetailRoute(
             }
             if (detail.tracks.isEmpty()) {
                 item { EmptyCard("No songs yet. Add songs from the Songs, Album, Search, or Favorite Songs screens.") }
+            } else if (displayedPlaylistTracks.isEmpty()) {
+                item { EmptyCard("No songs match \"${searchQuery.trim()}\".") }
             } else {
-                itemsIndexed(detail.tracks, key = { index, track -> "${track.id}:$index" }) { index, track ->
+                items(displayedPlaylistTracks, key = { (index, track) -> "${track.id}:$index" }) { (index, track) ->
                     TrackRow(
                         track = track,
                         isCurrent = playerState.currentTrack?.id == track.id,
@@ -6636,18 +6649,20 @@ private fun StandardTopScreen(
     stickySearchAlwaysVisible: Boolean = false,
     stickySearchContent: (@Composable () -> Unit)? = null,
     topContent: (@Composable () -> Unit)? = null,
+    imePaddingEnabled: Boolean = false,
+    listState: LazyListState? = null,
     containerColor: Color = MaterialTheme.colorScheme.background,
     content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
 ) {
-    val listState = rememberLazyListState()
+    val resolvedListState = listState ?: rememberLazyListState()
     val collapseDistancePx = with(LocalDensity.current) {
         NavidromeLargeTitleCollapseDistance.roundToPx()
     }
-    val collapseFraction by remember(listState, collapseDistancePx) {
+    val collapseFraction by remember(resolvedListState, collapseDistancePx) {
         derivedStateOf {
             calculateHeaderCollapseFraction(
-                firstVisibleItemIndex = listState.firstVisibleItemIndex,
-                firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+                firstVisibleItemIndex = resolvedListState.firstVisibleItemIndex,
+                firstVisibleItemScrollOffset = resolvedListState.firstVisibleItemScrollOffset,
                 collapseDistancePx = collapseDistancePx
             )
         }
@@ -6657,8 +6672,8 @@ private fun StandardTopScreen(
     } else {
         rememberNavidromeStickyHeaderVisibility(
             enabled = stickySearchEnabled && stickySearchContent != null,
-            firstVisibleItemIndex = listState.firstVisibleItemIndex,
-            firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+            firstVisibleItemIndex = resolvedListState.firstVisibleItemIndex,
+            firstVisibleItemScrollOffset = resolvedListState.firstVisibleItemScrollOffset,
             triggerOffsetPx = collapseDistancePx
         )
     }
@@ -6673,8 +6688,8 @@ private fun StandardTopScreen(
         containerColor = containerColor
     ) { topInsetPadding ->
         LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
+            state = resolvedListState,
+            modifier = Modifier.fillMaxSize().then(if (imePaddingEnabled) Modifier.imePadding() else Modifier),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {

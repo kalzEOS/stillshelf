@@ -1264,14 +1264,10 @@ private fun NavidromeHomeScreen(
     )
     var isLibraryMenuExpanded by remember { mutableStateOf(false) }
     var isMenuExpanded by remember { mutableStateOf(false) }
-    var randomAlbumsVersion by rememberSaveable { mutableIntStateOf(0) }
     var renameTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
     var deleteTarget by remember { mutableStateOf<NavidromePlaylist?>(null) }
     var trackDetailsTarget by remember { mutableStateOf<NavidromeTrack?>(null) }
     var playlistNameInput by rememberSaveable { mutableStateOf("") }
-    val randomAlbums = remember(randomAlbumsVersion, uiState.recentAlbums) {
-        uiState.recentAlbums.shuffled().take(min(12, uiState.recentAlbums.size))
-    }
     val listItemById = remember(
         onOpenAlbums,
         onOpenArtists,
@@ -1803,7 +1799,7 @@ private fun NavidromeHomeScreen(
                                 contentPadding = homeCarouselContentPadding,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                items(randomAlbums, key = { it.id }) { album ->
+                                items(uiState.discoverAlbums, key = { it.id }) { album ->
                                     NavidromeHomeAlbumCard(
                                         album = album,
                                         posterWidth = homeShelfPosterWidth,
@@ -3543,6 +3539,7 @@ private fun NavidromePlaylistDetailRoute(
                                         playerViewModel.addTracksToQueue(listOf(track))
                                     },
                                     playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                    isRadio = track.id.startsWith("radio:"),
                                     onShowAlbum = track.albumId?.let { albumId ->
                                         {
                                             rowMenuExpanded = false
@@ -3818,6 +3815,7 @@ private fun NavidromeFavoriteSongsRoute(
                                     playerViewModel.addTracksToQueue(listOf(track))
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                isRadio = track.id.startsWith("radio:"),
                                 onShowAlbum = onOpenAlbum?.let { openAlbum ->
                                     track.albumId?.let { albumId ->
                                         {
@@ -4131,6 +4129,7 @@ private fun NavidromeSongsRoute(
                                     playerViewModel.addTracksToQueue(listOf(track))
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                isRadio = track.id.startsWith("radio:"),
                                 isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
                                 onToggleDownload = {
                                     rowMenuExpanded = false
@@ -4762,6 +4761,7 @@ private fun NavidromeAlbumDetailRoute(
                                     playerViewModel.addTracksToQueue(listOf(track))
                                 },
                                 playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                isRadio = track.id.startsWith("radio:"),
                                 isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
                                 onToggleDownload = {
                                     rowMenuExpanded = false
@@ -7241,6 +7241,7 @@ private fun NavidromeContinueListeningCard(
                         menuExpanded = false
                     },
                     playLabel = if (isCurrent && isPlaying) "Pause" else if (isCurrent) "Resume" else "Play Now",
+                    isRadio = track.id.startsWith("radio:"),
                     isDownloaded = isDownloaded,
                     onToggleDownload = {
                         onToggleDownload()
@@ -7743,6 +7744,7 @@ private fun NavidromeTrackActionsMenu(
     onPlayNext: () -> Unit,
     onAddToQueue: () -> Unit,
     playLabel: String,
+    isRadio: Boolean = false,
     isDownloaded: Boolean = false,
     onToggleDownload: (() -> Unit)? = null,
     onShowAlbum: (() -> Unit)?,
@@ -7765,43 +7767,45 @@ private fun NavidromeTrackActionsMenu(
             },
             onClick = onPlayTrack
         )
-        AppDropdownMenuItem(
-            text = { Text("Play Next") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
-                    contentDescription = null
-                )
-            },
-            onClick = {
-                onPlayNext()
-                Toast.makeText(context, "Playing next", Toast.LENGTH_SHORT).show()
-            }
-        )
-        AppDropdownMenuItem(
-            text = { Text("Add to Queue") },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Outlined.QueueMusic,
-                    contentDescription = null
-                )
-            },
-            onClick = {
-                onAddToQueue()
-                Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
-            }
-        )
-        if (onToggleDownload != null) {
+        if (!isRadio) {
             AppDropdownMenuItem(
-                text = { Text(if (isDownloaded) "Remove Download" else "Download") },
+                text = { Text("Play Next") },
                 leadingIcon = {
                     Icon(
-                        imageVector = Icons.Outlined.Download,
+                        imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
                         contentDescription = null
                     )
                 },
-                onClick = onToggleDownload
+                onClick = {
+                    onPlayNext()
+                    Toast.makeText(context, "Playing next", Toast.LENGTH_SHORT).show()
+                }
             )
+            AppDropdownMenuItem(
+                text = { Text("Add to Queue") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.QueueMusic,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    onAddToQueue()
+                    Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+                }
+            )
+            if (onToggleDownload != null) {
+                AppDropdownMenuItem(
+                    text = { Text(if (isDownloaded) "Remove Download" else "Download") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = null
+                        )
+                    },
+                    onClick = onToggleDownload
+                )
+            }
         }
         AppDropdownMenuItem(
             text = { Text("Show Album") },
@@ -10410,6 +10414,7 @@ private fun NavidromeExpandedPlayerSheet(
                         val coverShape = RoundedCornerShape(18.dp)
                         val fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
                         if (playerCoverModel == null) {
+                            val radioAccentColor = Color(0xFFFF334B)
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
@@ -10420,8 +10425,8 @@ private fun NavidromeExpandedPlayerSheet(
                                 Icon(
                                     imageVector = fallbackIcon,
                                     contentDescription = null,
-                                    modifier = Modifier.size(92.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    modifier = Modifier.size(if (isRadio) 150.dp else 92.dp),
+                                    tint = if (isRadio) radioAccentColor else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         } else {
@@ -10627,6 +10632,7 @@ private fun NavidromeExpandedPlayerSheet(
                                                                 itemIsCurrent -> "Resume"
                                                                 else -> "Play Now"
                                                             },
+                                                            isRadio = item.track.id.startsWith("radio:"),
                                                             isDownloaded = item.track.id in downloadedTrackIds,
                                                             onToggleDownload = onToggleDownload?.let { toggle ->
                                                                 {

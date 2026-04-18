@@ -148,6 +148,7 @@ enum class NavidromeQueueDisplayMode {
 
 data class NavidromeHome(
     val recentAlbums: List<NavidromeAlbum>,
+    val discoverAlbums: List<NavidromeAlbum>,
     val artists: List<NavidromeArtist>,
     val playlists: List<NavidromePlaylist>,
     val radios: List<NavidromeRadio>

@@ -274,6 +274,7 @@ class NavidromeLoginViewModel @Inject constructor(
 
 data class NavidromeHomeUiState(
     val recentAlbums: List<NavidromeAlbum> = emptyList(),
+    val discoverAlbums: List<NavidromeAlbum> = emptyList(),
     val artists: List<NavidromeArtist> = emptyList(),
     val playlists: List<NavidromePlaylist> = emptyList(),
     val radios: List<NavidromeRadio> = emptyList(),
@@ -322,6 +323,7 @@ class NavidromeHomeViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(
                             recentAlbums = result.value.recentAlbums,
+                            discoverAlbums = result.value.discoverAlbums,
                             artists = result.value.artists,
                             playlists = result.value.playlists,
                             radios = result.value.radios,

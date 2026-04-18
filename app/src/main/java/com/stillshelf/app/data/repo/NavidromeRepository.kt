@@ -850,6 +850,7 @@ class NavidromeRepository @Inject constructor(
         val sessionKey = cacheKey(auth, "persisted-home")
         if (!forceRefresh) {
             getFreshCache(homeCache, cacheKey, HOME_CACHE_MAX_AGE_MS)?.let { cached ->
+                if (cached.discoverAlbums.isEmpty()) return@let null
                 val hydrated = hydrateHomePlaylists(auth, cached, forceRefreshArtwork = false)
                 if (hydrated != cached) {
                     putCache(homeCache, cacheKey, hydrated)
@@ -862,6 +863,7 @@ class NavidromeRepository @Inject constructor(
                 return@withAuth AppResult.Success(hydrated)
             }
             getFreshPersistedHomeSnapshot(sessionKey)?.let { cached ->
+                if (cached.discoverAlbums.isEmpty()) return@let null
                 val hydrated = hydrateHomePlaylists(auth, cached, forceRefreshArtwork = false)
                 putCache(homeCache, cacheKey, hydrated)
                 if (hydrated != cached) {
@@ -885,17 +887,34 @@ class NavidromeRepository @Inject constructor(
         }
         coroutineScope {
             val recentAlbums = async { navidromeApi.getAlbumList(auth, type = "newest", size = 18) }
+            val discoverAlbums = async { navidromeApi.getAlbumList(auth, type = "alphabeticalByName", size = 200) }
             val artists = async { navidromeApi.getArtists(auth) }
             val playlists = async { navidromeApi.getPlaylists(auth) }
 
             val albumResult = recentAlbums.await()
+            val discoverAlbumResult = discoverAlbums.await()
             val artistResult = artists.await()
             val playlistResult = playlists.await()
 
-            if (albumResult.isFailure || artistResult.isFailure || playlistResult.isFailure) {
-                staleCache?.let { return@coroutineScope AppResult.Success(it) }
+            if (
+                albumResult.isFailure ||
+                discoverAlbumResult.isFailure ||
+                artistResult.isFailure ||
+                playlistResult.isFailure
+            ) {
+                staleCache?.let {
+                    val fallbackDiscoverAlbums = if (it.discoverAlbums.isNotEmpty()) {
+                        it.discoverAlbums
+                    } else {
+                        it.recentAlbums.shuffled().take(12)
+                    }
+                    return@coroutineScope AppResult.Success(
+                        it.copy(discoverAlbums = fallbackDiscoverAlbums)
+                    )
+                }
                 throw (
                     albumResult.exceptionOrNull()
+                        ?: discoverAlbumResult.exceptionOrNull()
                         ?: artistResult.exceptionOrNull()
                         ?: playlistResult.exceptionOrNull()
                         ?: IllegalStateException("Unable to load Navidrome home.")
@@ -903,6 +922,7 @@ class NavidromeRepository @Inject constructor(
             }
 
             val albums = albumResult.getOrThrow()
+            val discoverAlbumItems = discoverAlbumResult.getOrThrow()
             val artistItems = artistResult.getOrThrow()
             val playlistItems = playlistResult.getOrThrow()
             val hydratedPlaylists = hydratePlaylistArtwork(
@@ -913,6 +933,7 @@ class NavidromeRepository @Inject constructor(
 
             val home = NavidromeHome(
                 recentAlbums = albums.map { it.toModel(auth) },
+                discoverAlbums = discoverAlbumItems.map { it.toModel(auth) }.shuffled().take(12),
                 artists = artistItems.map { it.toModel(auth) },
                 playlists = hydratedPlaylists,
                 radios = emptyList()
@@ -2339,6 +2360,22 @@ class NavidromeRepository @Inject constructor(
                     )
                 }
             })
+            .put("discoverAlbums", JSONArray().apply {
+                home.discoverAlbums.forEach { album ->
+                    put(
+                        JSONObject()
+                            .put("id", album.id)
+                            .put("name", album.name)
+                            .put("artistName", album.artistName)
+                            .put("artistId", album.artistId)
+                            .put("year", album.year)
+                            .put("songCount", album.songCount)
+                            .put("durationSeconds", album.durationSeconds)
+                            .put("coverUrl", album.coverUrl)
+                            .put("genre", album.genre)
+                    )
+                }
+            })
             .put("artists", JSONArray().apply {
                 home.artists.forEach { artist ->
                     put(
@@ -2381,28 +2418,51 @@ class NavidromeRepository @Inject constructor(
 
     private fun parseHome(cached: CachedNavidromeHomePayload): NavidromeHome? {
         val root = runCatching { org.json.JSONObject(cached.payload) }.getOrNull() ?: return null
-        return NavidromeHome(
-            recentAlbums = buildList {
-                val source = root.optJSONArray("recentAlbums") ?: JSONArray()
-                for (index in 0 until source.length()) {
-                    val item = source.optJSONObject(index) ?: continue
-                    add(
-                        NavidromeAlbum(
-                            id = item.optString("id"),
-                            name = item.optString("name"),
-                            artistName = item.optString("artistName"),
-                            artistId = item.optString("artistId").ifBlank { null },
-                            year = item.optInt("year").takeIf { item.has("year") && !item.isNull("year") },
-                            songCount = item.optInt("songCount"),
-                            durationSeconds = item.optInt("durationSeconds").takeIf {
-                                item.has("durationSeconds") && !item.isNull("durationSeconds")
-                            },
-                            coverUrl = item.optString("coverUrl").ifBlank { null },
-                            genre = item.optString("genre").ifBlank { null }
-                        )
+        val recentAlbums = buildList {
+            val source = root.optJSONArray("recentAlbums") ?: JSONArray()
+            for (index in 0 until source.length()) {
+                val item = source.optJSONObject(index) ?: continue
+                add(
+                    NavidromeAlbum(
+                        id = item.optString("id"),
+                        name = item.optString("name"),
+                        artistName = item.optString("artistName"),
+                        artistId = item.optString("artistId").ifBlank { null },
+                        year = item.optInt("year").takeIf { item.has("year") && !item.isNull("year") },
+                        songCount = item.optInt("songCount"),
+                        durationSeconds = item.optInt("durationSeconds").takeIf {
+                            item.has("durationSeconds") && !item.isNull("durationSeconds")
+                        },
+                        coverUrl = item.optString("coverUrl").ifBlank { null },
+                        genre = item.optString("genre").ifBlank { null }
                     )
-                }
-            },
+                )
+            }
+        }
+        val discoverAlbums = buildList {
+            val source = root.optJSONArray("discoverAlbums") ?: JSONArray()
+            for (index in 0 until source.length()) {
+                val item = source.optJSONObject(index) ?: continue
+                add(
+                    NavidromeAlbum(
+                        id = item.optString("id"),
+                        name = item.optString("name"),
+                        artistName = item.optString("artistName"),
+                        artistId = item.optString("artistId").ifBlank { null },
+                        year = item.optInt("year").takeIf { item.has("year") && !item.isNull("year") },
+                        songCount = item.optInt("songCount"),
+                        durationSeconds = item.optInt("durationSeconds").takeIf {
+                            item.has("durationSeconds") && !item.isNull("durationSeconds")
+                        },
+                        coverUrl = item.optString("coverUrl").ifBlank { null },
+                        genre = item.optString("genre").ifBlank { null }
+                    )
+                )
+            }
+        }
+        return NavidromeHome(
+            recentAlbums = recentAlbums,
+            discoverAlbums = discoverAlbums,
             artists = buildList {
                 val source = root.optJSONArray("artists") ?: JSONArray()
                 for (index in 0 until source.length()) {

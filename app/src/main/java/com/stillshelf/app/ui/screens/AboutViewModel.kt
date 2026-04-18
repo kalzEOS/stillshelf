@@ -27,7 +27,7 @@ data class AboutReleaseEntry(
 
 data class AboutUiState(
     val appName: String = "StillShelf",
-    val tagline: String = "A focused Audiobookshelf client for listening anywhere.",
+    val tagline: String = "A focused Audiobookshelf/Navidrome client for listening anywhere.",
     val originStory: String = "StillShelf started as a personal need, then was shared so others could benefit too.",
     val acknowledgements: String = """
 StillShelf is open source under GPL-3.0-only.

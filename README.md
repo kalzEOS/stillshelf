@@ -4,11 +4,11 @@ StillShelf Android audiobook/music player for Audiobookshelf/Navidrome.
 
 This project is heavily inspired by the iOS app Still.
 
-It started from a personal need: there were not many Audiobookshelf frontend clients on Android, so this app was built to fill that gap.
+It started from a personal need: there were not many Audiobookshelf frontend clients on Android, so this app was built to fill that gap. I also couldn’t find a good Navidrome frontend for my music, so support for it was added into the same app.
 
-The goal is a smooth, practical Android experience for browsing, managing, and listening to your ABS library.
+The goal is a smooth, practical Android experience for browsing, managing, and listening to your ABS  and Navidrome libraries.
 
-Both m4b and mp3 formats are supported. 
+Both m4b and mp3 formats are supported on the Audiobooks part. 
 
 ## Building
 

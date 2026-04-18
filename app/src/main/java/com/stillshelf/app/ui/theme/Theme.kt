@@ -105,7 +105,7 @@ fun StillShelfTheme(
     CompositionLocalProvider(LocalMaterialDesignEnabled provides materialDesignEnabled) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = if (materialDesignEnabled) Typography() else StillShelfTypography,
+            typography = StillShelfTypography,
             content = content
         )
     }

@@ -15,8 +15,8 @@ if (keystorePropertiesFile.exists()) {
 }
 val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { key -> !keystoreProperties.getProperty(key).isNullOrBlank() }
-val appVersionCode = 87
-val appVersionName = "0.4.5"
+val appVersionCode = 88
+val appVersionName = "0.4.6"
 
 android {
     namespace = "com.stillshelf.app"

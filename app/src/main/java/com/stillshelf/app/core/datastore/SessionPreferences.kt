@@ -34,6 +34,11 @@ import org.json.JSONObject
 
 private const val DEFAULT_NAVIDROME_LYRICS_SOURCE_ID = "default-lrclib"
 private const val MAX_SYNCED_PLAYBACK_CHECKPOINTS = 200
+private val NAVIDROME_SKIP_SECOND_CHOICES = setOf(10, 15, 30, 45, 60)
+
+private fun normalizeNavidromeSkipSeconds(seconds: Int): Int {
+    return if (seconds in NAVIDROME_SKIP_SECOND_CHOICES) seconds else 15
+}
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -48,6 +53,7 @@ class SessionPreferences @Inject constructor(
     private val activeNavidromeLyricsSourceIdKey = stringPreferencesKey("active_navidrome_lyrics_source_id")
     private val navidromeLyricsSourcesSeededKey = booleanPreferencesKey("navidrome_lyrics_sources_seeded")
     private val navidromeDirectEqualizerGainMigratedKey = booleanPreferencesKey("navidrome_direct_equalizer_gain_migrated")
+    private val navidromeSkipSecondsMigratedKey = booleanPreferencesKey("navidrome_skip_seconds_migrated")
     private val navidromeLegacySessionMigratedKey = booleanPreferencesKey("navidrome_legacy_session_migrated")
     private val activeNavidromeServerIdKey = stringPreferencesKey("active_navidrome_server_id")
     private val navidromeActiveLibraryIdsKey = stringPreferencesKey("navidrome_active_library_ids")
@@ -72,6 +78,8 @@ class SessionPreferences @Inject constructor(
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
     private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
+    private val navidromeSkipForwardSecondsKey = intPreferencesKey("navidrome_skip_forward_seconds")
+    private val navidromeSkipBackwardSecondsKey = intPreferencesKey("navidrome_skip_backward_seconds")
     private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
     private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
     private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
@@ -137,6 +145,7 @@ class SessionPreferences @Inject constructor(
         scope.launch {
             ensureDefaultNavidromeLyricsSourceSeeded()
             ensureNavidromeDirectEqualizerGainMigrated()
+            ensureNavidromeSkipSecondsMigrated()
         }
     }
 
@@ -239,6 +248,24 @@ class SessionPreferences @Inject constructor(
 
             prefs.remove(navidromeEqualizerPreampLevelKey)
             prefs[navidromeDirectEqualizerGainMigratedKey] = true
+        }
+    }
+
+    suspend fun ensureNavidromeSkipSecondsMigrated() {
+        dataStore.edit { prefs ->
+            if (prefs[navidromeSkipSecondsMigratedKey] == true) return@edit
+
+            if (prefs[navidromeSkipForwardSecondsKey] == null) {
+                prefs[navidromeSkipForwardSecondsKey] = normalizeNavidromeSkipSeconds(
+                    prefs[skipForwardSecondsKey] ?: 15
+                )
+            }
+            if (prefs[navidromeSkipBackwardSecondsKey] == null) {
+                prefs[navidromeSkipBackwardSecondsKey] = normalizeNavidromeSkipSeconds(
+                    prefs[skipBackwardSecondsKey] ?: 15
+                )
+            }
+            prefs[navidromeSkipSecondsMigratedKey] = true
         }
     }
 
@@ -878,6 +905,18 @@ class SessionPreferences @Inject constructor(
     suspend fun setSkipBackwardSeconds(seconds: Int) {
         dataStore.edit { prefs ->
             prefs[skipBackwardSecondsKey] = seconds.coerceIn(5, 600)
+        }
+    }
+
+    suspend fun setNavidromeSkipForwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[navidromeSkipForwardSecondsKey] = normalizeNavidromeSkipSeconds(seconds)
+        }
+    }
+
+    suspend fun setNavidromeSkipBackwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[navidromeSkipBackwardSecondsKey] = normalizeNavidromeSkipSeconds(seconds)
         }
     }
 
@@ -1900,6 +1939,12 @@ class SessionPreferences @Inject constructor(
             navidromeThemeMode = this[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = this[navidromeMaterialDesignEnabledKey] ?: false,
             navidromeImmersivePlayerEnabled = this[navidromeImmersivePlayerEnabledKey] ?: false,
+            navidromeSkipForwardSeconds = normalizeNavidromeSkipSeconds(
+                this[navidromeSkipForwardSecondsKey] ?: 15
+            ),
+            navidromeSkipBackwardSeconds = normalizeNavidromeSkipSeconds(
+                this[navidromeSkipBackwardSecondsKey] ?: 15
+            ),
             requiresLibrarySelection = this[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = this[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(this[hiddenBrowseSectionsKey]),
@@ -1973,6 +2018,8 @@ data class SessionPreferenceState(
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,
+    val navidromeSkipForwardSeconds: Int = 15,
+    val navidromeSkipBackwardSeconds: Int = 15,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),

@@ -212,6 +212,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -233,6 +235,8 @@ import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
 import com.stillshelf.app.core.model.navidromeEqualizerBandFrequenciesHz
 import kotlin.math.abs
 import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import androidx.navigation.navArgument
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.ViewCompat
@@ -655,6 +659,8 @@ fun NavidromeAppRoute(
     val lyricsUiState by playerViewModel.lyricsUiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
+    val skipForwardSeconds by playerViewModel.skipForwardSeconds.collectAsStateWithLifecycle()
+    val skipBackwardSeconds by playerViewModel.skipBackwardSeconds.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val showMiniPlayer = playerState.currentTrack != null
     val showBottomPlayerShell = showMiniPlayer &&
@@ -767,7 +773,9 @@ fun NavidromeAppRoute(
                     dismissPlayerSheet {
                         navController.navigate(NavidromeRoute.artist(artistId))
                     }
-                }
+                },
+                skipForwardSeconds = skipForwardSeconds,
+                skipBackwardSeconds = skipBackwardSeconds
             )
         }
     }
@@ -4848,9 +4856,12 @@ private fun NavidromeSettingsRoute(
     val equalizerUiState by equalizerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    var skipForwardDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var skipBackwardDialogVisible by rememberSaveable { mutableStateOf(false) }
     var signOutDialogVisible by rememberSaveable { mutableStateOf(false) }
     var resyncDialogVisible by rememberSaveable { mutableStateOf(false) }
     var serverScanDialogVisible by rememberSaveable { mutableStateOf(false) }
+    val skipSecondChoices = remember { listOf(10, 15, 30, 45, 60) }
     val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
         MaterialTheme.colorScheme.surfaceContainerHigh
     } else {
@@ -4948,6 +4959,36 @@ private fun NavidromeSettingsRoute(
                     title = "Dark Theme",
                     selected = appearanceUiState.navidromeThemeMode == AppThemeMode.Dark,
                     onClick = { appearanceViewModel.setNavidromeThemeMode(AppThemeMode.Dark) }
+                )
+            }
+        }
+        item {
+            Text(
+                text = "SKIP BUTTONS",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Skip Forward",
+                    value = "${uiState.skipForwardSeconds} seconds",
+                    trailingContentWidth = 168.dp,
+                    valueTextAlign = TextAlign.End,
+                    onClick = { skipForwardDialogVisible = true }
+                )
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Skip Backward",
+                    value = "${uiState.skipBackwardSeconds} seconds",
+                    trailingContentWidth = 168.dp,
+                    valueTextAlign = TextAlign.End,
+                    onClick = { skipBackwardDialogVisible = true }
                 )
             }
         }
@@ -5105,6 +5146,60 @@ private fun NavidromeSettingsRoute(
                 )
             }
         }
+        }
+        if (skipForwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipForwardDialogVisible = false },
+                title = { Text("Skip Forward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            NavidromeSettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.skipForwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setSkipForwardSeconds(seconds)
+                                    skipForwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipForwardDialogVisible = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+        if (skipBackwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipBackwardDialogVisible = false },
+                title = { Text("Skip Backward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            NavidromeSettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.skipBackwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setSkipBackwardSeconds(seconds)
+                                    skipBackwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipBackwardDialogVisible = false }) {
+                        Text("Close")
+                    }
+                }
+            )
         }
         AppThemedSnackbarHost(
             hostState = snackbarHostState,
@@ -9715,7 +9810,9 @@ private fun NavidromeExpandedPlayerSheet(
     onAddToQueueTrack: ((NavidromeTrack) -> Unit)? = null,
     onRemoveFromQueueTrack: (Int) -> Boolean,
     onOpenAlbum: ((String) -> Unit)? = null,
-    onOpenArtist: ((String) -> Unit)? = null
+    onOpenArtist: ((String) -> Unit)? = null,
+    skipForwardSeconds: Int = 15,
+    skipBackwardSeconds: Int = 15
 ) {
     val track = state.currentTrack ?: return
     val isRadio = remember(track.id) { track.id.startsWith("radio:") }
@@ -10014,6 +10111,7 @@ private fun NavidromeExpandedPlayerSheet(
             )
         }
         val usableSheetHeight = (maxHeight - statusBarTopInset - navigationBottomInset).coerceAtLeast(0.dp)
+        val narrowTransportLayout = maxWidth < 420.dp
         val compactLayout = usableSheetHeight < 760.dp
         val veryCompactLayout = usableSheetHeight < 720.dp
         val queueExpandedLayout = showQueue
@@ -10042,18 +10140,22 @@ private fun NavidromeExpandedPlayerSheet(
         }
         val targetTransportButtonSize = when {
             queueExpandedLayout || veryCompactLayout -> 80.dp
+            narrowTransportLayout -> 84.dp
             else -> 88.dp
         }
         val targetTransportIconSize = when {
             queueExpandedLayout || veryCompactLayout -> 38.dp
+            narrowTransportLayout -> 40.dp
             else -> 42.dp
         }
         val targetSkipButtonSize = when {
             queueExpandedLayout || veryCompactLayout -> 56.dp
+            narrowTransportLayout -> 52.dp
             else -> 64.dp
         }
         val targetSkipIconSize = when {
             queueExpandedLayout || veryCompactLayout -> 32.dp
+            narrowTransportLayout -> 30.dp
             else -> 36.dp
         }
         val lowerSectionLayoutT = ((usableSheetHeight - 620.dp) / 180.dp).coerceIn(0f, 1f)
@@ -10085,6 +10187,7 @@ private fun NavidromeExpandedPlayerSheet(
         val skipIconSize by animateDpAsState(targetValue = targetSkipIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipIconSize")
         val transportSectionTopGap by animateDpAsState(targetValue = targetTransportSectionTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportSectionTopGap")
         val toolRowTopGap by animateDpAsState(targetValue = targetToolRowTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerToolRowTopGap")
+        val transportRowSpacing = if (narrowTransportLayout) 2.dp else 4.dp
         val progressSection: @Composable () -> Unit = {
             val elapsedSeconds = (sliderPosition.roundToInt().coerceAtLeast(0) / 1000)
             val totalDurationSeconds = (resolvedDurationMs.coerceAtLeast(0) / 1000)
@@ -10145,9 +10248,18 @@ private fun NavidromeExpandedPlayerSheet(
         val transportRow: @Composable () -> Unit = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.spacedBy(transportRowSpacing, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                NavidromeSeek15Button(
+                    forward = false,
+                    seconds = skipBackwardSeconds,
+                    buttonSize = if (narrowTransportLayout) 52.dp else 56.dp,
+                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface,
+                    isImmersive = immersiveEnabled,
+                    semanticContentDescription = "Skip backward $skipBackwardSeconds seconds",
+                    onClick = { onSeekTo(state.positionMs - (skipBackwardSeconds * 1000)) }
+                )
                 NavidromeTransportIconButton(
                     onClick = onPrevious,
                     modifier = Modifier.size(skipButtonSize),
@@ -10208,6 +10320,15 @@ private fun NavidromeExpandedPlayerSheet(
                     contentDescription = "Next",
                     iconSize = skipIconSize,
                     tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                )
+                NavidromeSeek15Button(
+                    forward = true,
+                    seconds = skipForwardSeconds,
+                    buttonSize = if (narrowTransportLayout) 52.dp else 56.dp,
+                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface,
+                    isImmersive = immersiveEnabled,
+                    semanticContentDescription = "Skip forward $skipForwardSeconds seconds",
+                    onClick = { onSeekTo(state.positionMs + (skipForwardSeconds * 1000)) }
                 )
             }
         }
@@ -11623,6 +11744,98 @@ private fun NavidromeTransportIconButton(
             contentDescription = contentDescription,
             modifier = Modifier.size(iconSize),
             tint = tint
+        )
+    }
+}
+
+@Composable
+private fun NavidromeSeek15Button(
+    forward: Boolean,
+    seconds: Int,
+    buttonSize: Dp = 56.dp,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    isImmersive: Boolean = false,
+    semanticContentDescription: String,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressedContainerColor = if (isPressed) {
+        if (isImmersive) {
+            Color.White.copy(alpha = 0.22f)
+        } else {
+            tint.copy(alpha = 0.14f)
+        }
+    } else {
+        Color.Transparent
+    }
+    Box(
+        modifier = Modifier
+            .size(buttonSize)
+            .clip(CircleShape)
+            .background(pressedContainerColor)
+            .semantics {
+                contentDescription = semanticContentDescription
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        val glyphSize = (buttonSize - 22.dp).coerceAtLeast(28.dp)
+        Canvas(
+            modifier = Modifier
+                .size(glyphSize)
+                .graphicsLayer { scaleX = if (forward) 1f else -1f }
+        ) {
+            val canvasSize = this.size
+            val strokeWidth = 2.6.dp.toPx()
+            val inset = 3.dp.toPx()
+            val arcSize = minOf(canvasSize.width, canvasSize.height) - inset * 2
+            val arrowHeadAngle = 270f
+            val tailStartAngle = 40f
+            drawArc(
+                color = tint,
+                startAngle = tailStartAngle,
+                sweepAngle = arrowHeadAngle - tailStartAngle,
+                useCenter = false,
+                topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+                size = androidx.compose.ui.geometry.Size(arcSize, arcSize),
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+
+            val radius = arcSize / 2f
+            val cx = canvasSize.width / 2f
+            val cy = canvasSize.height / 2f
+            val angle = Math.toRadians(arrowHeadAngle.toDouble())
+            val x = cx + radius * cos(angle).toFloat()
+            val y = cy + radius * sin(angle).toFloat()
+            val head = 5.dp.toPx()
+            drawLine(
+                color = tint,
+                start = androidx.compose.ui.geometry.Offset(x, y),
+                end = androidx.compose.ui.geometry.Offset(x - head, y - head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = tint,
+                start = androidx.compose.ui.geometry.Offset(x, y),
+                end = androidx.compose.ui.geometry.Offset(x - head, y + head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+        Text(
+            text = seconds.coerceIn(10, 60).toString(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            color = tint,
+            maxLines = 1
         )
     }
 }

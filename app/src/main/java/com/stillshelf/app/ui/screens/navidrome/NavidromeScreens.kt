@@ -10141,7 +10141,7 @@ private fun NavidromeExpandedPlayerSheet(
         val targetTransportButtonSize = when {
             queueExpandedLayout || veryCompactLayout -> 80.dp
             narrowTransportLayout -> 84.dp
-            else -> 88.dp
+            else -> 84.dp
         }
         val targetTransportIconSize = when {
             queueExpandedLayout || veryCompactLayout -> 38.dp
@@ -10151,7 +10151,7 @@ private fun NavidromeExpandedPlayerSheet(
         val targetSkipButtonSize = when {
             queueExpandedLayout || veryCompactLayout -> 56.dp
             narrowTransportLayout -> 52.dp
-            else -> 64.dp
+            else -> 56.dp
         }
         val targetSkipIconSize = when {
             queueExpandedLayout || veryCompactLayout -> 32.dp
@@ -10187,7 +10187,7 @@ private fun NavidromeExpandedPlayerSheet(
         val skipIconSize by animateDpAsState(targetValue = targetSkipIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipIconSize")
         val transportSectionTopGap by animateDpAsState(targetValue = targetTransportSectionTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportSectionTopGap")
         val toolRowTopGap by animateDpAsState(targetValue = targetToolRowTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerToolRowTopGap")
-        val transportRowSpacing = if (narrowTransportLayout) 2.dp else 4.dp
+        val transportRowSpacing = 2.dp
         val progressSection: @Composable () -> Unit = {
             val elapsedSeconds = (sliderPosition.roundToInt().coerceAtLeast(0) / 1000)
             val totalDurationSeconds = (resolvedDurationMs.coerceAtLeast(0) / 1000)

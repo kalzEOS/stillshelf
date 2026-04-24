@@ -1769,8 +1769,6 @@ class NavidromeSettingsViewModel @Inject constructor(
             activeServerId = activeServerId,
             availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
-            skipForwardSeconds = preferences.navidromeSkipForwardSeconds,
-            skipBackwardSeconds = preferences.navidromeSkipBackwardSeconds,
             automaticServerSwitchingEnabled = switchingConfig.enabled,
             lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
             wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
@@ -2222,18 +2220,6 @@ class NavidromeSettingsViewModel @Inject constructor(
         mutableLocalState.update { it.copy(errorMessage = null) }
     }
 
-    fun setSkipForwardSeconds(seconds: Int) {
-        viewModelScope.launch {
-            sessionPreferences.setNavidromeSkipForwardSeconds(seconds)
-        }
-    }
-
-    fun setSkipBackwardSeconds(seconds: Int) {
-        viewModelScope.launch {
-            sessionPreferences.setNavidromeSkipBackwardSeconds(seconds)
-        }
-    }
-
     fun setActiveLibrary(libraryId: String) {
         viewModelScope.launch {
             when (val result = navidromeRepository.setActiveLibrary(libraryId)) {
@@ -2518,22 +2504,6 @@ class NavidromePlayerViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = emptySet()
-        )
-    val skipForwardSeconds: StateFlow<Int> = preferenceState
-        .map { state -> state.navidromeSkipForwardSeconds }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = 15
-        )
-    val skipBackwardSeconds: StateFlow<Int> = preferenceState
-        .map { state -> state.navidromeSkipBackwardSeconds }
-        .distinctUntilChanged()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = 15
         )
 
     init {
@@ -3021,8 +2991,6 @@ data class NavidromeSettingsUiState(
     val activeServerId: String? = null,
     val availableLibraries: List<NavidromeLibrary> = emptyList(),
     val activeLibraryId: String? = null,
-    val skipForwardSeconds: Int = 15,
-    val skipBackwardSeconds: Int = 15,
     val automaticServerSwitchingEnabled: Boolean = false,
     val lanServerUrl: String = "",
     val wanServerUrl: String = "",

@@ -697,6 +697,7 @@ class NavidromeRepository @Inject constructor(
             is AppResult.Error -> return@withAuth result
         }
 
+        invalidateArtistAndAlbumDetailCaches()
         AppResult.Success(libraries)
     }
 
@@ -2205,6 +2206,13 @@ class NavidromeRepository @Inject constructor(
             lyricsCache.clear()
         }
         sessionPreferences.clearCachedNavidromeLyrics()
+    }
+
+    internal suspend fun invalidateArtistAndAlbumDetailCaches() {
+        cacheMutex.withLock {
+            artistDetailCache.clear()
+            albumDetailCache.clear()
+        }
     }
 
     private suspend fun cacheResolvedLyrics(cacheKey: String, lyrics: NavidromeLyrics) {

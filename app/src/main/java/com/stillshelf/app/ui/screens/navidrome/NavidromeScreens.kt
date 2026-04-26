@@ -4511,6 +4511,7 @@ private fun SearchRecentRow(
 }
 
 @Composable
+@OptIn(androidx.compose.material.ExperimentalMaterialApi::class)
 private fun NavidromeArtistDetailRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
@@ -4527,6 +4528,14 @@ private fun NavidromeArtistDetailRoute(
     val bottomOverlayPadding = LocalNavidromeBottomOverlayPadding.current
     val context = LocalContext.current
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    var manualRefreshInProgress by rememberSaveable { mutableStateOf(false) }
+    val refreshState = rememberPullRefreshState(
+        refreshing = uiState.isLoading && manualRefreshInProgress,
+        onRefresh = {
+            manualRefreshInProgress = true
+            viewModel.refresh()
+        }
+    )
     LaunchedEffect(downloadUiState.actionMessage) {
         val message = downloadUiState.actionMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -4536,6 +4545,15 @@ private fun NavidromeArtistDetailRoute(
         val message = downloadUiState.errorMessage ?: return@LaunchedEffect
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         downloadsViewModel.clearMessages()
+    }
+    LaunchedEffect(uiState.errorMessage) {
+        val message = uiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+    LaunchedEffect(uiState.isLoading) {
+        if (!uiState.isLoading) {
+            manualRefreshInProgress = false
+        }
     }
     Column(modifier = Modifier.fillMaxSize()) {
         DetailHeader(
@@ -4609,79 +4627,97 @@ private fun NavidromeArtistDetailRoute(
                 }
             }
         )
-        if (uiState.isLoading) {
-            LoadingCard()
-        } else if (uiState.detail != null) {
-            val detail = uiState.detail!!
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 12.dp,
-                    bottom = bottomOverlayPadding + 25.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                item {
-                    CenteredDetailHero(
-                        title = detail.artist.name,
-                        subtitle = "${detail.artist.albumCount} albums",
-                        imageUrl = detail.artist.imageUrl ?: detail.artist.coverUrl,
-                        circular = true,
-                        showDownloadedIndicator = downloadUiState.fullyDownloadedAlbumCountByArtistId[detail.artist.id]
-                            ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
-                            ?: false,
-                        downloadProgressPercent = downloadUiState.artistProgressById[detail.artist.id]
-                    )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pullRefresh(refreshState)
+        ) {
+            when {
+                uiState.isLoading && uiState.detail == null -> {
+                    LoadingCard()
                 }
-                item { SectionTitle("Albums") }
-                if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
-                    item {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(20.dp)
-                        ) {
-                            detail.albums.chunked(2).forEach { albumRow ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+
+                uiState.detail != null -> {
+                    val detail = uiState.detail!!
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 20.dp,
+                            end = 20.dp,
+                            top = 12.dp,
+                            bottom = bottomOverlayPadding + 25.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        item {
+                            CenteredDetailHero(
+                                title = detail.artist.name,
+                                subtitle = "${detail.artist.albumCount} albums",
+                                imageUrl = detail.artist.imageUrl ?: detail.artist.coverUrl,
+                                circular = true,
+                                showDownloadedIndicator = downloadUiState.fullyDownloadedAlbumCountByArtistId[detail.artist.id]
+                                    ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
+                                    ?: false,
+                                downloadProgressPercent = downloadUiState.artistProgressById[detail.artist.id]
+                            )
+                        }
+                        item { SectionTitle("Albums") }
+                        if (displayStyle == NavidromeAlbumsDisplayStyle.GRID) {
+                            item {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(20.dp)
                                 ) {
-                                    albumRow.forEach { album ->
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            AlbumGridCard(
-                                                album = album,
-                                                isCurrent = playerState.currentTrack?.albumId == album.id,
-                                                isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
-                                                    ?.let { it >= album.songCount && album.songCount > 0 }
-                                                    ?: false,
-                                                downloadProgressPercent = downloadUiState.albumProgressById[album.id],
-                                                onClick = { onOpenAlbum(album.id) }
-                                            )
+                                    detail.albums.chunked(2).forEach { albumRow ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                        ) {
+                                            albumRow.forEach { album ->
+                                                Box(modifier = Modifier.weight(1f)) {
+                                                    AlbumGridCard(
+                                                        album = album,
+                                                        isCurrent = playerState.currentTrack?.albumId == album.id,
+                                                        isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                                            ?.let { it >= album.songCount && album.songCount > 0 }
+                                                            ?: false,
+                                                        downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                                                        onClick = { onOpenAlbum(album.id) }
+                                                    )
+                                                }
+                                            }
+                                            if (albumRow.size == 1) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            }
                                         }
-                                    }
-                                    if (albumRow.size == 1) {
-                                        Spacer(modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
+                        } else {
+                            items(detail.albums) { album ->
+                                AlbumRow(
+                                    album = album,
+                                    isCurrent = playerState.currentTrack?.albumId == album.id,
+                                    isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
+                                        ?.let { it >= album.songCount && album.songCount > 0 }
+                                        ?: false,
+                                    downloadProgressPercent = downloadUiState.albumProgressById[album.id],
+                                    onClick = { onOpenAlbum(album.id) }
+                                )
+                            }
                         }
                     }
-                } else {
-                    items(detail.albums) { album ->
-                        AlbumRow(
-                            album = album,
-                            isCurrent = playerState.currentTrack?.albumId == album.id,
-                            isDownloaded = downloadUiState.downloadedTrackCountByAlbumId[album.id]
-                                ?.let { it >= album.songCount && album.songCount > 0 }
-                                ?: false,
-                            downloadProgressPercent = downloadUiState.albumProgressById[album.id],
-                            onClick = { onOpenAlbum(album.id) }
-                        )
-                    }
+                }
+
+                else -> {
+                    ErrorCard(uiState.errorMessage ?: "Unable to load artist.")
                 }
             }
-        } else {
-            ErrorCard(uiState.errorMessage ?: "Unable to load artist.")
+
+            PullRefreshIndicator(
+                refreshing = uiState.isLoading && manualRefreshInProgress,
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }

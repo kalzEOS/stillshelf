@@ -60,6 +60,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import java.util.concurrent.atomic.AtomicLong
 
 data class NavidromeLoginUiState(
     val serverName: String = "",
@@ -2792,32 +2793,58 @@ data class NavidromeArtistDetailUiState(
 @HiltViewModel
 class NavidromeArtistDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val navidromeRepository: NavidromeRepository
+    private val navidromeRepository: NavidromeRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
     private val artistId: String =
         savedStateHandle.get<String>(NavidromeRoute.ARTIST_ID_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(NavidromeArtistDetailUiState())
     val uiState: StateFlow<NavidromeArtistDetailUiState> = mutableUiState.asStateFlow()
+    private var hasObservedLibrarySyncAtMs = false
+    private var lastObservedLibrarySyncAtMs: Long? = null
+    private val refreshGeneration = AtomicLong(0L)
 
     init {
+        observeLibrarySyncs()
         refresh(forceRefresh = false)
     }
 
     fun refresh(forceRefresh: Boolean = true) {
+        val requestGeneration = refreshGeneration.incrementAndGet()
         viewModelScope.launch {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
             when (val result = navidromeRepository.fetchArtistDetail(artistId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    if (refreshGeneration.get() != requestGeneration) return@launch
                     mutableUiState.update {
                         it.copy(detail = result.value, isLoading = false, errorMessage = null)
                     }
                 }
 
                 is AppResult.Error -> {
+                    if (refreshGeneration.get() != requestGeneration) return@launch
                     mutableUiState.update {
                         it.copy(isLoading = false, errorMessage = result.message)
                     }
                 }
             }
+        }
+    }
+
+    private fun observeLibrarySyncs() {
+        viewModelScope.launch {
+            sessionPreferences.state
+                .map { state -> state.lastLibrarySyncAtMs }
+                .distinctUntilChanged()
+                .collect { syncedAtMs ->
+                    val shouldRefresh = hasObservedLibrarySyncAtMs &&
+                        lastObservedLibrarySyncAtMs != syncedAtMs
+                    hasObservedLibrarySyncAtMs = true
+                    lastObservedLibrarySyncAtMs = syncedAtMs
+                    if (shouldRefresh) {
+                        refresh(forceRefresh = true)
+                    }
+                }
         }
     }
 }

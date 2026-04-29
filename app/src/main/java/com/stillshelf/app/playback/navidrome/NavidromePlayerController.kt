@@ -704,12 +704,13 @@ class NavidromePlayerController @Inject constructor(
             resumeFromSnapshot(playWhenReady = true)
             return
         }
-        if (activePlayer == null) {
+        if (shouldRecreatePlayerForTransportCommands(activePlayer)) {
             resumeFromSnapshot(playWhenReady = true)
             return
         }
-        if (activePlayer.isPlaying) return
-        activePlayer.play()
+        val confirmedPlayer = activePlayer ?: return
+        if (confirmedPlayer.isPlaying) return
+        confirmedPlayer.play()
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
@@ -922,6 +923,7 @@ class NavidromePlayerController @Inject constructor(
                     forcedRemoteTrackIds += failedTrackId
                 }
                 if (refreshedQueue.isNullOrEmpty()) {
+                    releasePlayer(clearQueue = false)
                     clearCachedNavidromePlayback("error_refresh_failed")
                     mutableState.value = mutableState.value.copy(
                         errorMessage = error.message ?: "Playback failed for this track."
@@ -976,6 +978,10 @@ class NavidromePlayerController @Inject constructor(
             ?: -1
     }
 
+    private fun shouldRecreatePlayerForTransportCommands(activePlayer: ExoPlayer?): Boolean {
+        return activePlayer == null || activePlayer.playbackState == Player.STATE_IDLE
+    }
+
     private fun seekToQueueIndex(
         index: Int,
         positionMs: Int,
@@ -988,15 +994,16 @@ class NavidromePlayerController @Inject constructor(
                 "has_player=${player != null}"
         )
         val activePlayer = player
-        if (activePlayer == null) {
+        if (shouldRecreatePlayerForTransportCommands(activePlayer)) {
             startPlaybackAt(index = index, positionMs = safePositionMs, playWhenReady = playWhenReady)
             return
         }
-        activePlayer.seekTo(index, safePositionMs.toLong())
+        val confirmedPlayer = activePlayer ?: return
+        confirmedPlayer.seekTo(index, safePositionMs.toLong())
         if (playWhenReady) {
-            activePlayer.play()
+            confirmedPlayer.play()
         } else {
-            activePlayer.pause()
+            confirmedPlayer.pause()
         }
         mutableState.value = mutableState.value.copy(
             currentIndex = index,

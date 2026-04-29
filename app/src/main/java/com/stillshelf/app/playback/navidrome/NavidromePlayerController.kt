@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -31,10 +32,14 @@ import androidx.media3.common.Player
 import androidx.media3.common.Player.REPEAT_MODE_ALL
 import androidx.media3.common.Player.REPEAT_MODE_OFF
 import androidx.media3.common.Player.REPEAT_MODE_ONE
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -63,6 +68,66 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+
+internal const val NAVIDROME_PLAYBACK_MEDIA_SCHEME = "stillshelf-navidrome"
+internal const val NAVIDROME_PLAYBACK_MEDIA_AUTHORITY = "playback"
+internal const val NAVIDROME_PLAYBACK_TRACK_ID_QUERY_PARAMETER = "trackId"
+internal const val NAVIDROME_PLAYBACK_STREAM_URL_QUERY_PARAMETER = "streamUrl"
+internal const val NAVIDROME_PLAYBACK_WARMUP_TRACK_LIMIT = 20
+
+internal fun normalizeNavidromePlaybackWarmupTracks(tracks: List<NavidromeTrack>): List<NavidromeTrack> {
+    return tracks
+        .distinctBy { it.id }
+        .filter {
+            it.id.isNotBlank() &&
+                it.streamUrl.isNotBlank() &&
+                !it.id.startsWith("radio:")
+        }
+}
+
+internal fun buildNavidromePlaybackWarmupSignature(tracks: List<NavidromeTrack>): String {
+    return tracks.joinToString(separator = "|") { it.id }
+}
+
+internal fun selectNavidromePlaybackWarmupTracks(
+    tracks: List<NavidromeTrack>,
+    currentIndex: Int,
+    trackLimit: Int = NAVIDROME_PLAYBACK_WARMUP_TRACK_LIMIT
+): List<NavidromeTrack> {
+    if (tracks.isEmpty() || trackLimit <= 0) return emptyList()
+    val startIndex = currentIndex.coerceIn(0, tracks.lastIndex)
+    return tracks.drop(startIndex).take(trackLimit)
+}
+
+internal fun buildNavidromePlaybackMediaUri(trackId: String, streamUrl: String): Uri {
+    return Uri.parse(
+        buildString {
+            append(NAVIDROME_PLAYBACK_MEDIA_SCHEME)
+            append("://")
+            append(NAVIDROME_PLAYBACK_MEDIA_AUTHORITY)
+            append("?")
+            append(NAVIDROME_PLAYBACK_TRACK_ID_QUERY_PARAMETER)
+            append("=")
+            append(Uri.encode(trackId))
+            append("&")
+            append(NAVIDROME_PLAYBACK_STREAM_URL_QUERY_PARAMETER)
+            append("=")
+            append(Uri.encode(streamUrl))
+        }
+    )
+}
+
+internal fun chooseNavidromePlaybackUri(
+    streamUrl: String,
+    localPlaybackUri: String?,
+    forceRemote: Boolean
+): String {
+    return if (!forceRemote && !localPlaybackUri.isNullOrBlank()) {
+        localPlaybackUri
+    } else {
+        streamUrl
+    }
+}
 
 internal fun shouldScheduleNavidromePausedPlayerRelease(
     currentTrack: NavidromeTrack?,
@@ -311,7 +376,8 @@ class NavidromePlayerController @Inject constructor(
     private var progressJob: Job? = null
     private var pausedReleaseJob: Job? = null
     private var outputRecoveryJob: Job? = null
-    private var queueTracks: List<NavidromeTrack> = emptyList()
+    private var playbackCacheWarmupJob: Job? = null
+    @Volatile private var queueTracks: List<NavidromeTrack> = emptyList()
     private var queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL
     private var recentTracks: List<NavidromeTrack> = emptyList()
     private var lastRecordedTrackId: String? = null
@@ -323,12 +389,13 @@ class NavidromePlayerController @Inject constructor(
     private var outputRouteKeyByDisplayedId: Map<Int, String> = emptyMap()
     private var lastKnownOutputDeviceIds: Set<Int> = emptySet()
     private var suppressRefreshRoutingUntilElapsedMs: Long = 0L
-    private val forcedRemoteTrackIds = mutableSetOf<String>()
+    @Volatile private var forcedRemoteTrackIds: Set<String> = emptySet()
     private var playbackRecoveryTrackId: String? = null
     private var restorePlaybackGeneration: Long = 0L
     private var lastPersistedSnapshotTrackId: String? = null
     private var lastPersistedSnapshotPositionMs: Int = 0
     private var lastPersistedSnapshotElapsedMs: Long = 0L
+    @Volatile private var playbackCacheWarmupSignature: String? = null
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
@@ -457,13 +524,57 @@ class NavidromePlayerController @Inject constructor(
                     .build()
             }
         }
+        val mediaSourceFactory = DefaultMediaSourceFactory(createNavidromePlaybackDataSourceFactory())
         return ExoPlayer.Builder(appContext, renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {
                 setAudioAttributes(playbackAudioAttributes, true)
                 addListener(playerListener)
             }
+    }
+
+    private fun createNavidromePlaybackDataSourceFactory(): ResolvingDataSource.Factory {
+        return ResolvingDataSource.Factory(
+            DefaultDataSource.Factory(appContext),
+            ResolvingDataSource.Resolver { dataSpec ->
+                resolveNavidromePlaybackDataSpec(dataSpec)
+            }
+        )
+    }
+
+    private fun resolveNavidromePlaybackDataSpec(dataSpec: DataSpec): DataSpec {
+        val uri = dataSpec.uri
+        if (uri.scheme != NAVIDROME_PLAYBACK_MEDIA_SCHEME) {
+            return dataSpec
+        }
+        val trackId = uri.getQueryParameter(NAVIDROME_PLAYBACK_TRACK_ID_QUERY_PARAMETER).orEmpty()
+        val embeddedStreamUrl = uri.getQueryParameter(NAVIDROME_PLAYBACK_STREAM_URL_QUERY_PARAMETER).orEmpty()
+        val track = queueTracks.firstOrNull { it.id == trackId }
+        val forcedRemoteSnapshot = forcedRemoteTrackIds
+        val resolvedUri = if (track != null) {
+            val forceRemote = track.id in forcedRemoteSnapshot
+            Uri.parse(
+                chooseNavidromePlaybackUri(
+                    streamUrl = track.streamUrl,
+                    localPlaybackUri = if (forceRemote) null else downloadManager.localPlaybackUri(track),
+                    forceRemote = forceRemote
+                )
+            )
+        } else if (embeddedStreamUrl.isNotBlank()) {
+            Uri.parse(embeddedStreamUrl)
+        } else {
+            uri
+        }
+        return dataSpec.buildUpon().setUri(resolvedUri).build()
+    }
+
+    private fun buildNavidromePlaybackMediaItem(track: NavidromeTrack): MediaItem {
+        return MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri(buildNavidromePlaybackMediaUri(track.id, track.streamUrl))
+            .build()
     }
 
     private fun describePlaybackState(playbackState: Int): String {
@@ -574,12 +685,7 @@ class NavidromePlayerController @Inject constructor(
         )
         val activePlayer = getOrCreatePlayer()
         activePlayer.setMediaItems(
-            tracks.map { track ->
-                MediaItem.Builder()
-                    .setMediaId(track.id)
-                    .setUri(resolvePlaybackUri(track))
-                    .build()
-            },
+            tracks.map(::buildNavidromePlaybackMediaItem),
             index,
             0L
         )
@@ -589,6 +695,7 @@ class NavidromePlayerController @Inject constructor(
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
+        schedulePlaybackCacheWarmup(tracks)
     }
 
     fun playTracksNext(tracks: List<NavidromeTrack>) {
@@ -612,13 +719,11 @@ class NavidromePlayerController @Inject constructor(
         }
         queueDisplayMode = NavidromeQueueDisplayMode.FULL
         player?.addMediaItems(insertIndex, normalizedTracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.id)
-                .setUri(resolvePlaybackUri(track))
-                .build()
+            buildNavidromePlaybackMediaItem(track)
         })
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
+        schedulePlaybackCacheWarmup(queueTracks)
     }
 
     fun appendTracksToQueue(tracks: List<NavidromeTrack>) {
@@ -631,13 +736,11 @@ class NavidromePlayerController @Inject constructor(
         queueTracks = queueTracks + normalizedTracks
         queueDisplayMode = NavidromeQueueDisplayMode.FULL
         player?.addMediaItems(normalizedTracks.map { track ->
-            MediaItem.Builder()
-                .setMediaId(track.id)
-                .setUri(resolvePlaybackUri(track))
-                .build()
+            buildNavidromePlaybackMediaItem(track)
         })
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
+        schedulePlaybackCacheWarmup(queueTracks)
     }
 
     fun removeTrackFromQueue(index: Int): Boolean {
@@ -679,6 +782,7 @@ class NavidromePlayerController @Inject constructor(
 
         persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
+        schedulePlaybackCacheWarmup(queueTracks)
         return true
     }
 
@@ -806,8 +910,12 @@ class NavidromePlayerController @Inject constructor(
         lastPersistedSnapshotTrackId = null
         lastPersistedSnapshotPositionMs = 0
         lastPersistedSnapshotElapsedMs = 0L
-        forcedRemoteTrackIds.clear()
+        forcedRemoteTrackIds = emptySet()
         playbackRecoveryTrackId = null
+        cancelPlaybackCacheWarmup(clearSignature = true)
+        scope.launch(Dispatchers.IO) {
+            downloadManager.clearPlaybackCache()
+        }
         releasePlayer(clearQueue = true)
         stopProgressUpdates()
         clearPlaybackSurface()
@@ -867,12 +975,7 @@ class NavidromePlayerController @Inject constructor(
         releasePlayer(clearQueue = false)
         val activePlayer = getOrCreatePlayer()
         activePlayer.setMediaItems(
-            queueTracks.map { track ->
-                MediaItem.Builder()
-                    .setMediaId(track.id)
-                    .setUri(resolvePlaybackUri(track))
-                    .build()
-            },
+            queueTracks.map(::buildNavidromePlaybackMediaItem),
             safeIndex,
             safePositionMs.toLong()
         )
@@ -896,6 +999,7 @@ class NavidromePlayerController @Inject constructor(
         persistPlaybackSnapshot(force = true)
         updateStateFromPlayer()
         ensureProgressUpdates()
+        schedulePlaybackCacheWarmup(queueTracks)
     }
 
     private fun recoverPlaybackAfterError(error: androidx.media3.common.PlaybackException) {
@@ -920,7 +1024,7 @@ class NavidromePlayerController @Inject constructor(
                     return@launch
                 }
                 if (bypassBrokenLocalCopy) {
-                    forcedRemoteTrackIds += failedTrackId
+                    forcedRemoteTrackIds = forcedRemoteTrackIds + failedTrackId
                 }
                 if (refreshedQueue.isNullOrEmpty()) {
                     releasePlayer(clearQueue = false)
@@ -947,12 +1051,86 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun resolvePlaybackUri(track: NavidromeTrack): String {
-        val localUri = if (track.id in forcedRemoteTrackIds) {
-            null
-        } else {
-            downloadManager.localPlaybackUri(track)
+        val forcedRemoteSnapshot = forcedRemoteTrackIds
+        val forceRemote = track.id in forcedRemoteSnapshot
+        return chooseNavidromePlaybackUri(
+            streamUrl = track.streamUrl,
+            localPlaybackUri = if (forceRemote) null else downloadManager.localPlaybackUri(track),
+            forceRemote = forceRemote
+        )
+    }
+
+    private fun cancelPlaybackCacheWarmup(clearSignature: Boolean) {
+        playbackCacheWarmupJob?.cancel()
+        playbackCacheWarmupJob = null
+        if (clearSignature) {
+            playbackCacheWarmupSignature = null
         }
-        return localUri ?: track.streamUrl
+    }
+
+    private fun schedulePlaybackCacheWarmup(tracks: List<NavidromeTrack>) {
+        val queueIndex = mutableState.value.currentIndex
+        val warmupTracks = selectNavidromePlaybackWarmupTracks(
+            tracks = normalizeNavidromePlaybackWarmupTracks(tracks),
+            currentIndex = queueIndex
+        )
+        if (warmupTracks.isEmpty()) {
+            cancelPlaybackCacheWarmup(clearSignature = true)
+            scope.launch(Dispatchers.IO) {
+                downloadManager.clearPlaybackCache()
+            }
+            return
+        }
+        val signature = buildNavidromePlaybackWarmupSignature(warmupTracks)
+        if (signature == playbackCacheWarmupSignature) {
+            return
+        }
+        playbackCacheWarmupSignature = signature
+        playbackCacheWarmupJob?.cancel()
+        playbackCacheWarmupJob = scope.launch(Dispatchers.IO) {
+            logPlaybackTrace(
+                "playback_cache_warmup_started queue_size=${warmupTracks.size}"
+            )
+            val refreshedQueue = when (val result = navidromeRepository.refreshPlayableTracks(warmupTracks)) {
+                is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                is com.stillshelf.app.core.util.AppResult.Error -> {
+                    logPlaybackTrace(
+                        "playback_cache_warmup_refresh_failed message=${result.message}"
+                    )
+                    warmupTracks
+                }
+            }
+            if (!isActive) return@launch
+            val prefetchResult = downloadManager.prefetchPlaybackQueue(refreshedQueue)
+            if (!isActive) return@launch
+            scope.launch(Dispatchers.Main.immediate) {
+                if (playbackCacheWarmupSignature != signature) {
+                    return@launch
+                }
+                if (queueTracks.map { it.id } == warmupTracks.map { it.id }) {
+                    queueTracks = refreshedQueue
+                    recentTracks = recentTracks.map { recent ->
+                        refreshedQueue.firstOrNull { it.id == recent.id } ?: recent
+                    }
+                    updateStateFromPlayer()
+                }
+                when (prefetchResult) {
+                    is com.stillshelf.app.core.util.AppResult.Success -> {
+                        logPlaybackTrace(
+                            "playback_cache_warmup_prefetch_queued count=${prefetchResult.value}"
+                        )
+                        scope.launch(Dispatchers.IO) {
+                            downloadManager.prunePlaybackCache(warmupTracks.map { it.id }.toSet())
+                        }
+                    }
+                    is com.stillshelf.app.core.util.AppResult.Error -> {
+                        logPlaybackTrace(
+                            "playback_cache_warmup_prefetch_failed message=${prefetchResult.message}"
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun resumeFromSnapshot(playWhenReady: Boolean) {
@@ -1028,6 +1206,7 @@ class NavidromePlayerController @Inject constructor(
             player = null
         }
         if (clearQueue) {
+            cancelPlaybackCacheWarmup(clearSignature = true)
             queueTracks = emptyList()
             queueDisplayMode = NavidromeQueueDisplayMode.FULL
         }
@@ -1181,6 +1360,7 @@ class NavidromePlayerController @Inject constructor(
                     selectedOutputDeviceId = mutableState.value.selectedOutputDeviceId,
                     errorMessage = null
                 )
+                schedulePlaybackCacheWarmup(refreshedQueue)
             }
         }
     }

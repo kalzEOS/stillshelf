@@ -2,6 +2,7 @@ package com.stillshelf.app.ui.navigation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BackendProvider
@@ -28,7 +29,8 @@ class RootViewModel @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val secureTokenStorage: SecureTokenStorage,
     private val playbackController: Lazy<PlaybackController>,
-    private val navidromePlayerController: Lazy<NavidromePlayerController>
+    private val navidromePlayerController: Lazy<NavidromePlayerController>,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) : ViewModel() {
 
     private val selectedBackendFlow = sessionPreferences.state
@@ -93,6 +95,7 @@ class RootViewModel @Inject constructor(
 
     fun selectBackend(provider: BackendProvider) {
         viewModelScope.launch {
+            diagnosticLogManager.logLifecycle("Session", "backend_selected=${provider.storageValue}")
             if (provider != BackendProvider.NAVIDROME) {
                 navidromePlayerController.get().stop()
             }
@@ -105,6 +108,7 @@ class RootViewModel @Inject constructor(
 
     fun clearSelectedBackend() {
         viewModelScope.launch {
+            diagnosticLogManager.logLifecycle("Session", "backend_selection_cleared")
             playbackController.get().stop()
             navidromePlayerController.get().stop()
             sessionPreferences.setSelectedBackend(null)

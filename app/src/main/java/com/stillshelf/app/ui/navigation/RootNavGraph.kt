@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.composable
 import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.ui.screens.BackendSelectionScreen
@@ -67,6 +68,8 @@ fun RootNavGraph(
 
     key(startGraph) {
         val navController = rememberNavController()
+        val currentBackStackEntry by navController.currentBackStackEntryAsState()
+        val currentRoute = currentBackStackEntry?.destination?.route
         NavHost(
             navController = navController,
             startDestination = startGraph,

@@ -9910,17 +9910,6 @@ private fun NavidromeExpandedPlayerSheet(
     } else {
         Color.Transparent
     }
-    var showLoadingIndicator by remember { mutableStateOf(false) }
-    LaunchedEffect(state.isLoading) {
-        if (!state.isLoading) {
-            showLoadingIndicator = false
-            return@LaunchedEffect
-        }
-        delay(200)
-        if (state.isLoading) {
-            showLoadingIndicator = true
-        }
-    }
     val toolButtonContainerColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.12f)
     } else {
@@ -9998,6 +9987,17 @@ private fun NavidromeExpandedPlayerSheet(
                 0f
             }
         )
+    }
+    var showLoadingIndicator by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isLoading) {
+        if (!state.isLoading) {
+            showLoadingIndicator = false
+            return@LaunchedEffect
+        }
+        delay(200)
+        if (state.isLoading) {
+            showLoadingIndicator = true
+        }
     }
     BoxWithConstraints(
         modifier = Modifier
@@ -10205,7 +10205,7 @@ private fun NavidromeExpandedPlayerSheet(
                             .clickable(enabled = !state.isLoading, onClick = onPlayPause),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (showLoadingIndicator) {
+                        if (state.isLoading && showLoadingIndicator) {
                             PlaybackLoadingIndicator(
                                 modifier = Modifier.size(transportIconSize),
                                 baseTint = if (transportButtonColor.luminance() > 0.5f) {

@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.util.AppResult
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -29,7 +30,8 @@ data class AppUpdateRelease(
 class AppUpdateManager @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val okHttpClient: OkHttpClient,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) {
     companion object {
         private const val RELEASES_API_URL = "https://api.github.com/repos/kalzEOS/stillshelf/releases"
@@ -47,6 +49,12 @@ class AppUpdateManager @Inject constructor(
                     .build()
                 okHttpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
+                        diagnosticLogManager.logNetworkError(
+                            tag = "AppUpdateManager",
+                            errorType = "http_${response.code}",
+                            method = "GET",
+                            httpStatusCode = response.code
+                        )
                         throw IllegalStateException("Unable to check updates (${response.code}).")
                     }
                     val responseBody = response.body?.string().orEmpty()
@@ -67,7 +75,14 @@ class AppUpdateManager @Inject constructor(
                 }
             }.fold(
                 onSuccess = { AppResult.Success(it) },
-                onFailure = { AppResult.Error(it.message ?: "Unable to check updates.", it) }
+                onFailure = { throwable ->
+                    diagnosticLogManager.logError(
+                        tag = "AppUpdateManager",
+                        message = "Unable to check updates.",
+                        throwable = throwable
+                    )
+                    AppResult.Error(throwable.message ?: "Unable to check updates.", throwable)
+                }
             )
         }
     }
@@ -95,6 +110,12 @@ class AppUpdateManager @Inject constructor(
                     .build()
                 okHttpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
+                        diagnosticLogManager.logNetworkError(
+                            tag = "AppUpdateManager",
+                            errorType = "http_${response.code}",
+                            method = "GET",
+                            httpStatusCode = response.code
+                        )
                         throw IllegalStateException("Download failed (${response.code}).")
                     }
                     val body = response.body ?: throw IllegalStateException("Download returned empty data.")
@@ -117,6 +138,11 @@ class AppUpdateManager @Inject constructor(
             }.fold(
                 onSuccess = { AppResult.Success(Unit) },
                 onFailure = { throwable ->
+                    diagnosticLogManager.logError(
+                        tag = "AppUpdateManager",
+                        message = "Unable to update app.",
+                        throwable = throwable
+                    )
                     AppResult.Error(throwable.message ?: "Unable to update app.", throwable)
                 }
             )

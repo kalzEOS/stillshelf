@@ -152,6 +152,7 @@ fun MiniPlayerBar(
 
             IconButton(
                 onClick = onPlayPause,
+                enabled = !state.isLoading,
                 modifier = Modifier
                     .width(actionButtonWidth)
                     .height(actionButtonHeight)
@@ -163,11 +164,19 @@ fun MiniPlayerBar(
                         .background(MaterialTheme.colorScheme.onSurface),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = if (state.isPlaying) Icons.Outlined.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (state.isPlaying) "Pause" else "Play",
-                        tint = MaterialTheme.colorScheme.surface
-                    )
+                    if (state.isLoading) {
+                        PlaybackLoadingIndicator(
+                            modifier = Modifier.size(18.dp),
+                            baseTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.26f),
+                            sweepTint = MaterialTheme.colorScheme.surface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (state.isPlaying) Icons.Outlined.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (state.isPlaying) "Pause" else "Play",
+                            tint = MaterialTheme.colorScheme.surface
+                        )
+                    }
                 }
             }
         }

@@ -2,9 +2,9 @@ package com.stillshelf.app.core.datastore
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.security.KeyStore
 import javax.inject.Inject
@@ -18,7 +18,8 @@ class SecureStorageUnavailableException : IllegalStateException(
 
 @Singleton
 class SecureTokenStorage @Inject constructor(
-    @param:ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) {
     @Volatile
     private var encryptedSharedPreferences: SharedPreferences? = null
@@ -40,25 +41,41 @@ class SecureTokenStorage @Inject constructor(
         val masterKeyAlias = runCatching {
             MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
         }.getOrElse { throwable ->
-            Log.e(TAG, "Unable to obtain master key alias for encrypted token prefs.", throwable)
+            diagnosticLogManager.logError(
+                tag = TAG,
+                message = "Unable to obtain master key alias for encrypted token prefs.",
+                throwable = throwable
+            )
             return null
         }
 
         return try {
             createEncryptedPreferences(masterKeyAlias)
         } catch (firstError: Throwable) {
-            Log.w(TAG, "Encrypted token prefs failed. Clearing token prefs and retrying once.", firstError)
+            diagnosticLogManager.logWarning(
+                tag = TAG,
+                message = "Encrypted token prefs failed. Clearing token prefs and retrying once.",
+                throwable = firstError
+            )
             runCatching { clearEncryptedPreferencesFile() }
             try {
                 createEncryptedPreferences(masterKeyAlias)
             } catch (secondError: Throwable) {
-                Log.w(TAG, "Encrypted token prefs still failing. Resetting master key and retrying.", secondError)
+                diagnosticLogManager.logWarning(
+                    tag = TAG,
+                    message = "Encrypted token prefs still failing. Resetting master key and retrying.",
+                    throwable = secondError
+                )
                 runCatching { deleteMasterKey(masterKeyAlias) }
                 runCatching { clearEncryptedPreferencesFile() }
                 try {
                     createEncryptedPreferences(masterKeyAlias)
                 } catch (finalError: Throwable) {
-                    Log.e(TAG, "Unable to initialize encrypted token prefs.", finalError)
+                    diagnosticLogManager.logError(
+                        tag = TAG,
+                        message = "Unable to initialize encrypted token prefs.",
+                        throwable = finalError
+                    )
                     null
                 }
             }

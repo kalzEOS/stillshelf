@@ -3,9 +3,13 @@ package com.stillshelf.app.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -199,6 +203,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
@@ -241,6 +246,7 @@ import com.stillshelf.app.ui.navigation.MainTab
 import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import java.io.File
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -416,6 +422,7 @@ fun HomeScreen(
     onOpenBook: (String) -> Unit = {},
     onOpenSeries: (String) -> Unit = {},
     onOpenAuthor: (String) -> Unit = {},
+    onPlayContinueListening: (String) -> Unit = {},
     onOpenPlayer: (String?) -> Unit = {},
     onHomeClick: (() -> Unit)? = null,
     viewModel: HomeViewModel = hiltViewModel(),
@@ -1007,7 +1014,7 @@ fun HomeScreen(
                                                 posterHeight = continueListeningPosterHeight,
                                                 isDownloaded = uiState.downloadedBookIds.containsDownloadedBook(item.book),
                                                 downloadProgressPercent = uiState.downloadProgressByBookId.downloadProgressForBook(item.book),
-                                                onClick = { onOpenPlayer(item.book.id) },
+                                                onClick = { onPlayContinueListening(item.book.id) },
                                                 onGoToBook = { onOpenBook(item.book.id) },
                                                 onAddToCollection = { addToListBookId = item.book.id },
                                                 onMarkFinished = {
@@ -4759,6 +4766,7 @@ fun DownloadsScreen(
 @Composable
 fun SettingsScreen(
     onManageServers: () -> Unit = {},
+    onOpenAdvanced: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
@@ -4968,6 +4976,11 @@ fun SettingsScreen(
             }
         }
 
+        Text(
+            text = "SERVERS MANAGEMENT",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Card(
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),
             shape = RoundedCornerShape(18.dp),
@@ -4995,6 +5008,23 @@ fun SettingsScreen(
                     infoMessage = null
                     signOutDialogVisible = true
                 }
+            )
+        }
+        Text(
+            text = "ADVANCED",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
+        ) {
+            SettingsRow(
+                title = "Advanced",
+                value = "Diagnostic logs",
+                trailingContentWidth = 144.dp,
+                onClick = onOpenAdvanced
             )
         }
         Card(
@@ -5129,6 +5159,286 @@ fun SettingsScreen(
                     }
                 }
             )
+        }
+    }
+}
+
+@Composable
+fun AdvancedScreen(
+    onBackClick: (() -> Unit)? = null,
+    onHomeClick: (() -> Unit)? = null,
+    viewModel: SettingsViewModel = hiltViewModel()
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var deleteLogsDialogVisible by remember { mutableStateOf(false) }
+    var diagnosticInfoDialogVisible by remember { mutableStateOf(false) }
+    var diagnosticLogsBrowserVisible by remember { mutableStateOf(false) }
+    var diagnosticLogViewerVisible by remember { mutableStateOf(false) }
+    var diagnosticLogViewerTitle by remember { mutableStateOf("") }
+    var diagnosticLogViewerContent by remember { mutableStateOf("") }
+    var diagnosticActionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var pendingExportLogFile by remember { mutableStateOf<File?>(null) }
+    var diagnosticLogsBrowserFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    val sectionCardColor = if (uiState.materialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (uiState.materialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+
+    fun shareDiagnosticLogFile(file: File) {
+        val shareUri = runCatching {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+        }.getOrNull()
+        if (shareUri == null) {
+            Toast.makeText(context, "Unable to share diagnostic log.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, shareUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(shareIntent, "Share diagnostic log"))
+        }.onFailure {
+            Toast.makeText(context, "Unable to share diagnostic log.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openDiagnosticLogsBrowser(logFiles: List<File>) {
+        if (logFiles.isEmpty()) {
+            Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        diagnosticLogsBrowserFiles = logFiles
+        diagnosticLogsBrowserVisible = true
+    }
+
+    fun deleteDiagnosticLogFile(file: File) {
+        scope.launch {
+            viewModel.deleteDiagnosticLog(file)
+            diagnosticLogsBrowserFiles = viewModel.diagnosticLogFiles()
+            if (diagnosticLogsBrowserFiles.isEmpty()) {
+                diagnosticLogsBrowserVisible = false
+            }
+            Toast.makeText(context, "Diagnostic log deleted.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openDiagnosticLogFile(file: File) {
+        scope.launch {
+            val content = runCatching {
+                withContext(Dispatchers.IO) {
+                    readDiagnosticLogPreview(file)
+                }
+            }.getOrElse {
+                Toast.makeText(context, "Unable to open diagnostic log.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            diagnosticLogsBrowserVisible = false
+            diagnosticLogViewerTitle = file.name
+            diagnosticLogViewerContent = content
+            diagnosticLogViewerVisible = true
+        }
+    }
+
+    LaunchedEffect(diagnosticLogsBrowserVisible) {
+        if (!diagnosticLogsBrowserVisible) return@LaunchedEffect
+        while (true) {
+            diagnosticLogsBrowserFiles = viewModel.diagnosticLogFiles()
+            delay(2_000)
+        }
+    }
+
+    val exportLogLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { destinationUri ->
+        val sourceFile = pendingExportLogFile ?: return@rememberLauncherForActivityResult
+        pendingExportLogFile = null
+        if (destinationUri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(destinationUri)?.use { output ->
+                sourceFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: error("Unable to open the destination file.")
+            Toast.makeText(context, "Diagnostic log exported.", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "Unable to export diagnostic log.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun launchDiagnosticLogExport(file: File) {
+        pendingExportLogFile = file
+        exportLogLauncher.launch(file.name)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .padding(horizontal = AppScreenHorizontalPadding, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        BackTitle(
+            title = "Advanced",
+            onBackClick = onBackClick,
+            onHomeClick = onHomeClick
+        )
+
+        Text(
+            text = "DIAGNOSTICS",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        DiagnosticLogsSettingsCard(
+            enabled = uiState.diagnosticLoggingEnabled,
+            hasLogs = uiState.hasDiagnosticLogs,
+            actionsExpanded = diagnosticActionsExpanded,
+            onEnabledChange = { enabled ->
+                viewModel.setDiagnosticLoggingEnabled(enabled)
+                diagnosticActionsExpanded = enabled
+            },
+            onActionsExpandedChange = { expanded ->
+                diagnosticActionsExpanded = expanded
+            },
+            onShowLogsClick = {
+                scope.launch {
+                    openDiagnosticLogsBrowser(viewModel.diagnosticLogFiles())
+                }
+            },
+            onExportClick = {
+                scope.launch {
+                    val logFiles = viewModel.diagnosticLogFiles()
+                    when (logFiles.size) {
+                        0 -> Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+                        1 -> {
+                            val logFile = logFiles.first()
+                            launchDiagnosticLogExport(logFile)
+                        }
+                        else -> openDiagnosticLogsBrowser(logFiles)
+                    }
+                }
+            },
+            onShareClick = {
+                scope.launch {
+                    val logFiles = viewModel.diagnosticLogFiles()
+                    when (logFiles.size) {
+                        0 -> Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+                        1 -> {
+                            val logFile = logFiles.first()
+                            shareDiagnosticLogFile(logFile)
+                        }
+                        else -> openDiagnosticLogsBrowser(logFiles)
+                    }
+                }
+            },
+            onOpenIssuesClick = {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("https://github.com/kalzEOS/stillshelf/issues/new")
+                        )
+                    )
+                }.onFailure {
+                    Toast.makeText(context, "Unable to open GitHub Issues.", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDeleteClick = {
+                deleteLogsDialogVisible = true
+            },
+            onSeeWhatCollectedClick = {
+                diagnosticInfoDialogVisible = true
+            },
+            containerColor = sectionCardColor,
+            border = sectionCardBorder
+        )
+
+        if (deleteLogsDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { deleteLogsDialogVisible = false },
+                title = { Text("Delete diagnostic logs?") },
+                text = {
+                    Text(
+                        text = "This removes all saved local diagnostic log files from this device and turns diagnostic logging off."
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            deleteLogsDialogVisible = false
+                            viewModel.deleteDiagnosticLogs()
+                            Toast.makeText(context, "Diagnostic logs deleted.", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deleteLogsDialogVisible = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        if (diagnosticInfoDialogVisible) {
+            DiagnosticLogsCollectedInfoDialog(
+                onDismissRequest = { diagnosticInfoDialogVisible = false }
+            )
+        }
+
+        if (diagnosticLogsBrowserVisible) {
+            DiagnosticLogsBrowserDialog(
+                logFiles = diagnosticLogsBrowserFiles,
+                onOpenLogClick = ::openDiagnosticLogFile,
+                onExportLogClick = ::launchDiagnosticLogExport,
+                onShareLogClick = ::shareDiagnosticLogFile,
+                onDeleteLogClick = ::deleteDiagnosticLogFile,
+                onDismissRequest = { diagnosticLogsBrowserVisible = false }
+            )
+        }
+
+        if (diagnosticLogViewerVisible) {
+            DiagnosticLogViewerDialog(
+                title = diagnosticLogViewerTitle,
+                content = diagnosticLogViewerContent,
+                onDismissRequest = { diagnosticLogViewerVisible = false }
+            )
+        }
+    }
+}
+
+private fun readDiagnosticLogPreview(file: File): String {
+    val fileLength = file.length()
+    if (fileLength <= 0L) return "The log file is empty."
+    val previewBytes = 64 * 1024
+    if (fileLength <= previewBytes) {
+        return file.readText()
+    }
+    return RandomAccessFile(file, "r").use { raf ->
+        val start = (fileLength - previewBytes).coerceAtLeast(0L)
+        raf.seek(start)
+        val bytes = ByteArray((fileLength - start).toInt())
+        raf.readFully(bytes)
+        buildString {
+            append("Showing the last ")
+            append(previewBytes / 1024)
+            append(" KB of this log. Older content was trimmed.\n\n")
+            append(String(bytes, Charsets.UTF_8))
         }
     }
 }
@@ -5920,7 +6230,6 @@ fun ServersManagementScreen(
                 modifier = Modifier.weight(1f)
             )
         }
-
         Card(
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = sectionCardColor),

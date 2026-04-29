@@ -41,6 +41,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
@@ -149,7 +150,8 @@ class PlaybackController @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) {
     companion object {
         private const val CHANNEL_ID = "stillshelf_playback_v4"
@@ -167,6 +169,7 @@ class PlaybackController @Inject constructor(
         private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
         private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
         private const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
+        private const val TAG = "PlaybackController"
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
         const val ACTION_FORWARD = "com.stillshelf.app.playback.action.FORWARD"
@@ -241,10 +244,16 @@ class PlaybackController @Inject constructor(
     private var noisyAudioReceiverRegistered: Boolean = false
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+            logPlaybackTrace(
+                "audio_route_change=device_added count=${addedDevices?.size ?: 0}"
+            )
             refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceAdded)
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+            logPlaybackTrace(
+                "audio_route_change=device_removed count=${removedDevices?.size ?: 0}"
+            )
             refreshAudioOutputDevices(reason = OutputRefreshReason.DeviceRemoved)
         }
     }
@@ -356,6 +365,10 @@ class PlaybackController @Inject constructor(
 
     fun playBook(bookId: String, startPositionMs: Long? = null) {
         if (bookId.isBlank()) return
+        logPlaybackTrace(
+            "playback_command=play_book start_position_ms=${startPositionMs?.coerceAtLeast(0L)} " +
+                "has_current_book=${currentBookId != null} has_player=${mediaPlayer != null}"
+        )
         if (currentBookId != bookId) {
             attemptedAutoAdvanceTargetsMs.clear()
             clearPendingAutoAdvanceUiTarget()
@@ -584,6 +597,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun playBookFromPosition(bookId: String, startPositionMs: Long) {
+        logPlaybackTrace("playback_command=play_book_from_position start_position_ms=${startPositionMs.coerceAtLeast(0L)}")
         playBook(
             bookId = bookId,
             startPositionMs = startPositionMs.coerceAtLeast(0L)
@@ -591,6 +605,7 @@ class PlaybackController @Inject constructor(
     }
 
     fun togglePlayPause() {
+        logPlaybackTrace("playback_command=toggle_play_pause is_playing=${uiState.value.isPlaying}")
         if (uiState.value.isPlaying) {
             pause()
         } else {
@@ -599,14 +614,17 @@ class PlaybackController @Inject constructor(
     }
 
     fun playCurrent() {
+        logPlaybackTrace("playback_command=play_current")
         resume()
     }
 
     fun pauseCurrent() {
+        logPlaybackTrace("playback_command=pause_current")
         pause()
     }
 
     fun stop() {
+        logPlaybackTrace("playback_command=stop had_book=${uiState.value.book != null}")
         val hadBook = uiState.value.book != null
         if (hadBook) {
             updateCachedFromUiState()
@@ -655,6 +673,9 @@ class PlaybackController @Inject constructor(
         } else {
             (current + deltaMs).coerceAtLeast(0L)
         }
+        logPlaybackTrace(
+            "playback_command=seek_by delta_ms=$deltaMs target_ms=$target duration_ms=$duration"
+        )
         seekToPosition(targetMs = target, forceSync = true)
     }
 
@@ -664,10 +685,16 @@ class PlaybackController @Inject constructor(
         if (duration <= 0L) return
         val clamped = progressFraction.coerceIn(0f, 1f)
         val targetMs = (duration.toDouble() * clamped.toDouble()).toLong()
+        logPlaybackTrace(
+            "playback_command=seek_to_progress fraction=$clamped target_ms=$targetMs duration_ms=$duration commit=$commit"
+        )
         seekToPosition(targetMs = targetMs, forceSync = commit)
     }
 
     fun seekToPositionMs(positionMs: Long, commit: Boolean) {
+        logPlaybackTrace(
+            "playback_command=seek_to_position_ms target_ms=${positionMs.coerceAtLeast(0L)} commit=$commit"
+        )
         seekToPosition(targetMs = positionMs.coerceAtLeast(0L), forceSync = commit)
     }
 
@@ -1009,6 +1036,10 @@ class PlaybackController @Inject constructor(
 
     private fun refreshAudioOutputDevices(reason: OutputRefreshReason) {
         val available = queryOutputDevices()
+        logPlaybackTrace(
+            "audio_output_refresh reason=${describeOutputRefreshReason(reason)} available_count=${available.size} " +
+                "has_explicit_selection=${preferredOutputDeviceId != null}"
+        )
         val availableIds = available.mapNotNull { it.id }.toSet()
         val bluetoothOutputId = available.firstOrNull { output ->
             val displayedId = output.id ?: return@firstOrNull false
@@ -1040,10 +1071,17 @@ class PlaybackController @Inject constructor(
             )
         }
         lastKnownOutputDeviceIds = availableIds
+        logPlaybackTrace(
+            "audio_output_refresh_applied reason=${describeOutputRefreshReason(reason)} selected_device=${preferredOutputDeviceId != null} " +
+                "available_count=${available.size}"
+        )
     }
 
     fun selectAudioOutputDevice(deviceId: Int?): Boolean {
         val available = queryOutputDevices()
+        logPlaybackTrace(
+            "audio_output_select requested=${deviceId != null} available_count=${available.size}"
+        )
         if (available.none { output -> output.id == deviceId }) {
             refreshAudioOutputDevices()
             return false
@@ -1087,6 +1125,9 @@ class PlaybackController @Inject constructor(
     private fun seekToPosition(targetMs: Long, forceSync: Boolean = true) {
         val player = mediaPlayer ?: return
         val safeTargetMs = targetMs.coerceAtLeast(0L)
+        logPlaybackTrace(
+            "playback_command=seek_to_position target_ms=$safeTargetMs force_sync=$forceSync"
+        )
         val targetTrackStartOffsetMs = resolveTrackStartOffsetForPosition(
             tracks = currentPlaybackSource?.tracks.orEmpty(),
             positionMs = safeTargetMs
@@ -1123,10 +1164,14 @@ class PlaybackController @Inject constructor(
     }
 
     private fun pause() {
+        logPlaybackTrace("playback_command=pause_request")
         pause(reason = PauseReason.User)
     }
 
     private fun resume() {
+        logPlaybackTrace(
+            "playback_command=resume_request has_player=${mediaPlayer != null} has_book=${uiState.value.book != null} is_loading=${uiState.value.isLoading}"
+        )
         val player = mediaPlayer
         if (player == null) {
             val book = uiState.value.book ?: return
@@ -1203,6 +1248,12 @@ class PlaybackController @Inject constructor(
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (player !== mediaPlayer) return
+                logPlaybackTrace(
+                    "playback_state_changed state=${describePlaybackState(playbackState)} " +
+                        "is_playing=${runCatching { player.isPlaying }.getOrDefault(false)} " +
+                        "play_when_ready=${runCatching { player.playWhenReady }.getOrDefault(false)} " +
+                        "position_ms=${safePosition(player)} duration_ms=${safeDuration(player)}"
+                )
                 when (playbackState) {
                     Player.STATE_READY -> {
                         if (initialReadyHandled) return
@@ -1254,8 +1305,21 @@ class PlaybackController @Inject constructor(
                 }
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (player !== mediaPlayer) return
+                logPlaybackTrace(
+                    "playback_flag_changed is_playing=$isPlaying state=${describePlaybackState(player.playbackState)} " +
+                        "position_ms=${safePosition(player)}"
+                )
+            }
+
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 if (player !== mediaPlayer) return
+                diagnosticLogManager.logPlaybackError(
+                    tag = TAG,
+                    errorType = error::class.java.simpleName,
+                    throwable = error
+                )
                 updateUiState {
                     it.copy(
                         isLoading = false,
@@ -1286,7 +1350,52 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    private fun describePlaybackState(playbackState: Int): String {
+        return when (playbackState) {
+            Player.STATE_IDLE -> "idle"
+            Player.STATE_BUFFERING -> "buffering"
+            Player.STATE_READY -> "ready"
+            Player.STATE_ENDED -> "ended"
+            else -> "state_$playbackState"
+        }
+    }
+
+    private fun describePauseReason(reason: PauseReason): String {
+        return when (reason) {
+            PauseReason.User -> "user"
+            PauseReason.AudioFocusTransientLoss -> "audio_focus_transient_loss"
+            PauseReason.AudioFocusLoss -> "audio_focus_loss"
+            PauseReason.NoisyOutput -> "noisy_output"
+            PauseReason.Internal -> "internal"
+        }
+    }
+
+    private fun describeAudioFocusChange(focusChange: Int): String {
+        return when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> "gain"
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> "loss_transient_can_duck"
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> "loss_transient"
+            AudioManager.AUDIOFOCUS_LOSS -> "loss"
+            else -> "change_$focusChange"
+        }
+    }
+
+    private fun describeOutputRefreshReason(reason: OutputRefreshReason): String {
+        return when (reason) {
+            OutputRefreshReason.General -> "general"
+            OutputRefreshReason.DeviceAdded -> "device_added"
+            OutputRefreshReason.DeviceRemoved -> "device_removed"
+        }
+    }
+
+    private fun logPlaybackTrace(message: String) {
+        diagnosticLogManager.logDiagnosticEvent(TAG, message)
+    }
+
     private fun pause(reason: PauseReason) {
+        logPlaybackTrace(
+            "playback_command=pause reason=${describePauseReason(reason)} has_player=${mediaPlayer != null} is_playing=${uiState.value.isPlaying}"
+        )
         val player = mediaPlayer
         if (player != null) {
             clearDucking(player)
@@ -1358,6 +1467,14 @@ class PlaybackController @Inject constructor(
         if (requestResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             hasAudioFocus = true
         }
+        logPlaybackTrace(
+            "audio_focus_request result=${when (requestResult) {
+                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> "granted"
+                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> "delayed"
+                AudioManager.AUDIOFOCUS_REQUEST_FAILED -> "failed"
+                else -> "result_$requestResult"
+            }} has_focus=$hasAudioFocus"
+        )
         return requestResult
     }
 
@@ -1370,9 +1487,14 @@ class PlaybackController @Inject constructor(
             @Suppress("DEPRECATION")
             runCatching { audioManager.abandonAudioFocus(audioFocusChangeListener) }
         }
+        logPlaybackTrace("audio_focus_abandoned")
     }
 
     private fun handleAudioFocusChange(focusChange: Int) {
+        logPlaybackTrace(
+            "audio_focus_change=${describeAudioFocusChange(focusChange)} pending_play=$pendingPlayAfterAudioFocusGain " +
+                "is_ducked=$isDuckedForAudioFocus"
+        )
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 hasAudioFocus = true
@@ -1465,6 +1587,7 @@ class PlaybackController @Inject constructor(
         val player = mediaPlayer ?: return
         val isPlayingNow = runCatching { player.isPlaying }.getOrDefault(false)
         if (!isPlayingNow) return
+        logPlaybackTrace("audio_route_change=noisy_output_pause")
         pause(reason = PauseReason.NoisyOutput)
     }
 

@@ -30,6 +30,7 @@ object MainRoute {
     const val CUSTOMIZE = "main/customize"
     const val SETTINGS = "main/settings"
     const val ABOUT = "main/settings/about"
+    const val ADVANCED = "main/settings/advanced"
     const val PLAYER = "main/player"
     const val PLAYER_BOOK_ID_ARG = "bookId"
     const val PLAYER_START_SECONDS_ARG = "startSeconds"
@@ -127,6 +128,82 @@ enum class MainTab(val route: String, val label: String) {
         fun fromRoute(route: String?): MainTab {
             return entries.firstOrNull { it.route == route } ?: Home
         }
+    }
+}
+
+internal fun resolveSafeScreenArea(route: String?): String {
+    val rawRoute = route?.trim().orEmpty()
+    if (rawRoute.isBlank()) return "unknown"
+
+    return when {
+        rawRoute == GraphRoute.BACKEND_SELECTOR -> "backend_selector"
+        rawRoute == GraphRoute.AUTH -> "auth_graph"
+        rawRoute == GraphRoute.MAIN -> "main_graph"
+        rawRoute == GraphRoute.NAVIDROME_AUTH -> "navidrome_auth"
+        rawRoute == GraphRoute.NAVIDROME -> "navidrome_graph"
+
+        rawRoute == MainRoute.SHELL -> "main_shell"
+        rawRoute == MainRoute.CUSTOMIZE -> "customize"
+        rawRoute == MainRoute.SETTINGS -> "settings"
+        rawRoute == MainRoute.ABOUT -> "about"
+        rawRoute == MainRoute.ADVANCED -> "advanced"
+        rawRoute == MainRoute.PLAYER || rawRoute.startsWith("main/player") -> "player"
+        rawRoute == MainRoute.SERVERS -> "servers"
+        rawRoute == MainRoute.LIBRARY_PICKER -> "library_picker"
+
+        rawRoute == MainTab.Home.route -> "home"
+        rawRoute == MainTab.Browse.route -> "browse"
+        rawRoute == MainTab.Search.route -> "search"
+        rawRoute == MainTab.Downloads.route -> "downloads"
+        rawRoute == MainTab.Settings.route -> "settings_tab"
+
+        rawRoute == BrowseRoute.BOOKS -> "browse_books"
+        rawRoute == BrowseRoute.AUTHORS -> "browse_authors"
+        rawRoute == BrowseRoute.NARRATORS -> "browse_narrators"
+        rawRoute == BrowseRoute.SERIES -> "browse_series"
+        rawRoute == BrowseRoute.COLLECTIONS -> "browse_collections"
+        rawRoute == BrowseRoute.GENRES -> "browse_genres"
+        rawRoute == BrowseRoute.BOOKMARKS -> "browse_bookmarks"
+        rawRoute == BrowseRoute.PLAYLISTS -> "browse_playlists"
+        rawRoute == BrowseRoute.DOWNLOADED -> "browse_downloaded"
+
+        rawRoute == AuthRoute.SERVERS -> "auth_servers"
+        rawRoute == AuthRoute.ADD_SERVER -> "auth_add_server"
+        rawRoute == AuthRoute.LIBRARY_PICKER -> "auth_library_picker"
+        rawRoute.startsWith("auth/login") -> "auth_login"
+
+        rawRoute == NavidromeRoute.LOGIN -> "navidrome_login"
+        rawRoute == NavidromeRoute.HOME -> "navidrome_home"
+        rawRoute == NavidromeRoute.LIBRARY -> "navidrome_library"
+        rawRoute == NavidromeRoute.ARTISTS -> "navidrome_artists"
+        rawRoute == NavidromeRoute.ALBUMS -> "navidrome_albums"
+        rawRoute == NavidromeRoute.NEWEST_ALBUMS -> "navidrome_newest_albums"
+        rawRoute == NavidromeRoute.RADIOS -> "navidrome_radios"
+        rawRoute == NavidromeRoute.SONGS -> "navidrome_songs"
+        rawRoute == NavidromeRoute.DOWNLOADED -> "navidrome_downloaded"
+        rawRoute == NavidromeRoute.FAVORITES -> "navidrome_favorites"
+        rawRoute == NavidromeRoute.PLAYLISTS -> "navidrome_playlists"
+        rawRoute == NavidromeRoute.SEARCH -> "navidrome_search"
+        rawRoute == NavidromeRoute.SETTINGS -> "navidrome_settings"
+        rawRoute == NavidromeRoute.EQUALIZER -> "navidrome_equalizer"
+        rawRoute == NavidromeRoute.LYRICS_SOURCES -> "navidrome_lyrics_sources"
+        rawRoute == NavidromeRoute.SERVERS -> "navidrome_servers"
+        rawRoute == NavidromeRoute.CUSTOMIZE -> "navidrome_customize"
+        rawRoute.startsWith("navidrome/playlist/") -> "navidrome_playlist_detail"
+        rawRoute.startsWith("navidrome/artist/") -> "navidrome_artist_detail"
+        rawRoute.startsWith("navidrome/album/") -> "navidrome_album_detail"
+
+        rawRoute.startsWith("main/browse/") -> "browse_area"
+        rawRoute.startsWith("main/book/") -> "book_detail"
+        rawRoute.startsWith("main/author/") -> "author_detail"
+        rawRoute.startsWith("main/narrator/") -> "narrator_detail"
+        rawRoute.startsWith("main/series/") || rawRoute.startsWith("main/subseries/") -> "series_detail"
+        rawRoute.startsWith("main/genre/") -> "genre_detail"
+        rawRoute.startsWith("main/collection/") -> "collection_detail"
+        rawRoute.startsWith("main/playlist/") -> "playlist_detail"
+        rawRoute.startsWith("main/") -> "main_area"
+
+        else -> "unknown"
     }
 }
 

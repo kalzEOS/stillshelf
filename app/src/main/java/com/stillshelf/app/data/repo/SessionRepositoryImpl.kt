@@ -36,6 +36,7 @@ import com.stillshelf.app.core.model.SeriesDetailEntry
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.PendingBookmarkCreateSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.Library
 import com.stillshelf.app.core.model.ServerConnectionMode
@@ -212,7 +213,8 @@ class SessionRepositoryImpl @Inject constructor(
     private val secureTokenStorage: SecureTokenStorage,
     private val audiobookshelfApi: AudiobookshelfApi,
     private val realtimeClient: AudiobookshelfRealtimeClient,
-    private val activeServerEndpointResolver: ActiveServerEndpointResolver
+    private val activeServerEndpointResolver: ActiveServerEndpointResolver,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) : SessionRepository {
     companion object {
         private const val HOME_FEED_CACHE_MAX_AGE_MS: Long = 10 * 60 * 1000L
@@ -464,7 +466,7 @@ class SessionRepositoryImpl @Inject constructor(
             val isDeletingActiveServer = session.activeServerId == existing.id
             if (isDeletingActiveServer) {
                 sessionPreferences.setLastPlayedBookId(null)
-                sessionPreferences.clearCachedHomeFeed()
+                clearHomeFeedCache("delete_active_server")
                 prepareFallbackSelectionIfPossible(nextServer?.id)
             }
             secureTokenStorage.clearToken(existing.id)
@@ -568,6 +570,7 @@ class SessionRepositoryImpl @Inject constructor(
             is AppResult.Error -> return syncResult
         }
 
+        diagnosticLogManager.logLifecycle("Session", "active_server_changed")
         return activateServerWithDefaultLibrary(server.id)
     }
 
@@ -579,6 +582,7 @@ class SessionRepositoryImpl @Inject constructor(
 
         sessionPreferences.setActiveLibraryId(library.id)
         sessionPreferences.setRequiresLibrarySelection(false)
+        diagnosticLogManager.logLifecycle("Session", "active_library_changed")
         return AppResult.Success(Unit)
     }
 
@@ -593,9 +597,10 @@ class SessionRepositoryImpl @Inject constructor(
         val library = libraryDao.getByServerAndId(activeServerId, libraryId)
             ?: return AppResult.Error("Library not found.")
 
-        sessionPreferences.clearCachedHomeFeed()
+        clearHomeFeedCache("prepare_library_selection")
         sessionPreferences.setRequiresLibrarySelection(true)
         sessionPreferences.setActiveLibraryId(library.id)
+        diagnosticLogManager.logLifecycle("Session", "active_library_primed")
 
         val homeFeedResult = fetchHomeFeed(
             continueLimit = continueLimit,
@@ -621,12 +626,13 @@ class SessionRepositoryImpl @Inject constructor(
             ?: return AppResult.Error("No libraries were returned for this server.")
 
         sessionPreferences.setLastPlayedBookId(null)
-        sessionPreferences.clearCachedHomeFeed()
+        clearHomeFeedCache("initialize_active_server")
         sessionPreferences.setActiveSelectionState(
             serverId = serverId,
             libraryId = defaultLibraryId,
             requiresLibrarySelection = false
         )
+        diagnosticLogManager.logLifecycle("Session", "active_server_initialized")
         clearContentCaches()
         return AppResult.Success(Unit)
     }
@@ -676,7 +682,7 @@ class SessionRepositoryImpl @Inject constructor(
                 ?: return AppResult.Error("No active server selected.")
             val nextServer = serverDao.getAll().firstOrNull { it.id != activeServerId }
             sessionPreferences.setLastPlayedBookId(null)
-            sessionPreferences.clearCachedHomeFeed()
+            clearHomeFeedCache("sign_out")
             prepareFallbackSelectionIfPossible(nextServer?.id)
 
             runCatching { secureTokenStorage.clearToken(activeServerId) }
@@ -2629,7 +2635,7 @@ class SessionRepositoryImpl @Inject constructor(
             )
         }
         if (isFinished) {
-            runCatching { sessionPreferences.clearCachedHomeFeed() }
+            clearHomeFeedCache("mark_progress_finished")
             clearContentCaches()
         }
         putLocalProgressOverride(
@@ -2975,7 +2981,7 @@ class SessionRepositoryImpl @Inject constructor(
         if (!finished || resetProgressWhenUnfinished) {
             finishedProgressSnapshots.remove(bookId)
         }
-        runCatching { sessionPreferences.clearCachedHomeFeed() }
+        clearHomeFeedCache("mark_book_finished")
         clearContentCaches()
         val resolvedProgress = when {
             finished -> PlaybackProgress(
@@ -3315,16 +3321,24 @@ class SessionRepositoryImpl @Inject constructor(
                 cachedLibraryId = cached.libraryId
             )
         ) {
+            logCacheTrace("home_feed_cache_miss reason=selection_mismatch")
             return AppResult.Success(null)
         }
         val cacheAgeMs = (System.currentTimeMillis() - cached.savedAtMs).coerceAtLeast(0L)
         val effectiveMaxAgeMs = maxAgeMs ?: HOME_FEED_CACHE_MAX_AGE_MS
         if (cacheAgeMs > effectiveMaxAgeMs) {
+            logCacheTrace(
+                "home_feed_cache_miss reason=stale age_ms=$cacheAgeMs max_age_ms=$effectiveMaxAgeMs"
+            )
             return AppResult.Success(null)
         }
 
         val parsed = runCatching { parseCachedHomeFeed(cached.payload) }.getOrNull()
-            ?: return AppResult.Success(null)
+            ?: run {
+                logCacheTrace("home_feed_cache_miss reason=parse_failed")
+                return AppResult.Success(null)
+            }
+        logCacheTrace("home_feed_cache_hit age_ms=$cacheAgeMs")
         return AppResult.Success(parsed)
     }
 
@@ -3751,7 +3765,7 @@ class SessionRepositoryImpl @Inject constructor(
                     serverId = server.id,
                     activeLibraryId = session.activeLibraryId
                 )
-                sessionPreferences.clearCachedHomeFeed()
+                clearHomeFeedCache("server_refresh_success")
                 deletePersistedDetailCacheForServer(server.id)
                 clearContentCachesForServer(server.id)
                 clearServerDataState(server.id)
@@ -3761,7 +3775,7 @@ class SessionRepositoryImpl @Inject constructor(
             }
 
             is AppResult.Error -> {
-                sessionPreferences.clearCachedHomeFeed()
+                clearHomeFeedCache("server_refresh_failed")
                 deletePersistedDetailCacheForServer(server.id)
                 clearContentCachesForServer(server.id)
                 markServerDataStale(
@@ -3904,6 +3918,7 @@ class SessionRepositoryImpl @Inject constructor(
             collectionsCache.clear()
             playlistsCache.clear()
         }
+        logCacheTrace("content_cache_cleared scope=all")
     }
 
     private suspend fun clearContentCachesForServer(serverId: String) {
@@ -3916,6 +3931,7 @@ class SessionRepositoryImpl @Inject constructor(
             collectionsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
             playlistsCache.keys.removeAll { it.startsWith(normalizedPrefix) }
         }
+        logCacheTrace("content_cache_cleared scope=server")
     }
 
     private suspend fun deletePersistedDetailCacheForServer(serverId: String) {
@@ -3926,6 +3942,16 @@ class SessionRepositoryImpl @Inject constructor(
         detailCacheDao.deleteSeriesMembershipsForServer(serverId)
         detailCacheDao.deleteSeriesSummariesForServer(serverId)
         detailCacheDao.deleteDetailSyncStateForServer(serverId)
+        logCacheTrace("detail_cache_cleared scope=server")
+    }
+
+    private suspend fun clearHomeFeedCache(reason: String) {
+        sessionPreferences.clearCachedHomeFeed()
+        logCacheTrace("home_feed_cache_cleared reason=$reason")
+    }
+
+    private fun logCacheTrace(message: String) {
+        diagnosticLogManager.logDiagnosticEvent("SessionCache", message)
     }
 
     private suspend fun runDedupedDetailRefresh(

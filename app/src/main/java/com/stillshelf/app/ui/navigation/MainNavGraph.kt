@@ -48,6 +48,7 @@ import androidx.navigation.navArgument
 import com.stillshelf.app.ui.components.MiniPlayerViewModel
 import com.stillshelf.app.ui.components.RootScaffold
 import com.stillshelf.app.ui.screens.AboutScreen
+import com.stillshelf.app.ui.screens.AdvancedScreen
 import com.stillshelf.app.ui.screens.AuthorsBrowseScreen
 import com.stillshelf.app.ui.screens.AuthorDetailScreen
 import com.stillshelf.app.ui.screens.BookDetailScreen
@@ -193,6 +194,7 @@ private fun MainShell(
         currentRoute != MainTab.Settings.route &&
         currentRoute != MainRoute.SETTINGS &&
         currentRoute != MainRoute.ABOUT &&
+        currentRoute != MainRoute.ADVANCED &&
         currentRoute != MainRoute.SERVERS &&
         currentRoute != MainRoute.LIBRARY_PICKER &&
         currentRoute?.startsWith("auth/") != true
@@ -223,7 +225,8 @@ private fun MainShell(
                 paddingValues = paddingValues,
                 navController = tabsNavController,
                 onHomeClick = screenHomeClick,
-                onOpenSelectedBook = ::handleBookSelection
+                onOpenSelectedBook = ::handleBookSelection,
+                onPlayContinueListening = playerViewModel::openPlayer
             )
         }
 
@@ -274,7 +277,8 @@ private fun MainTabsNavHost(
     paddingValues: PaddingValues,
     navController: androidx.navigation.NavHostController,
     onHomeClick: (() -> Unit)?,
-    onOpenSelectedBook: (String?, Double?) -> Unit
+    onOpenSelectedBook: (String?, Double?) -> Unit,
+    onPlayContinueListening: (String) -> Unit
 ) {
     NavHost(
         navController = navController,
@@ -327,6 +331,7 @@ private fun MainTabsNavHost(
                         launchSingleTop = true
                     }
                 },
+                onPlayContinueListening = onPlayContinueListening,
                 onOpenPlayer = { bookId ->
                     onOpenSelectedBook(bookId, null)
                 }
@@ -385,6 +390,11 @@ private fun MainTabsNavHost(
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
+                onOpenAdvanced = {
+                    navController.navigate(MainRoute.ADVANCED) {
+                        launchSingleTop = true
+                    }
+                },
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true
@@ -401,6 +411,11 @@ private fun MainTabsNavHost(
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
+                onOpenAdvanced = {
+                    navController.navigate(MainRoute.ADVANCED) {
+                        launchSingleTop = true
+                    }
+                },
                 onOpenAbout = {
                     navController.navigate(MainRoute.ABOUT) {
                         launchSingleTop = true
@@ -415,6 +430,12 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.ABOUT) {
             AboutScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
+            )
+        }
+        composable(MainRoute.ADVANCED) {
+            AdvancedScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick
             )

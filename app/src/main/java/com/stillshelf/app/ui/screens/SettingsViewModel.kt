@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.BuildConfig
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.EndpointReachabilityStatus
 import com.stillshelf.app.core.model.ServerConnectionRoute
@@ -16,6 +17,7 @@ import com.stillshelf.app.update.AppUpdateManager
 import com.stillshelf.app.update.AppUpdateRelease
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.net.URI
+import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -81,6 +83,8 @@ data class SettingsUiState(
     val appUpdatesEnabled: Boolean = BuildConfig.IN_APP_UPDATES_ENABLED,
     val updateCheckOnStartupEnabled: Boolean = true,
     val includePrereleaseUpdates: Boolean = false,
+    val diagnosticLoggingEnabled: Boolean = false,
+    val hasDiagnosticLogs: Boolean = false,
     val automaticServerSwitchingEnabled: Boolean = false,
     val lanServerUrl: String = "",
     val wanServerUrl: String = "",
@@ -99,14 +103,15 @@ class SettingsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
     private val activeEndpointHealthMonitor: ActiveEndpointHealthMonitor,
-    private val appUpdateManager: AppUpdateManager
+    private val appUpdateManager: AppUpdateManager,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = mutableUiState.asStateFlow()
 
     init {
         viewModelScope.launch {
-            combine(
+            val baseStateFlow = combine(
                 sessionRepository.observeSessionState(),
                 sessionRepository.observeServers(),
                 sessionPreferences.state,
@@ -147,6 +152,8 @@ class SettingsViewModel @Inject constructor(
                         lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
                         updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
                         includePrereleaseUpdates = pref.updateIncludePrereleases,
+                        diagnosticLoggingEnabled = pref.diagnosticLoggingEnabled,
+                        hasDiagnosticLogs = false,
                         automaticServerSwitchingEnabled = switchingConfig.enabled,
                         lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
                         wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
@@ -180,6 +187,8 @@ class SettingsViewModel @Inject constructor(
                         lastLibrarySyncAtMs = pref.lastLibrarySyncAtMs,
                         updateCheckOnStartupEnabled = pref.updateCheckOnStartup,
                         includePrereleaseUpdates = pref.updateIncludePrereleases,
+                        diagnosticLoggingEnabled = pref.diagnosticLoggingEnabled,
+                        hasDiagnosticLogs = false,
                         automaticServerSwitchingEnabled = switchingConfig.enabled,
                         lanServerUrl = switchingConfig.lanBaseUrl.orEmpty(),
                         wanServerUrl = switchingConfig.wanBaseUrl.orEmpty(),
@@ -197,6 +206,10 @@ class SettingsViewModel @Inject constructor(
                         connectionLatencyMs = endpointHealth?.latencyMs
                     )
                 }
+            }
+
+            combine(baseStateFlow, diagnosticLogManager.state) { state, diagnosticState ->
+                state.copy(hasDiagnosticLogs = diagnosticState.hasLogs)
             }.collect { state ->
                 mutableUiState.update { previous ->
                     state.copy(
@@ -214,6 +227,10 @@ class SettingsViewModel @Inject constructor(
     fun onCheckForUpdatesClick() {
         if (!BuildConfig.IN_APP_UPDATES_ENABLED || uiState.value.isCheckingForUpdates) return
         viewModelScope.launch {
+            diagnosticLogManager.logLifecycle(
+                "Settings",
+                "update_check_started include_prereleases=${uiState.value.includePrereleaseUpdates}"
+            )
             mutableUiState.update {
                 it.copy(
                     isCheckingForUpdates = true,
@@ -229,6 +246,10 @@ class SettingsViewModel @Inject constructor(
             ) {
                 is AppResult.Success -> {
                     val update = result.value
+                    diagnosticLogManager.logLifecycle(
+                        "Settings",
+                        if (update == null) "update_check_completed no_update" else "update_check_completed update_found"
+                    )
                     mutableUiState.update {
                         it.copy(
                             isCheckingForUpdates = false,
@@ -239,6 +260,11 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    diagnosticLogManager.logWarning(
+                        tag = "Settings",
+                        message = "update_check_failed",
+                        throwable = result.cause
+                    )
                     mutableUiState.update {
                         it.copy(
                             isCheckingForUpdates = false,
@@ -279,6 +305,7 @@ class SettingsViewModel @Inject constructor(
     fun onSyncLibrariesClick() {
         if (uiState.value.isSyncingLibraries) return
         viewModelScope.launch {
+            diagnosticLogManager.logLifecycle("Settings", "library_sync_started")
             mutableUiState.update {
                 it.copy(
                     isSyncingLibraries = true,
@@ -290,6 +317,7 @@ class SettingsViewModel @Inject constructor(
                 is AppResult.Success -> {
                     val syncedAtMs = System.currentTimeMillis()
                     sessionPreferences.setLastLibrarySyncAtMs(syncedAtMs)
+                    diagnosticLogManager.logLifecycle("Settings", "library_sync_completed")
                     mutableUiState.update {
                         it.copy(
                             isSyncingLibraries = false,
@@ -301,6 +329,11 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    diagnosticLogManager.logWarning(
+                        tag = "Settings",
+                        message = "library_sync_failed",
+                        throwable = result.cause
+                    )
                     mutableUiState.update {
                         it.copy(
                             isSyncingLibraries = false,
@@ -317,6 +350,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = sessionRepository.signOutActiveSession()) {
                 is AppResult.Success -> {
+                    diagnosticLogManager.logLifecycle("Settings", "signed_out")
                     mutableUiState.update {
                         it.copy(
                             errorMessage = null,
@@ -326,6 +360,11 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> {
+                    diagnosticLogManager.logWarning(
+                        tag = "Settings",
+                        message = "sign_out_failed",
+                        throwable = result.cause
+                    )
                     mutableUiState.update { it.copy(errorMessage = result.message) }
                 }
             }
@@ -357,6 +396,27 @@ class SettingsViewModel @Inject constructor(
         if (!BuildConfig.IN_APP_UPDATES_ENABLED) return
         viewModelScope.launch {
             sessionPreferences.setUpdateIncludePrereleases(enabled)
+        }
+    }
+
+    fun setDiagnosticLoggingEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setDiagnosticLoggingEnabled(enabled)
+        }
+    }
+
+    suspend fun latestDiagnosticLogFile() = diagnosticLogManager.latestLogFile()
+
+    suspend fun diagnosticLogFiles(): List<File> = diagnosticLogManager.logFiles()
+
+    suspend fun deleteDiagnosticLog(file: File) {
+        diagnosticLogManager.deleteLogFile(file)
+    }
+
+    fun deleteDiagnosticLogs() {
+        viewModelScope.launch {
+            sessionPreferences.setDiagnosticLoggingEnabled(false)
+            diagnosticLogManager.deleteLogs()
         }
     }
 

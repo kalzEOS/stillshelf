@@ -116,6 +116,7 @@ class SessionPreferences @Inject constructor(
     private val lastLibrarySyncAtMsKey = longPreferencesKey("last_library_sync_at_ms")
     private val updateCheckOnStartupKey = booleanPreferencesKey("update_check_on_startup")
     private val updateIncludePrereleasesKey = booleanPreferencesKey("update_include_prereleases")
+    private val diagnosticLoggingEnabledKey = booleanPreferencesKey("diagnostic_logging_enabled")
     private val pendingUpdateApkPathKey = stringPreferencesKey("pending_update_apk_path")
     private val pendingUpdateVersionNameKey = stringPreferencesKey("pending_update_version_name")
     private val acknowledgedUpgradeNoticeVersionKey = stringPreferencesKey("acknowledged_upgrade_notice_version")
@@ -924,6 +925,12 @@ class SessionPreferences @Inject constructor(
     suspend fun setUpdateIncludePrereleases(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[updateIncludePrereleasesKey] = enabled
+        }
+    }
+
+    suspend fun setDiagnosticLoggingEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[diagnosticLoggingEnabledKey] = enabled
         }
     }
 
@@ -1935,6 +1942,7 @@ class SessionPreferences @Inject constructor(
             lastLibrarySyncAtMs = this[lastLibrarySyncAtMsKey],
             updateCheckOnStartup = this[updateCheckOnStartupKey] ?: true,
             updateIncludePrereleases = this[updateIncludePrereleasesKey] ?: false,
+            diagnosticLoggingEnabled = this[diagnosticLoggingEnabledKey] ?: false,
             pendingUpdateApkPath = this[pendingUpdateApkPathKey],
             pendingUpdateVersionName = this[pendingUpdateVersionNameKey],
             recentSearchTerms = parseStringArray(this[recentSearchTermsKey]),
@@ -2006,6 +2014,7 @@ data class SessionPreferenceState(
     val lastLibrarySyncAtMs: Long? = null,
     val updateCheckOnStartup: Boolean = true,
     val updateIncludePrereleases: Boolean = false,
+    val diagnosticLoggingEnabled: Boolean = false,
     val pendingUpdateApkPath: String? = null,
     val pendingUpdateVersionName: String? = null,
     val recentSearchTerms: List<String> = emptyList(),

@@ -32,6 +32,7 @@ data class NavidromeDownloadItem(
     val downloadId: Long? = null,
     val localPath: String? = null,
     val errorMessage: String? = null,
+    val isPlaybackCache: Boolean = false,
     val updatedAtMs: Long = System.currentTimeMillis()
 )
 
@@ -79,6 +80,7 @@ class NavidromeDownloadStorage @Inject constructor(
                             downloadId = node.optLong("downloadId").takeIf { it > 0L },
                             localPath = node.optString("localPath").ifBlank { null },
                             errorMessage = node.optString("errorMessage").ifBlank { null },
+                            isPlaybackCache = node.optBoolean("isPlaybackCache", false),
                             updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis())
                         )
                     )
@@ -109,6 +111,7 @@ class NavidromeDownloadStorage @Inject constructor(
                         .put("downloadId", item.downloadId)
                         .put("localPath", item.localPath)
                         .put("errorMessage", item.errorMessage)
+                        .put("isPlaybackCache", item.isPlaybackCache)
                         .put("updatedAtMs", item.updatedAtMs)
                 )
             }

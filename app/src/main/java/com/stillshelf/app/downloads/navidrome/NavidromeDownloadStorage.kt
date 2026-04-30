@@ -31,9 +31,11 @@ data class NavidromeDownloadItem(
     val progressPercent: Int,
     val downloadId: Long? = null,
     val localPath: String? = null,
+    val fileSizeBytes: Long? = null,
     val errorMessage: String? = null,
     val isPlaybackCache: Boolean = false,
-    val updatedAtMs: Long = System.currentTimeMillis()
+    val updatedAtMs: Long = System.currentTimeMillis(),
+    val lastAccessedAtMs: Long = updatedAtMs
 )
 
 @Singleton
@@ -79,9 +81,11 @@ class NavidromeDownloadStorage @Inject constructor(
                             progressPercent = node.optInt("progressPercent", 0).coerceIn(0, 100),
                             downloadId = node.optLong("downloadId").takeIf { it > 0L },
                             localPath = node.optString("localPath").ifBlank { null },
+                            fileSizeBytes = node.optLong("fileSizeBytes").takeIf { it > 0L },
                             errorMessage = node.optString("errorMessage").ifBlank { null },
                             isPlaybackCache = node.optBoolean("isPlaybackCache", false),
-                            updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis())
+                            updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis()),
+                            lastAccessedAtMs = node.optLong("lastAccessedAtMs", node.optLong("updatedAtMs", System.currentTimeMillis()))
                         )
                     )
                 }
@@ -110,9 +114,11 @@ class NavidromeDownloadStorage @Inject constructor(
                         .put("progressPercent", item.progressPercent)
                         .put("downloadId", item.downloadId)
                         .put("localPath", item.localPath)
+                        .put("fileSizeBytes", item.fileSizeBytes)
                         .put("errorMessage", item.errorMessage)
                         .put("isPlaybackCache", item.isPlaybackCache)
                         .put("updatedAtMs", item.updatedAtMs)
+                        .put("lastAccessedAtMs", item.lastAccessedAtMs)
                 )
             }
         }.toString()

@@ -970,12 +970,26 @@ class NavidromeRepository @Inject constructor(
             NavidromeAlbumSortOption.ALBUM_ARTIST,
             NavidromeAlbumSortOption.RELEASE_YEAR -> "alphabeticalByName"
         }
-        val result = navidromeApi.getAlbumList(auth, type = apiType, size = 200)
-        if (result.isFailure) {
-            staleCache?.let { return@withAuth AppResult.Success(it) }
-            throw result.exceptionOrNull() ?: IllegalStateException("Unable to load albums.")
+        val pageSize = 100
+        val fetchedAlbums = mutableListOf<com.stillshelf.app.data.api.NavidromeAlbumDto>()
+        val seenAlbumIds = linkedSetOf<String>()
+        var offset = 0
+        while (true) {
+            val result = navidromeApi.getAlbumList(auth, type = apiType, size = pageSize, offset = offset)
+            if (result.isFailure) {
+                staleCache?.let { return@withAuth AppResult.Success(it) }
+                throw result.exceptionOrNull() ?: IllegalStateException("Unable to load albums.")
+            }
+            val page = result.getOrThrow()
+            page.forEach { album ->
+                if (seenAlbumIds.add(album.id)) {
+                    fetchedAlbums += album
+                }
+            }
+            if (page.size < pageSize) break
+            offset += pageSize
         }
-        val albums = result.getOrThrow()
+        val albums = fetchedAlbums
             .map { it.toModel(auth) }
 
         val sorted = when (sort) {

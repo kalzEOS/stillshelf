@@ -3,6 +3,7 @@ package com.stillshelf.app.ui.screens.navidrome
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.File
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
@@ -28,6 +29,7 @@ import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
 import com.stillshelf.app.core.network.NetworkConnectionType
 import com.stillshelf.app.core.network.NetworkMonitor
+import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeAlbumSortOption
@@ -1089,6 +1091,7 @@ data class NavidromeFavoriteSongsUiState(
 
 data class NavidromeDownloadsUiState(
     val downloadedTrackIds: Set<String> = emptySet(),
+    val cachedTrackIds: Set<String> = emptySet(),
     val trackProgressById: Map<String, Int> = emptyMap(),
     val albumProgressById: Map<String, Int> = emptyMap(),
     val artistProgressById: Map<String, Int> = emptyMap(),
@@ -1142,8 +1145,10 @@ class NavidromeDownloadsViewModel @Inject constructor(
 
     val uiState: StateFlow<NavidromeDownloadsUiState> = combine(
         downloadManager.activeItems,
+        downloadManager.activeCacheItems,
         mutableFeedbackState
-    ) { items, feedback ->
+    ) { items, cacheItems, feedback ->
+        val cachedTrackIds = cacheItems.map { it.trackId }.toSet()
         val completedItems = items.filter { it.status == NavidromeDownloadStatus.Completed }
         val downloadingItems = items.filter {
             it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading
@@ -1212,6 +1217,7 @@ class NavidromeDownloadsViewModel @Inject constructor(
 
         feedback.copy(
             downloadedTrackIds = completedItems.map { it.trackId }.toSet(),
+            cachedTrackIds = cachedTrackIds,
             trackProgressById = downloadingItems.associate { it.trackId to it.progressPercent.coerceIn(0, 99) },
             albumProgressById = albumProgressById,
             artistProgressById = artistProgressById,
@@ -1702,7 +1708,9 @@ class NavidromeFavoriteSongsViewModel @Inject constructor(
 @HiltViewModel
 class NavidromeSettingsViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val downloadManager: NavidromeDownloadManager,
+    private val playerController: NavidromePlayerController
 ) : ViewModel() {
     private val mutableLocalState = MutableStateFlow(NavidromeSettingsLocalState())
 
@@ -1717,15 +1725,26 @@ class NavidromeSettingsViewModel @Inject constructor(
             ) { session, servers, preferences, connectionStatus, endpointHealth ->
                 Quintuple(session, servers, preferences, connectionStatus, endpointHealth)
             },
-            sessionPreferences.observeCachedNavidromeLyricsSizeBytes()
-        ) { upstream, lyricsCacheSizeBytes ->
-            Sextuple(
+            sessionPreferences.observeCachedNavidromeLyricsSizeBytes(),
+            downloadManager.activeCacheItems
+        ) { upstream, lyricsCacheSizeBytes, cacheItems ->
+            Septuple(
                 upstream.session,
                 upstream.servers,
                 upstream.preferences,
                 upstream.connectionStatus,
                 upstream.endpointHealth,
-                lyricsCacheSizeBytes
+                lyricsCacheSizeBytes,
+                Pair(
+                    cacheItems.sumOf { item ->
+                        item.fileSizeBytes
+                            ?: item.localPath
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { path -> runCatching { File(path).length() }.getOrNull() }
+                            ?: 0L
+                    },
+                    cacheItems.size
+                )
             )
         },
         mutableLocalState
@@ -1736,6 +1755,8 @@ class NavidromeSettingsViewModel @Inject constructor(
         val connectionStatus = upstream.connectionStatus
         val endpointHealth = upstream.endpointHealth
         val lyricsCacheSizeBytes = upstream.sixth
+        val playbackCacheUsageBytes = upstream.seventh.first
+        val playbackCacheItemCount = upstream.seventh.second
         val activeServerId = preferences.activeNavidromeServerId ?: servers.firstOrNull()?.id
         val activeServer = servers.firstOrNull { it.id == activeServerId }
         val activeLibraryId = activeServer?.id?.let(preferences.navidromeActiveLibraryIds::get)
@@ -1767,6 +1788,10 @@ class NavidromeSettingsViewModel @Inject constructor(
             },
             activeLyricsSourceId = preferences.activeNavidromeLyricsSourceId,
             lyricsCacheSizeBytes = lyricsCacheSizeBytes,
+            playbackCacheSizeLimit = preferences.navidromeCacheSizeLimit,
+            playbackCacheUsageBytes = playbackCacheUsageBytes,
+            playbackCacheItemCount = playbackCacheItemCount,
+            isClearingCache = localState.isClearingCache,
             activeServerId = activeServerId,
             availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
@@ -2028,6 +2053,25 @@ class NavidromeSettingsViewModel @Inject constructor(
 
     fun consumeSyncToastMessage() {
         mutableLocalState.update { it.copy(syncToastMessage = null) }
+    }
+
+    fun setPlaybackCacheSizeLimit(option: String) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeCacheSizeLimit(option)
+            if (NavidromeCacheSizeOption.toBytes(option) != null) {
+                playerController.invalidatePlaybackCacheWarmup()
+            }
+        }
+    }
+
+    fun clearPlaybackCache() {
+        if (mutableLocalState.value.isClearingCache) return
+        viewModelScope.launch {
+            mutableLocalState.update { it.copy(isClearingCache = true) }
+            downloadManager.clearPlaybackCache()
+            playerController.invalidatePlaybackCacheWarmup()
+            mutableLocalState.update { it.copy(isClearingCache = false, syncToastMessage = "Cached music cleared") }
+        }
     }
 
     fun setActiveServer(serverId: String) {
@@ -3015,6 +3059,10 @@ data class NavidromeSettingsUiState(
     val lyricsSources: List<SettingsServerOption> = emptyList(),
     val activeLyricsSourceId: String? = null,
     val lyricsCacheSizeBytes: Long = 0L,
+    val playbackCacheSizeLimit: String = NavidromeCacheSizeOption.default,
+    val playbackCacheUsageBytes: Long = 0L,
+    val playbackCacheItemCount: Int = 0,
+    val isClearingCache: Boolean = false,
     val activeServerId: String? = null,
     val availableLibraries: List<NavidromeLibrary> = emptyList(),
     val activeLibraryId: String? = null,
@@ -3351,10 +3399,21 @@ private data class Sextuple<A, B, C, D, E, F>(
     val sixth: F
 )
 
+private data class Septuple<A, B, C, D, E, F, G>(
+    val session: A,
+    val servers: B,
+    val preferences: C,
+    val connectionStatus: D,
+    val endpointHealth: E,
+    val sixth: F,
+    val seventh: G
+)
+
 private data class NavidromeSettingsLocalState(
     val libraries: List<NavidromeLibrary> = emptyList(),
     val errorMessage: String? = null,
     val isBusy: Boolean = false,
+    val isClearingCache: Boolean = false,
     val syncToastMessage: String? = null,
     val resyncProgress: NavidromeLibraryResyncProgress? = null,
     val serverScanProgress: NavidromeServerScanProgress? = null,

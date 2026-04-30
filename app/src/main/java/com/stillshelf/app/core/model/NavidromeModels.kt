@@ -5,6 +5,48 @@ import kotlin.math.roundToInt
 
 val navidromeEqualizerBandFrequenciesHz = listOf(32, 64, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
 const val NAVIDROME_EQUALIZER_MIN_DB = -6f
+
+object NavidromeCacheSizeOption {
+    const val NO_CACHING = "off"
+    const val NO_LIMIT = "nolimit"
+    @Deprecated("Use NO_CACHING")
+    const val OFF = NO_CACHING
+    const val MB_256 = "256mb"
+    const val MB_512 = "512mb"
+    const val GB_1 = "1gb"
+    const val GB_2 = "2gb"
+    const val GB_5 = "5gb"
+    const val GB_10 = "10gb"
+
+    val all = listOf(NO_CACHING, MB_256, MB_512, GB_1, GB_2, GB_5, GB_10, NO_LIMIT)
+    val default = MB_512
+
+    fun toBytes(option: String): Long? = when (option) {
+        NO_CACHING -> null
+        NO_LIMIT -> Long.MAX_VALUE
+        MB_256 -> 256L * 1024 * 1024
+        MB_512 -> 512L * 1024 * 1024
+        GB_1 -> 1024L * 1024 * 1024
+        GB_2 -> 2L * 1024 * 1024 * 1024
+        GB_5 -> 5L * 1024 * 1024 * 1024
+        GB_10 -> 10L * 1024 * 1024 * 1024
+        else -> 512L * 1024 * 1024
+    }
+
+    fun label(option: String): String = when (option) {
+        NO_CACHING -> "No caching"
+        NO_LIMIT -> "No limit"
+        MB_256 -> "256 MB"
+        MB_512 -> "512 MB"
+        GB_1 -> "1 GB"
+        GB_2 -> "2 GB"
+        GB_5 -> "5 GB"
+        GB_10 -> "10 GB"
+        else -> "512 MB"
+    }
+}
+
+
 const val NAVIDROME_EQUALIZER_MAX_DB = 6f
 const val NAVIDROME_EQUALIZER_STEP_DB = 1f
 

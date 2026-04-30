@@ -14,6 +14,7 @@ import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NavidromeServer
 import com.stillshelf.app.core.model.NavidromeEqualizerProfile
 import com.stillshelf.app.core.model.NavidromeLyricsSource
+import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.model.ServerConnectionMode
@@ -125,6 +126,7 @@ class SessionPreferences @Inject constructor(
     private val pendingBookmarkCreatesKey = stringPreferencesKey("pending_bookmark_creates")
     private val recentSearchTermsKey = stringPreferencesKey("recent_search_terms")
     private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
+    private val navidromeCacheSizeLimitKey = stringPreferencesKey("navidrome_cache_size_limit")
 
     val state: Flow<SessionPreferenceState> = dataStore.data
         .map { prefs -> prefs.toSessionPreferenceState() }
@@ -1292,6 +1294,12 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun setNavidromeCacheSizeLimit(option: String) {
+        dataStore.edit { prefs ->
+            prefs[navidromeCacheSizeLimitKey] = option
+        }
+    }
+
     private fun parseCsv(csv: String?): Set<String> {
         if (csv.isNullOrBlank()) return emptySet()
         return csv.split(",")
@@ -1946,7 +1954,8 @@ class SessionPreferences @Inject constructor(
             pendingUpdateApkPath = this[pendingUpdateApkPathKey],
             pendingUpdateVersionName = this[pendingUpdateVersionNameKey],
             recentSearchTerms = parseStringArray(this[recentSearchTermsKey]),
-            navidromeRecentSearchTerms = parseStringArray(this[navidromeRecentSearchTermsKey])
+            navidromeRecentSearchTerms = parseStringArray(this[navidromeRecentSearchTermsKey]),
+            navidromeCacheSizeLimit = this[navidromeCacheSizeLimitKey] ?: NavidromeCacheSizeOption.default
         )
     }
 }
@@ -2018,7 +2027,8 @@ data class SessionPreferenceState(
     val pendingUpdateApkPath: String? = null,
     val pendingUpdateVersionName: String? = null,
     val recentSearchTerms: List<String> = emptyList(),
-    val navidromeRecentSearchTerms: List<String> = emptyList()
+    val navidromeRecentSearchTerms: List<String> = emptyList(),
+    val navidromeCacheSizeLimit: String = NavidromeCacheSizeOption.default
 )
 
 data class CachedHomeFeedPayload(

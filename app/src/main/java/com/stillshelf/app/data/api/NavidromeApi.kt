@@ -261,7 +261,8 @@ class NavidromeApi @Inject constructor(
     suspend fun getAlbumList(
         auth: NavidromeAuth,
         type: String,
-        size: Int = 24
+        size: Int = 24,
+        offset: Int = 0
     ): Result<List<NavidromeAlbumDto>> = withContext(Dispatchers.IO) {
         runCatching {
             val root = execute(
@@ -271,7 +272,8 @@ class NavidromeApi @Inject constructor(
                     query = queryWithMusicFolder(
                         auth,
                         "type" to type,
-                        "size" to size.coerceIn(1, 100).toString()
+                        "size" to size.coerceIn(1, 100).toString(),
+                        "offset" to offset.coerceAtLeast(0).toString()
                     )
                 )
             )

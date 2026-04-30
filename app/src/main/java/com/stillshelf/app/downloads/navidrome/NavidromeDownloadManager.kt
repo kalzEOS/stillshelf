@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Environment
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
@@ -62,6 +63,14 @@ class NavidromeDownloadManager @Inject constructor(
         items.filter { item ->
             item.serverId == selection.serverId && item.libraryId == selection.libraryId
         }.filterNot { it.isPlaybackCache }
+    }
+    val activeCacheItems: Flow<List<NavidromeDownloadItem>> = combine(mutableItems, mutableActiveSelection) { items, selection ->
+        items.filter { item ->
+            item.serverId == selection.serverId &&
+                item.libraryId == selection.libraryId &&
+                item.isPlaybackCache &&
+                item.status != NavidromeDownloadStatus.Failed
+        }
     }
 
     init {
@@ -249,6 +258,10 @@ class NavidromeDownloadManager @Inject constructor(
     }
 
     suspend fun prefetchPlaybackQueue(tracks: List<NavidromeTrack>): AppResult<Int> = mutex.withLock {
+        val cacheLimitOption = sessionPreferences.state.first().navidromeCacheSizeLimit
+        if (NavidromeCacheSizeOption.toBytes(cacheLimitOption) == null) {
+            return@withLock AppResult.Success(0)
+        }
         val selection = resolveActiveSelection()
             ?: return@withLock AppResult.Error("Select a Navidrome server first.")
         val normalizedTracks = tracks
@@ -268,6 +281,8 @@ class NavidromeDownloadManager @Inject constructor(
 
         val newItems = normalizedTracks.mapNotNull { track ->
             val existing = existingByTrackId[track.id]
+            // A permanent download is authoritative — warmup must never overwrite it.
+            if (existing != null && !existing.isPlaybackCache) return@mapNotNull null
             val needsDownload = existing == null ||
                 existing.status == NavidromeDownloadStatus.Failed ||
                 (existing.status == NavidromeDownloadStatus.Completed && localPlaybackUri(track) == null)
@@ -293,7 +308,8 @@ class NavidromeDownloadManager @Inject constructor(
             items.filterNot {
                 it.serverId == selection.serverId &&
                     it.libraryId == selection.libraryId &&
-                    it.trackId in newTrackIds
+                    it.trackId in newTrackIds &&
+                    it.isPlaybackCache
             } + newItems
         }
 
@@ -327,6 +343,67 @@ class NavidromeDownloadManager @Inject constructor(
     }
 
     suspend fun clearPlaybackCache(): Int = prunePlaybackCache(emptySet())
+
+    fun currentPlaybackCacheSizeBytes(): Long {
+        val selection = mutableActiveSelection.value
+        return mutableItems.value
+            .filter {
+                it.serverId == selection.serverId &&
+                    it.libraryId == selection.libraryId &&
+                    it.isPlaybackCache &&
+                    it.status != NavidromeDownloadStatus.Failed
+            }
+            .sumOf { it.effectivePlaybackCacheSizeBytes() }
+    }
+
+    suspend fun evictPlaybackCacheToLimit(limitBytes: Long) = mutex.withLock {
+        val selection = resolveActiveSelection() ?: return@withLock
+        val cacheItems = mutableItems.value
+            .filter {
+                it.serverId == selection.serverId &&
+                    it.libraryId == selection.libraryId &&
+                    it.isPlaybackCache &&
+                    it.status != NavidromeDownloadStatus.Failed
+            }
+            .map { it to it.effectivePlaybackCacheSizeBytes() }
+            .filter { (_, size) -> size > 0L }
+            .sortedBy { (item, _) -> item.lastAccessedAtMs }
+        var totalBytes = cacheItems.sumOf { (_, size) -> size }
+        val toRemove = mutableListOf<NavidromeDownloadItem>()
+        for ((item, size) in cacheItems) {
+            if (totalBytes <= limitBytes) break
+            toRemove += item
+            totalBytes -= size
+        }
+        if (toRemove.isNotEmpty()) {
+            removeItems(toRemove)
+        }
+    }
+
+    fun touchCacheItem(trackId: String) {
+        scope.launch {
+            mutex.withLock {
+                val selection = mutableActiveSelection.value
+                val items = mutableItems.value
+                val now = System.currentTimeMillis()
+                val updated = items.map { item ->
+                    if (item.isPlaybackCache &&
+                        item.serverId == selection.serverId &&
+                        item.libraryId == selection.libraryId &&
+                        item.trackId == trackId
+                    ) {
+                        item.copy(lastAccessedAtMs = now)
+                    } else {
+                        item
+                    }
+                }
+                if (updated != items) {
+                    mutableItems.value = updated
+                    downloadStorage.persistItems(updated)
+                }
+            }
+        }
+    }
 
     private suspend fun resolveActiveSelection(): NavidromeActiveSelection? {
         val state = sessionPreferences.state.first()
@@ -437,6 +514,7 @@ class NavidromeDownloadManager @Inject constructor(
                             status = NavidromeDownloadStatus.Completed,
                             progressPercent = 100,
                             localPath = localPath ?: matchedItem.localPath,
+                            fileSizeBytes = totalBytes.takeIf { it > 0L } ?: matchedItem.fileSizeBytes,
                             errorMessage = null,
                             updatedAtMs = System.currentTimeMillis()
                         )
@@ -492,10 +570,11 @@ class NavidromeDownloadManager @Inject constructor(
                 runCatching { File(path).delete() }
             }
         }
-        val removalKeys = itemsToRemove.map { Triple(it.serverId, it.libraryId, it.trackId) }.toSet()
+        data class RemovalKey(val serverId: String, val libraryId: String, val trackId: String, val isPlaybackCache: Boolean)
+        val removalKeys = itemsToRemove.map { RemovalKey(it.serverId, it.libraryId, it.trackId, it.isPlaybackCache) }.toSet()
         replaceItems { items ->
             items.filterNot {
-                Triple(it.serverId, it.libraryId, it.trackId) in removalKeys
+                RemovalKey(it.serverId, it.libraryId, it.trackId, it.isPlaybackCache) in removalKeys
             }
         }
     }
@@ -508,7 +587,11 @@ class NavidromeDownloadManager @Inject constructor(
         isPlaybackCache: Boolean
     ): File {
         val baseDir = if (isPlaybackCache) {
-            File(appContext.cacheDir, "navidrome")
+            // DownloadManager runs as a system service and cannot write to internal cacheDir.
+            // externalCacheDir is app-private external storage that DownloadManager can reach.
+            appContext.externalCacheDir?.let { File(it, "navidrome") }
+                ?: appContext.getExternalFilesDir(null)?.let { File(it, "navidrome_cache") }
+                ?: File(appContext.filesDir, "navidrome_cache")
         } else {
             appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC)
                 ?: File(appContext.filesDir, "music")
@@ -534,6 +617,14 @@ class NavidromeDownloadManager @Inject constructor(
         val normalized = path?.trim().orEmpty()
         return normalized.isNotBlank() && File(normalized).exists()
     }
+}
+
+private fun NavidromeDownloadItem.effectivePlaybackCacheSizeBytes(): Long {
+    return fileSizeBytes
+        ?: localPath
+            ?.takeIf { it.isNotBlank() }
+            ?.let { path -> runCatching { File(path).length() }.getOrNull() }
+        ?: 0L
 }
 
 private fun Cursor.getLongOrNull(columnName: String): Long? {

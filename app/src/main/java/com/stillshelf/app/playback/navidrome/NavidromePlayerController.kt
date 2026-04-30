@@ -48,6 +48,7 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
+import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.data.repo.NavidromeRepository
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
@@ -64,6 +65,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -913,9 +915,6 @@ class NavidromePlayerController @Inject constructor(
         forcedRemoteTrackIds = emptySet()
         playbackRecoveryTrackId = null
         cancelPlaybackCacheWarmup(clearSignature = true)
-        scope.launch(Dispatchers.IO) {
-            downloadManager.clearPlaybackCache()
-        }
         releasePlayer(clearQueue = true)
         stopProgressUpdates()
         clearPlaybackSurface()
@@ -1060,6 +1059,13 @@ class NavidromePlayerController @Inject constructor(
         )
     }
 
+    fun invalidatePlaybackCacheWarmup() {
+        scope.launch(Dispatchers.Main.immediate) {
+            cancelPlaybackCacheWarmup(clearSignature = true)
+            schedulePlaybackCacheWarmup(queueTracks)
+        }
+    }
+
     private fun cancelPlaybackCacheWarmup(clearSignature: Boolean) {
         playbackCacheWarmupJob?.cancel()
         playbackCacheWarmupJob = null
@@ -1076,9 +1082,6 @@ class NavidromePlayerController @Inject constructor(
         )
         if (warmupTracks.isEmpty()) {
             cancelPlaybackCacheWarmup(clearSignature = true)
-            scope.launch(Dispatchers.IO) {
-                downloadManager.clearPlaybackCache()
-            }
             return
         }
         val signature = buildNavidromePlaybackWarmupSignature(warmupTracks)
@@ -1099,6 +1102,13 @@ class NavidromePlayerController @Inject constructor(
                     )
                     warmupTracks
                 }
+            }
+            if (!isActive) return@launch
+            val cacheLimitBytes = sessionPreferences.state.first()
+                .navidromeCacheSizeLimit
+                .let { NavidromeCacheSizeOption.toBytes(it) }
+            if (cacheLimitBytes != null) {
+                downloadManager.evictPlaybackCacheToLimit(cacheLimitBytes)
             }
             if (!isActive) return@launch
             val prefetchResult = downloadManager.prefetchPlaybackQueue(refreshedQueue)
@@ -1480,6 +1490,7 @@ class NavidromePlayerController @Inject constructor(
                 )
             }
             lastRecordedTrackId = currentTrack.id
+            scope.launch(Dispatchers.IO) { downloadManager.touchCacheItem(currentTrack.id) }
         } else if (currentTrack == null) {
             lastRecordedTrackId = null
         }

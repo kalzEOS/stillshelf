@@ -5099,6 +5099,7 @@ private fun NavidromeSettingsRoute(
                 NavidromeSettingsRow(
                     title = "Clear cached music",
                     value = if (uiState.isClearingCache) "Clearing…" else formatStorageSize(uiState.playbackCacheUsageBytes),
+                    titleMaxLines = 1,
                     valueTextAlign = TextAlign.End,
                     onClick = if (uiState.isClearingCache) null else ({ clearCachedMusicDialogVisible = true })
                 )
@@ -12114,7 +12115,9 @@ private fun PlayerQueueRow(
                     }
                 }
                 if (isCached) {
-                    CacheIndicator()
+                    CacheIndicator(
+                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+                    )
                 }
                 if (trailingContent != null) {
                     trailingContent()
@@ -12124,12 +12127,13 @@ private fun PlayerQueueRow(
 }
 
 @Composable
-private fun CacheIndicator() {
+private fun CacheIndicator(tint: Color? = null) {
+    val resolvedTint = tint ?: MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
     Icon(
         imageVector = Icons.Outlined.ArrowCircleDown,
         contentDescription = "Cached track",
         modifier = Modifier.size(18.dp),
-        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f)
+        tint = resolvedTint
     )
 }
 

@@ -9387,8 +9387,7 @@ private fun NavidromeSettingsRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = valueTextAlign,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (showChevronWhenValue && onClick != null) {
                     Icon(

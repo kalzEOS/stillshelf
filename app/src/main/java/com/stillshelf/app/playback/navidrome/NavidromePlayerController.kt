@@ -1144,7 +1144,13 @@ class NavidromePlayerController @Inject constructor(
                     logPlaybackTrace(
                         "playback_cache_warmup_refresh_failed message=${result.message}"
                     )
-                    warmupTracks
+                    scope.launch(Dispatchers.Main.immediate) {
+                        if (playbackCacheWarmupSignature == signature) {
+                            playbackCacheWarmupSignature = null
+                            schedulePlaybackCacheWarmup(queueTracks)
+                        }
+                    }
+                    return@launch
                 }
             }
             if (!isActive) return@launch
@@ -1181,6 +1187,8 @@ class NavidromePlayerController @Inject constructor(
                         logPlaybackTrace(
                             "playback_cache_warmup_prefetch_failed message=${prefetchResult.message}"
                         )
+                        playbackCacheWarmupSignature = null
+                        schedulePlaybackCacheWarmup(queueTracks)
                     }
                 }
             }

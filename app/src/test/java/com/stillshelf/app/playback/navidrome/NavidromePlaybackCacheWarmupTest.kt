@@ -35,6 +35,20 @@ class NavidromePlaybackCacheWarmupTest {
     }
 
     @Test
+    fun buildNavidromePlaybackWarmupSignature_changesAcrossConnectionContexts() {
+        val wifiSignature = buildNavidromePlaybackWarmupSignature(
+            tracks = listOf(track("track-1"), track("track-2")),
+            connectionSignature = "srv|https://lan.example.com|Local|Auto"
+        )
+        val cellularSignature = buildNavidromePlaybackWarmupSignature(
+            tracks = listOf(track("track-1"), track("track-2")),
+            connectionSignature = "srv|https://wan.example.com|Remote|Auto"
+        )
+
+        assertFalse(wifiSignature == cellularSignature)
+    }
+
+    @Test
     fun selectNavidromePlaybackWarmupTracks_capsToUpcomingWindow() {
         val tracks = (0 until 30).map { track("track-$it") }
 

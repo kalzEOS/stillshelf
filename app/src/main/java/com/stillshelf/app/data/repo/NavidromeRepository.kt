@@ -1378,7 +1378,7 @@ class NavidromeRepository @Inject constructor(
     }
 
     suspend fun refreshPlayableTracks(tracks: List<NavidromeTrack>): AppResult<List<NavidromeTrack>> {
-        val auth = currentAuth(requireFreshConnection = true)
+        val auth = currentAuth(requireFreshConnection = false)
             ?: return AppResult.Error("Navidrome session expired. Please sign in again.")
         return try {
             AppResult.Success(
@@ -1667,7 +1667,10 @@ class NavidromeRepository @Inject constructor(
                         wanBaseUrl = normalizedRemoteBaseUrl,
                         password = password
                     )
-                } else if (isEndpointReachable(normalizedLocalBaseUrl!!)) {
+                } else if (
+                    networkMonitor.currentConnectionType() == NetworkConnectionType.Wifi &&
+                    isEndpointReachable(normalizedLocalBaseUrl!!)
+                ) {
                     buildResolvedConnection(
                         server = server,
                         effectiveBaseUrl = normalizedLocalBaseUrl,
@@ -1685,7 +1688,7 @@ class NavidromeRepository @Inject constructor(
                         route = ServerConnectionRoute.Remote,
                         connectionMode = config.connectionMode,
                         switchingEnabled = true,
-                        lanFallbackToRemote = true,
+                        lanFallbackToRemote = networkMonitor.currentConnectionType() == NetworkConnectionType.Wifi,
                         lanBaseUrl = normalizedLocalBaseUrl,
                         wanBaseUrl = normalizedRemoteBaseUrl,
                         password = password

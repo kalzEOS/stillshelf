@@ -3444,9 +3444,13 @@ private fun ViewModel.observeNavidromeConnectionChanges(
                 lastStatus = status
                 return@collect
             }
-            if (status != lastStatus) {
+            if (status?.serverId != lastStatus?.serverId ||
+                status?.effectiveBaseUrl != lastStatus?.effectiveBaseUrl
+            ) {
                 lastStatus = status
                 onConnectionChanged()
+            } else {
+                lastStatus = status
             }
         }
     }

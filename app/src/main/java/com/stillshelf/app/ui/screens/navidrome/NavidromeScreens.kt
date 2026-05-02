@@ -5140,7 +5140,11 @@ private fun NavidromeSettingsRoute(
                 DividerLine()
                 NavidromeSettingsRow(
                     title = "Clear cached music",
-                    value = if (uiState.isClearingCache) "Clearing…" else formatStorageSize(uiState.playbackCacheUsageBytes),
+                    value = when {
+                        uiState.isClearingCache -> "Clearing…"
+                        uiState.playbackCacheUsageBytes == 0L && uiState.playbackCacheItemCount > 0 -> "Downloading…"
+                        else -> formatStorageSize(uiState.playbackCacheUsageBytes)
+                    },
                     titleMaxLines = 1,
                     valueTextAlign = TextAlign.End,
                     onClick = if (uiState.isClearingCache) null else ({ clearCachedMusicDialogVisible = true })

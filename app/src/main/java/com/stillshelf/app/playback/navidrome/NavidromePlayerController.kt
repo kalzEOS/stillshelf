@@ -89,8 +89,17 @@ internal fun normalizeNavidromePlaybackWarmupTracks(tracks: List<NavidromeTrack>
         }
 }
 
-internal fun buildNavidromePlaybackWarmupSignature(tracks: List<NavidromeTrack>): String {
-    return tracks.joinToString(separator = "|") { it.id }
+internal fun buildNavidromePlaybackWarmupSignature(
+    tracks: List<NavidromeTrack>,
+    connectionSignature: String = ""
+): String {
+    return buildString {
+        if (connectionSignature.isNotBlank()) {
+            append(connectionSignature)
+            append("::")
+        }
+        append(tracks.joinToString(separator = "|") { it.id })
+    }
 }
 
 internal fun selectNavidromePlaybackWarmupTracks(
@@ -422,6 +431,7 @@ class NavidromePlayerController @Inject constructor(
     private var lastPersistedSnapshotPositionMs: Int = 0
     private var lastPersistedSnapshotElapsedMs: Long = 0L
     @Volatile private var playbackCacheWarmupSignature: String? = null
+    @Volatile private var playbackCacheWarmupConnectionSignature: String = ""
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val mediaSession = MediaSessionCompat(appContext, "StillShelfNavidromePlayback")
@@ -1115,7 +1125,10 @@ class NavidromePlayerController @Inject constructor(
             cancelPlaybackCacheWarmup(clearSignature = true)
             return
         }
-        val signature = buildNavidromePlaybackWarmupSignature(warmupTracks)
+        val signature = buildNavidromePlaybackWarmupSignature(
+            tracks = warmupTracks,
+            connectionSignature = playbackCacheWarmupConnectionSignature
+        )
         if (signature == playbackCacheWarmupSignature) {
             return
         }
@@ -1685,6 +1698,8 @@ class NavidromePlayerController @Inject constructor(
             var hasObservedStatus = false
             var lastStatus: ActiveServerConnectionStatus? = null
             navidromeRepository.observeActiveConnectionStatus().collect { status ->
+                playbackCacheWarmupConnectionSignature =
+                    buildPlaybackCacheWarmupConnectionSignature(status)
                 if (!hasObservedStatus) {
                     hasObservedStatus = true
                     lastStatus = status
@@ -1700,6 +1715,7 @@ class NavidromePlayerController @Inject constructor(
 
     private fun refreshPlaybackPresentationForConnectionChange() {
         val currentTrack = mutableState.value.currentTrack ?: return
+        cancelPlaybackCacheWarmup(clearSignature = true)
         if (currentTrack.id.startsWith("radio:")) return
         val queueSnapshot = queueTracks
         val recentSnapshot = recentTracks
@@ -1750,6 +1766,19 @@ class NavidromePlayerController @Inject constructor(
                 schedulePlaybackCacheWarmup(queueTracks)
             }
         }
+    }
+
+    private fun buildPlaybackCacheWarmupConnectionSignature(
+        status: ActiveServerConnectionStatus?
+    ): String {
+        return status?.let {
+            listOf(
+                it.serverId,
+                it.effectiveBaseUrl,
+                it.route.name,
+                it.connectionMode.name
+            ).joinToString(separator = "|")
+        }.orEmpty()
     }
 
     private fun observeEqualizerPreferences() {

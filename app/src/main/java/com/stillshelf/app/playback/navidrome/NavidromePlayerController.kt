@@ -45,6 +45,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.stillshelf.app.MainActivity
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
 import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
@@ -63,6 +64,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -529,6 +531,7 @@ class NavidromePlayerController @Inject constructor(
         })
         mediaSession.isActive = false
         observeEqualizerPreferences()
+        observeActiveConnectionChanges()
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         restorePlaybackSnapshot()
         ensureProgressUpdates()
@@ -1675,6 +1678,78 @@ class NavidromePlayerController @Inject constructor(
         mediaSession.isActive = false
         PlaybackServiceController.stop(appContext)
         NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+    }
+
+    private fun observeActiveConnectionChanges() {
+        scope.launch {
+            var hasObservedStatus = false
+            var lastStatus: ActiveServerConnectionStatus? = null
+            navidromeRepository.observeActiveConnectionStatus().collect { status ->
+                if (!hasObservedStatus) {
+                    hasObservedStatus = true
+                    lastStatus = status
+                    return@collect
+                }
+                if (status != lastStatus) {
+                    lastStatus = status
+                    refreshPlaybackPresentationForConnectionChange()
+                }
+            }
+        }
+    }
+
+    private fun refreshPlaybackPresentationForConnectionChange() {
+        val currentTrack = mutableState.value.currentTrack ?: return
+        if (currentTrack.id.startsWith("radio:")) return
+        val queueSnapshot = queueTracks
+        val recentSnapshot = recentTracks
+        scope.launch(Dispatchers.IO) {
+            val refreshedQueue = if (queueSnapshot.isEmpty()) {
+                queueSnapshot
+            } else {
+                when (val result = navidromeRepository.refreshPlayableTracks(queueSnapshot)) {
+                    is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                    is com.stillshelf.app.core.util.AppResult.Error -> queueSnapshot
+                }
+            }
+            val refreshedRecent = if (recentSnapshot.isEmpty()) {
+                recentSnapshot
+            } else {
+                when (val result = navidromeRepository.refreshPlayableTracks(recentSnapshot)) {
+                    is com.stillshelf.app.core.util.AppResult.Success -> result.value
+                    is com.stillshelf.app.core.util.AppResult.Error -> recentSnapshot
+                }
+            }
+            val refreshedCurrentTrack = currentTrack.albumId?.let { albumId ->
+                when (val result = navidromeRepository.fetchAlbumDetail(albumId, forceRefresh = true)) {
+                    is com.stillshelf.app.core.util.AppResult.Success -> {
+                        result.value.tracks.firstOrNull { it.id == currentTrack.id } ?: currentTrack
+                    }
+                    is com.stillshelf.app.core.util.AppResult.Error -> currentTrack
+                }
+            } ?: currentTrack
+            scope.launch(Dispatchers.Main.immediate) {
+                if (mutableState.value.currentTrack?.id != currentTrack.id) return@launch
+                queueTracks = refreshedQueue.map { track ->
+                    if (track.id == refreshedCurrentTrack.id) refreshedCurrentTrack else track
+                }
+                recentTracks = refreshedRecent.map { track ->
+                    if (track.id == refreshedCurrentTrack.id) refreshedCurrentTrack else track
+                }
+                artworkBitmap = null
+                artworkTrackId = null
+                lastNotificationSignature = null
+                mutableState.value = mutableState.value.copy(
+                    queue = queueTracks,
+                    recentTracks = recentTracks,
+                    currentTrack = refreshedCurrentTrack
+                )
+                persistPlaybackSnapshot(force = true)
+                updatePlaybackSurface()
+                ensureProgressUpdates()
+                schedulePlaybackCacheWarmup(queueTracks)
+            }
+        }
     }
 
     private fun observeEqualizerPreferences() {

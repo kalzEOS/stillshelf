@@ -1,6 +1,7 @@
 package com.stillshelf.app.ui.screens.navidrome
 
 import androidx.lifecycle.SavedStateHandle
+import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.datastore.SessionPreferenceState
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.NavidromeAlbum
@@ -9,6 +10,8 @@ import com.stillshelf.app.core.model.NavidromeArtistDetail
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.NavidromeRepository
 import com.stillshelf.app.ui.navigation.NavidromeRoute
+import com.stillshelf.app.core.model.ServerConnectionMode
+import com.stillshelf.app.core.model.ServerConnectionRoute
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -56,10 +59,12 @@ class NavidromeArtistDetailViewModelTest {
                 lastLibrarySyncAtMs = null
             )
         )
+        val connectionState = MutableStateFlow<ActiveServerConnectionStatus?>(null)
         val repository = mockk<NavidromeRepository>()
         val sessionPreferences = mockk<SessionPreferences>() {
             every { state } returns syncState
         }
+        every { repository.observeActiveConnectionStatus() } returns connectionState
 
         val initialDetail = artistDetail(
             artistName = "Initial Artist",
@@ -91,6 +96,56 @@ class NavidromeArtistDetailViewModelTest {
     }
 
     @Test
+    fun activeConnectionChange_triggersForcedArtistRefresh() = runTest(dispatcher) {
+        val connectionState = MutableStateFlow<ActiveServerConnectionStatus?>(null)
+        val repository = mockk<NavidromeRepository>()
+        val sessionPreferences = mockk<SessionPreferences>() {
+            every { state } returns MutableStateFlow(
+                SessionPreferenceState(
+                    activeServerId = null,
+                    activeLibraryId = null,
+                    lastLibrarySyncAtMs = null
+                )
+            )
+        }
+        every { repository.observeActiveConnectionStatus() } returns connectionState
+
+        val initialDetail = artistDetail(
+            artistName = "Initial Artist",
+            albumName = "Old Album"
+        )
+        val refreshedDetail = artistDetail(
+            artistName = "Initial Artist",
+            albumName = "New Album"
+        )
+
+        coEvery { repository.fetchArtistDetail("artist-1", false) } returns AppResult.Success(initialDetail)
+        coEvery { repository.fetchArtistDetail("artist-1", true) } returns AppResult.Success(refreshedDetail)
+
+        val viewModel = NavidromeArtistDetailViewModel(
+            savedStateHandle = SavedStateHandle(mapOf(NavidromeRoute.ARTIST_ID_ARG to "artist-1")),
+            navidromeRepository = repository,
+            sessionPreferences = sessionPreferences
+        )
+
+        advanceUntilIdle()
+        assertEquals("Old Album", viewModel.uiState.value.detail?.albums?.firstOrNull()?.name)
+
+        connectionState.value = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://remote.example",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true
+        )
+        advanceUntilIdle()
+
+        assertEquals("New Album", viewModel.uiState.value.detail?.albums?.firstOrNull()?.name)
+        coVerify(exactly = 1) { repository.fetchArtistDetail("artist-1", false) }
+        coVerify(exactly = 1) { repository.fetchArtistDetail("artist-1", true) }
+    }
+
+    @Test
     fun newerSyncRefresh_winsOverSlowerInitialLoad() = runTest(dispatcher) {
         val syncState = MutableStateFlow(
             SessionPreferenceState(
@@ -99,10 +154,12 @@ class NavidromeArtistDetailViewModelTest {
                 lastLibrarySyncAtMs = null
             )
         )
+        val connectionState = MutableStateFlow<ActiveServerConnectionStatus?>(null)
         val repository = mockk<NavidromeRepository>()
         val sessionPreferences = mockk<SessionPreferences>() {
             every { state } returns syncState
         }
+        every { repository.observeActiveConnectionStatus() } returns connectionState
         val initialFetchStarted = CompletableDeferred<Unit>()
         val releaseInitialFetch = CompletableDeferred<Unit>()
 

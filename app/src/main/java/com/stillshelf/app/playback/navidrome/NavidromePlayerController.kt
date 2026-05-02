@@ -1204,6 +1204,7 @@ class NavidromePlayerController @Inject constructor(
         updateStateFromPlayer()
         persistPlaybackSnapshot(force = true)
         ensureProgressUpdates()
+        schedulePlaybackCacheWarmup(queueTracks)
     }
 
     private fun releasePlayer(clearQueue: Boolean) {
@@ -1517,6 +1518,9 @@ class NavidromePlayerController @Inject constructor(
             }
         )
         persistPlaybackSnapshot()
+        if (previousState.currentIndex != currentIndex && currentIndex in queueTracks.indices) {
+            schedulePlaybackCacheWarmup(queueTracks)
+        }
         if ((activePlayer.isPlaying || playbackState == Player.STATE_READY) && currentTrack?.id == playbackRecoveryTrackId) {
             playbackRecoveryTrackId = null
         }

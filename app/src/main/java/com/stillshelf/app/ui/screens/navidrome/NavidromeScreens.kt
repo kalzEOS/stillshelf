@@ -189,8 +189,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -199,9 +199,9 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -11252,19 +11252,10 @@ internal fun NavidromeLyricsSheetContent(
     }
     val lyricsListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var autoSyncLyrics by remember(uiState.trackTitle, uiState.artistName) { mutableStateOf(true) }
+    var autoSyncLyrics by remember(uiState.trackId) { mutableStateOf(true) }
     val showSyncLyricsButton = uiState.isSynced && !autoSyncLyrics
     val syncLyricsReservedWidth = 164.dp
-    var contentHeightPx by remember { mutableIntStateOf(0) }
     val latestPlaybackPositionMs by rememberUpdatedState(playbackPositionMs)
-    val density = LocalDensity.current
-    val centerPadding = remember(contentHeightPx, density) {
-        with(density) {
-            val viewportHeightDp = contentHeightPx.toDp()
-            ((viewportHeightDp / 2f) - 28.dp).coerceAtLeast(140.dp)
-        }
-    }
-    val lyricsBottomPadding = centerPadding + 96.dp
     val smoothedPlaybackPositionMs by produceState(
         initialValue = playbackPositionMs,
         key1 = uiState.trackId,
@@ -11303,6 +11294,7 @@ internal fun NavidromeLyricsSheetContent(
             autoSyncLyrics = false
         }
     }
+    val latestMarkLyricsAsManuallyScrolled = rememberUpdatedState(markLyricsAsManuallyScrolled)
     val lyricsScrollConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -11314,12 +11306,12 @@ internal fun NavidromeLyricsSheetContent(
                 available: Offset,
                 source: NestedScrollSource
             ): Offset {
-                markLyricsAsManuallyScrolled(source, consumed.y)
+                latestMarkLyricsAsManuallyScrolled.value(source, consumed.y)
                 return Offset.Zero
             }
 
             override suspend fun onPreFling(available: Velocity): Velocity {
-                markLyricsAsManuallyScrolled(NestedScrollSource.UserInput, available.y)
+                latestMarkLyricsAsManuallyScrolled.value(NestedScrollSource.UserInput, available.y)
                 return Velocity.Zero
             }
         }
@@ -11376,7 +11368,7 @@ internal fun NavidromeLyricsSheetContent(
             }
         }
     }
-    LaunchedEffect(uiState.isSynced, uiState.lyrics.size, autoSyncLyrics, currentLineIndex, contentHeightPx) {
+    LaunchedEffect(uiState.isSynced, uiState.lyrics.size, autoSyncLyrics, currentLineIndex) {
         if (!autoSyncLyrics) return@LaunchedEffect
         if (!uiState.isSynced || uiState.lyrics.isEmpty()) return@LaunchedEffect
         val targetIndex = currentLineIndex.coerceAtLeast(0)
@@ -11397,13 +11389,6 @@ internal fun NavidromeLyricsSheetContent(
                     easing = FastOutSlowInEasing
                 )
             )
-        }
-    }
-    LaunchedEffect(uiState.trackId) {
-        autoSyncLyrics = true
-        contentHeightPx = 0
-        if (lyricsListState.firstVisibleItemIndex != 0 || lyricsListState.firstVisibleItemScrollOffset != 0) {
-            lyricsListState.scrollToItem(0)
         }
     }
     Box(
@@ -11690,161 +11675,165 @@ internal fun NavidromeLyricsSheetContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .onSizeChanged { contentHeightPx = it.height }
             ) {
-                Crossfade(
-                    targetState = lyricsContentState,
-                    animationSpec = tween(durationMillis = 180),
-                    label = "navidromeLyricsContent"
-                ) { contentState ->
-                    when (contentState) {
-                        "loading" -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = uiState.loadingMessage ?: "Searching for lyrics...",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = emptyStateColor,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val centerPadding = ((maxHeight / 2f) - 28.dp).coerceAtLeast(140.dp)
+                    val lyricsBottomPadding = centerPadding + 96.dp
 
-                        "empty" -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = uiState.errorMessage ?: "No lyrics found.",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = emptyStateColor,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-
-                        "synced" -> {
-                            LazyColumn(
-                                state = lyricsListState,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .testTag("navidromeLyricsList")
-                                    .nestedScroll(lyricsScrollConnection),
-                                contentPadding = PaddingValues(
-                                    top = centerPadding,
-                                    bottom = lyricsBottomPadding
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                itemsIndexed(uiState.lyrics) { index, line ->
-                                    val lineDistance = if (autoSyncLyrics && focusedLineIndex >= 0) {
-                                        abs(index - focusedLineIndex)
-                                    } else {
-                                        Int.MAX_VALUE
-                                    }
-                                    val isFocusedLine = autoSyncLyrics && index == focusedLineIndex
-                                    val targetBlurRadius = if (!autoSyncLyrics) {
-                                        0.dp
-                                    } else if (isFocusedLine) {
-                                        if (isPreStartFocus) 1.5.dp else 0.dp
-                                    } else {
-                                        minOf(lineDistance.toFloat() * 1.6f, 8f).dp
-                                    }
-                                    val targetScale = when {
-                                        !autoSyncLyrics -> 1f
-                                        isFocusedLine -> 1.08f
-                                        else -> 0.92f
-                                    }
-                                    val targetColor = if (!autoSyncLyrics) {
-                                        plainLyricsTextColor
-                                    } else if (isFocusedLine) {
-                                        if (immersiveEnabled) {
-                                            if (isPreStartFocus) Color.White.copy(alpha = 0.88f) else Color.White
-                                        } else {
-                                            if (isPreStartFocus) {
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
-                                            } else {
-                                                MaterialTheme.colorScheme.primary
-                                            }
-                                        }
-                                    } else {
-                                        val alpha = when (lineDistance) {
-                                            0 -> 1f
-                                            1 -> 0.42f
-                                            2 -> 0.22f
-                                            else -> 0.08f
-                                        }
-                                        nonFocusedLyricBaseColor.copy(alpha = alpha)
-                                    }
-                                    val lyricAnimationSpec = remember(autoSyncLyrics) {
-                                        tween<Float>(
-                                            durationMillis = if (autoSyncLyrics) 100 else 180,
-                                            easing = FastOutSlowInEasing
-                                        )
-                                    }
-                                    val blurRadius by animateDpAsState(
-                                        targetValue = targetBlurRadius,
-                                        animationSpec = tween(
-                                            durationMillis = if (autoSyncLyrics) 80 else 180,
-                                            easing = FastOutSlowInEasing
-                                        ),
-                                        label = "navidromeLyricBlur"
-                                    )
-                                    val textScale by animateFloatAsState(
-                                        targetValue = targetScale,
-                                        animationSpec = lyricAnimationSpec,
-                                        label = "navidromeLyricScale"
-                                    )
-                                    val textColor by animateColorAsState(
-                                        targetValue = targetColor,
-                                        animationSpec = tween(
-                                            durationMillis = if (autoSyncLyrics) 100 else 180,
-                                            easing = FastOutSlowInEasing
-                                        ),
-                                        label = "navidromeLyricColor"
-                                    )
+                    Crossfade(
+                        targetState = lyricsContentState,
+                        animationSpec = tween(durationMillis = 180),
+                        label = "navidromeLyricsContent"
+                    ) { contentState ->
+                        when (contentState) {
+                            "loading" -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Text(
-                                        text = line.text,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 26.dp)
-                                            .graphicsLayer {
-                                                scaleX = textScale
-                                                scaleY = textScale
-                                            }
-                                            .blur(blurRadius),
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = if (isFocusedLine) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = textColor,
-                                        textAlign = TextAlign.Center,
-                                        lineHeight = 34.sp
+                                        text = uiState.loadingMessage ?: "Searching for lyrics...",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = emptyStateColor,
+                                        textAlign = TextAlign.Center
                                     )
                                 }
                             }
-                        }
 
-                        else -> {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(bottom = lyricsBottomPadding),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                items(uiState.lyrics) { line ->
+                            "empty" -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Text(
-                                        text = line.text,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 18.dp),
-                                        style = MaterialTheme.typography.headlineSmall,
-                                        color = plainLyricsTextColor,
-                                        lineHeight = 34.sp,
+                                        text = uiState.errorMessage ?: "No lyrics found.",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = emptyStateColor,
                                         textAlign = TextAlign.Center
                                     )
+                                }
+                            }
+
+                            "synced" -> {
+                                LazyColumn(
+                                    state = lyricsListState,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("navidromeLyricsList")
+                                        .nestedScroll(lyricsScrollConnection),
+                                    contentPadding = PaddingValues(
+                                        top = centerPadding,
+                                        bottom = lyricsBottomPadding
+                                    ),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    itemsIndexed(uiState.lyrics) { index, line ->
+                                        val lineDistance = if (autoSyncLyrics && focusedLineIndex >= 0) {
+                                            abs(index - focusedLineIndex)
+                                        } else {
+                                            Int.MAX_VALUE
+                                        }
+                                        val isFocusedLine = autoSyncLyrics && index == focusedLineIndex
+                                        val targetBlurRadius = if (!autoSyncLyrics) {
+                                            0.dp
+                                        } else if (isFocusedLine) {
+                                            if (isPreStartFocus) 1.5.dp else 0.dp
+                                        } else {
+                                            minOf(lineDistance.toFloat() * 1.6f, 8f).dp
+                                        }
+                                        val targetScale = when {
+                                            !autoSyncLyrics -> 1f
+                                            isFocusedLine -> 1.08f
+                                            else -> 0.92f
+                                        }
+                                        val targetColor = if (!autoSyncLyrics) {
+                                            plainLyricsTextColor
+                                        } else if (isFocusedLine) {
+                                            if (immersiveEnabled) {
+                                                if (isPreStartFocus) Color.White.copy(alpha = 0.88f) else Color.White
+                                            } else {
+                                                if (isPreStartFocus) {
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.primary
+                                                }
+                                            }
+                                        } else {
+                                            val alpha = when (lineDistance) {
+                                                0 -> 1f
+                                                1 -> 0.42f
+                                                2 -> 0.22f
+                                                else -> 0.08f
+                                            }
+                                            nonFocusedLyricBaseColor.copy(alpha = alpha)
+                                        }
+                                        val lyricAnimationSpec = remember(autoSyncLyrics) {
+                                            tween<Float>(
+                                                durationMillis = if (autoSyncLyrics) 100 else 180,
+                                                easing = FastOutSlowInEasing
+                                            )
+                                        }
+                                        val blurRadius by animateDpAsState(
+                                            targetValue = targetBlurRadius,
+                                            animationSpec = tween(
+                                                durationMillis = if (autoSyncLyrics) 80 else 180,
+                                                easing = FastOutSlowInEasing
+                                            ),
+                                            label = "navidromeLyricBlur"
+                                        )
+                                        val textScale by animateFloatAsState(
+                                            targetValue = targetScale,
+                                            animationSpec = lyricAnimationSpec,
+                                            label = "navidromeLyricScale"
+                                        )
+                                        val textColor by animateColorAsState(
+                                            targetValue = targetColor,
+                                            animationSpec = tween(
+                                                durationMillis = if (autoSyncLyrics) 100 else 180,
+                                                easing = FastOutSlowInEasing
+                                            ),
+                                            label = "navidromeLyricColor"
+                                        )
+                                        Text(
+                                            text = line.text,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 26.dp)
+                                                .graphicsLayer {
+                                                    scaleX = textScale
+                                                    scaleY = textScale
+                                                }
+                                                .blur(blurRadius),
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = if (isFocusedLine) FontWeight.SemiBold else FontWeight.Normal,
+                                            color = textColor,
+                                            textAlign = TextAlign.Center,
+                                            lineHeight = 34.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            else -> {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(bottom = lyricsBottomPadding),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    items(uiState.lyrics) { line ->
+                                        Text(
+                                            text = line.text,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 18.dp),
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            color = plainLyricsTextColor,
+                                            lineHeight = 34.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
                                 }
                             }
                         }

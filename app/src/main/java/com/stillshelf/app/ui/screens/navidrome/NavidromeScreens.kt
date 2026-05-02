@@ -218,6 +218,10 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
@@ -279,6 +283,7 @@ import com.stillshelf.app.ui.theme.AppThemeMode
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.cos
 import kotlin.math.sin
 import java.net.URI
 import java.util.Locale
@@ -656,6 +661,8 @@ fun NavidromeAppRoute(
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val lyricsUiState by playerViewModel.lyricsUiState.collectAsStateWithLifecycle()
     val favoriteTrackIds by playerViewModel.favoriteTrackIds.collectAsStateWithLifecycle()
+    val skipForwardSeconds by playerViewModel.skipForwardSeconds.collectAsStateWithLifecycle()
+    val skipBackwardSeconds by playerViewModel.skipBackwardSeconds.collectAsStateWithLifecycle()
     val downloadUiState by downloadsViewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val showMiniPlayer = playerState.currentTrack != null
@@ -734,6 +741,10 @@ fun NavidromeAppRoute(
                 onPrevious = playerViewModel::playPrevious,
                 onPlayPause = playerViewModel::togglePlayPause,
                 onNext = playerViewModel::playNext,
+                onSeekForward = playerViewModel::seekForward,
+                onSeekBackward = playerViewModel::seekBackward,
+                skipForwardSeconds = skipForwardSeconds,
+                skipBackwardSeconds = skipBackwardSeconds,
                 onSelectTrack = playerViewModel::playQueueIndex,
                 onSeekTo = playerViewModel::seekTo,
                 onRefreshAudioOutputs = playerViewModel::refreshAudioOutputs,
@@ -4906,6 +4917,9 @@ private fun NavidromeSettingsRoute(
     var serverScanDialogVisible by rememberSaveable { mutableStateOf(false) }
     var clearCachedMusicDialogVisible by rememberSaveable { mutableStateOf(false) }
     var cacheSizeMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var skipForwardDialogVisible by rememberSaveable { mutableStateOf(false) }
+    var skipBackwardDialogVisible by rememberSaveable { mutableStateOf(false) }
+    val skipSecondChoices = remember { listOf(10, 15, 30, 45, 60) }
     val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
         MaterialTheme.colorScheme.surfaceContainerHigh
     } else {
@@ -5036,6 +5050,34 @@ private fun NavidromeSettingsRoute(
                         ?: if (uiState.lyricsSources.isEmpty()) "Not configured" else "Choose source",
                     valueTextAlign = TextAlign.End,
                     onClick = onOpenLyricsSources
+                )
+            }
+        }
+        item {
+            Text(
+                text = "PLAYER CONTROLS",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Skip Forward",
+                    value = "${uiState.navidromeSkipForwardSeconds} seconds",
+                    valueTextAlign = TextAlign.End,
+                    onClick = { skipForwardDialogVisible = true }
+                )
+                DividerLine()
+                NavidromeSettingsRow(
+                    title = "Skip Backward",
+                    value = "${uiState.navidromeSkipBackwardSeconds} seconds",
+                    valueTextAlign = TextAlign.End,
+                    onClick = { skipBackwardDialogVisible = true }
                 )
             }
         }
@@ -5247,6 +5289,60 @@ private fun NavidromeSettingsRoute(
                 dismissButton = {
                     TextButton(onClick = { clearCachedMusicDialogVisible = false }) {
                         Text("Cancel")
+                    }
+                }
+            )
+        }
+        if (skipForwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipForwardDialogVisible = false },
+                title = { Text("Skip Forward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            NavidromeSettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.navidromeSkipForwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setNavidromeSkipForwardSeconds(seconds)
+                                    skipForwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipForwardDialogVisible = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+        if (skipBackwardDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { skipBackwardDialogVisible = false },
+                title = { Text("Skip Backward") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        skipSecondChoices.forEach { seconds ->
+                            NavidromeSettingsRow(
+                                title = "$seconds seconds",
+                                selected = uiState.navidromeSkipBackwardSeconds == seconds,
+                                showChevronWhenUnselected = false,
+                                onClick = {
+                                    viewModel.setNavidromeSkipBackwardSeconds(seconds)
+                                    skipBackwardDialogVisible = false
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { skipBackwardDialogVisible = false }) {
+                        Text("Close")
                     }
                 }
             )
@@ -9836,6 +9932,10 @@ private fun NavidromeExpandedPlayerSheet(
     onPrevious: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
+    onSeekForward: () -> Unit,
+    onSeekBackward: () -> Unit,
+    skipForwardSeconds: Int = 15,
+    skipBackwardSeconds: Int = 15,
     onSelectTrack: (Int) -> Unit,
     onSeekTo: (Int) -> Unit,
     onRefreshAudioOutputs: () -> Unit,
@@ -10287,19 +10387,37 @@ private fun NavidromeExpandedPlayerSheet(
             }
         }
         val transportRow: @Composable () -> Unit = {
+            val seekButtonTint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                NavidromeTransportIconButton(
-                    onClick = onPrevious,
-                    modifier = Modifier.size(skipButtonSize),
-                    icon = Icons.Outlined.SkipPrevious,
-                    contentDescription = "Previous",
-                    iconSize = skipIconSize,
-                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isRadio) {
+                        Spacer(modifier = Modifier.size(skipButtonSize))
+                    } else {
+                        NavidromeSeekButton(
+                            seconds = skipBackwardSeconds,
+                            forward = false,
+                            onClick = onSeekBackward,
+                            tint = seekButtonTint,
+                            buttonSize = skipButtonSize,
+                            iconSize = skipIconSize
+                        )
+                    }
+                    NavidromeTransportIconButton(
+                        onClick = onPrevious,
+                        modifier = Modifier.size(skipButtonSize),
+                        icon = Icons.Outlined.SkipPrevious,
+                        contentDescription = "Previous",
+                        iconSize = skipIconSize,
+                        tint = seekButtonTint
+                    )
+                }
                 Surface(
                     modifier = Modifier.size(transportButtonSize),
                     shape = CircleShape,
@@ -10345,14 +10463,32 @@ private fun NavidromeExpandedPlayerSheet(
                         }
                     }
                 }
-                NavidromeTransportIconButton(
-                    onClick = onNext,
-                    modifier = Modifier.size(skipButtonSize),
-                    icon = Icons.Outlined.SkipNext,
-                    contentDescription = "Next",
-                    iconSize = skipIconSize,
-                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    NavidromeTransportIconButton(
+                        onClick = onNext,
+                        modifier = Modifier.size(skipButtonSize),
+                        icon = Icons.Outlined.SkipNext,
+                        contentDescription = "Next",
+                        iconSize = skipIconSize,
+                        tint = seekButtonTint
+                    )
+                    if (isRadio) {
+                        Spacer(modifier = Modifier.size(skipButtonSize))
+                    } else {
+                        NavidromeSeekButton(
+                            seconds = skipForwardSeconds,
+                            forward = true,
+                            onClick = onSeekForward,
+                            tint = seekButtonTint,
+                            buttonSize = skipButtonSize,
+                            iconSize = skipIconSize
+                        )
+                    }
+                }
             }
         }
         val toolRow: @Composable () -> Unit = {
@@ -11736,6 +11872,90 @@ private fun NavidromePlayerToolButton(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+@Composable
+private fun NavidromeSeekButton(
+    seconds: Int,
+    forward: Boolean,
+    onClick: () -> Unit,
+    tint: Color,
+    buttonSize: Dp,
+    iconSize: Dp
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressedContainerColor = if (isPressed) tint.copy(alpha = 0.14f) else Color.Transparent
+    Box(
+        modifier = Modifier
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = if (forward) {
+                    "Skip forward $seconds seconds"
+                } else {
+                    "Skip backward $seconds seconds"
+                }
+            }
+            .size(buttonSize)
+            .clip(CircleShape)
+            .background(pressedContainerColor)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .size(iconSize)
+                .graphicsLayer { scaleX = if (forward) 1f else -1f }
+        ) {
+            val strokeWidth = 2.6.dp.toPx()
+            val inset = 3.dp.toPx()
+            val arcSize = size.minDimension - inset * 2
+            val arrowHeadAngle = 270f
+            val tailStartAngle = 40f
+            drawArc(
+                color = tint,
+                startAngle = tailStartAngle,
+                sweepAngle = arrowHeadAngle - tailStartAngle,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = Size(arcSize, arcSize),
+                style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+            )
+            val radius = arcSize / 2f
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val angle = Math.toRadians(arrowHeadAngle.toDouble())
+            val x = cx + radius * cos(angle).toFloat()
+            val y = cy + radius * sin(angle).toFloat()
+            val head = 5.dp.toPx()
+            drawLine(
+                color = tint,
+                start = Offset(x, y),
+                end = Offset(x - head, y - head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = tint,
+                start = Offset(x, y),
+                end = Offset(x - head, y + head * 0.55f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+        Text(
+            text = seconds.coerceIn(10, 60).toString(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            color = tint
+        )
     }
 }
 

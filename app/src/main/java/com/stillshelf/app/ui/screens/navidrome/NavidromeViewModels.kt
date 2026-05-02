@@ -1792,6 +1792,8 @@ class NavidromeSettingsViewModel @Inject constructor(
             playbackCacheUsageBytes = playbackCacheUsageBytes,
             playbackCacheItemCount = playbackCacheItemCount,
             isClearingCache = localState.isClearingCache,
+            navidromeSkipForwardSeconds = preferences.navidromeSkipForwardSeconds,
+            navidromeSkipBackwardSeconds = preferences.navidromeSkipBackwardSeconds,
             activeServerId = activeServerId,
             availableLibraries = localState.libraries,
             activeLibraryId = activeLibraryId,
@@ -2062,6 +2064,14 @@ class NavidromeSettingsViewModel @Inject constructor(
                 playerController.invalidatePlaybackCacheWarmup()
             }
         }
+    }
+
+    fun setNavidromeSkipForwardSeconds(seconds: Int) {
+        viewModelScope.launch { sessionPreferences.setNavidromeSkipForwardSeconds(seconds) }
+    }
+
+    fun setNavidromeSkipBackwardSeconds(seconds: Int) {
+        viewModelScope.launch { sessionPreferences.setNavidromeSkipBackwardSeconds(seconds) }
     }
 
     fun clearPlaybackCache() {
@@ -2550,6 +2560,12 @@ class NavidromePlayerViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = emptySet()
         )
+    val skipForwardSeconds: StateFlow<Int> = preferenceState
+        .map { it.navidromeSkipForwardSeconds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 15)
+    val skipBackwardSeconds: StateFlow<Int> = preferenceState
+        .map { it.navidromeSkipBackwardSeconds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 15)
 
     init {
         viewModelScope.launch {
@@ -2668,6 +2684,14 @@ class NavidromePlayerViewModel @Inject constructor(
 
     fun seekTo(positionMs: Int) {
         playerController.seekTo(positionMs)
+    }
+
+    fun seekForward() {
+        playerController.seekBy(skipForwardSeconds.value * 1000L)
+    }
+
+    fun seekBackward() {
+        playerController.seekBy(-skipBackwardSeconds.value * 1000L)
     }
 
     fun refreshAudioOutputs() {
@@ -3063,6 +3087,8 @@ data class NavidromeSettingsUiState(
     val playbackCacheUsageBytes: Long = 0L,
     val playbackCacheItemCount: Int = 0,
     val isClearingCache: Boolean = false,
+    val navidromeSkipForwardSeconds: Int = 15,
+    val navidromeSkipBackwardSeconds: Int = 15,
     val activeServerId: String? = null,
     val availableLibraries: List<NavidromeLibrary> = emptyList(),
     val activeLibraryId: String? = null,

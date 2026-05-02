@@ -955,6 +955,12 @@ class NavidromePlayerController @Inject constructor(
         persistPlaybackSnapshot(force = true)
     }
 
+    fun seekBy(deltaMs: Long) {
+        val duration = resolvePlayerDurationMs()
+        val current = resolvePlayerPositionMs(duration).toLong()
+        seekTo((current + deltaMs).coerceIn(0L, duration.toLong().coerceAtLeast(0L)).toInt())
+    }
+
     private fun startPlaybackAt(
         index: Int,
         positionMs: Int,

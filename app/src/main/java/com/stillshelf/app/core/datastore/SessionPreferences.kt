@@ -104,6 +104,8 @@ class SessionPreferences @Inject constructor(
     private val playerBottomToolsStyleKey = stringPreferencesKey("player_bottom_tools_style")
     private val skipForwardSecondsKey = intPreferencesKey("skip_forward_seconds")
     private val skipBackwardSecondsKey = intPreferencesKey("skip_backward_seconds")
+    private val navidromeSkipForwardSecondsKey = intPreferencesKey("navidrome_skip_forward_seconds")
+    private val navidromeSkipBackwardSecondsKey = intPreferencesKey("navidrome_skip_backward_seconds")
     private val softToneLevelKey = floatPreferencesKey("soft_tone_level")
     private val boostLevelKey = floatPreferencesKey("boost_level")
     private val lockScreenControlModeKey = stringPreferencesKey("lock_screen_control_mode")
@@ -881,6 +883,18 @@ class SessionPreferences @Inject constructor(
     suspend fun setSkipBackwardSeconds(seconds: Int) {
         dataStore.edit { prefs ->
             prefs[skipBackwardSecondsKey] = seconds.coerceIn(5, 600)
+        }
+    }
+
+    suspend fun setNavidromeSkipForwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[navidromeSkipForwardSecondsKey] = seconds.coerceIn(10, 60)
+        }
+    }
+
+    suspend fun setNavidromeSkipBackwardSeconds(seconds: Int) {
+        dataStore.edit { prefs ->
+            prefs[navidromeSkipBackwardSecondsKey] = seconds.coerceIn(10, 60)
         }
     }
 
@@ -1955,7 +1969,9 @@ class SessionPreferences @Inject constructor(
             pendingUpdateVersionName = this[pendingUpdateVersionNameKey],
             recentSearchTerms = parseStringArray(this[recentSearchTermsKey]),
             navidromeRecentSearchTerms = parseStringArray(this[navidromeRecentSearchTermsKey]),
-            navidromeCacheSizeLimit = this[navidromeCacheSizeLimitKey] ?: NavidromeCacheSizeOption.default
+            navidromeCacheSizeLimit = this[navidromeCacheSizeLimitKey] ?: NavidromeCacheSizeOption.default,
+            navidromeSkipForwardSeconds = (this[navidromeSkipForwardSecondsKey] ?: 15).coerceIn(10, 60),
+            navidromeSkipBackwardSeconds = (this[navidromeSkipBackwardSecondsKey] ?: 15).coerceIn(10, 60)
         )
     }
 }
@@ -2028,7 +2044,9 @@ data class SessionPreferenceState(
     val pendingUpdateVersionName: String? = null,
     val recentSearchTerms: List<String> = emptyList(),
     val navidromeRecentSearchTerms: List<String> = emptyList(),
-    val navidromeCacheSizeLimit: String = NavidromeCacheSizeOption.default
+    val navidromeCacheSizeLimit: String = NavidromeCacheSizeOption.default,
+    val navidromeSkipForwardSeconds: Int = 15,
+    val navidromeSkipBackwardSeconds: Int = 15
 )
 
 data class CachedHomeFeedPayload(

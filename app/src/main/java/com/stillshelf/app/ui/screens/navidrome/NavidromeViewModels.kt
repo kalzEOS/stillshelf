@@ -7,6 +7,7 @@ import java.io.File
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
+import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.NavidromeAlbum
 import com.stillshelf.app.core.model.NavidromeAlbumDetail
 import com.stillshelf.app.core.model.NavidromeArtist
@@ -48,6 +49,7 @@ import java.net.URI
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -315,6 +317,9 @@ class NavidromeHomeViewModel @Inject constructor(
                         it.copy(isOffline = type == NetworkConnectionType.Offline)
                     }
                 }
+        }
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
         }
     }
 
@@ -687,6 +692,9 @@ class NavidromeBrowseViewModel @Inject constructor(
 
     init {
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun selectSection(section: NavidromeBrowseSection) {
@@ -781,6 +789,9 @@ class NavidromePlaylistsViewModel @Inject constructor(
             }
         }
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
@@ -1573,6 +1584,9 @@ class NavidromeSongsViewModel @Inject constructor(
             }
         }
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun setSortOption(value: NavidromeSongSortOption) {
@@ -1623,6 +1637,9 @@ class NavidromeRadiosViewModel @Inject constructor(
 
     init {
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
@@ -2875,6 +2892,9 @@ class NavidromeArtistDetailViewModel @Inject constructor(
     init {
         observeLibrarySyncs()
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
@@ -2932,21 +2952,28 @@ class NavidromeAlbumDetailViewModel @Inject constructor(
         savedStateHandle.get<String>(NavidromeRoute.ALBUM_ID_ARG).orEmpty()
     private val mutableUiState = MutableStateFlow(NavidromeAlbumDetailUiState())
     val uiState: StateFlow<NavidromeAlbumDetailUiState> = mutableUiState.asStateFlow()
+    private val refreshGeneration = AtomicLong(0L)
 
     init {
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
+        val requestGeneration = refreshGeneration.incrementAndGet()
         viewModelScope.launch {
             when (val result = navidromeRepository.fetchAlbumDetail(albumId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    if (refreshGeneration.get() != requestGeneration) return@launch
                     mutableUiState.update {
                         it.copy(detail = result.value, isLoading = false, errorMessage = null)
                     }
                 }
 
                 is AppResult.Error -> {
+                    if (refreshGeneration.get() != requestGeneration) return@launch
                     mutableUiState.update {
                         it.copy(isLoading = false, errorMessage = result.message)
                     }
@@ -2977,6 +3004,9 @@ class NavidromePlaylistDetailViewModel @Inject constructor(
 
     init {
         refresh(forceRefresh = false)
+        observeNavidromeConnectionChanges(navidromeRepository) {
+            refresh(forceRefresh = true)
+        }
     }
 
     fun refresh(forceRefresh: Boolean = true) {
@@ -3399,6 +3429,27 @@ internal fun buildNavidromeHomeDownloadEntries(
                 }
             }
         }
+}
+
+private fun ViewModel.observeNavidromeConnectionChanges(
+    navidromeRepository: NavidromeRepository,
+    onConnectionChanged: () -> Unit
+) {
+    viewModelScope.launch {
+        var hasObservedStatus = false
+        var lastStatus: ActiveServerConnectionStatus? = null
+        navidromeRepository.observeActiveConnectionStatus().collect { status ->
+            if (!hasObservedStatus) {
+                hasObservedStatus = true
+                lastStatus = status
+                return@collect
+            }
+            if (status != lastStatus) {
+                lastStatus = status
+                onConnectionChanged()
+            }
+        }
+    }
 }
 
 private data class Quadruple<A, B, C, D>(

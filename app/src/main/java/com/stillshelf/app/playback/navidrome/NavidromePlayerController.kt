@@ -174,6 +174,28 @@ internal data class NavidromeQueueRemovalResult(
     val currentIndex: Int
 )
 
+internal fun resolveNavidromeCurrentQueueIndex(
+    queue: List<NavidromeTrack>,
+    playerIndex: Int?,
+    stateIndex: Int?,
+    currentTrackId: String?
+): Int {
+    playerIndex?.takeIf { it in queue.indices }?.let { return it }
+    stateIndex?.takeIf { it in queue.indices }?.let { return it }
+    currentTrackId
+        ?.takeIf { it.isNotBlank() }
+        ?.let { trackId ->
+            val matchingIndex = queue.indexOfFirst { it.id == trackId }
+            if (matchingIndex >= 0 && queue.count { it.id == trackId } == 1) {
+                matchingIndex
+            } else {
+                null
+            }
+        }
+        ?.let { return it }
+    return -1
+}
+
 internal fun removeNavidromeTrackFromQueue(
     queue: List<NavidromeTrack>,
     currentIndex: Int,
@@ -1165,11 +1187,12 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun resolveCurrentQueueIndex(): Int {
-        val activePlayer = player
-        return activePlayer?.currentMediaItemIndex
-            ?.takeIf { it in queueTracks.indices }
-            ?: mutableState.value.currentIndex.takeIf { it in queueTracks.indices }
-            ?: -1
+        return resolveNavidromeCurrentQueueIndex(
+            queue = queueTracks,
+            playerIndex = player?.currentMediaItemIndex,
+            stateIndex = mutableState.value.currentIndex,
+            currentTrackId = mutableState.value.currentTrack?.id
+        )
     }
 
     private fun shouldRecreatePlayerForTransportCommands(activePlayer: ExoPlayer?): Boolean {

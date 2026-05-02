@@ -10388,36 +10388,7 @@ private fun NavidromeExpandedPlayerSheet(
         }
         val transportRow: @Composable () -> Unit = {
             val seekButtonTint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (isRadio) {
-                        Spacer(modifier = Modifier.size(skipButtonSize))
-                    } else {
-                        NavidromeSeekButton(
-                            seconds = skipBackwardSeconds,
-                            forward = false,
-                            onClick = onSeekBackward,
-                            tint = seekButtonTint,
-                            buttonSize = skipButtonSize,
-                            iconSize = skipIconSize
-                        )
-                    }
-                    NavidromeTransportIconButton(
-                        onClick = onPrevious,
-                        modifier = Modifier.size(skipButtonSize),
-                        icon = Icons.Outlined.SkipPrevious,
-                        contentDescription = "Previous",
-                        iconSize = skipIconSize,
-                        tint = seekButtonTint
-                    )
-                }
+            val playPauseButton: @Composable () -> Unit = {
                 Surface(
                     modifier = Modifier.size(transportButtonSize),
                     shape = CircleShape,
@@ -10463,11 +10434,22 @@ private fun NavidromeExpandedPlayerSheet(
                         }
                     }
                 }
+            }
+            if (isRadio) {
                 Row(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    NavidromeTransportIconButton(
+                        onClick = onPrevious,
+                        modifier = Modifier.size(skipButtonSize),
+                        icon = Icons.Outlined.SkipPrevious,
+                        contentDescription = "Previous",
+                        iconSize = skipIconSize,
+                        tint = seekButtonTint
+                    )
+                    playPauseButton()
                     NavidromeTransportIconButton(
                         onClick = onNext,
                         modifier = Modifier.size(skipButtonSize),
@@ -10476,9 +10458,48 @@ private fun NavidromeExpandedPlayerSheet(
                         iconSize = skipIconSize,
                         tint = seekButtonTint
                     )
-                    if (isRadio) {
-                        Spacer(modifier = Modifier.size(skipButtonSize))
-                    } else {
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NavidromeSeekButton(
+                            seconds = skipBackwardSeconds,
+                            forward = false,
+                            onClick = onSeekBackward,
+                            tint = seekButtonTint,
+                            buttonSize = skipButtonSize,
+                            iconSize = skipIconSize
+                        )
+                        NavidromeTransportIconButton(
+                            onClick = onPrevious,
+                            modifier = Modifier.size(skipButtonSize),
+                            icon = Icons.Outlined.SkipPrevious,
+                            contentDescription = "Previous",
+                            iconSize = skipIconSize,
+                            tint = seekButtonTint
+                        )
+                    }
+                    playPauseButton()
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NavidromeTransportIconButton(
+                            onClick = onNext,
+                            modifier = Modifier.size(skipButtonSize),
+                            icon = Icons.Outlined.SkipNext,
+                            contentDescription = "Next",
+                            iconSize = skipIconSize,
+                            tint = seekButtonTint
+                        )
                         NavidromeSeekButton(
                             seconds = skipForwardSeconds,
                             forward = true,

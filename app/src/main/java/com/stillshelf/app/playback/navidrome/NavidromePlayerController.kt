@@ -431,6 +431,8 @@ class NavidromePlayerController @Inject constructor(
     private var lastPersistedSnapshotPositionMs: Int = 0
     private var lastPersistedSnapshotElapsedMs: Long = 0L
     @Volatile private var playbackCacheWarmupSignature: String? = null
+    private var playbackCacheWarmupRetryJob: Job? = null
+    @Volatile private var playbackCacheWarmupRetrySignature: String? = null
     @Volatile private var playbackCacheWarmupConnectionSignature: String = ""
     private val audioManager: AudioManager =
         appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -1110,6 +1112,9 @@ class NavidromePlayerController @Inject constructor(
     private fun cancelPlaybackCacheWarmup(clearSignature: Boolean) {
         playbackCacheWarmupJob?.cancel()
         playbackCacheWarmupJob = null
+        playbackCacheWarmupRetryJob?.cancel()
+        playbackCacheWarmupRetryJob = null
+        playbackCacheWarmupRetrySignature = null
         if (clearSignature) {
             playbackCacheWarmupSignature = null
         }
@@ -1129,6 +1134,9 @@ class NavidromePlayerController @Inject constructor(
             tracks = warmupTracks,
             connectionSignature = playbackCacheWarmupConnectionSignature
         )
+        if (playbackCacheWarmupRetrySignature != signature) {
+            playbackCacheWarmupRetrySignature = null
+        }
         if (signature == playbackCacheWarmupSignature) {
             return
         }
@@ -1147,7 +1155,7 @@ class NavidromePlayerController @Inject constructor(
                     scope.launch(Dispatchers.Main.immediate) {
                         if (playbackCacheWarmupSignature == signature) {
                             playbackCacheWarmupSignature = null
-                            schedulePlaybackCacheWarmup(queueTracks)
+                            schedulePlaybackCacheWarmupRetry(queueTracks, signature)
                         }
                     }
                     return@launch
@@ -1179,6 +1187,9 @@ class NavidromePlayerController @Inject constructor(
                         logPlaybackTrace(
                             "playback_cache_warmup_prefetch_queued count=${prefetchResult.value}"
                         )
+                        playbackCacheWarmupRetryJob?.cancel()
+                        playbackCacheWarmupRetryJob = null
+                        playbackCacheWarmupRetrySignature = null
                         scope.launch(Dispatchers.IO) {
                             downloadManager.prunePlaybackCache(warmupTracks.map { it.id }.toSet())
                         }
@@ -1188,8 +1199,32 @@ class NavidromePlayerController @Inject constructor(
                             "playback_cache_warmup_prefetch_failed message=${prefetchResult.message}"
                         )
                         playbackCacheWarmupSignature = null
-                        schedulePlaybackCacheWarmup(queueTracks)
+                        schedulePlaybackCacheWarmupRetry(queueTracks, signature)
                     }
+                }
+            }
+        }
+    }
+
+    private fun schedulePlaybackCacheWarmupRetry(
+        tracks: List<NavidromeTrack>,
+        signature: String
+    ) {
+        if (playbackCacheWarmupRetrySignature == signature) return
+        playbackCacheWarmupRetrySignature = signature
+        playbackCacheWarmupRetryJob?.cancel()
+        playbackCacheWarmupRetryJob = scope.launch(Dispatchers.Main.immediate) {
+            try {
+                delay(750)
+                if (playbackCacheWarmupRetrySignature != signature) {
+                    return@launch
+                }
+                if (playbackCacheWarmupSignature == null) {
+                    schedulePlaybackCacheWarmup(tracks)
+                }
+            } finally {
+                if (playbackCacheWarmupRetrySignature == signature) {
+                    playbackCacheWarmupRetryJob = null
                 }
             }
         }
@@ -1713,9 +1748,13 @@ class NavidromePlayerController @Inject constructor(
                     lastStatus = status
                     return@collect
                 }
-                if (status != lastStatus) {
+                if (status?.serverId != lastStatus?.serverId ||
+                    status?.effectiveBaseUrl != lastStatus?.effectiveBaseUrl
+                ) {
                     lastStatus = status
                     refreshPlaybackPresentationForConnectionChange()
+                } else {
+                    lastStatus = status
                 }
             }
         }

@@ -199,6 +199,116 @@ class NavidromeArtistDetailViewModelTest {
         coVerify(exactly = 1) { repository.fetchArtistDetail("artist-1", true) }
     }
 
+    @Test
+    fun failedConnectionChange_followedBySecondConnectionChange_retriesAndRecovers() = runTest(dispatcher) {
+        val connectionState = MutableStateFlow<ActiveServerConnectionStatus?>(null)
+        val repository = mockk<NavidromeRepository>()
+        val sessionPreferences = mockk<SessionPreferences>() {
+            every { state } returns MutableStateFlow(
+                SessionPreferenceState(
+                    activeServerId = null,
+                    activeLibraryId = null,
+                    lastLibrarySyncAtMs = null
+                )
+            )
+        }
+        every { repository.observeActiveConnectionStatus() } returns connectionState
+
+        val initialDetail = artistDetail(artistName = "Artist", albumName = "Initial Album")
+        val recoveredDetail = artistDetail(artistName = "Artist", albumName = "Recovered Album")
+
+        coEvery { repository.fetchArtistDetail("artist-1", false) } returns AppResult.Success(initialDetail)
+        coEvery { repository.fetchArtistDetail("artist-1", true) } returnsMany listOf(
+            AppResult.Error("Network error during transition"),
+            AppResult.Success(recoveredDetail)
+        )
+
+        val viewModel = NavidromeArtistDetailViewModel(
+            savedStateHandle = SavedStateHandle(mapOf(NavidromeRoute.ARTIST_ID_ARG to "artist-1")),
+            navidromeRepository = repository,
+            sessionPreferences = sessionPreferences
+        )
+
+        advanceUntilIdle()
+        assertEquals("Initial Album", viewModel.uiState.value.detail?.albums?.firstOrNull()?.name)
+
+        // First connection change — refresh fails.
+        connectionState.value = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://remote.example",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true
+        )
+        advanceUntilIdle()
+        assertEquals("Network error during transition", viewModel.uiState.value.errorMessage)
+
+        // Second connection change (route settles to a new endpoint) — refresh succeeds.
+        connectionState.value = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://remote-stable.example",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true
+        )
+        advanceUntilIdle()
+        assertEquals("Recovered Album", viewModel.uiState.value.detail?.albums?.firstOrNull()?.name)
+        coVerify(exactly = 2) { repository.fetchArtistDetail("artist-1", true) }
+    }
+
+    @Test
+    fun metadataOnlyConnectionChange_doesNotTriggerRefresh() = runTest(dispatcher) {
+        val connectionState = MutableStateFlow<ActiveServerConnectionStatus?>(null)
+        val repository = mockk<NavidromeRepository>()
+        val sessionPreferences = mockk<SessionPreferences>() {
+            every { state } returns MutableStateFlow(
+                SessionPreferenceState(
+                    activeServerId = null,
+                    activeLibraryId = null,
+                    lastLibrarySyncAtMs = null
+                )
+            )
+        }
+        every { repository.observeActiveConnectionStatus() } returns connectionState
+
+        val detail = artistDetail(artistName = "Artist", albumName = "Album")
+        coEvery { repository.fetchArtistDetail("artist-1", false) } returns AppResult.Success(detail)
+        coEvery { repository.fetchArtistDetail("artist-1", true) } returns AppResult.Success(detail)
+
+        val viewModel = NavidromeArtistDetailViewModel(
+            savedStateHandle = SavedStateHandle(mapOf(NavidromeRoute.ARTIST_ID_ARG to "artist-1")),
+            navidromeRepository = repository,
+            sessionPreferences = sessionPreferences
+        )
+
+        advanceUntilIdle()
+
+        // Establish a connection status.
+        connectionState.value = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://remote.example",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true
+        )
+        advanceUntilIdle()
+        coVerify(exactly = 1) { repository.fetchArtistDetail("artist-1", true) }
+
+        // Metadata-only update: same serverId and effectiveBaseUrl, only lanFallbackToRemote flips.
+        connectionState.value = ActiveServerConnectionStatus(
+            serverId = "server-1",
+            effectiveBaseUrl = "https://remote.example",
+            route = ServerConnectionRoute.Remote,
+            connectionMode = ServerConnectionMode.Auto,
+            switchingEnabled = true,
+            lanFallbackToRemote = true
+        )
+        advanceUntilIdle()
+
+        // No additional forced refresh — the endpoint didn't change.
+        coVerify(exactly = 1) { repository.fetchArtistDetail("artist-1", true) }
+    }
+
     private fun artistDetail(
         artistName: String,
         albumName: String

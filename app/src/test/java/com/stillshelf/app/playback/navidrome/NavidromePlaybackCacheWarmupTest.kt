@@ -49,16 +49,12 @@ class NavidromePlaybackCacheWarmupTest {
     }
 
     @Test
-    fun selectNavidromePlaybackWarmupTracks_capsToUpcomingWindow() {
+    fun selectNavidromePlaybackWarmupTracks_returnsAllTracks() {
         val tracks = (0 until 30).map { track("track-$it") }
 
-        val selected = selectNavidromePlaybackWarmupTracks(
-            tracks = tracks,
-            currentIndex = 10,
-            trackLimit = 5
-        )
+        val selected = selectNavidromePlaybackWarmupTracks(tracks = tracks)
 
-        assertEquals(listOf("track-10", "track-11", "track-12", "track-13", "track-14"), selected.map { it.id })
+        assertEquals(tracks.map { it.id }, selected.map { it.id })
     }
 
     @Test

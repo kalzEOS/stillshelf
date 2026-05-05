@@ -77,8 +77,6 @@ internal const val NAVIDROME_PLAYBACK_MEDIA_SCHEME = "stillshelf-navidrome"
 internal const val NAVIDROME_PLAYBACK_MEDIA_AUTHORITY = "playback"
 internal const val NAVIDROME_PLAYBACK_TRACK_ID_QUERY_PARAMETER = "trackId"
 internal const val NAVIDROME_PLAYBACK_STREAM_URL_QUERY_PARAMETER = "streamUrl"
-internal const val NAVIDROME_PLAYBACK_WARMUP_TRACK_LIMIT = 20
-
 internal fun normalizeNavidromePlaybackWarmupTracks(tracks: List<NavidromeTrack>): List<NavidromeTrack> {
     return tracks
         .distinctBy { it.id }
@@ -103,13 +101,9 @@ internal fun buildNavidromePlaybackWarmupSignature(
 }
 
 internal fun selectNavidromePlaybackWarmupTracks(
-    tracks: List<NavidromeTrack>,
-    currentIndex: Int,
-    trackLimit: Int = NAVIDROME_PLAYBACK_WARMUP_TRACK_LIMIT
+    tracks: List<NavidromeTrack>
 ): List<NavidromeTrack> {
-    if (tracks.isEmpty() || trackLimit <= 0) return emptyList()
-    val startIndex = currentIndex.coerceIn(0, tracks.lastIndex)
-    return tracks.drop(startIndex).take(trackLimit)
+    return tracks
 }
 
 internal fun buildNavidromePlaybackMediaUri(trackId: String, streamUrl: String): Uri {
@@ -1121,10 +1115,8 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun schedulePlaybackCacheWarmup(tracks: List<NavidromeTrack>) {
-        val queueIndex = mutableState.value.currentIndex
         val warmupTracks = selectNavidromePlaybackWarmupTracks(
-            tracks = normalizeNavidromePlaybackWarmupTracks(tracks),
-            currentIndex = queueIndex
+            tracks = normalizeNavidromePlaybackWarmupTracks(tracks)
         )
         if (warmupTracks.isEmpty()) {
             cancelPlaybackCacheWarmup(clearSignature = true)

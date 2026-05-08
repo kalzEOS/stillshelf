@@ -33,6 +33,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
@@ -204,6 +205,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -232,6 +234,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.stillshelf.app.R
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MAX_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_MIN_DB
 import com.stillshelf.app.core.model.NAVIDROME_EQUALIZER_STEP_DB
@@ -7403,11 +7406,12 @@ private fun NavidromeContinueListeningCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 AlbumArt(
-                    url = track.coverUrl,
+                    url = if (track.id.startsWith("radio:")) null else track.coverUrl,
                     width = posterWidth,
                     height = posterHeight,
                     shape = RoundedCornerShape(6.dp),
                     contentScale = ContentScale.Fit,
+                    placeholderResId = if (track.id.startsWith("radio:")) R.drawable.radio_placeholder else null,
                     showDownloadedIndicator = isDownloaded
                 )
                 Column(
@@ -8897,18 +8901,13 @@ private fun RadioRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.GraphicEq,
-                    contentDescription = null
-                )
-            }
+            AlbumArt(
+                url = null,
+                width = 44.dp,
+                height = 44.dp,
+                shape = RoundedCornerShape(14.dp),
+                placeholderResId = R.drawable.radio_placeholder
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = radio.name,
@@ -9835,7 +9834,11 @@ private fun NavidromeMiniPlayerBar(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AlbumArt(url = track.coverUrl, size = 30.dp)
+            AlbumArt(
+                url = if (isRadio) null else track.coverUrl,
+                size = 30.dp,
+                placeholderResId = if (isRadio) R.drawable.radio_placeholder else null
+            )
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -10046,11 +10049,19 @@ private fun NavidromeExpandedPlayerSheet(
     val outputIcon = remember(selectedOutput) {
         playerOutputToolIcon(selectedOutput?.typeLabel)
     }
+    val radioPlaceholderArtwork = "android.resource://${context.packageName}/${R.drawable.radio_placeholder}"
+    val playerArtworkUrl = remember(track.coverUrl, isRadio, radioPlaceholderArtwork) {
+        if (isRadio) {
+            radioPlaceholderArtwork
+        } else {
+            track.coverUrl?.trim()?.takeIf { it.isNotBlank() }
+        }
+    }
     val dominantCoverColor = rememberDominantNavidromeCoverColor(
-        coverUrl = track.coverUrl,
+        coverUrl = playerArtworkUrl,
         enabled = immersiveEnabled
     )
-    val playerCoverModel = rememberCoverImageModel(track.coverUrl, preferOriginalSize = true)
+    val playerCoverModel = rememberCoverImageModel(playerArtworkUrl, preferOriginalSize = true)
     val playerCoverPainter = rememberAsyncImagePainter(model = playerCoverModel)
     var lastSuccessfulPlayerCoverModel by remember { mutableStateOf<Any?>(null) }
     LaunchedEffect(playerCoverPainter.state, playerCoverModel) {
@@ -10059,7 +10070,7 @@ private fun NavidromeExpandedPlayerSheet(
         }
     }
     val immersiveBackgroundModel = if (immersiveEnabled) {
-        rememberCoverImageModel(track.coverUrl, preferOriginalSize = true)
+        rememberCoverImageModel(playerArtworkUrl, preferOriginalSize = true)
     } else {
         null
     }
@@ -10733,7 +10744,16 @@ private fun NavidromeExpandedPlayerSheet(
                     ) {
                         val coverShape = RoundedCornerShape(18.dp)
                         val fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
-                        if (playerCoverModel == null) {
+                        if (isRadio) {
+                            Image(
+                                painter = painterResource(R.drawable.radio_placeholder),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .clip(coverShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else if (playerCoverModel == null) {
                             val radioAccentColor = Color(0xFFFF334B)
                             Box(
                                 modifier = Modifier
@@ -11129,7 +11149,7 @@ private fun NavidromeExpandedPlayerSheet(
                 isPlaying = state.isPlaying,
                 isRadio = isRadio,
                 durationMs = state.durationMs,
-                coverUrl = track.coverUrl,
+                coverUrl = playerArtworkUrl,
                 onPrevious = onPrevious,
                 onPlayPause = onPlayPause,
                 onNext = onNext,
@@ -12311,8 +12331,9 @@ private fun PlayerQueueRow(
         verticalAlignment = Alignment.CenterVertically
         ) {
             AlbumArt(
-                url = track.coverUrl,
+                url = if (track.id.startsWith("radio:")) null else track.coverUrl,
                 size = 44.dp,
+                placeholderResId = if (track.id.startsWith("radio:")) R.drawable.radio_placeholder else null,
                 showDownloadedIndicator = isDownloaded,
                 showCachedIndicator = false,
                 downloadProgressPercent = downloadProgressPercent
@@ -12787,6 +12808,7 @@ private fun ProfileGlyph() {
 private fun AlbumArt(
     url: String?,
     size: androidx.compose.ui.unit.Dp,
+    placeholderResId: Int? = null,
     showDownloadedIndicator: Boolean = false,
     showCachedIndicator: Boolean = false,
     downloadProgressPercent: Int? = null
@@ -12795,6 +12817,7 @@ private fun AlbumArt(
         url = url,
         width = size,
         height = size,
+        placeholderResId = placeholderResId,
         showDownloadedIndicator = showDownloadedIndicator,
         showCachedIndicator = showCachedIndicator,
         downloadProgressPercent = downloadProgressPercent
@@ -12809,6 +12832,7 @@ private fun AlbumArt(
     shape: Shape = RoundedCornerShape(18.dp),
     contentScale: ContentScale = ContentScale.Crop,
     fallbackIcon: ImageVector = Icons.Outlined.Album,
+    placeholderResId: Int? = null,
     showDownloadedIndicator: Boolean = false,
     showCachedIndicator: Boolean = false,
     downloadProgressPercent: Int? = null
@@ -12818,7 +12842,16 @@ private fun AlbumArt(
             .width(width)
             .height(height)
     ) {
-        if (url.isNullOrBlank()) {
+        if (placeholderResId != null) {
+            Image(
+                painter = painterResource(placeholderResId),
+                contentDescription = null,
+                modifier = Modifier
+                    .matchParentSize()
+                    .clip(shape),
+                contentScale = contentScale
+            )
+        } else if (url.isNullOrBlank()) {
             val fallbackIconSize = if (width >= 160.dp || height >= 160.dp) 92.dp else 28.dp
             Box(
                 modifier = Modifier

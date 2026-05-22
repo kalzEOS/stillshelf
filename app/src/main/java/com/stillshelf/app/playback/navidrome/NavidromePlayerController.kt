@@ -1184,6 +1184,9 @@ class NavidromePlayerController @Inject constructor(
                         playbackCacheWarmupRetrySignature = null
                         scope.launch(Dispatchers.IO) {
                             downloadManager.prunePlaybackCache(warmupTracks.map { it.id }.toSet())
+                            if (cacheLimitBytes != null) {
+                                downloadManager.evictPlaybackCacheToLimit(cacheLimitBytes)
+                            }
                         }
                     }
                     is com.stillshelf.app.core.util.AppResult.Error -> {

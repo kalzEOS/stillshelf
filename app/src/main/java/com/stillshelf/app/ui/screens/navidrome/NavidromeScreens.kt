@@ -835,6 +835,7 @@ fun NavidromeAppRoute(
                     onOpenAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
                     onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
+                    onOpenMusicRadio = { navController.navigate(NavidromeRoute.MUSIC_RADIO) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
                     onOpenDownloaded = { navController.navigate(NavidromeRoute.DOWNLOADED) },
                     onOpenFavorites = { navController.navigate(NavidromeRoute.FAVORITES) },
@@ -859,12 +860,19 @@ fun NavidromeAppRoute(
                     onOpenArtists = { navController.navigate(NavidromeRoute.ARTISTS) },
                     onOpenAlbums = { navController.navigate(NavidromeRoute.ALBUMS) },
                     onOpenRadios = { navController.navigate(NavidromeRoute.RADIOS) },
+                    onOpenMusicRadio = { navController.navigate(NavidromeRoute.MUSIC_RADIO) },
                     onOpenNewestAlbums = { navController.navigate(NavidromeRoute.NEWEST_ALBUMS) },
                     onOpenSongs = { navController.navigate(NavidromeRoute.SONGS) },
                     onOpenDownloaded = { navController.navigate(NavidromeRoute.DOWNLOADED) },
                     onOpenFavoriteSongs = { navController.navigate(NavidromeRoute.FAVORITES) },
                     onOpenPlaylists = { navController.navigate(NavidromeRoute.PLAYLISTS) },
                     onOpenSettings = { navController.navigate(NavidromeRoute.SETTINGS) }
+                )
+            }
+            composable(NavidromeRoute.MUSIC_RADIO) {
+                NavidromeMusicRadioRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction
                 )
             }
             composable(NavidromeRoute.DOWNLOADED) {
@@ -1106,6 +1114,7 @@ private fun NavidromeHomeRoute(
     onOpenAlbums: () -> Unit,
     onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
+    onOpenMusicRadio: () -> Unit,
     onOpenSongs: () -> Unit,
     onOpenDownloaded: () -> Unit,
     onOpenFavorites: () -> Unit,
@@ -1193,6 +1202,7 @@ private fun NavidromeHomeRoute(
         onOpenAlbums = onOpenAlbums,
         onOpenNewestAlbums = onOpenNewestAlbums,
         onOpenRadios = onOpenRadios,
+        onOpenMusicRadio = onOpenMusicRadio,
         onOpenSongs = onOpenSongs,
         onOpenDownloaded = onOpenDownloaded,
         onOpenFavorites = onOpenFavorites,
@@ -1238,6 +1248,7 @@ private fun NavidromeHomeScreen(
     onOpenAlbums: () -> Unit,
     onOpenNewestAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
+    onOpenMusicRadio: () -> Unit,
     onOpenSongs: () -> Unit,
     onOpenDownloaded: () -> Unit,
     onOpenFavorites: () -> Unit,
@@ -1289,6 +1300,7 @@ private fun NavidromeHomeScreen(
         onOpenAlbums,
         onOpenArtists,
         onOpenRadios,
+        onOpenMusicRadio,
         onOpenSongs,
         onOpenFavorites,
         onOpenPlaylists
@@ -1306,9 +1318,15 @@ private fun NavidromeHomeScreen(
                 icon = Icons.Outlined.Album,
                 onClick = onOpenAlbums
             ),
+            NavidromeListSectionIds.MUSIC_RADIO to NavidromeHomeDestination(
+                id = NavidromeListSectionIds.MUSIC_RADIO,
+                label = "Music Radio",
+                icon = Icons.Outlined.Shuffle,
+                onClick = onOpenMusicRadio
+            ),
             NavidromeListSectionIds.RADIOS to NavidromeHomeDestination(
                 id = NavidromeListSectionIds.RADIOS,
-                label = "Radios",
+                label = "Internet Radio",
                 icon = Icons.Outlined.GraphicEq,
                 onClick = onOpenRadios
             ),
@@ -2247,6 +2265,7 @@ private fun NavidromeLibraryRoute(
     onOpenArtists: () -> Unit,
     onOpenAlbums: () -> Unit,
     onOpenRadios: () -> Unit,
+    onOpenMusicRadio: () -> Unit,
     onOpenNewestAlbums: () -> Unit,
     onOpenSongs: () -> Unit,
     onOpenDownloaded: () -> Unit,
@@ -2258,7 +2277,8 @@ private fun NavidromeLibraryRoute(
         listOf(
             NavidromeLibraryDestination("Artists", Icons.Outlined.Person, onOpenArtists),
             NavidromeLibraryDestination("Albums", Icons.Outlined.Album, onOpenAlbums),
-            NavidromeLibraryDestination("Radios", Icons.Outlined.GraphicEq, onOpenRadios),
+            NavidromeLibraryDestination("Music Radio", Icons.Outlined.Shuffle, onOpenMusicRadio),
+            NavidromeLibraryDestination("Internet Radio", Icons.Outlined.GraphicEq, onOpenRadios),
             NavidromeLibraryDestination("Newest Albums", Icons.Outlined.Album, onOpenNewestAlbums),
             NavidromeLibraryDestination("Recently Played Albums", Icons.Outlined.Album, onOpenAlbums),
             NavidromeLibraryDestination("Songs", Icons.Outlined.MusicNote, onOpenSongs),
@@ -3760,6 +3780,144 @@ private fun NavidromeRadiosRoute(
 }
 
 @Composable
+private fun NavidromeMusicRadioRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    viewModel: NavidromeMusicRadioViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    LaunchedEffect(uiState.errorMessage) {
+        val message = uiState.errorMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    LaunchedEffect(uiState.actionMessage) {
+        val message = uiState.actionMessage ?: return@LaunchedEffect
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.clearMessages()
+    }
+    StandardTopScreen(title = "Music Radio", onBack = onBack, onHome = onHome) {
+        if (uiState.isLoading) {
+            item { LoadingCard() }
+        } else {
+            item {
+                MusicRadioRow(
+                    title = "All Library Radio",
+                    subtitle = "Shuffle songs from your entire library",
+                    icon = Icons.Outlined.Shuffle,
+                    enabled = !uiState.isStartingPlayback,
+                    onClick = { if (!uiState.isStartingPlayback) viewModel.playLibraryRadio() }
+                )
+            }
+            if (uiState.genres.isNotEmpty()) {
+                item { SectionTitle("Genre Radio") }
+                items(uiState.genres.size) { index ->
+                    val genre = uiState.genres[index]
+                    MusicRadioRow(
+                        title = genre,
+                        subtitle = "Shuffle songs from this genre",
+                        icon = Icons.Outlined.MusicNote,
+                        enabled = !uiState.isStartingPlayback,
+                        onClick = { if (!uiState.isStartingPlayback) viewModel.playGenreRadio(genre) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val musicRadioColorPalette = listOf(
+    0xFFE91E63L,
+    0xFF9C27B0L,
+    0xFF3F51B5L,
+    0xFF2196F3L,
+    0xFF009688L,
+    0xFF4CAF50L,
+    0xFFFF9800L,
+    0xFFF44336L,
+    0xFF607D8BL,
+    0xFF795548L,
+    0xFF00BCD4L,
+    0xFF8BC34AL,
+    0xFFFF5722L,
+    0xFF673AB7L,
+    0xFF03A9F4L,
+    0xFF00897BL,
+)
+
+private fun musicRadioColor(seed: String): Color {
+    val index = ((seed.hashCode() % musicRadioColorPalette.size) + musicRadioColorPalette.size) % musicRadioColorPalette.size
+    return Color(musicRadioColorPalette[index])
+}
+
+@Composable
+private fun MusicRadioRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    colorSeed: String = title,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val accentColor = remember(colorSeed) { musicRadioColor(colorSeed) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                accentColor,
+                                accentColor.copy(alpha = 0.65f)
+                            )
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Color.White
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Outlined.PlayArrow,
+                contentDescription = null
+            )
+        }
+        DividerLine()
+    }
+}
+
+@Composable
 private fun NavidromeFavoriteSongsRoute(
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
@@ -4688,6 +4846,20 @@ private fun NavidromeArtistDetailRoute(
                                     ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
                                     ?: false,
                                 downloadProgressPercent = downloadUiState.artistProgressById[detail.artist.id]
+                            )
+                        }
+                        item {
+                            PillActionButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                icon = Icons.Outlined.Shuffle,
+                                label = "Play Artist Radio",
+                                onClick = {
+                                    if (detail.albums.isEmpty()) {
+                                        Toast.makeText(context, "No songs found for this artist.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        playerViewModel.playAlbums(detail.albums, shuffle = true)
+                                    }
+                                }
                             )
                         }
                         item { SectionTitle("Albums") }
@@ -9877,6 +10049,7 @@ private fun NavidromeMiniPlayerBar(
             }
             IconButton(
                 onClick = onPlayPause,
+                enabled = !state.isLoading,
                 modifier = Modifier
                     .width(transportButtonWidth)
                     .height(transportButtonHeight)
@@ -9888,19 +10061,27 @@ private fun NavidromeMiniPlayerBar(
                     .background(MaterialTheme.colorScheme.onSurface),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = when {
-                            isRadio && state.isPlaying -> Icons.Outlined.Stop
-                            state.isPlaying -> Icons.Outlined.Pause
-                            else -> Icons.Outlined.PlayArrow
-                        },
-                        contentDescription = when {
-                            isRadio && state.isPlaying -> "Stop"
-                            state.isPlaying -> "Pause"
-                            else -> "Play"
-                        },
-                        tint = MaterialTheme.colorScheme.surface
-                    )
+                    if (state.isLoading) {
+                        PlaybackLoadingIndicator(
+                            modifier = Modifier.size(18.dp),
+                            baseTint = MaterialTheme.colorScheme.surface.copy(alpha = 0.26f),
+                            sweepTint = MaterialTheme.colorScheme.surface
+                        )
+                    } else {
+                        Icon(
+                            imageVector = when {
+                                isRadio && state.isPlaying -> Icons.Outlined.Stop
+                                state.isPlaying -> Icons.Outlined.Pause
+                                else -> Icons.Outlined.PlayArrow
+                            },
+                            contentDescription = when {
+                                isRadio && state.isPlaying -> "Stop"
+                                state.isPlaying -> "Pause"
+                                else -> "Play"
+                            },
+                            tint = MaterialTheme.colorScheme.surface
+                        )
+                    }
                 }
             }
             IconButton(

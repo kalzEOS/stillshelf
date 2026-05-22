@@ -41,6 +41,7 @@ import com.stillshelf.app.data.api.NavidromeApi
 import com.stillshelf.app.data.api.NavidromeArtistDetailDto
 import com.stillshelf.app.data.api.NavidromeAuth
 import com.stillshelf.app.data.api.NavidromePlaylistDetailDto
+import com.stillshelf.app.data.api.NavidromeGenreDto
 import com.stillshelf.app.data.api.NavidromeRadioDto
 import com.stillshelf.app.data.api.NavidromeStructuredLyricsDto
 import javax.inject.Inject
@@ -213,6 +214,7 @@ class NavidromeRepository @Inject constructor(
     private val playlistsCache = mutableMapOf<String, TimedCacheEntry<List<NavidromePlaylist>>>()
     private val radiosCache = mutableMapOf<String, TimedCacheEntry<List<NavidromeRadio>>>()
     private val songsCache = mutableMapOf<String, TimedCacheEntry<List<NavidromeTrack>>>()
+    private val genresCache = mutableMapOf<String, TimedCacheEntry<List<String>>>()
     private val artistDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromeArtistDetail>>()
     private val albumDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromeAlbumDetail>>()
     private val playlistDetailCache = mutableMapOf<String, TimedCacheEntry<NavidromePlaylistDetail>>()
@@ -1267,6 +1269,33 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(songs)
     }
 
+    suspend fun fetchRandomSongs(
+        count: Int = 100,
+        genre: String? = null
+    ): AppResult<List<NavidromeTrack>> = withAuth { auth ->
+        val result = navidromeApi.getRandomSongs(auth, size = count.coerceIn(1, 500), genre = genre)
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to load songs.")
+        }
+        AppResult.Success(result.getOrThrow().map { it.toModel(auth) })
+    }
+
+    suspend fun fetchGenres(): AppResult<List<String>> = withAuth { auth ->
+        val cacheKey = cacheKey(auth, "genres")
+        getFreshCache(genresCache, cacheKey, CONTENT_CACHE_MAX_AGE_MS)?.let { cached ->
+            return@withAuth AppResult.Success(cached)
+        }
+        val staleCache = getAnyCache(genresCache, cacheKey)
+        val result = navidromeApi.getGenres(auth)
+        if (result.isFailure) {
+            staleCache?.let { return@withAuth AppResult.Success(it) }
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to load genres.")
+        }
+        val genres = result.getOrThrow().map { it.name }
+        putCache(genresCache, cacheKey, genres)
+        AppResult.Success(genres)
+    }
+
     suspend fun fetchLyrics(track: NavidromeTrack): AppResult<NavidromeLyrics> = withAuth { auth ->
         if (track.id.startsWith("radio:")) {
             return@withAuth AppResult.Error("Lyrics are not available for radio stations.")
@@ -2216,6 +2245,7 @@ class NavidromeRepository @Inject constructor(
             playlistsCache.clear()
             radiosCache.clear()
             songsCache.clear()
+            genresCache.clear()
             artistDetailCache.clear()
             albumDetailCache.clear()
             playlistDetailCache.clear()

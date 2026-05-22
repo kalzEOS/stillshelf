@@ -60,8 +60,10 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import java.util.concurrent.atomic.AtomicLong
@@ -2097,7 +2099,9 @@ class NavidromeSettingsViewModel @Inject constructor(
         if (mutableLocalState.value.isClearingCache) return
         viewModelScope.launch {
             mutableLocalState.update { it.copy(isClearingCache = true) }
-            downloadManager.clearPlaybackCache()
+            withContext(Dispatchers.IO) {
+                downloadManager.clearPlaybackCache()
+            }
             playerController.invalidatePlaybackCacheWarmup()
             mutableLocalState.update { it.copy(isClearingCache = false, syncToastMessage = "Cached music cleared") }
         }

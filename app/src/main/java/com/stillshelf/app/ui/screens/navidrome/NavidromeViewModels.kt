@@ -408,6 +408,7 @@ object NavidromeListSectionIds {
     const val ALBUMS = "navidrome_albums"
     const val ARTISTS = "navidrome_artists"
     const val RADIOS = "navidrome_radios"
+    const val MUSIC_RADIO = "navidrome_music_radio"
     const val NEWEST_ALBUMS = "navidrome_newest_albums"
     const val SONGS = "navidrome_songs"
     const val DOWNLOADED = "navidrome_downloaded"
@@ -456,7 +457,8 @@ class NavidromeCustomizeViewModel @Inject constructor(
     private val defaultListSections = listOf(
         ToggleSectionItem(NavidromeListSectionIds.ARTISTS, "Artists"),
         ToggleSectionItem(NavidromeListSectionIds.ALBUMS, "Albums"),
-        ToggleSectionItem(NavidromeListSectionIds.RADIOS, "Radios"),
+        ToggleSectionItem(NavidromeListSectionIds.MUSIC_RADIO, "Music Radio"),
+        ToggleSectionItem(NavidromeListSectionIds.RADIOS, "Internet Radio"),
         ToggleSectionItem(NavidromeListSectionIds.NEWEST_ALBUMS, "Newest Albums"),
         ToggleSectionItem(NavidromeListSectionIds.SONGS, "Songs"),
         ToggleSectionItem(NavidromeListSectionIds.DOWNLOADED, "Downloaded"),
@@ -2869,6 +2871,80 @@ private fun navidromeSessionKey(
     if (normalizedBaseUrl.isBlank() || normalizedUsername.isBlank()) return null
     return "${normalizedBaseUrl.lowercase()}|${normalizedUsername.lowercase()}"
 }
+data class NavidromeMusicRadioUiState(
+    val genres: List<String> = emptyList(),
+    val isLoading: Boolean = true,
+    val isStartingPlayback: Boolean = false,
+    val errorMessage: String? = null,
+    val actionMessage: String? = null
+)
+
+@HiltViewModel
+class NavidromeMusicRadioViewModel @Inject constructor(
+    private val navidromeRepository: NavidromeRepository,
+    private val playerController: NavidromePlayerController
+) : ViewModel() {
+    private val mutableUiState = MutableStateFlow(NavidromeMusicRadioUiState())
+    val uiState: StateFlow<NavidromeMusicRadioUiState> = mutableUiState.asStateFlow()
+
+    init {
+        loadGenres()
+    }
+
+    fun loadGenres() {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+            when (val result = navidromeRepository.fetchGenres()) {
+                is AppResult.Success -> mutableUiState.update {
+                    it.copy(genres = result.value, isLoading = false)
+                }
+                is AppResult.Error -> mutableUiState.update {
+                    it.copy(isLoading = false, errorMessage = result.message)
+                }
+            }
+        }
+    }
+
+    fun playLibraryRadio() {
+        startRadio(genre = null)
+    }
+
+    fun playGenreRadio(genre: String) {
+        startRadio(genre = genre)
+    }
+
+    fun clearMessages() {
+        mutableUiState.update { it.copy(errorMessage = null, actionMessage = null) }
+    }
+
+    private fun startRadio(genre: String?) {
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isStartingPlayback = true, errorMessage = null) }
+            when (val result = navidromeRepository.fetchRandomSongs(count = 500, genre = genre)) {
+                is AppResult.Success -> {
+                    val tracks = result.value
+                    if (tracks.isEmpty()) {
+                        mutableUiState.update {
+                            it.copy(
+                                isStartingPlayback = false,
+                                errorMessage = "No songs found for this radio."
+                            )
+                        }
+                    } else {
+                        playerController.playTracks(tracks.shuffled(), startIndex = 0)
+                        mutableUiState.update {
+                            it.copy(isStartingPlayback = false, actionMessage = "Playing ${tracks.size} songs")
+                        }
+                    }
+                }
+                is AppResult.Error -> mutableUiState.update {
+                    it.copy(isStartingPlayback = false, errorMessage = result.message)
+                }
+            }
+        }
+    }
+}
+
 data class NavidromeArtistDetailUiState(
     val detail: NavidromeArtistDetail? = null,
     val isLoading: Boolean = true,

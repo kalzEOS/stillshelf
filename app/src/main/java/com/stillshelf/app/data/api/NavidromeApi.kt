@@ -119,6 +119,11 @@ data class NavidromeSearchDto(
     val tracks: List<NavidromeTrackDto>
 )
 
+data class NavidromeGenreDto(
+    val name: String,
+    val songCount: Int
+)
+
 internal fun decodeNavidromeResponseBody(
     bytes: ByteArray,
     declaredCharset: Charset?
@@ -489,6 +494,31 @@ class NavidromeApi @Inject constructor(
         }
     }
 
+    suspend fun getRandomSongs(
+        auth: NavidromeAuth,
+        size: Int = 100,
+        genre: String? = null
+    ): Result<List<NavidromeTrackDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val pairs = buildList {
+                add("size" to size.coerceIn(1, 500).toString())
+                genre?.trim()?.takeIf { it.isNotBlank() }?.let { add("genre" to it) }
+            }.toTypedArray()
+            val root = execute(
+                buildRequest(auth, "rest/getRandomSongs.view", queryWithMusicFolder(auth, *pairs))
+            )
+            parseTrackArray(root.optJSONObject("randomSongs")?.optJSONArray("song"))
+        }
+    }
+
+    suspend fun getGenres(auth: NavidromeAuth): Result<List<NavidromeGenreDto>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = execute(buildRequest(auth, "rest/getGenres.view"))
+                parseGenres(root.optJSONObject("genres")?.optJSONArray("genre"))
+            }
+        }
+
     suspend fun getLyricsBySongId(
         auth: NavidromeAuth,
         songId: String
@@ -833,6 +863,23 @@ class NavidromeApi @Inject constructor(
             results += parsePlaylist(item)
         }
         return results
+    }
+
+    private fun parseGenres(items: JSONArray?): List<NavidromeGenreDto> {
+        if (items == null) return emptyList()
+        val results = mutableListOf<NavidromeGenreDto>()
+        repeat(items.length()) { index ->
+            val item = items.optJSONObject(index) ?: return@repeat
+            val name = item.optString("value").normalizeNavidromeText()
+                .ifBlank { item.optString("name").normalizeNavidromeText() }
+                .ifBlank { null }
+                ?: return@repeat
+            val songCount = item.optInt("songCount", 0)
+            if (songCount > 0) {
+                results += NavidromeGenreDto(name = name, songCount = songCount)
+            }
+        }
+        return results.sortedBy { it.name.lowercase() }
     }
 
     private fun parseRadios(items: JSONArray?): List<NavidromeRadioDto> {

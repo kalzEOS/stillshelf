@@ -296,6 +296,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.RandomAccessFile
+import androidx.core.content.FileProvider
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.stillshelf.app.ui.screens.AboutViewModel
+import com.stillshelf.app.ui.screens.DiagnosticLogsSettingsCard
+import com.stillshelf.app.ui.screens.DiagnosticLogsBrowserDialog
+import com.stillshelf.app.ui.screens.DiagnosticLogViewerDialog
+import com.stillshelf.app.ui.screens.DiagnosticLogsCollectedInfoDialog
+import com.stillshelf.app.ui.components.UpdateNotesDialogContent
 
 private data class NavidromeLibraryDestination(
     val label: String,
@@ -674,6 +685,8 @@ fun NavidromeAppRoute(
         currentRoute != NavidromeRoute.EQUALIZER &&
         currentRoute != NavidromeRoute.LYRICS_SOURCES &&
         currentRoute != NavidromeRoute.SERVERS &&
+        currentRoute != NavidromeRoute.ADVANCED &&
+        currentRoute != NavidromeRoute.ABOUT &&
         currentRoute != NavidromeRoute.LOGIN
     var lockPlayerSheetDismiss by rememberSaveable { mutableStateOf(false) }
     val playerSheetState = rememberModalBottomSheetState(
@@ -920,7 +933,9 @@ fun NavidromeAppRoute(
                     onSwitchMode = onSwitchMode,
                     onOpenEqualizer = { navController.navigate(NavidromeRoute.EQUALIZER) },
                     onOpenLyricsSources = { navController.navigate(NavidromeRoute.LYRICS_SOURCES) },
-                    onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) }
+                    onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) },
+                    onOpenAdvanced = { navController.navigate(NavidromeRoute.ADVANCED) },
+                    onOpenAbout = { navController.navigate(NavidromeRoute.ABOUT) }
                 )
             }
             composable(NavidromeRoute.EQUALIZER) {
@@ -938,6 +953,18 @@ fun NavidromeAppRoute(
             }
             composable(NavidromeRoute.LYRICS_SOURCES) {
                 NavidromeLyricsSourcesRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction
+                )
+            }
+            composable(NavidromeRoute.ADVANCED) {
+                NavidromeAdvancedRoute(
+                    onBack = { navController.popBackStack() },
+                    onHome = topHomeAction
+                )
+            }
+            composable(NavidromeRoute.ABOUT) {
+                NavidromeAboutRoute(
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction
                 )
@@ -5079,6 +5106,8 @@ private fun NavidromeSettingsRoute(
     onOpenEqualizer: () -> Unit,
     onOpenLyricsSources: () -> Unit,
     onOpenServers: () -> Unit,
+    onOpenAdvanced: () -> Unit,
+    onOpenAbout: () -> Unit,
     viewModel: NavidromeSettingsViewModel = hiltViewModel(),
     equalizerViewModel: NavidromeEqualizerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
@@ -5326,6 +5355,41 @@ private fun NavidromeSettingsRoute(
                 )
             }
         }
+        if (uiState.appUpdatesEnabled) {
+            item {
+                Text(
+                    text = "APP UPDATES",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+                )
+            }
+            item {
+                GroupedSettingsCard(
+                    containerColor = sectionCardColor,
+                    border = sectionCardBorder
+                ) {
+                    NavidromeSettingsRow(
+                        title = if (uiState.isCheckingForUpdates) "Checking…" else "Check for Updates",
+                        showChevronWhenValue = false,
+                        showChevronWhenUnselected = false,
+                        onClick = if (uiState.isCheckingForUpdates) null else viewModel::onCheckForUpdatesClick
+                    )
+                    DividerLine()
+                    SettingsSwitchRow(
+                        title = "Check on Startup",
+                        checked = uiState.updateCheckOnStartupEnabled,
+                        onCheckedChange = viewModel::setUpdateCheckOnStartupEnabled
+                    )
+                    DividerLine()
+                    SettingsSwitchRow(
+                        title = "Include Pre-releases",
+                        checked = uiState.includePrereleaseUpdates,
+                        onCheckedChange = viewModel::setIncludePrereleaseUpdates
+                    )
+                }
+            }
+        }
         item {
             Text(
                 text = "SESSION",
@@ -5359,6 +5423,36 @@ private fun NavidromeSettingsRoute(
                 NavidromeSettingsRow(
                     title = "Sign Out",
                     onClick = { signOutDialogVisible = true }
+                )
+            }
+        }
+        item {
+            Text(
+                text = "ADVANCED",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "Advanced",
+                    onClick = onOpenAdvanced
+                )
+            }
+        }
+        item {
+            GroupedSettingsCard(
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            ) {
+                NavidromeSettingsRow(
+                    title = "About",
+                    onClick = onOpenAbout
                 )
             }
         }
@@ -5546,6 +5640,502 @@ private fun NavidromeSettingsRoute(
             onDismiss = viewModel::dismissServerScanProgress
         )
         }
+    }
+
+    if (uiState.appUpdatesEnabled) {
+        uiState.availableUpdate?.let { release ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissAvailableUpdateDialog,
+                title = { Text("Update available") },
+                text = {
+                    UpdateNotesDialogContent(
+                        versionName = release.versionName,
+                        notes = release.body
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = viewModel::installAvailableUpdate) {
+                        Text("Update")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissAvailableUpdateDialog) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavidromeAdvancedRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    viewModel: NavidromeSettingsViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val sectionCardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val sectionCardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+    var deleteLogsDialogVisible by remember { mutableStateOf(false) }
+    var diagnosticInfoDialogVisible by remember { mutableStateOf(false) }
+    var diagnosticLogsBrowserVisible by remember { mutableStateOf(false) }
+    var diagnosticLogViewerVisible by remember { mutableStateOf(false) }
+    var diagnosticLogViewerTitle by remember { mutableStateOf("") }
+    var diagnosticLogViewerContent by remember { mutableStateOf("") }
+    var diagnosticActionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var pendingExportLogFile by remember { mutableStateOf<File?>(null) }
+    var diagnosticLogsBrowserFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val file = pendingExportLogFile ?: return@rememberLauncherForActivityResult
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        file.inputStream().use { it.copyTo(out) }
+                    }
+                }
+                Toast.makeText(context, "Diagnostic log exported.", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(context, "Export failed.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun shareDiagnosticLogFile(file: File) {
+        val shareUri = runCatching {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+        }.getOrNull()
+        if (shareUri == null) {
+            Toast.makeText(context, "Unable to share diagnostic log.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, shareUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(shareIntent, "Share diagnostic log"))
+        }.onFailure {
+            Toast.makeText(context, "Unable to share diagnostic log.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openDiagnosticLogsBrowser(logFiles: List<File>) {
+        if (logFiles.isEmpty()) {
+            Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        diagnosticLogsBrowserFiles = logFiles
+        diagnosticLogsBrowserVisible = true
+    }
+
+    fun deleteDiagnosticLogFile(file: File) {
+        scope.launch {
+            viewModel.deleteDiagnosticLog(file)
+            diagnosticLogsBrowserFiles = viewModel.diagnosticLogFiles()
+            if (diagnosticLogsBrowserFiles.isEmpty()) {
+                diagnosticLogsBrowserVisible = false
+            }
+            Toast.makeText(context, "Diagnostic log deleted.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun openDiagnosticLogFile(file: File) {
+        scope.launch {
+            val content = runCatching {
+                withContext(Dispatchers.IO) {
+                    val fileLength = file.length()
+                    if (fileLength <= 0L) {
+                        "The log file is empty."
+                    } else {
+                        val previewBytes = 64 * 1024
+                        if (fileLength <= previewBytes) {
+                            file.readText()
+                        } else {
+                            RandomAccessFile(file, "r").use { raf ->
+                                val start = (fileLength - previewBytes).coerceAtLeast(0L)
+                                raf.seek(start)
+                                val bytes = ByteArray((fileLength - start).toInt())
+                                raf.readFully(bytes)
+                                buildString {
+                                    append("Showing the last ${previewBytes / 1024} KB of this log. Older content was trimmed.\n\n")
+                                    append(String(bytes, Charsets.UTF_8))
+                                }
+                            }
+                        }
+                    }
+                }
+            }.getOrElse {
+                Toast.makeText(context, "Unable to open diagnostic log.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            diagnosticLogViewerTitle = file.name
+            diagnosticLogViewerContent = content
+            diagnosticLogViewerVisible = true
+        }
+    }
+
+    fun launchDiagnosticLogExport(file: File) {
+        pendingExportLogFile = file
+        exportLauncher.launch(file.name)
+    }
+
+    StandardTopScreen(
+        title = "Advanced",
+        onBack = onBack,
+        onHome = onHome,
+        containerColor = MaterialTheme.colorScheme.background
+    ) {
+        item {
+            Text(
+                text = "DIAGNOSTIC LOGGING",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding)
+            )
+        }
+        item {
+            DiagnosticLogsSettingsCard(
+                enabled = uiState.diagnosticLoggingEnabled,
+                hasLogs = uiState.hasDiagnosticLogs,
+                actionsExpanded = diagnosticActionsExpanded,
+                onEnabledChange = viewModel::setDiagnosticLoggingEnabled,
+                onActionsExpandedChange = { diagnosticActionsExpanded = it },
+                onShowLogsClick = {
+                    scope.launch { openDiagnosticLogsBrowser(viewModel.diagnosticLogFiles()) }
+                },
+                onExportClick = {
+                    scope.launch {
+                        val logFiles = viewModel.diagnosticLogFiles()
+                        when {
+                            logFiles.isEmpty() -> Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+                            logFiles.size == 1 -> launchDiagnosticLogExport(logFiles.first())
+                            else -> openDiagnosticLogsBrowser(logFiles)
+                        }
+                    }
+                },
+                onShareClick = {
+                    scope.launch {
+                        val logFiles = viewModel.diagnosticLogFiles()
+                        when {
+                            logFiles.isEmpty() -> Toast.makeText(context, "No diagnostic log available.", Toast.LENGTH_SHORT).show()
+                            logFiles.size == 1 -> shareDiagnosticLogFile(logFiles.first())
+                            else -> openDiagnosticLogsBrowser(logFiles)
+                        }
+                    }
+                },
+                onOpenIssuesClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/kalzEOS/StillShelf/issues"))
+                        )
+                    }
+                },
+                onDeleteClick = { deleteLogsDialogVisible = true },
+                onSeeWhatCollectedClick = { diagnosticInfoDialogVisible = true },
+                containerColor = sectionCardColor,
+                border = sectionCardBorder
+            )
+        }
+    }
+
+    if (deleteLogsDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { deleteLogsDialogVisible = false },
+            title = { Text("Delete diagnostic logs?") },
+            text = { Text("Diagnostic logging will be turned off and all logs will be deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteLogsDialogVisible = false
+                    viewModel.deleteDiagnosticLogs()
+                    Toast.makeText(context, "Diagnostic logs deleted.", Toast.LENGTH_SHORT).show()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteLogsDialogVisible = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (diagnosticInfoDialogVisible) {
+        DiagnosticLogsCollectedInfoDialog(
+            onDismissRequest = { diagnosticInfoDialogVisible = false }
+        )
+    }
+
+    if (diagnosticLogsBrowserVisible) {
+        DiagnosticLogsBrowserDialog(
+            logFiles = diagnosticLogsBrowserFiles,
+            onDismissRequest = { diagnosticLogsBrowserVisible = false },
+            onOpenLogClick = ::openDiagnosticLogFile,
+            onExportLogClick = ::launchDiagnosticLogExport,
+            onShareLogClick = ::shareDiagnosticLogFile,
+            onDeleteLogClick = ::deleteDiagnosticLogFile
+        )
+    }
+
+    if (diagnosticLogViewerVisible) {
+        DiagnosticLogViewerDialog(
+            title = diagnosticLogViewerTitle,
+            content = diagnosticLogViewerContent,
+            onDismissRequest = { diagnosticLogViewerVisible = false }
+        )
+    }
+}
+
+@Composable
+private fun NavidromeAboutRoute(
+    onBack: () -> Unit,
+    onHome: (() -> Unit)?,
+    viewModel: AboutViewModel = hiltViewModel(),
+    appearanceViewModel: AppAppearanceViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var showReleaseHistory by rememberSaveable { mutableStateOf(false) }
+
+    val cardColor = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val cardBorder = if (appearanceUiState.navidromeMaterialDesignEnabled) {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
+    } else {
+        null
+    }
+
+    fun openUrl(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }
+    }
+
+    StandardTopScreen(title = "About", onBack = onBack, onHome = onHome) {
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                border = cardBorder,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(text = uiState.appName, style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        text = uiState.tagline,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = uiState.originStory,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                    Text(text = "Version", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = "v${uiState.versionName} (build ${uiState.versionCode})",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                border = cardBorder,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(text = "Links", style = MaterialTheme.typography.titleMedium)
+                    NavidromeAboutLinkRow("Website", uiState.websiteUrl) { openUrl(uiState.websiteUrl) }
+                    HorizontalDivider()
+                    NavidromeAboutLinkRow("Support", uiState.supportUrl) { openUrl(uiState.supportUrl) }
+                    HorizontalDivider()
+                    NavidromeAboutLinkRow("Privacy", uiState.privacyUrl) { openUrl(uiState.privacyUrl) }
+                }
+            }
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                border = cardBorder,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(text = "Acknowledgements", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = uiState.acknowledgements,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { openUrl(uiState.sourceUrl) }) { Text("Source Code") }
+                        TextButton(onClick = { openUrl(uiState.licenseUrl) }) { Text("License") }
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = cardColor),
+                border = cardBorder,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(text = "Release Notes", style = MaterialTheme.typography.titleMedium)
+                    uiState.currentRelease?.let { entry ->
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "Current build: ${entry.tagName}",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            entry.publishedDate?.let { date ->
+                                Text(
+                                    text = "Published $date",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (!entry.notes.isNullOrBlank()) {
+                                Text(
+                                    text = entry.notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    if (uiState.isLoadingReleaseNotes) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text(
+                                text = "Loading release history...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    uiState.releaseNotesError?.let { error ->
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        TextButton(onClick = viewModel::refreshReleaseNotes) { Text("Retry") }
+                    }
+                    if (uiState.releaseHistory.isNotEmpty()) {
+                        TextButton(onClick = { showReleaseHistory = !showReleaseHistory }) {
+                            Text(if (showReleaseHistory) "Hide history" else "Show history")
+                        }
+                        if (showReleaseHistory) {
+                            uiState.releaseHistory.take(6).forEach { entry ->
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.26f))
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = entry.tagName + if (entry.prerelease) " (prerelease)" else "",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    entry.publishedDate?.let { date ->
+                                        Text(
+                                            text = "Published $date",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (!entry.notes.isNullOrBlank()) {
+                                        Text(
+                                            text = entry.notes,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    TextButton(onClick = { openUrl(uiState.releasePageUrl) }) { Text("View all releases") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavidromeAboutLinkRow(label: String, url: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(text = label, style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = url,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

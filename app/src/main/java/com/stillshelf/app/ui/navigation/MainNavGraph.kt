@@ -79,25 +79,19 @@ import com.stillshelf.app.ui.screens.auth.LoginRoute
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
-fun NavGraphBuilder.mainNavGraph(
-    onHomeScreenReached: () -> Unit = {}
-) {
+fun NavGraphBuilder.mainNavGraph() {
     navigation(
         route = GraphRoute.MAIN,
         startDestination = MainRoute.SHELL
     ) {
         composable(MainRoute.SHELL) {
-            MainShell(
-                onHomeScreenReached = onHomeScreenReached
-            )
+            MainShell()
         }
     }
 }
 
 @Composable
-private fun MainShell(
-    onHomeScreenReached: () -> Unit
-) {
+private fun MainShell() {
     val context = LocalContext.current
     val activity = context.findActivity()
     val notificationsPermissionLauncher = rememberLauncherForActivityResult(
@@ -171,11 +165,6 @@ private fun MainShell(
         playerVisible = false
     }
 
-    LaunchedEffect(currentRoute) {
-        if (currentRoute == MainTab.Home.route) {
-            onHomeScreenReached()
-        }
-    }
     LaunchedEffect(serverConnectionViewModel) {
         serverConnectionViewModel.messages.collectLatest { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()

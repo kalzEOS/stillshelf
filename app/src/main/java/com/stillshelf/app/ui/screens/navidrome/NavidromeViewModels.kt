@@ -67,6 +67,10 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import java.util.concurrent.atomic.AtomicLong
+import com.stillshelf.app.BuildConfig
+import com.stillshelf.app.update.AppUpdateManager
+import com.stillshelf.app.update.AppUpdateRelease
+import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 
 data class NavidromeLoginUiState(
     val serverName: String = "",
@@ -1731,7 +1735,9 @@ class NavidromeSettingsViewModel @Inject constructor(
     private val navidromeRepository: NavidromeRepository,
     private val sessionPreferences: SessionPreferences,
     private val downloadManager: NavidromeDownloadManager,
-    private val playerController: NavidromePlayerController
+    private val playerController: NavidromePlayerController,
+    private val appUpdateManager: AppUpdateManager,
+    private val diagnosticLogManager: DiagnosticLogManager
 ) : ViewModel() {
     private val mutableLocalState = MutableStateFlow(NavidromeSettingsLocalState())
 
@@ -1838,7 +1844,14 @@ class NavidromeSettingsViewModel @Inject constructor(
             serverScanProgress = localState.serverScanProgress,
             showServerScanProgressDialog = localState.showServerScanProgressDialog,
             syncToastMessage = localState.syncToastMessage,
-            errorMessage = localState.errorMessage
+            errorMessage = localState.errorMessage,
+            appUpdatesEnabled = BuildConfig.IN_APP_UPDATES_ENABLED,
+            updateCheckOnStartupEnabled = preferences.updateCheckOnStartup,
+            includePrereleaseUpdates = preferences.updateIncludePrereleases,
+            diagnosticLoggingEnabled = preferences.diagnosticLoggingEnabled,
+            isCheckingForUpdates = localState.isCheckingForUpdates,
+            hasDiagnosticLogs = localState.hasDiagnosticLogs,
+            availableUpdate = localState.availableUpdate
         )
     }
         .stateIn(
@@ -1860,6 +1873,11 @@ class NavidromeSettingsViewModel @Inject constructor(
                         mutableLocalState.update { it.copy(libraries = emptyList()) }
                     }
                 }
+        }
+        viewModelScope.launch {
+            diagnosticLogManager.state.collect { diagState ->
+                mutableLocalState.update { it.copy(hasDiagnosticLogs = diagState.hasLogs) }
+            }
         }
     }
 
@@ -2104,6 +2122,67 @@ class NavidromeSettingsViewModel @Inject constructor(
             }
             playerController.invalidatePlaybackCacheWarmup()
             mutableLocalState.update { it.copy(isClearingCache = false, syncToastMessage = "Cached music cleared") }
+        }
+    }
+
+    fun onCheckForUpdatesClick() {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED || mutableLocalState.value.isCheckingForUpdates) return
+        viewModelScope.launch {
+            mutableLocalState.update { it.copy(isCheckingForUpdates = true, availableUpdate = null, syncToastMessage = null) }
+            when (val result = appUpdateManager.checkForUpdate(includePrereleases = uiState.value.includePrereleaseUpdates)) {
+                is AppResult.Success -> {
+                    val update = result.value
+                    mutableLocalState.update {
+                        it.copy(
+                            isCheckingForUpdates = false,
+                            availableUpdate = update,
+                            syncToastMessage = if (update == null) "No updates found." else null
+                        )
+                    }
+                }
+                is AppResult.Error -> {
+                    mutableLocalState.update { it.copy(isCheckingForUpdates = false, syncToastMessage = "Update check failed.") }
+                }
+            }
+        }
+    }
+
+    fun dismissAvailableUpdateDialog() {
+        mutableLocalState.update { it.copy(availableUpdate = null) }
+    }
+
+    fun installAvailableUpdate() {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) {
+            dismissAvailableUpdateDialog()
+            return
+        }
+        val release = mutableLocalState.value.availableUpdate ?: return
+        mutableLocalState.update { it.copy(availableUpdate = null) }
+        viewModelScope.launch { appUpdateManager.downloadAndInstallUpdate(release) }
+    }
+
+    fun setUpdateCheckOnStartupEnabled(enabled: Boolean) {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) return
+        viewModelScope.launch { sessionPreferences.setUpdateCheckOnStartup(enabled) }
+    }
+
+    fun setIncludePrereleaseUpdates(enabled: Boolean) {
+        if (!BuildConfig.IN_APP_UPDATES_ENABLED) return
+        viewModelScope.launch { sessionPreferences.setUpdateIncludePrereleases(enabled) }
+    }
+
+    fun setDiagnosticLoggingEnabled(enabled: Boolean) {
+        viewModelScope.launch { sessionPreferences.setDiagnosticLoggingEnabled(enabled) }
+    }
+
+    suspend fun diagnosticLogFiles(): List<File> = diagnosticLogManager.logFiles()
+
+    suspend fun deleteDiagnosticLog(file: File) { diagnosticLogManager.deleteLogFile(file) }
+
+    fun deleteDiagnosticLogs() {
+        viewModelScope.launch {
+            sessionPreferences.setDiagnosticLoggingEnabled(false)
+            diagnosticLogManager.deleteLogs()
         }
     }
 
@@ -3215,7 +3294,14 @@ data class NavidromeSettingsUiState(
     val serverScanProgress: NavidromeServerScanProgress? = null,
     val showServerScanProgressDialog: Boolean = false,
     val syncToastMessage: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val appUpdatesEnabled: Boolean = false,
+    val updateCheckOnStartupEnabled: Boolean = false,
+    val includePrereleaseUpdates: Boolean = false,
+    val diagnosticLoggingEnabled: Boolean = false,
+    val isCheckingForUpdates: Boolean = false,
+    val hasDiagnosticLogs: Boolean = false,
+    val availableUpdate: AppUpdateRelease? = null
 )
 
 data class NavidromeHomeMenuUiState(
@@ -3578,7 +3664,10 @@ private data class NavidromeSettingsLocalState(
     val syncToastMessage: String? = null,
     val resyncProgress: NavidromeLibraryResyncProgress? = null,
     val serverScanProgress: NavidromeServerScanProgress? = null,
-    val showServerScanProgressDialog: Boolean = false
+    val showServerScanProgressDialog: Boolean = false,
+    val isCheckingForUpdates: Boolean = false,
+    val hasDiagnosticLogs: Boolean = false,
+    val availableUpdate: AppUpdateRelease? = null
 )
 
 private fun NavidromeRadio.toTrack(): NavidromeTrack {

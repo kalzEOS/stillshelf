@@ -141,14 +141,16 @@ internal fun shouldScheduleNavidromePausedPlayerRelease(
     hasActivePlayer: Boolean,
     isPlaying: Boolean,
     playWhenReady: Boolean,
-    playbackState: Int
+    playbackState: Int,
+    appInForeground: Boolean,
+    repeatMode: Int
 ): Boolean {
     return currentTrack != null &&
-        !currentTrack.id.startsWith("radio:") &&
         hasActivePlayer &&
         !isPlaying &&
-        !playWhenReady &&
-        playbackState != Player.STATE_BUFFERING
+        !appInForeground &&
+        playbackState != Player.STATE_BUFFERING &&
+        (!playWhenReady || (playbackState == Player.STATE_ENDED && repeatMode == Player.REPEAT_MODE_OFF))
 }
 
 internal fun isNavidromeOutputSwitchInFlight(
@@ -928,6 +930,7 @@ class NavidromePlayerController @Inject constructor(
         }
         player?.repeatMode = repeatMode
         updatePlaybackSurface()
+        ensureProgressUpdates()
         return repeatMode
     }
 
@@ -1500,7 +1503,9 @@ class NavidromePlayerController @Inject constructor(
             hasActivePlayer = activePlayer != null,
             isPlaying = activePlayer?.isPlaying == true,
             playWhenReady = activePlayer?.playWhenReady == true,
-            playbackState = activePlayer?.playbackState ?: Player.STATE_IDLE
+            playbackState = activePlayer?.playbackState ?: Player.STATE_IDLE,
+            appInForeground = appInForeground,
+            repeatMode = repeatMode
         )
         if (!shouldScheduleRelease) {
             cancelPausedPlayerRelease()
@@ -1516,7 +1521,9 @@ class NavidromePlayerController @Inject constructor(
                 hasActivePlayer = playerToRelease != null,
                 isPlaying = playerToRelease?.isPlaying == true,
                 playWhenReady = playerToRelease?.playWhenReady == true,
-                playbackState = playerToRelease?.playbackState ?: Player.STATE_IDLE
+                playbackState = playerToRelease?.playbackState ?: Player.STATE_IDLE,
+                appInForeground = appInForeground,
+                repeatMode = repeatMode
             )
             if (!stillPaused) return@launch
             persistPlaybackSnapshot(force = true)
@@ -1525,7 +1532,8 @@ class NavidromePlayerController @Inject constructor(
                 isPlaying = false,
                 isLoading = false
             )
-            updatePlaybackSurface()
+            pausedReleaseJob = null
+            clearPlaybackSurface()
         }
     }
 
@@ -1690,7 +1698,7 @@ class NavidromePlayerController @Inject constructor(
         mediaSession.setPlaybackState(playbackState)
         mediaSession.isActive = keepMediaSessionActive
 
-        if (currentTrack == null) {
+        if (currentTrack == null || player == null) {
             clearPlaybackSurface()
             return
         }

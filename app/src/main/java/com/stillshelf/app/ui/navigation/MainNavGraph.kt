@@ -185,6 +185,7 @@ private fun MainShell() {
         currentRoute != MainRoute.ABOUT &&
         currentRoute != MainRoute.ADVANCED &&
         currentRoute != MainRoute.SERVERS &&
+        currentRoute != MainRoute.CUSTOMIZE &&
         currentRoute != MainRoute.LIBRARY_PICKER &&
         currentRoute?.startsWith("auth/") != true
     val showMiniPlayerHomeButton = showMiniPlayer && currentRoute != MainTab.Home.route

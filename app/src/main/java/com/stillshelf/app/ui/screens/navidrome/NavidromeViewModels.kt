@@ -3148,7 +3148,8 @@ data class NavidromePlaylistDetailUiState(
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
     val actionMessage: String? = null,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val reorderVersion: Int = 0
 )
 
 @HiltViewModel
@@ -3168,16 +3169,17 @@ class NavidromePlaylistDetailViewModel @Inject constructor(
         }
     }
 
-    fun refresh(forceRefresh: Boolean = true) {
+    fun refresh(forceRefresh: Boolean = true, silent: Boolean = false, bumpReorderVersion: Boolean = false) {
         viewModelScope.launch {
-            mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
+            if (!silent) mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
             when (val result = navidromeRepository.fetchPlaylistDetail(playlistId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     mutableUiState.update {
                         it.copy(
                             detail = result.value,
                             isLoading = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            reorderVersion = if (bumpReorderVersion) it.reorderVersion + 1 else it.reorderVersion
                         )
                     }
                 }
@@ -3256,6 +3258,22 @@ class NavidromePlaylistDetailViewModel @Inject constructor(
                     mutableUiState.update {
                         it.copy(isSubmitting = false, errorMessage = result.message)
                     }
+                }
+            }
+        }
+    }
+
+    fun reorderTracks(reorderedTracks: List<NavidromeTrack>) {
+        viewModelScope.launch {
+            when (val result = navidromeRepository.reorderPlaylistTracks(playlistId, reorderedTracks.map { it.id })) {
+                is AppResult.Success -> {
+                    mutableUiState.update { state ->
+                        state.copy(detail = state.detail?.copy(tracks = reorderedTracks))
+                    }
+                }
+                is AppResult.Error -> {
+                    mutableUiState.update { it.copy(errorMessage = result.message) }
+                    refresh(forceRefresh = true, bumpReorderVersion = true)
                 }
             }
         }

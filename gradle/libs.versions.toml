@@ -23,6 +23,7 @@ junit4 = "4.13.2"
 coroutines = "1.8.1"
 socketIoClient = "2.1.2"
 robolectric = "4.13"
+reorderable = "2.4.2"
 androidxTestCore = "1.6.1"
 androidxTestExtJunit = "1.2.1"
 mockk = "1.13.12"
@@ -69,6 +70,7 @@ androidx-test-core-ktx = { group = "androidx.test", name = "core-ktx", version.r
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 mockk-android = { group = "io.mockk", name = "mockk-android", version.ref = "mockk" }
+reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderable" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 

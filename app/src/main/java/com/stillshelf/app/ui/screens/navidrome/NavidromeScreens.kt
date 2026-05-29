@@ -89,6 +89,7 @@ import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
@@ -307,6 +308,8 @@ import com.stillshelf.app.ui.screens.DiagnosticLogsBrowserDialog
 import com.stillshelf.app.ui.screens.DiagnosticLogViewerDialog
 import com.stillshelf.app.ui.screens.DiagnosticLogsCollectedInfoDialog
 import com.stillshelf.app.ui.components.UpdateNotesDialogContent
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 private data class NavidromeLibraryDestination(
     val label: String,
@@ -2055,30 +2058,24 @@ private fun NavidromeCustomizeRoute(
     val effectiveHiddenListSectionIds = pendingHiddenListSectionIds ?: uiState.hiddenListSectionIds
     val effectiveHiddenPersonalizedSectionIds =
         pendingHiddenPersonalizedSectionIds ?: uiState.hiddenPersonalizedSectionIds
-    val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
-    fun moveRow(source: List<ToggleSectionItem>, from: Int, to: Int): List<ToggleSectionItem> {
-        if (from !in source.indices || to !in source.indices || from == to) return source
-        val mutable = source.toMutableList()
-        val item = mutable.removeAt(from)
-        mutable.add(to, item)
-        return mutable
-    }
+    val listLazyListState = rememberLazyListState()
+    val personalizedLazyListState = rememberLazyListState()
 
-    fun moveRowByDelta(rowId: String, delta: Int) {
-        if (delta == 0) return
-        val fromIndex = orderedRows.indexOfFirst { it.id == rowId }
-        if (fromIndex < 0) return
-        val toIndex = fromIndex + delta
-        if (toIndex !in orderedRows.indices) return
-        val updated = moveRow(orderedRows, fromIndex, toIndex)
-        if (selectedTab == "Lists") {
-            pendingListRows = updated
-        } else {
-            pendingPersonalizedRows = updated
-        }
+    val listReorderState = rememberReorderableLazyListState(listLazyListState) { from, to ->
+        val current = pendingListRows ?: uiState.listSections
+        pendingListRows = current.toMutableList().apply { add(to.index, removeAt(from.index)) }
         hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
+    val personalizedReorderState = rememberReorderableLazyListState(personalizedLazyListState) { from, to ->
+        val current = pendingPersonalizedRows ?: uiState.personalizedSections
+        pendingPersonalizedRows = current.toMutableList().apply { add(to.index, removeAt(from.index)) }
+        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
+
+    val currentLazyListState = if (selectedTab == "Lists") listLazyListState else personalizedLazyListState
+    val currentReorderState = if (selectedTab == "Lists") listReorderState else personalizedReorderState
+    val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
     Column(
         modifier = Modifier
@@ -2140,96 +2137,73 @@ private fun NavidromeCustomizeRoute(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
         ) {
             LazyColumn(
+                state = currentLazyListState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
                 contentPadding = PaddingValues(0.dp)
             ) {
-                itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
-                    val enabled = if (selectedTab == "Lists") {
-                        !effectiveHiddenListSectionIds.contains(row.id)
-                    } else {
-                        !effectiveHiddenPersonalizedSectionIds.contains(row.id)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                            .clickable {
-                                if (selectedTab == "Lists") {
-                                    pendingHiddenListSectionIds =
-                                        toggleHiddenSection(effectiveHiddenListSectionIds, row.id)
-                                } else {
-                                    pendingHiddenPersonalizedSectionIds =
-                                        toggleHiddenSection(effectiveHiddenPersonalizedSectionIds, row.id)
-                                }
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (enabled) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
+                items(orderedRows, key = { it.id }) { row ->
+                    ReorderableItem(currentReorderState, key = row.id) { _ ->
+                        val index = orderedRows.indexOf(row)
+                        val enabled = if (selectedTab == "Lists") {
+                            !effectiveHiddenListSectionIds.contains(row.id)
+                        } else {
+                            !effectiveHiddenPersonalizedSectionIds.contains(row.id)
                         }
-                        Text(
-                            text = row.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 12.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .clickable {
+                                    if (selectedTab == "Lists") {
+                                        pendingHiddenListSectionIds =
+                                            toggleHiddenSection(effectiveHiddenListSectionIds, row.id)
+                                    } else {
+                                        pendingHiddenPersonalizedSectionIds =
+                                            toggleHiddenSection(effectiveHiddenPersonalizedSectionIds, row.id)
+                                    }
+                                },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(
-                                onClick = { moveRowByDelta(row.id, -1) },
-                                enabled = index > 0,
-                                modifier = Modifier.size(36.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.KeyboardArrowUp,
-                                    contentDescription = "Move up",
-                                    tint = if (index > 0) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                    }
-                                )
+                                if (enabled) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
-                            IconButton(
-                                onClick = { moveRowByDelta(row.id, 1) },
-                                enabled = index < orderedRows.lastIndex,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.KeyboardArrowDown,
-                                    contentDescription = "Move down",
-                                    tint = if (index < orderedRows.lastIndex) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                    }
-                                )
-                            }
+                            Text(
+                                text = row.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.DragHandle,
+                                contentDescription = "Drag to reorder",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .draggableHandle()
+                            )
                         }
-                    }
-                    if (index < orderedRows.lastIndex) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        if (index < orderedRows.lastIndex) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
                     }
                 }
             }
@@ -3443,14 +3417,33 @@ private fun NavidromePlaylistDetailRoute(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     val showSearchField = searchExpanded || searchQuery.isNotBlank()
     val listState = rememberLazyListState()
-    val displayedPlaylistTracks = uiState.detail?.tracks?.withIndex()?.filter { (_, track) ->
+    val serverTracks = uiState.detail?.tracks ?: emptyList()
+    val serverTrackIds = serverTracks.map { it.id }.toSet()
+    val reorderVersion = uiState.reorderVersion
+    var localTracks by remember(serverTrackIds, reorderVersion) { mutableStateOf(serverTracks) }
+    var slotIds by remember(serverTrackIds, reorderVersion) { mutableStateOf(serverTracks.indices.toList()) }
+    val reorderableLazyListState = rememberReorderableLazyListState(listState) { from, to ->
+        val fromSlot = from.key as? Int ?: return@rememberReorderableLazyListState
+        val toSlot = to.key as? Int ?: return@rememberReorderableLazyListState
+        val fromIdx = slotIds.indexOf(fromSlot)
+        val toIdx = slotIds.indexOf(toSlot)
+        if (fromIdx < 0 || toIdx < 0) return@rememberReorderableLazyListState
+        localTracks = localTracks.toMutableList().apply { add(toIdx, removeAt(fromIdx)) }
+        slotIds = slotIds.toMutableList().apply { add(toIdx, removeAt(fromIdx)) }
+    }
+    val canReorder = searchQuery.isBlank()
+    val displayedPlaylistTracks = localTracks.mapIndexed { i, track ->
+        Pair(slotIds[i], track)
+    }.filter { (_, track) ->
         val normalizedQuery = searchQuery.trim()
         normalizedQuery.isBlank() ||
             track.title.contains(normalizedQuery, ignoreCase = true) ||
             track.artistName.contains(normalizedQuery, ignoreCase = true) ||
             track.albumName.contains(normalizedQuery, ignoreCase = true)
-    }.orEmpty()
-    val firstMatchingTrackIndex = displayedPlaylistTracks.firstOrNull()?.index
+    }
+    val firstMatchingTrackIndex = displayedPlaylistTracks.firstOrNull()
+        ?.let { (slotId, _) -> slotIds.indexOf(slotId) }
+        ?.takeIf { searchQuery.isNotBlank() }
 
     LaunchedEffect(searchQuery, firstMatchingTrackIndex) {
         if (searchQuery.isBlank() || firstMatchingTrackIndex == null) return@LaunchedEffect
@@ -3573,105 +3566,122 @@ private fun NavidromePlaylistDetailRoute(
             item {
                 PlaylistDetailHero(
                     detail = detail,
-                    onPlay = { playerViewModel.playTracks(detail.tracks, 0) },
+                    onPlay = { playerViewModel.playTracks(localTracks, 0) },
                     onShuffle = {
-                        val shuffledTracks = detail.tracks.shuffled()
+                        val shuffledTracks = localTracks.shuffled()
                         if (shuffledTracks.isNotEmpty()) {
                             playerViewModel.playTracks(shuffledTracks, 0)
                         }
                     }
                 )
             }
-            if (detail.tracks.isEmpty()) {
+            if (localTracks.isEmpty()) {
                 item { EmptyCard("No songs yet. Add songs from the Songs, Album, Search, or Favorite Songs screens.") }
             } else if (displayedPlaylistTracks.isEmpty()) {
                 item { EmptyCard("No songs match \"${searchQuery.trim()}\".") }
             } else {
-                items(displayedPlaylistTracks, key = { (index, track) -> "${track.id}:$index" }) { (index, track) ->
-                    TrackRow(
-                        track = track,
-                        isCurrent = playerState.currentTrack?.id == track.id,
-                        isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
-                        isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
-                        isCached = downloadUiState.cachedTrackIds.contains(track.id) &&
-                            !downloadUiState.downloadedTrackIds.contains(track.id),
-                        downloadProgressPercent = downloadUiState.trackProgressById[track.id],
-                        onClick = { playerViewModel.playTracks(detail.tracks, index) },
-                        trailingContent = {
-                            var rowMenuExpanded by remember { mutableStateOf(false) }
-                            Box {
-                                IconButton(onClick = { rowMenuExpanded = true }) {
+                items(displayedPlaylistTracks, key = { (slotId, _) -> slotId }) { (slotId, track) ->
+                    val trackListIdx = slotIds.indexOf(slotId)
+                    ReorderableItem(reorderableLazyListState, key = slotId) { _ ->
+                        TrackRow(
+                            track = track,
+                            isCurrent = playerState.currentTrack?.id == track.id,
+                            isPlaying = playerState.currentTrack?.id == track.id && playerState.isPlaying,
+                            isDownloaded = downloadUiState.downloadedTrackIds.contains(track.id),
+                            isCached = downloadUiState.cachedTrackIds.contains(track.id) &&
+                                !downloadUiState.downloadedTrackIds.contains(track.id),
+                            downloadProgressPercent = downloadUiState.trackProgressById[track.id],
+                            onClick = { playerViewModel.playTracks(localTracks, trackListIdx) },
+                            leadingContent = if (canReorder) {
+                                {
                                     Icon(
-                                        imageVector = Icons.Outlined.MoreHoriz,
-                                        contentDescription = "Playlist song options"
+                                        imageVector = Icons.Rounded.DragHandle,
+                                        contentDescription = "Drag to reorder",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.draggableHandle(
+                                            onDragStopped = {
+                                                viewModel.reorderTracks(localTracks)
+                                            }
+                                        )
                                     )
                                 }
-                                NavidromeTrackActionsMenu(
-                                    expanded = rowMenuExpanded,
-                                    onDismissRequest = { rowMenuExpanded = false },
-                                    onPlayTrack = {
-                                        rowMenuExpanded = false
-                                        playerViewModel.playTracks(detail.tracks, index)
-                                    },
-                                    onPlayNext = {
-                                        rowMenuExpanded = false
-                                        playerViewModel.playTracksNext(listOf(track))
-                                    },
-                                    onAddToQueue = {
-                                        rowMenuExpanded = false
-                                        playerViewModel.addTracksToQueue(listOf(track))
-                                    },
-                                    playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
-                                    isRadio = track.id.startsWith("radio:"),
-                                    onShowAlbum = track.albumId?.let { albumId ->
-                                        {
-                                            rowMenuExpanded = false
-                                            onOpenAlbum(albumId)
-                                        }
-                                    },
-                                    onShowArtist = track.artistId?.let { artistId ->
-                                        {
-                                            rowMenuExpanded = false
-                                            onOpenArtist(artistId)
-                                        }
-                                    },
-                                    onShowTrackDetails = {
-                                        rowMenuExpanded = false
-                                        trackDetailsTarget = track
-                                    },
-                                    extraActions = {
-                                        HorizontalDivider()
-                                        AppDropdownMenuItem(
-                                            text = { Text("Add to Playlist") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = Icons.Outlined.QueueMusic,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            onClick = {
-                                                rowMenuExpanded = false
-                                                pendingPlaylistRequest = track.toPlaylistSelectionRequest()
-                                            }
-                                        )
-                                        AppDropdownMenuItem(
-                                            text = { Text("Remove from Playlist") },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = Icons.Outlined.Remove,
-                                                    contentDescription = null
-                                                )
-                                            },
-                                            onClick = {
-                                                rowMenuExpanded = false
-                                                pendingTrackRemovalIndex = index
-                                            }
+                            } else null,
+                            trailingContent = {
+                                var rowMenuExpanded by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(onClick = { rowMenuExpanded = true }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            contentDescription = "Playlist song options"
                                         )
                                     }
-                                )
+                                    NavidromeTrackActionsMenu(
+                                        expanded = rowMenuExpanded,
+                                        onDismissRequest = { rowMenuExpanded = false },
+                                        onPlayTrack = {
+                                            rowMenuExpanded = false
+                                            playerViewModel.playTracks(localTracks, trackListIdx)
+                                        },
+                                        onPlayNext = {
+                                            rowMenuExpanded = false
+                                            playerViewModel.playTracksNext(listOf(track))
+                                        },
+                                        onAddToQueue = {
+                                            rowMenuExpanded = false
+                                            playerViewModel.addTracksToQueue(listOf(track))
+                                        },
+                                        playLabel = if (playerState.currentTrack?.id == track.id) "Play Again" else "Play",
+                                        isRadio = track.id.startsWith("radio:"),
+                                        onShowAlbum = track.albumId?.let { albumId ->
+                                            {
+                                                rowMenuExpanded = false
+                                                onOpenAlbum(albumId)
+                                            }
+                                        },
+                                        onShowArtist = track.artistId?.let { artistId ->
+                                            {
+                                                rowMenuExpanded = false
+                                                onOpenArtist(artistId)
+                                            }
+                                        },
+                                        onShowTrackDetails = {
+                                            rowMenuExpanded = false
+                                            trackDetailsTarget = track
+                                        },
+                                        extraActions = {
+                                            HorizontalDivider()
+                                            AppDropdownMenuItem(
+                                                text = { Text("Add to Playlist") },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.QueueMusic,
+                                                        contentDescription = null
+                                                    )
+                                                },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    pendingPlaylistRequest = track.toPlaylistSelectionRequest()
+                                                }
+                                            )
+                                            AppDropdownMenuItem(
+                                                text = { Text("Remove from Playlist") },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.Remove,
+                                                        contentDescription = null
+                                                    )
+                                                },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    pendingTrackRemovalIndex = trackListIdx
+                                                }
+                                            )
+                                        }
+                                    )
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         } else {
@@ -3735,7 +3745,7 @@ private fun NavidromePlaylistDetailRoute(
     }
 
     pendingTrackRemovalIndex?.let { index ->
-        val track = uiState.detail?.tracks?.getOrNull(index)
+        val track = localTracks.getOrNull(index)
         if (track != null) {
             AlertDialog(
                 onDismissRequest = { pendingTrackRemovalIndex = null },
@@ -7663,6 +7673,7 @@ private fun StandardTopScreen(
     imePaddingEnabled: Boolean = false,
     listState: LazyListState? = null,
     containerColor: Color = MaterialTheme.colorScheme.background,
+    lazyColumnModifier: Modifier = Modifier,
     content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
 ) {
     val resolvedListState = listState ?: rememberLazyListState()
@@ -7700,7 +7711,9 @@ private fun StandardTopScreen(
     ) { topInsetPadding ->
         LazyColumn(
             state = resolvedListState,
-            modifier = Modifier.fillMaxSize().then(if (imePaddingEnabled) Modifier.imePadding() else Modifier),
+            modifier = Modifier.fillMaxSize()
+                .then(if (imePaddingEnabled) Modifier.imePadding() else Modifier)
+                .then(lazyColumnModifier),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -9712,6 +9725,7 @@ private fun TrackRow(
     isCached: Boolean = false,
     downloadProgressPercent: Int? = null,
     onClick: () -> Unit,
+    leadingContent: (@Composable () -> Unit)? = null,
     trailingContent: (@Composable () -> Unit)? = null
 ) {
     val nowPlayingAccentColor = navidromeNowPlayingAccentColor()
@@ -9753,6 +9767,9 @@ private fun TrackRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (leadingContent != null) {
+                leadingContent()
+            }
             AlbumArt(
                 url = track.coverUrl,
                 size = 44.dp,

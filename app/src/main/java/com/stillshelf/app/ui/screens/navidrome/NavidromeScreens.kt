@@ -10316,14 +10316,13 @@ private fun CenteredDetailHero(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(188.dp)
                     .clip(shape)
             ) {
                 if (imageUrl.isNullOrBlank()) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .matchParentSize()
+                            .height(188.dp)
                             .background(MaterialTheme.colorScheme.surfaceVariant),
                         contentAlignment = Alignment.Center
                     ) {
@@ -10339,8 +10338,9 @@ private fun CenteredDetailHero(
                         model = imageUrl,
                         contentDescription = null,
                         modifier = Modifier
-                            .matchParentSize(),
-                        contentScale = ContentScale.Crop
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp),
+                        contentScale = ContentScale.FillWidth
                     )
                 }
                 NavidromeDownloadBadge(

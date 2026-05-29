@@ -690,7 +690,8 @@ fun NavidromeAppRoute(
         currentRoute != NavidromeRoute.SERVERS &&
         currentRoute != NavidromeRoute.ADVANCED &&
         currentRoute != NavidromeRoute.ABOUT &&
-        currentRoute != NavidromeRoute.LOGIN
+        currentRoute != NavidromeRoute.LOGIN &&
+        currentRoute != NavidromeRoute.CUSTOMIZE
     var lockPlayerSheetDismiss by rememberSaveable { mutableStateOf(false) }
     val playerSheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,

@@ -52,6 +52,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -70,6 +71,7 @@ import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
@@ -259,6 +261,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 private data class LibraryListItem(
     val id: String,
@@ -11028,11 +11032,12 @@ fun CustomizeScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Customize",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.weight(1f)
+            CircleActionButton(
+                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "Back",
+                onClick = ::cancelAndExit
             )
+            Spacer(modifier = Modifier.width(8.dp))
             if (onHomeClick != null) {
                 CircleActionButton(
                     icon = Icons.Outlined.Home,
@@ -11045,8 +11050,13 @@ fun CustomizeScreen(
                         onHomeClick()
                     }
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(10.dp))
             }
+            Text(
+                text = "Customize",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f)
+            )
             CircleActionButton(
                 icon = Icons.Filled.Check,
                 contentDescription = "Done",
@@ -11079,28 +11089,24 @@ fun CustomizeScreen(
         val effectiveHiddenListSectionIds = pendingHiddenListSectionIds ?: uiState.hiddenListSectionIds
         val effectiveHiddenPersonalizedSectionIds =
             pendingHiddenPersonalizedSectionIds ?: uiState.hiddenPersonalizedSectionIds
-        val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
-        fun moveRow(
-            source: List<ToggleSectionItem>,
-            from: Int,
-            to: Int
-        ): List<ToggleSectionItem> = moveSectionRow(source = source, from = from, to = to)
+        val listLazyListState = rememberLazyListState()
+        val personalizedLazyListState = rememberLazyListState()
 
-        fun moveRowByDelta(rowId: String, delta: Int) {
-            if (delta == 0) return
-            val fromIndex = orderedRows.indexOfFirst { it.id == rowId }
-            if (fromIndex < 0) return
-            val toIndex = fromIndex + delta
-            if (toIndex !in orderedRows.indices) return
-            val updated = moveRow(orderedRows, fromIndex, toIndex)
-            if (selectedTab == "Lists") {
-                pendingListRows = updated
-            } else {
-                pendingPersonalizedRows = updated
-            }
+        val listReorderState = rememberReorderableLazyListState(listLazyListState) { from, to ->
+            val current = pendingListRows ?: uiState.listSections
+            pendingListRows = current.toMutableList().apply { add(to.index, removeAt(from.index)) }
             hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
+        val personalizedReorderState = rememberReorderableLazyListState(personalizedLazyListState) { from, to ->
+            val current = pendingPersonalizedRows ?: ensureListenAgainSection(uiState.personalizedSections)
+            pendingPersonalizedRows = current.toMutableList().apply { add(to.index, removeAt(from.index)) }
+            hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+
+        val currentLazyListState = if (selectedTab == "Lists") listLazyListState else personalizedLazyListState
+        val currentReorderState = if (selectedTab == "Lists") listReorderState else personalizedReorderState
+        val orderedRows = if (selectedTab == "Lists") effectiveListRows else effectivePersonalizedRows
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -11109,100 +11115,77 @@ fun CustomizeScreen(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))
         ) {
             LazyColumn(
+                state = currentLazyListState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
                 contentPadding = PaddingValues(0.dp)
             ) {
-                itemsIndexed(orderedRows, key = { _, item -> item.id }) { index, row ->
-                    val enabled = if (selectedTab == "Lists") {
-                        !effectiveHiddenListSectionIds.contains(row.id)
-                    } else {
-                        !effectiveHiddenPersonalizedSectionIds.contains(row.id)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp)
-                            .clickable {
-                                if (selectedTab == "Lists") {
-                                    pendingHiddenListSectionIds = toggleHiddenSection(
-                                        hidden = effectiveHiddenListSectionIds,
-                                        id = row.id
-                                    )
-                                } else {
-                                    pendingHiddenPersonalizedSectionIds = toggleHiddenSection(
-                                        hidden = effectiveHiddenPersonalizedSectionIds,
-                                        id = row.id
-                                    )
-                                }
-                            },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (enabled) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
+                items(orderedRows, key = { it.id }) { row ->
+                    ReorderableItem(currentReorderState, key = row.id) { _ ->
+                        val index = orderedRows.indexOf(row)
+                        val enabled = if (selectedTab == "Lists") {
+                            !effectiveHiddenListSectionIds.contains(row.id)
+                        } else {
+                            !effectiveHiddenPersonalizedSectionIds.contains(row.id)
                         }
-                        Text(
-                            text = row.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 12.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .clickable {
+                                    if (selectedTab == "Lists") {
+                                        pendingHiddenListSectionIds = toggleHiddenSection(
+                                            hidden = effectiveHiddenListSectionIds,
+                                            id = row.id
+                                        )
+                                    } else {
+                                        pendingHiddenPersonalizedSectionIds = toggleHiddenSection(
+                                            hidden = effectiveHiddenPersonalizedSectionIds,
+                                            id = row.id
+                                        )
+                                    }
+                                },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(
-                                onClick = { moveRowByDelta(row.id, -1) },
-                                enabled = index > 0,
-                                modifier = Modifier.size(36.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(if (enabled) Color.Black else MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.KeyboardArrowUp,
-                                    contentDescription = "Move up",
-                                    tint = if (index > 0) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                    }
-                                )
+                                if (enabled) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
-                            IconButton(
-                                onClick = { moveRowByDelta(row.id, 1) },
-                                enabled = index < orderedRows.lastIndex,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.KeyboardArrowDown,
-                                    contentDescription = "Move down",
-                                    tint = if (index < orderedRows.lastIndex) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                                    }
-                                )
-                            }
+                            Text(
+                                text = row.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.DragHandle,
+                                contentDescription = "Drag to reorder",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .draggableHandle()
+                            )
                         }
-                    }
-                    if (index < orderedRows.lastIndex) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        if (index < orderedRows.lastIndex) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                        }
                     }
                 }
             }

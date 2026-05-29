@@ -15,8 +15,8 @@ if (keystorePropertiesFile.exists()) {
 }
 val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { key -> !keystoreProperties.getProperty(key).isNullOrBlank() }
-val appVersionCode = 113
-val appVersionName = "0.7.1"
+val appVersionCode = 114
+val appVersionName = "0.7.2"
 
 android {
     namespace = "com.stillshelf.app"
@@ -142,6 +142,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
 
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.reorderable)
 
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)

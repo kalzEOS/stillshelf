@@ -1195,6 +1195,35 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(Unit)
     }
 
+    suspend fun reorderPlaylistTracks(
+        playlistId: String,
+        orderedTrackIds: List<String>
+    ): AppResult<Unit> = withAuth { auth ->
+        val normalizedId = playlistId.trim()
+        if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")
+        val detail = when (val result = fetchPlaylistDetail(normalizedId, forceRefresh = true)) {
+            is AppResult.Success -> result.value
+            is AppResult.Error -> return@withAuth result
+        }
+        val serverIdCounts = detail.tracks.map { it.id }.groupingBy { it }.eachCount()
+        val callerIdCounts = orderedTrackIds.groupingBy { it }.eachCount()
+        if (serverIdCounts != callerIdCounts) {
+            return@withAuth AppResult.Error("Playlist was modified externally. Please refresh and try again.")
+        }
+        val result = navidromeApi.updatePlaylist(
+            auth = auth,
+            playlistId = normalizedId,
+            name = detail.playlist.name,
+            songIndicesToRemove = detail.tracks.indices.toList(),
+            songIdsToAdd = orderedTrackIds
+        )
+        if (result.isFailure) {
+            throw result.exceptionOrNull() ?: IllegalStateException("Unable to reorder playlist.")
+        }
+        invalidatePlaylistCaches(auth, normalizedId)
+        AppResult.Success(Unit)
+    }
+
     suspend fun deletePlaylist(playlistId: String): AppResult<Unit> = withAuth { auth ->
         val normalizedId = playlistId.trim()
         if (normalizedId.isBlank()) return@withAuth AppResult.Error("Invalid playlist id.")

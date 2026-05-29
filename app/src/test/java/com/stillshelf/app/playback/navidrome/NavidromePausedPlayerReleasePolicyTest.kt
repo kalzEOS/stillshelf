@@ -16,7 +16,9 @@ class NavidromePausedPlayerReleasePolicyTest {
                 hasActivePlayer = true,
                 isPlaying = false,
                 playWhenReady = true,
-                playbackState = Player.STATE_READY
+                playbackState = Player.STATE_READY,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_OFF
             )
         )
     }
@@ -29,20 +31,99 @@ class NavidromePausedPlayerReleasePolicyTest {
                 hasActivePlayer = true,
                 isPlaying = false,
                 playWhenReady = false,
-                playbackState = Player.STATE_READY
+                playbackState = Player.STATE_READY,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_OFF
             )
         )
     }
 
     @Test
-    fun returnsFalseForRadioTrack() {
-        assertFalse(
+    fun returnsTrueForPausedRadioTrack() {
+        assertTrue(
             shouldScheduleNavidromePausedPlayerRelease(
                 currentTrack = track(id = "radio:station"),
                 hasActivePlayer = true,
                 isPlaying = false,
                 playWhenReady = false,
-                playbackState = Player.STATE_READY
+                playbackState = Player.STATE_READY,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_OFF
+            )
+        )
+    }
+
+    @Test
+    fun returnsTrueWhenQueueEndedNaturally() {
+        assertTrue(
+            shouldScheduleNavidromePausedPlayerRelease(
+                currentTrack = track(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = true,
+                playbackState = Player.STATE_ENDED,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_OFF
+            )
+        )
+    }
+
+    @Test
+    fun returnsFalseWhenEndedWithRepeatModeAll() {
+        assertFalse(
+            shouldScheduleNavidromePausedPlayerRelease(
+                currentTrack = track(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = true,
+                playbackState = Player.STATE_ENDED,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_ALL
+            )
+        )
+    }
+
+    @Test
+    fun returnsFalseWhenEndedWithRepeatModeOne() {
+        assertFalse(
+            shouldScheduleNavidromePausedPlayerRelease(
+                currentTrack = track(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = true,
+                playbackState = Player.STATE_ENDED,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_ONE
+            )
+        )
+    }
+
+    @Test
+    fun returnsFalseWhenAppIsInForeground() {
+        assertFalse(
+            shouldScheduleNavidromePausedPlayerRelease(
+                currentTrack = track(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = false,
+                playbackState = Player.STATE_READY,
+                appInForeground = true,
+                repeatMode = Player.REPEAT_MODE_OFF
+            )
+        )
+    }
+
+    @Test
+    fun returnsFalseWhenEndedButStillBuffering() {
+        assertFalse(
+            shouldScheduleNavidromePausedPlayerRelease(
+                currentTrack = track(),
+                hasActivePlayer = true,
+                isPlaying = false,
+                playWhenReady = true,
+                playbackState = Player.STATE_BUFFERING,
+                appInForeground = false,
+                repeatMode = Player.REPEAT_MODE_OFF
             )
         )
     }

@@ -4868,7 +4868,7 @@ private fun NavidromeArtistDetailRoute(
                                 title = detail.artist.name,
                                 subtitle = "${detail.artist.albumCount} albums",
                                 imageUrl = detail.artist.imageUrl ?: detail.artist.coverUrl,
-                                circular = true,
+                                circular = false,
                                 showDownloadedIndicator = downloadUiState.fullyDownloadedAlbumCountByArtistId[detail.artist.id]
                                     ?.let { it >= detail.artist.albumCount && detail.artist.albumCount > 0 }
                                     ?: false,
@@ -4934,6 +4934,7 @@ private fun NavidromeArtistDetailRoute(
                             }
                         }
                     }
+
                 }
 
                 else -> {
@@ -10311,12 +10312,44 @@ private fun CenteredDetailHero(
                 downloadProgressPercent = downloadProgressPercent
             )
         } else {
-            AlbumArt(
-                url = imageUrl,
-                size = 160.dp,
-                showDownloadedIndicator = showDownloadedIndicator,
-                downloadProgressPercent = downloadProgressPercent
-            )
+            val shape = RoundedCornerShape(18.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(188.dp)
+                    .clip(shape)
+            ) {
+                if (imageUrl.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .matchParentSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(92.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .matchParentSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                NavidromeDownloadBadge(
+                    visible = showDownloadedIndicator || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
+                    isCompleted = showDownloadedIndicator && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
+                    progressPercent = downloadProgressPercent,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
+            }
         }
         Text(
             text = title,

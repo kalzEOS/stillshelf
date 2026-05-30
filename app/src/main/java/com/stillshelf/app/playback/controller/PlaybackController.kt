@@ -44,6 +44,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
@@ -2943,15 +2944,17 @@ class PlaybackController @Inject constructor(
             artworkBookId = null
             artworkBitmap = null
             lastNotificationSignature = null
-            PlaybackServiceController.stop(appContext)
-            NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+            if (PlaybackServiceController.stop(appContext, BackendProvider.AUDIOBOOKSHELF)) {
+                NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+            }
             return
         }
 
         if (!keepPlaybackSessionActive) {
             lastNotificationSignature = null
-            PlaybackServiceController.stop(appContext)
-            NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+            if (PlaybackServiceController.stop(appContext, BackendProvider.AUDIOBOOKSHELF)) {
+                NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+            }
             return
         }
 
@@ -3104,7 +3107,11 @@ class PlaybackController @Inject constructor(
             .build()
 
         runCatching {
-            PlaybackServiceController.startOrUpdate(appContext, notification)
+            PlaybackServiceController.startOrUpdate(
+                context = appContext,
+                notification = notification,
+                owner = BackendProvider.AUDIOBOOKSHELF
+            )
         }.onFailure {
             // Avoid playback crashes if OEM notification policy rejects a publish attempt.
         }.onSuccess {

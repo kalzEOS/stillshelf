@@ -45,6 +45,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.stillshelf.app.MainActivity
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BackendProvider
 import com.stillshelf.app.core.model.ActiveServerConnectionStatus
 import com.stillshelf.app.core.model.NavidromeOutputDevice
 import com.stillshelf.app.core.model.NavidromePlayerState
@@ -151,6 +152,13 @@ internal fun shouldScheduleNavidromePausedPlayerRelease(
         !appInForeground &&
         playbackState != Player.STATE_BUFFERING &&
         (!playWhenReady || (playbackState == Player.STATE_ENDED && repeatMode == Player.REPEAT_MODE_OFF))
+}
+
+internal fun shouldKeepNavidromePlaybackSurfaceActive(
+    currentTrack: NavidromeTrack?,
+    hasActivePlayer: Boolean
+): Boolean {
+    return currentTrack != null || hasActivePlayer
 }
 
 internal fun isNavidromeOutputSwitchInFlight(
@@ -1675,7 +1683,15 @@ class NavidromePlayerController @Inject constructor(
     private fun updatePlaybackSurface() {
         val state = mutableState.value
         val currentTrack = state.currentTrack
-        val keepMediaSessionActive = currentTrack != null
+        val activePlayer = player
+        if (!shouldKeepNavidromePlaybackSurfaceActive(currentTrack, activePlayer != null)) {
+            clearPlaybackSurface()
+            return
+        }
+        if (currentTrack == null || activePlayer == null) {
+            return
+        }
+
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(
                 PlaybackStateCompat.ACTION_PLAY or
@@ -1686,7 +1702,6 @@ class NavidromePlayerController @Inject constructor(
             )
             .setState(
                 when {
-                    currentTrack == null -> PlaybackStateCompat.STATE_NONE
                     state.isLoading -> PlaybackStateCompat.STATE_BUFFERING
                     state.isPlaying -> PlaybackStateCompat.STATE_PLAYING
                     else -> PlaybackStateCompat.STATE_PAUSED
@@ -1696,12 +1711,7 @@ class NavidromePlayerController @Inject constructor(
             )
             .build()
         mediaSession.setPlaybackState(playbackState)
-        mediaSession.isActive = keepMediaSessionActive
-
-        if (currentTrack == null || player == null) {
-            clearPlaybackSurface()
-            return
-        }
+        mediaSession.isActive = true
 
         maybeLoadArtwork(currentTrack)
         mediaSession.setMetadata(
@@ -1735,8 +1745,9 @@ class NavidromePlayerController @Inject constructor(
         lastNotificationSignature = null
         mediaSession.setMetadata(null)
         mediaSession.isActive = false
-        PlaybackServiceController.stop(appContext)
-        NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+        if (PlaybackServiceController.stop(appContext, BackendProvider.NAVIDROME)) {
+            NotificationManagerCompat.from(appContext).cancel(NOTIFICATION_ID)
+        }
     }
 
     private fun observeActiveConnectionChanges() {
@@ -1954,7 +1965,11 @@ class NavidromePlayerController @Inject constructor(
             .build()
 
         runCatching {
-            PlaybackServiceController.startOrUpdate(appContext, notification)
+            PlaybackServiceController.startOrUpdate(
+                context = appContext,
+                notification = notification,
+                owner = BackendProvider.NAVIDROME
+            )
         }.onSuccess {
             lastNotificationSignature = notificationSignature
         }

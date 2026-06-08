@@ -466,8 +466,8 @@ fun HomeScreen(
     val homeCarouselModifier = remember {
         Modifier.fillMaxWidth()
     }
-    val homeCarouselContentPadding = remember(homeStartInset) {
-        PaddingValues(start = homeStartInset, end = 0.dp)
+    val homeCarouselContentPadding = remember(homeStartInset, homeEndInset) {
+        PaddingValues(start = homeStartInset, end = homeEndInset)
     }
     var isMenuExpanded by remember { mutableStateOf(false) }
     var isLibraryMenuExpanded by remember { mutableStateOf(false) }

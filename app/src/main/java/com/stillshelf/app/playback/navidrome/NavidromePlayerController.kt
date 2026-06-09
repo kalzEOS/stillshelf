@@ -1165,6 +1165,13 @@ class NavidromePlayerController @Inject constructor(
                 }
             }
             if (!isActive) return@launch
+            // Pre-fetch cover art for all queued tracks in parallel with audio warmup
+            launch {
+                com.stillshelf.app.ui.common.prefetchCoverImages(
+                    appContext,
+                    refreshedQueue.mapNotNull { it.coverUrl }
+                )
+            }
             val cacheLimitBytes = sessionPreferences.state.first()
                 .navidromeCacheSizeLimit
                 .let { NavidromeCacheSizeOption.toBytes(it) }

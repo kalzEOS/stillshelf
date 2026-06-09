@@ -1,0 +1,3 @@
+- Improved the full-screen player and queue layout for a cleaner playback experience
+- Added cover art prefetching so artwork appears more reliably during playback warmup
+- Refined the player surfaces and queue presentation for a more consistent look

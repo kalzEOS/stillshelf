@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+
 package com.stillshelf.app.ui.screens.navidrome
 
 import android.annotation.SuppressLint
@@ -9,23 +11,35 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentScope
+import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
@@ -34,6 +48,8 @@ import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
@@ -84,6 +100,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -97,12 +114,14 @@ import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.ArrowCircleDown
@@ -149,6 +168,7 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
@@ -161,6 +181,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -1252,6 +1273,8 @@ private fun NavidromeHomeRoute(
         onPlayPause = onPlayPause,
         onPlayTrack = playerViewModel::playTrack,
         onPlayAlbum = playerViewModel::playAlbum,
+        onPlayNextTrack = { track -> playerViewModel.playTracksNext(listOf(track)) },
+        onAddToQueueTrack = { track -> playerViewModel.addTracksToQueue(listOf(track)) },
         onToggleTrackDownload = downloadsViewModel::toggleTrackDownload,
         onToggleAlbumDownload = downloadsViewModel::toggleAlbumDownload,
         onOpenPlayer = onOpenPlayer
@@ -1298,6 +1321,8 @@ private fun NavidromeHomeScreen(
     onPlayPause: () -> Unit,
     onPlayTrack: (NavidromeTrack) -> Unit,
     onPlayAlbum: (String, Boolean) -> Unit,
+    onPlayNextTrack: (NavidromeTrack) -> Unit,
+    onAddToQueueTrack: (NavidromeTrack) -> Unit,
     onToggleTrackDownload: (NavidromeTrack) -> Unit,
     onToggleAlbumDownload: (NavidromeAlbum) -> Unit,
     onOpenPlayer: () -> Unit
@@ -1793,6 +1818,8 @@ private fun NavidromeHomeScreen(
                                                 posterHeight = continueListeningPosterHeight,
                                                 onPlayPause = onPlayPause,
                                                 onPlayTrack = { onPlayTrack(track) },
+                                                onPlayNextTrack = onPlayNextTrack,
+                                                onAddToQueueTrack = onAddToQueueTrack,
                                                 onToggleDownload = { onToggleTrackDownload(track) },
                                                 onClick = {
                                                     if (playerState.currentTrack?.id == track.id) {
@@ -8887,6 +8914,424 @@ private fun NavidromeTrackActionsMenu(
 }
 
 @Composable
+private fun NavidromePlayerOptionsMenuButton(
+    track: NavidromeTrack,
+    isFavorite: Boolean,
+    isDownloaded: Boolean,
+    isRadio: Boolean,
+    immersiveEnabled: Boolean,
+    menuShellColor: Color,
+    onToggleFavorite: (NavidromeTrack) -> Boolean,
+    onAddToPlaylist: ((NavidromeTrack) -> Unit)?,
+    onToggleDownload: ((NavidromeTrack) -> Unit)?,
+    onShowLyrics: () -> Unit,
+    onClearLyricsCache: () -> Unit,
+    onOpenAlbum: ((String) -> Unit)?,
+    onOpenArtist: ((String) -> Unit)?,
+    onShowTrackDetails: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var isMenuExpanded by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier.clickable { isMenuExpanded = true },
+            shape = CircleShape,
+            color = menuShellColor,
+            tonalElevation = 2.dp
+        ) {
+            Box(
+                modifier = Modifier.size(38.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreHoriz,
+                    contentDescription = "Player options",
+                    modifier = Modifier.size(20.dp),
+                    tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+        AppDropdownMenu(
+            expanded = isMenuExpanded,
+            onDismissRequest = { isMenuExpanded = false }
+        ) {
+            if (!isRadio) {
+                AppDropdownMenuItem(
+                    text = { Text(if (isFavorite) "Remove Favorite" else "Favorite") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                            contentDescription = null,
+                            tint = if (isFavorite) Color(0xFFE53935) else LocalContentColor.current
+                        )
+                    },
+                    onClick = {
+                        isMenuExpanded = false
+                        val added = onToggleFavorite(track)
+                        Toast.makeText(
+                            context,
+                            if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+                onAddToPlaylist?.let { addToPlaylist ->
+                    AppDropdownMenuItem(
+                        text = { Text("Add to Playlist") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.QueueMusic,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            isMenuExpanded = false
+                            addToPlaylist(track)
+                        }
+                    )
+                }
+                onToggleDownload?.let { toggleDownload ->
+                    AppDropdownMenuItem(
+                        text = {
+                            Text(if (isDownloaded) "Remove Download" else "Download")
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Download,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            isMenuExpanded = false
+                            toggleDownload(track)
+                        }
+                    )
+                }
+                AppDropdownMenuItem(
+                    text = { Text("Show Lyrics") },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Outlined.Subtitles, contentDescription = null)
+                    },
+                    onClick = {
+                        isMenuExpanded = false
+                        onShowLyrics()
+                    }
+                )
+                AppDropdownMenuItem(
+                    text = { Text("Clear Lyrics Cache") },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Outlined.Refresh, contentDescription = null)
+                    },
+                    onClick = {
+                        isMenuExpanded = false
+                        onClearLyricsCache()
+                        Toast.makeText(context, "Lyrics cache cleared.", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+            onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
+                AppDropdownMenuItem(
+                    text = { Text("Show Album") },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Outlined.Album, contentDescription = null)
+                    },
+                    onClick = {
+                        isMenuExpanded = false
+                        openAlbum(track.albumId!!)
+                    }
+                )
+            }
+            onOpenArtist?.takeIf { track.artistId != null }?.let { openArtist ->
+                AppDropdownMenuItem(
+                    text = { Text("Show Artist") },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Outlined.Person, contentDescription = null)
+                    },
+                    onClick = {
+                        isMenuExpanded = false
+                        openArtist(track.artistId!!)
+                    }
+                )
+            }
+            AppDropdownMenuItem(
+                text = { Text("Track Details") },
+                leadingIcon = {
+                    Icon(imageVector = Icons.Outlined.Tune, contentDescription = null)
+                },
+                onClick = {
+                    isMenuExpanded = false
+                    onShowTrackDetails()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniNowPlayingBar(
+    track: NavidromeTrack,
+    coverUrl: String?,
+    onFavoriteClick: () -> Unit,
+    isFavorite: Boolean,
+    isRadio: Boolean,
+    isDownloaded: Boolean,
+    immersiveEnabled: Boolean,
+    primaryTextColor: Color,
+    secondaryTextColor: Color,
+    menuShellColor: Color,
+    onToggleFavorite: (NavidromeTrack) -> Boolean,
+    onAddToPlaylist: ((NavidromeTrack) -> Unit)?,
+    onToggleDownload: ((NavidromeTrack) -> Unit)?,
+    onShowLyrics: () -> Unit,
+    onClearLyricsCache: () -> Unit,
+    onOpenAlbum: ((String) -> Unit)?,
+    onOpenArtist: ((String) -> Unit)?,
+    onShowTrackDetails: () -> Unit,
+    coverModifier: Modifier = Modifier,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        AlbumArt(
+            url = if (isRadio) null else coverUrl,
+            width = 48.dp,
+            height = 48.dp,
+            shape = RoundedCornerShape(6.dp),
+            placeholderResId = if (isRadio) R.drawable.radio_placeholder else null,
+            modifier = coverModifier
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = primaryTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = track.artistName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = secondaryTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        IconButton(onClick = onFavoriteClick) {
+            Icon(
+                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = if (isFavorite) "Remove Favorite" else "Favorite",
+                tint = if (isFavorite) Color(0xFFE53935) else primaryTextColor
+            )
+        }
+        NavidromePlayerOptionsMenuButton(
+            track = track,
+            isFavorite = isFavorite,
+            isDownloaded = isDownloaded,
+            isRadio = isRadio,
+            immersiveEnabled = immersiveEnabled,
+            menuShellColor = menuShellColor,
+            onToggleFavorite = onToggleFavorite,
+            onAddToPlaylist = onAddToPlaylist,
+            onToggleDownload = onToggleDownload,
+            onShowLyrics = onShowLyrics,
+            onClearLyricsCache = onClearLyricsCache,
+            onOpenAlbum = onOpenAlbum,
+            onOpenArtist = onOpenArtist,
+            onShowTrackDetails = onShowTrackDetails
+        )
+    }
+}
+
+@Composable
+private fun QueueListSurface(
+    displayedQueueItems: List<NavidromeQueuePreviewItem>,
+    currentIndex: Int,
+    currentTrackId: String,
+    queueHasValidCurrentIndex: Boolean,
+    isPlaying: Boolean,
+    downloadedTrackIds: Set<String>,
+    cachedTrackIds: Set<String>,
+    trackProgressById: Map<String, Int>,
+    immersiveEnabled: Boolean,
+    onSelectTrack: (Int) -> Unit,
+    onPlayPause: () -> Unit,
+    onPlayNextTrack: ((NavidromeTrack) -> Unit)?,
+    onAddToQueueTrack: ((NavidromeTrack) -> Unit)?,
+    onRemoveFromQueueTrack: (Int) -> Boolean,
+    onToggleDownload: ((NavidromeTrack) -> Unit)?,
+    onOpenAlbum: ((String) -> Unit)?,
+    onOpenArtist: ((String) -> Unit)?,
+    onShowTrackDetails: (NavidromeTrack) -> Unit,
+    queueCardColor: Color,
+    queueCardBorderColor: Color,
+    primaryTextColor: Color,
+    bottomContentPadding: Dp = 0.dp,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val hasUpNext = displayedQueueItems.any { item -> item.track.id != currentTrackId }
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = "Up Next",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = primaryTextColor,
+            modifier = Modifier.padding(horizontal = 6.dp)
+        )
+        if (!hasUpNext) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.QueueMusic,
+                        contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = primaryTextColor.copy(alpha = 0.4f)
+                    )
+                    Text(
+                        text = "Nothing up next",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = primaryTextColor.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = bottomContentPadding),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(displayedQueueItems, key = { it.queueIndex }) { item ->
+                    val itemIsCurrent = item.queueIndex == currentIndex ||
+                        (!queueHasValidCurrentIndex && item.track.id == currentTrackId)
+                    PlayerQueueRow(
+                        track = item.track,
+                        isCurrent = itemIsCurrent,
+                        isPlaying = itemIsCurrent && isPlaying,
+                        isDownloaded = item.track.id in downloadedTrackIds,
+                        isCached = item.track.id in cachedTrackIds && item.track.id !in downloadedTrackIds,
+                        downloadProgressPercent = trackProgressById[item.track.id],
+                        immersiveEnabled = immersiveEnabled,
+                        onClick = { onSelectTrack(item.queueIndex) },
+                        trailingContent = if (onPlayNextTrack != null && onAddToQueueTrack != null) {
+                            {
+                                var rowMenuExpanded by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(onClick = { rowMenuExpanded = true }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.MoreHoriz,
+                                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface,
+                                            contentDescription = "Queue item options"
+                                        )
+                                    }
+                                    NavidromeTrackActionsMenu(
+                                        expanded = rowMenuExpanded,
+                                        onDismissRequest = { rowMenuExpanded = false },
+                                        onPlayTrack = {
+                                            rowMenuExpanded = false
+                                            if (itemIsCurrent && isPlaying) {
+                                                onPlayPause()
+                                            } else {
+                                                onSelectTrack(item.queueIndex)
+                                            }
+                                        },
+                                        onPlayNext = {
+                                            rowMenuExpanded = false
+                                            onPlayNextTrack(item.track)
+                                        },
+                                        onAddToQueue = {
+                                            rowMenuExpanded = false
+                                            onAddToQueueTrack(item.track)
+                                        },
+                                        playLabel = when {
+                                            itemIsCurrent && isPlaying -> "Pause"
+                                            itemIsCurrent -> "Resume"
+                                            else -> "Play Now"
+                                        },
+                                        isRadio = item.track.id.startsWith("radio:"),
+                                        isDownloaded = item.track.id in downloadedTrackIds,
+                                        onToggleDownload = onToggleDownload?.let { toggle ->
+                                            {
+                                                rowMenuExpanded = false
+                                                toggle(item.track)
+                                            }
+                                        },
+                                        onShowAlbum = item.track.albumId?.let { albumId ->
+                                            {
+                                                rowMenuExpanded = false
+                                                onOpenAlbum?.invoke(albumId)
+                                            }
+                                        },
+                                        onShowArtist = item.track.artistId?.let { artistId ->
+                                            {
+                                                rowMenuExpanded = false
+                                                onOpenArtist?.invoke(artistId)
+                                            }
+                                        },
+                                        onShowTrackDetails = {
+                                            rowMenuExpanded = false
+                                            onShowTrackDetails(item.track)
+                                        },
+                                        extraActions = if (!itemIsCurrent) {
+                                            {
+                                                HorizontalDivider()
+                                                AppDropdownMenuItem(
+                                                    text = { Text("Remove from queue") },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Outlined.Remove,
+                                                            contentDescription = null
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        rowMenuExpanded = false
+                                                        if (onRemoveFromQueueTrack(item.queueIndex)) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Removed from queue",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        } else {
+                                            null
+                                        }
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun NavidromePlaylistPickerHost(
     pendingRequest: NavidromePlaylistSelectionRequest?,
     onDismiss: () -> Unit,
@@ -10734,7 +11179,7 @@ private fun NavidromeMiniPlayerBar(
                 Icon(Icons.Outlined.SkipNext, contentDescription = "Next")
             }
         }
-        if (playbackProgress > 0f) {
+        if (resolvedDurationMs > 0) {
             Canvas(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -10815,23 +11260,14 @@ private fun NavidromeExpandedPlayerSheet(
                 ).toDp()
         }
     }
-    var isMenuExpanded by remember { mutableStateOf(false) }
     var showTrackDetails by remember { mutableStateOf(false) }
     var showLyricsMode by rememberSaveable { mutableStateOf(false) }
     var showOutputSheet by remember { mutableStateOf(false) }
     var showQueue by rememberSaveable { mutableStateOf(false) }
-    var renderQueue by rememberSaveable { mutableStateOf(false) }
-    var bottomSectionHeightPx by remember { mutableIntStateOf(0) }
-    val scope = rememberCoroutineScope()
-    val contentScrollState = rememberScrollState()
-    var queueScrollAnimationJob by remember { mutableStateOf<Job?>(null) }
-    var scrollContainerTopOffsetPx by remember { mutableIntStateOf(0) }
-    var queueCardTopOffsetPx by remember { mutableIntStateOf(0) }
-    val queueOpenTopInsetPx = remember(statusBarTopInset, density) {
-        with(density) {
-            (statusBarTopInset + 12.dp).roundToPx()
-        }
-    }
+    val defaultDockHeightPx = remember(density) { with(density) { 224.dp.roundToPx() } }
+    var rawDockHeightPx by remember { mutableIntStateOf(defaultDockHeightPx) }
+    val dockHeightPx by animateIntAsState(rawDockHeightPx, animationSpec = tween(270), label = "dockHeight")
+    var transportBarHeightPx by remember { mutableIntStateOf(with(density) { 72.dp.roundToPx() }) }
     val outputSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     fun dismissLyricsMode() {
         showLyricsMode = false
@@ -10891,14 +11327,14 @@ private fun NavidromeExpandedPlayerSheet(
             lastSuccessfulPlayerCoverModel = playerCoverModel
         }
     }
-    val immersiveBackgroundModel = if (immersiveEnabled) {
-        rememberCoverImageModel(playerArtworkUrl, preferOriginalSize = true)
-    } else {
-        null
-    }
-    val immersiveBaseColor = remember(dominantCoverColor) {
+    val immersiveBaseColorTarget = remember(dominantCoverColor) {
         dominantCoverColor?.let(::brightenAndSaturateNavidromeCardColor) ?: Color(0xFF26343B)
     }
+    val immersiveBaseColor by animateColorAsState(
+        targetValue = immersiveBaseColorTarget,
+        animationSpec = tween(durationMillis = 400),
+        label = "immersiveBaseColor"
+    )
     val nonMaterialSectionSurfaceColor = MaterialTheme.colorScheme.surface.copy(
         alpha = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) 0.96f else 0.98f
     )
@@ -10918,7 +11354,7 @@ private fun NavidromeExpandedPlayerSheet(
     } else {
         nonMaterialSectionBorderColor
     }
-    val playerBackgroundColor = if (immersiveEnabled) Color.Transparent else MaterialTheme.colorScheme.background
+    val playerBackgroundColor = if (immersiveEnabled) Color.Black else MaterialTheme.colorScheme.background
     val coverShellColor = if (immersiveEnabled) {
         Color.White.copy(alpha = 0.08f)
     } else {
@@ -11052,7 +11488,7 @@ private fun NavidromeExpandedPlayerSheet(
     ) {
         if (immersiveEnabled) {
             AsyncImage(
-                model = immersiveBackgroundModel,
+                model = rememberCoverImageModel(playerArtworkUrl, preferOriginalSize = true, crossfadeMs = 400),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -11097,24 +11533,12 @@ private fun NavidromeExpandedPlayerSheet(
         val usableSheetHeight = (maxHeight - statusBarTopInset - navigationBottomInset).coerceAtLeast(0.dp)
         val compactLayout = usableSheetHeight < 760.dp
         val veryCompactLayout = usableSheetHeight < 720.dp
-        val queueExpandedLayout = showQueue
         val targetCoverSize = when {
             veryCompactLayout -> 200.dp
             usableSheetHeight < 680.dp -> 220.dp
             usableSheetHeight < 760.dp -> 242.dp
             else -> 280.dp
         }.coerceAtMost(maxWidth - 48.dp)
-        val targetOuterSpacing = when {
-            queueExpandedLayout -> 8.dp
-            veryCompactLayout -> 8.dp
-            compactLayout -> 10.dp
-            else -> 14.dp
-        }
-        val targetTitleSpacing = when {
-            queueExpandedLayout || veryCompactLayout -> 2.dp
-            compactLayout -> 3.dp
-            else -> 5.dp
-        }
         val handleTopPadding = (statusBarTopInset + 16.dp).coerceIn(32.dp, 52.dp)
         val targetTopPadding = when {
             veryCompactLayout -> 6.dp
@@ -11122,50 +11546,28 @@ private fun NavidromeExpandedPlayerSheet(
             else -> 12.dp
         }
         val targetTransportButtonSize = when {
-            queueExpandedLayout || veryCompactLayout -> 80.dp
+            veryCompactLayout -> 80.dp
             else -> 88.dp
         }
         val targetTransportIconSize = when {
-            queueExpandedLayout || veryCompactLayout -> 38.dp
+            veryCompactLayout -> 38.dp
             else -> 42.dp
         }
         val targetSkipButtonSize = when {
-            queueExpandedLayout || veryCompactLayout -> 56.dp
+            veryCompactLayout -> 56.dp
             else -> 64.dp
         }
         val targetSkipIconSize = when {
-            queueExpandedLayout || veryCompactLayout -> 32.dp
+            veryCompactLayout -> 32.dp
             else -> 36.dp
-        }
-        val lowerSectionLayoutT = ((usableSheetHeight - 620.dp) / 180.dp).coerceIn(0f, 1f)
-        val lowerSectionBudget = (usableSheetHeight - targetCoverSize - 300.dp).coerceAtLeast(0.dp)
-        val targetTransportSectionTopGap = if (queueExpandedLayout) {
-            12.dp
-        } else {
-            minOf(
-                lerp(start = 22.dp, stop = 92.dp, fraction = lowerSectionLayoutT),
-                lowerSectionBudget * 0.72f
-            )
-        }
-        val targetToolRowTopGap = if (queueExpandedLayout) {
-            10.dp
-        } else {
-            minOf(
-                lerp(start = 12.dp, stop = 28.dp, fraction = lowerSectionLayoutT),
-                lowerSectionBudget * 0.24f
-            )
         }
         val queueTransitionSpec = remember { tween<Dp>(durationMillis = 260) }
         val coverSize by animateDpAsState(targetValue = targetCoverSize, animationSpec = queueTransitionSpec, label = "navidromePlayerCoverSize")
-        val outerSpacing by animateDpAsState(targetValue = targetOuterSpacing, animationSpec = queueTransitionSpec, label = "navidromePlayerOuterSpacing")
-        val titleSpacing by animateDpAsState(targetValue = targetTitleSpacing, animationSpec = queueTransitionSpec, label = "navidromePlayerTitleSpacing")
         val topPadding by animateDpAsState(targetValue = targetTopPadding, animationSpec = queueTransitionSpec, label = "navidromePlayerTopPadding")
         val transportButtonSize by animateDpAsState(targetValue = targetTransportButtonSize, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportButtonSize")
         val transportIconSize by animateDpAsState(targetValue = targetTransportIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportIconSize")
         val skipButtonSize by animateDpAsState(targetValue = targetSkipButtonSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipButtonSize")
         val skipIconSize by animateDpAsState(targetValue = targetSkipIconSize, animationSpec = queueTransitionSpec, label = "navidromePlayerSkipIconSize")
-        val transportSectionTopGap by animateDpAsState(targetValue = targetTransportSectionTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerTransportSectionTopGap")
-        val toolRowTopGap by animateDpAsState(targetValue = targetToolRowTopGap, animationSpec = queueTransitionSpec, label = "navidromePlayerToolRowTopGap")
         val progressSection: @Composable () -> Unit = {
             val elapsedSeconds = (sliderPosition.roundToInt().coerceAtLeast(0) / 1000)
             val totalDurationSeconds = (resolvedDurationMs.coerceAtLeast(0) / 1000)
@@ -11349,6 +11751,107 @@ private fun NavidromeExpandedPlayerSheet(
                 }
             }
         }
+        val queueTransportBar: @Composable () -> Unit = {
+            val barShape = RoundedCornerShape(18.dp)
+            val barBgColor = if (immersiveEnabled) {
+                lerp(immersiveBaseColor, Color.Black, 0.50f)
+            } else {
+                toolButtonContainerColor
+            }
+            val barBorderColor = toolButtonBorderColor
+            val seekButtonTint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .onSizeChanged { transportBarHeightPx = it.height },
+                shape = barShape,
+                color = barBgColor.copy(alpha = 1f),
+                border = BorderStroke(1.dp, barBorderColor),
+                tonalElevation = 1.dp
+            ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        QueueProgressStrip(
+                            progress = if (resolvedDurationMs > 0) {
+                                (sliderPosition / resolvedDurationMs.toFloat()).coerceIn(0f, 1f)
+                            } else 0f,
+                            activeColor = progressActiveColor,
+                            trackColor = progressTrackColor,
+                            onProgressChange = { newProgress ->
+                                sliderPosition = resolvedDurationMs * newProgress.coerceIn(0f, 1f)
+                            },
+                            onProgressChangeFinished = { finalProgress ->
+                                val finalPosition = (resolvedDurationMs * finalProgress.coerceIn(0f, 1f)).roundToInt()
+                                sliderPosition = finalPosition.toFloat()
+                                onSeekTo(finalPosition)
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp)
+                                .padding(bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            if (!isRadio) {
+                                NavidromeSeekButton(
+                                    seconds = skipBackwardSeconds,
+                                    forward = false,
+                                    onClick = onSeekBackward,
+                                    tint = seekButtonTint,
+                                    buttonSize = 44.dp,
+                                    iconSize = 28.dp
+                                )
+                            }
+                            NavidromeTransportIconButton(
+                                onClick = onPrevious,
+                                modifier = Modifier.size(40.dp),
+                                icon = Icons.Outlined.SkipPrevious,
+                                contentDescription = "Previous",
+                                iconSize = 24.dp,
+                                tint = seekButtonTint
+                            )
+                            Surface(
+                                shape = CircleShape,
+                                color = transportButtonColor,
+                                border = BorderStroke(1.dp, transportButtonBorderColor),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    IconButton(onClick = onPlayPause) {
+                                        Icon(
+                                            imageVector = if (state.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                            contentDescription = if (state.isPlaying) "Pause" else "Play",
+                                            tint = if (immersiveEnabled) Color.White
+                                                   else MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    }
+                                }
+                            }
+                            NavidromeTransportIconButton(
+                                onClick = onNext,
+                                modifier = Modifier.size(40.dp),
+                                icon = Icons.Outlined.SkipNext,
+                                contentDescription = "Next",
+                                iconSize = 24.dp,
+                                tint = seekButtonTint
+                            )
+                            if (!isRadio) {
+                                NavidromeSeekButton(
+                                    seconds = skipForwardSeconds,
+                                    forward = true,
+                                    onClick = onSeekForward,
+                                    tint = seekButtonTint,
+                                    buttonSize = 44.dp,
+                                    iconSize = 28.dp
+                                )
+                            }
+                        }
+                    }
+                }
+        }
         val toolRow: @Composable () -> Unit = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -11374,314 +11877,135 @@ private fun NavidromeExpandedPlayerSheet(
                     contentColor = toolButtonContentColor,
                     borderColor = toolButtonBorderColor,
                     onClick = {
-                        queueScrollAnimationJob?.cancel()
-                        if (showQueue) {
-                            showQueue = false
-                            queueScrollAnimationJob = scope.launch {
-                                contentScrollState.animateScrollTo(
-                                    value = 0,
-                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                                )
-                                delay(220)
-                                renderQueue = false
-                                queueScrollAnimationJob = null
-                            }
-                        } else {
-                            renderQueue = true
-                            showQueue = true
-                            queueScrollAnimationJob = scope.launch {
-                                repeat(12) {
-                                    if (queueCardTopOffsetPx > 0 && scrollContainerTopOffsetPx > 0) return@repeat
-                                    delay(16)
-                                }
-                                contentScrollState.animateScrollTo(
-                                    value = (queueCardTopOffsetPx - scrollContainerTopOffsetPx - queueOpenTopInsetPx)
-                                        .coerceIn(0, contentScrollState.maxValue),
-                                    animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing)
-                                )
-                                queueScrollAnimationJob = null
-                            }
-                        }
+                        showQueue = !showQueue
                     }
                 )
             }
         }
         val playerOptionsMenu: @Composable () -> Unit = {
-            Box(contentAlignment = Alignment.Center) {
-                Surface(
-                    modifier = Modifier.clickable(onClick = { isMenuExpanded = true }),
-                    shape = CircleShape,
-                    color = menuShellColor,
-                    tonalElevation = 2.dp
-                ) {
+            NavidromePlayerOptionsMenuButton(
+                track = track,
+                isFavorite = isFavorite,
+                isDownloaded = isDownloaded,
+                isRadio = isRadio,
+                immersiveEnabled = immersiveEnabled,
+                menuShellColor = menuShellColor,
+                onToggleFavorite = onToggleFavorite,
+                onAddToPlaylist = onAddToPlaylist,
+                onToggleDownload = onToggleDownload,
+                onShowLyrics = {
+                    showLyricsMode = true
+                    onShowLyrics()
+                },
+                onClearLyricsCache = onClearLyricsCache,
+                onOpenAlbum = onOpenAlbum,
+                onOpenArtist = onOpenArtist,
+                onShowTrackDetails = { showTrackDetails = true }
+            )
+        }
+        val coverArtwork: @Composable (SharedTransitionScope, AnimatedContentScope) -> Unit = { sharedScope, animScope ->
+            val coverSharedBounds = with(sharedScope) {
+                Modifier.sharedBounds(
+                    sharedContentState = rememberSharedContentState("playerCoverArt"),
+                    animatedVisibilityScope = animScope,
+                    enter = EnterTransition.None,
+                    exit = ExitTransition.None,
+                    boundsTransform = BoundsTransform { _, _ ->
+                        tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                    }
+                )
+            }
+            Box(
+                modifier = coverSharedBounds
+                    .width(coverSize)
+                    .height(coverSize)
+            ) {
+                val coverShape = RoundedCornerShape(24.dp)
+                val fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
+                if (isRadio) {
+                    Image(
+                        painter = painterResource(R.drawable.radio_placeholder),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clip(coverShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else if (playerCoverModel == null) {
+                    val radioAccentColor = Color(0xFFFF334B)
                     Box(
-                        modifier = Modifier.size(38.dp),
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clip(coverShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.MoreHoriz,
-                            contentDescription = "Player options",
-                            modifier = Modifier.size(20.dp),
-                            tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface
+                            imageVector = fallbackIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(92.dp),
+                            tint = if (isRadio) radioAccentColor else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
-                AppDropdownMenu(
-                    expanded = isMenuExpanded,
-                    onDismissRequest = { isMenuExpanded = false }
-                ) {
-                    if (!isRadio) {
-                        AppDropdownMenuItem(
-                            text = { Text(if (isFavorite) "Remove Favorite" else "Favorite") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Favorite, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                val added = onToggleFavorite(track)
-                                Toast.makeText(
-                                    context,
-                                    if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        )
-                        onAddToPlaylist?.let { addToPlaylist ->
-                            AppDropdownMenuItem(
-                                text = { Text("Add to Playlist") },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Outlined.QueueMusic,
-                                        contentDescription = null
-                                    )
-                                },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    addToPlaylist(track)
-                                }
-                            )
-                        }
-                        onToggleDownload?.let { toggleDownload ->
-                            AppDropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (isDownloaded) {
-                                            "Remove Download"
-                                        } else {
-                                            "Download"
-                                        }
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Download,
-                                        contentDescription = null
-                                    )
-                                },
-                                onClick = {
-                                    isMenuExpanded = false
-                                    toggleDownload(track)
-                                }
-                            )
-                        }
-                        AppDropdownMenuItem(
-                            text = { Text("Show Lyrics") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Subtitles, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                showQueue = false
-                                renderQueue = false
-                                showLyricsMode = true
-                                onShowLyrics()
-                            }
-                        )
-                        AppDropdownMenuItem(
-                            text = { Text("Clear Lyrics Cache") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Refresh, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                onClearLyricsCache()
-                                Toast.makeText(context, "Lyrics cache cleared.", Toast.LENGTH_SHORT).show()
-                            }
+                } else {
+                    val shouldShowPreviousCover = playerCoverPainter.state !is AsyncImagePainter.State.Success &&
+                        lastSuccessfulPlayerCoverModel != null &&
+                        lastSuccessfulPlayerCoverModel != playerCoverModel
+                    if (shouldShowPreviousCover) {
+                        AsyncImage(
+                            model = lastSuccessfulPlayerCoverModel,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .matchParentSize()
+                                .clip(coverShape),
+                            contentScale = ContentScale.Crop
                         )
                     }
-                    onOpenAlbum?.takeIf { track.albumId != null }?.let { openAlbum ->
-                        AppDropdownMenuItem(
-                            text = { Text("Show Album") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Album, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                openAlbum(track.albumId!!)
-                            }
-                        )
-                    }
-                    onOpenArtist?.takeIf { track.artistId != null }?.let { openArtist ->
-                        AppDropdownMenuItem(
-                            text = { Text("Show Artist") },
-                            leadingIcon = {
-                                Icon(imageVector = Icons.Outlined.Person, contentDescription = null)
-                            },
-                            onClick = {
-                                isMenuExpanded = false
-                                openArtist(track.artistId!!)
-                            }
-                        )
-                    }
-                    AppDropdownMenuItem(
-                        text = { Text("Track Details") },
-                        leadingIcon = {
-                            Icon(imageVector = Icons.Outlined.Tune, contentDescription = null)
-                        },
-                        onClick = {
-                            isMenuExpanded = false
-                            showTrackDetails = true
-                        }
-                    )
-                }
-            }
-        }
-        val metadataSectionHeight = when {
-            veryCompactLayout -> 112.dp
-            queueExpandedLayout || compactLayout -> 124.dp
-            else -> 136.dp
-        }
-        val coverArtwork: @Composable () -> Unit = {
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = coverShellColor,
-                border = BorderStroke(1.dp, if (immersiveEnabled) Color.Transparent else sectionSurfaceBorderColor),
-                tonalElevation = 3.dp
-            ) {
-                Box(modifier = Modifier.padding(10.dp)) {
-                    Box(
+                    AsyncImage(
+                        model = playerCoverModel,
+                        contentDescription = null,
                         modifier = Modifier
-                            .width(coverSize)
-                            .height(coverSize)
-                    ) {
-                        val coverShape = RoundedCornerShape(18.dp)
-                        val fallbackIcon = if (isRadio) Icons.Outlined.GraphicEq else Icons.Outlined.Album
-                        if (isRadio) {
-                            Image(
-                                painter = painterResource(R.drawable.radio_placeholder),
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(coverShape),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else if (playerCoverModel == null) {
-                            val radioAccentColor = Color(0xFFFF334B)
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(coverShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = fallbackIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(if (isRadio) 150.dp else 92.dp),
-                                    tint = if (isRadio) radioAccentColor else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            val shouldShowPreviousCover = playerCoverPainter.state !is AsyncImagePainter.State.Success &&
-                                lastSuccessfulPlayerCoverModel != null &&
-                                lastSuccessfulPlayerCoverModel != playerCoverModel
-                            if (shouldShowPreviousCover) {
-                                AsyncImage(
-                                    model = lastSuccessfulPlayerCoverModel,
-                                    contentDescription = null,
-                                    modifier = Modifier
-                                        .matchParentSize()
-                                        .clip(coverShape),
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                            AsyncImage(
-                                model = playerCoverModel,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .clip(coverShape),
-                                contentScale = ContentScale.Crop
-                            )
-                        }
-                        NavidromeDownloadBadge(
-                            visible = isDownloaded || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
-                            isCompleted = isDownloaded && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
-                            progressPercent = downloadProgressPercent,
-                            modifier = Modifier.align(Alignment.TopEnd)
-                        )
-                    }
+                            .matchParentSize()
+                            .clip(coverShape),
+                        contentScale = ContentScale.Crop
+                    )
                 }
+                NavidromeDownloadBadge(
+                    visible = isDownloaded || (downloadProgressPercent != null && downloadProgressPercent in 0..99),
+                    isCompleted = isDownloaded && (downloadProgressPercent == null || downloadProgressPercent !in 0..99),
+                    progressPercent = downloadProgressPercent,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
             }
         }
-        val topContent: @Composable () -> Unit = {
-            Spacer(modifier = Modifier.height(handleTopPadding))
-            Box(
-                modifier = Modifier
-                    .width(44.dp)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(100))
-                    .background(
-                        if (immersiveEnabled) {
-                            Color.White.copy(alpha = 0.68f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                        }
-                    )
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-            coverArtwork()
-        }
-        val playerControlPanel: @Composable () -> Unit = {
+        val playerControlPanel: @Composable (Dp) -> Unit = { innerSpacing ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
                 color = toolButtonContainerColor,
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = toolButtonBorderColor
-                ),
+                border = BorderStroke(1.dp, toolButtonBorderColor),
                 tonalElevation = 1.dp
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                    verticalArrangement = Arrangement.spacedBy(innerSpacing)
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.TopStart
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(metadataSectionHeight)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = primaryTextColor,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = track.title,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = primaryTextColor,
-                                maxLines = 2,
-                                modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(end = 50.dp)
-                            )
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(end = 50.dp),
-                                verticalArrangement = Arrangement.spacedBy(titleSpacing)
-                            ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = track.artistName,
                                     style = MaterialTheme.typography.titleMedium,
@@ -11697,8 +12021,20 @@ private fun NavidromeExpandedPlayerSheet(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                        }
-                        Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                            IconButton(onClick = {
+                                val added = onToggleFavorite(track)
+                                Toast.makeText(
+                                    context,
+                                    if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                    contentDescription = if (isFavorite) "Remove Favorite" else "Favorite",
+                                    tint = if (isFavorite) Color(0xFFE53935) else primaryTextColor
+                                )
+                            }
                             playerOptionsMenu()
                         }
                     }
@@ -11707,252 +12043,194 @@ private fun NavidromeExpandedPlayerSheet(
                 }
             }
         }
-        val queueCardContent: @Composable () -> Unit = {
+        val coverClosedContent: @Composable (SharedTransitionScope, AnimatedContentScope, Dp) -> Unit = { sharedScope, animScope, innerSpacing ->
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    coverArtwork(sharedScope, animScope)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                playerControlPanel(innerSpacing)
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+        val queueOpenContent: @Composable (SharedTransitionScope, AnimatedContentScope) -> Unit = { sharedScope, animScope ->
+            val coverSharedMod = with(sharedScope) {
+                Modifier.sharedBounds(
+                    sharedContentState = rememberSharedContentState("playerCoverArt"),
+                    animatedVisibilityScope = animScope,
+                    enter = EnterTransition.None,
+                    exit = ExitTransition.None,
+                    boundsTransform = BoundsTransform { _, _ ->
+                        tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                    }
+                )
+            }
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = toolButtonContainerColor,
+                    border = BorderStroke(1.dp, toolButtonBorderColor),
+                    tonalElevation = 1.dp
+                ) {
+                MiniNowPlayingBar(
+                    track = track,
+                    coverUrl = playerArtworkUrl,
+                    onFavoriteClick = {
+                        val added = onToggleFavorite(track)
+                        Toast.makeText(
+                            context,
+                            if (added) "Added to Favorite Songs" else "Removed from Favorite Songs",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    isFavorite = isFavorite,
+                    isRadio = isRadio,
+                    isDownloaded = isDownloaded,
+                    immersiveEnabled = immersiveEnabled,
+                    primaryTextColor = primaryTextColor,
+                    secondaryTextColor = secondaryTextColor,
+                    menuShellColor = menuShellColor,
+                    onToggleFavorite = onToggleFavorite,
+                    onAddToPlaylist = onAddToPlaylist,
+                    onToggleDownload = onToggleDownload,
+                    onShowLyrics = {
+                        showLyricsMode = true
+                        onShowLyrics()
+                    },
+                    onClearLyricsCache = onClearLyricsCache,
+                    onOpenAlbum = onOpenAlbum,
+                    onOpenArtist = onOpenArtist,
+                    onShowTrackDetails = { showTrackDetails = true },
+                    coverModifier = coverSharedMod,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                } // Surface
+                Spacer(modifier = Modifier.height(12.dp))
+                QueueListSurface(
+                    displayedQueueItems = displayedQueueItems,
+                    currentIndex = state.currentIndex,
+                    currentTrackId = track.id,
+                    queueHasValidCurrentIndex = state.currentIndex in state.queue.indices,
+                    isPlaying = state.isPlaying,
+                    downloadedTrackIds = downloadedTrackIds,
+                    cachedTrackIds = cachedTrackIds,
+                    trackProgressById = trackProgressById,
+                    immersiveEnabled = immersiveEnabled,
+                    onSelectTrack = onSelectTrack,
+                    onPlayPause = onPlayPause,
+                    onPlayNextTrack = onPlayNextTrack,
+                    onAddToQueueTrack = onAddToQueueTrack,
+                    onRemoveFromQueueTrack = onRemoveFromQueueTrack,
+                    onToggleDownload = onToggleDownload,
+                    onOpenAlbum = onOpenAlbum,
+                    onOpenArtist = onOpenArtist,
+                    onShowTrackDetails = { trackDetailsTarget = it },
+                    queueCardColor = queueCardColor,
+                    queueCardBorderColor = queueCardBorderColor,
+                    primaryTextColor = primaryTextColor,
+                    bottomContentPadding = with(density) { transportBarHeightPx.toDp() } + 16.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+            }
+        }
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
+        ) {
+            val dockHeightDp = with(density) { dockHeightPx.toDp() }
+            val topAreaHeight = (maxHeight - dockHeightDp).coerceAtLeast(coverSize + 100.dp)
+            val controlPanelInnerSpacing = lerp(
+                start = 12.dp,
+                stop = 20.dp,
+                fraction = ((maxHeight - 720.dp) / 240.dp).coerceIn(0f, 1f)
+            )
             Box(
                 modifier = Modifier
+                    .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .onGloballyPositioned { coordinates ->
-                        queueCardTopOffsetPx = coordinates.positionInRoot().y.roundToInt()
-                    }
+                    .height(topAreaHeight)
             ) {
-                androidx.compose.animation.AnimatedVisibility(
-                    modifier = Modifier.fillMaxWidth(),
-                    visible = showQueue,
-                    enter = slideInVertically(
-                        initialOffsetY = { it / 4 },
-                        animationSpec = tween(durationMillis = 220)
-                    ),
-                    exit = slideOutVertically(
-                        targetOffsetY = { it / 4 },
-                        animationSpec = tween(durationMillis = 180)
-                    )
-                ) {
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(26.dp),
-                        color = queueCardColor,
-                        border = BorderStroke(1.dp, queueCardBorderColor),
-                        tonalElevation = 1.dp
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Text(
-                                text = "Up Next",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = primaryTextColor
-                            )
-                            LazyColumn(
-                                modifier = Modifier.heightIn(max = 420.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(displayedQueueItems, key = { it.queueIndex }) { item ->
-                                    val itemIsCurrent = item.queueIndex == state.currentIndex ||
-                                        (state.currentIndex !in state.queue.indices && item.track.id == track.id)
-                                        PlayerQueueRow(
-                                            track = item.track,
-                                            isCurrent = itemIsCurrent,
-                                            isPlaying = itemIsCurrent && state.isPlaying,
-                                            isDownloaded = item.track.id in downloadedTrackIds,
-                                            isCached = item.track.id in cachedTrackIds && item.track.id !in downloadedTrackIds,
-                                            downloadProgressPercent = trackProgressById[item.track.id],
-                                            immersiveEnabled = immersiveEnabled,
-                                            onClick = { onSelectTrack(item.queueIndex) },
-                                            trailingContent = if (onPlayNextTrack != null && onAddToQueueTrack != null) {
-                                                {
-                                                    var rowMenuExpanded by remember { mutableStateOf(false) }
-                            Box {
-                                IconButton(onClick = { rowMenuExpanded = true }) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.MoreHoriz,
-                                        tint = if (immersiveEnabled) Color.White else MaterialTheme.colorScheme.onSurface,
-                                        contentDescription = "Queue item options"
-                                    )
-                                }
-                                NavidromeTrackActionsMenu(
-                                    expanded = rowMenuExpanded,
-                                                            onDismissRequest = { rowMenuExpanded = false },
-                                                            onPlayTrack = {
-                                                                rowMenuExpanded = false
-                                                                if (itemIsCurrent && state.isPlaying) {
-                                                                    onPlayPause()
-                                                                } else {
-                                                                    onSelectTrack(item.queueIndex)
-                                                                }
-                                                            },
-                                                            onPlayNext = {
-                                                                rowMenuExpanded = false
-                                                                onPlayNextTrack?.invoke(item.track)
-                                                            },
-                                                            onAddToQueue = {
-                                                                rowMenuExpanded = false
-                                                                onAddToQueueTrack?.invoke(item.track)
-                                                            },
-                                                            playLabel = when {
-                                                                itemIsCurrent && state.isPlaying -> "Pause"
-                                                                itemIsCurrent -> "Resume"
-                                                                else -> "Play Now"
-                                                            },
-                                                            isRadio = item.track.id.startsWith("radio:"),
-                                                            isDownloaded = item.track.id in downloadedTrackIds,
-                                                            onToggleDownload = onToggleDownload?.let { toggle ->
-                                                                {
-                                                                    rowMenuExpanded = false
-                                                                    toggle(item.track)
-                                                                }
-                                                            },
-                                                            onShowAlbum = item.track.albumId?.let { albumId ->
-                                                                {
-                                                                    rowMenuExpanded = false
-                                                                    onOpenAlbum?.invoke(albumId)
-                                                                }
-                                                            },
-                                    onShowArtist = item.track.artistId?.let { artistId ->
-                                        {
-                                            rowMenuExpanded = false
-                                            onOpenArtist?.invoke(artistId)
-                                        }
-                                    },
-                                    onShowTrackDetails = {
-                                        rowMenuExpanded = false
-                                        trackDetailsTarget = item.track
-                                    },
-                                    extraActions = if (!itemIsCurrent) {
-                                                                {
-                                                                    HorizontalDivider()
-                                                                    AppDropdownMenuItem(
-                                                                        text = { Text("Remove from queue") },
-                                                                        leadingIcon = {
-                                                                            Icon(
-                                                                                imageVector = Icons.Outlined.Remove,
-                                                                                contentDescription = null
-                                                                            )
-                                                                        },
-                                                                        onClick = {
-                                                                            rowMenuExpanded = false
-                                                                            if (onRemoveFromQueueTrack(item.queueIndex)) {
-                                                                                Toast.makeText(
-                                                                                    context,
-                                                                                    "Removed from queue",
-                                                                                    Toast.LENGTH_SHORT
-                                                                                ).show()
-                                                                            }
-                                                                        }
-                                                                    )
-                                                                }
-                                                            } else {
-                                                                null
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                            } else {
-                                                null
-                                            }
-                                        )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        val hiddenPlayerContent: @Composable () -> Unit = {
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
-            ) {
-                val bottomSectionHeight = with(density) { bottomSectionHeightPx.toDp() }
-                val artworkZoneHeight = (maxHeight - bottomSectionHeight)
-                    .coerceAtLeast(coverSize + handleTopPadding + 40.dp)
-                Column(
+                Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .height(artworkZoneHeight),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Spacer(modifier = Modifier.height(handleTopPadding))
-                    Box(
+                        .padding(top = handleTopPadding)
+                        .width(44.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(100))
+                        .background(
+                            if (immersiveEnabled) {
+                                Color.White.copy(alpha = 0.68f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            }
+                        )
+                )
+                SharedTransitionLayout {
+                    val sharedScope = this
+                    AnimatedContent(
+                        targetState = showQueue,
+                        transitionSpec = {
+                            if (targetState) {
+                                // Opening: queue rises from below, big card exits upward — pure slide, no fade
+                                slideInVertically(tween(380, easing = FastOutSlowInEasing)) { it } togetherWith
+                                    slideOutVertically(tween(350, easing = FastOutSlowInEasing)) { -it }
+                            } else {
+                                // Closing: big card descends from above, queue exits downward — pure slide, no fade
+                                slideInVertically(tween(380, easing = FastOutSlowInEasing)) { -it } togetherWith
+                                    slideOutVertically(tween(350, easing = FastOutSlowInEasing)) { it }
+                            }
+                        },
                         modifier = Modifier
-                            .width(44.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(100))
-                            .background(
-                                if (immersiveEnabled) {
-                                    Color.White.copy(alpha = 0.68f)
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                                }
-                            )
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        coverArtwork()
-                    }
-                }
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(bottom = 2.dp)
-                        .onSizeChanged { bottomSectionHeightPx = it.height },
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    playerControlPanel()
-                    toolRow()
-                }
-            }
-        }
-        if (renderQueue) {
-            if (showQueue) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .animateContentSize(animationSpec = tween(durationMillis = 260))
-                        .navigationBarsPadding()
-                        .padding(start = 20.dp, end = 20.dp, top = topPadding, bottom = 6.dp)
-                        .onGloballyPositioned { coordinates ->
-                            scrollContainerTopOffsetPx = coordinates.positionInRoot().y.roundToInt()
+                            .fillMaxSize()
+                            .clipToBounds()
+                            .padding(top = handleTopPadding + 18.dp),
+                        label = "navidromeTopAreaMorph"
+                    ) { isQueueShown ->
+                        if (isQueueShown) {
+                            queueOpenContent(sharedScope, this)
+                        } else {
+                            coverClosedContent(sharedScope, this, controlPanelInnerSpacing)
                         }
-                        .verticalScroll(contentScrollState, enabled = true),
-                    verticalArrangement = Arrangement.spacedBy(outerSpacing),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    topContent()
-                    Spacer(modifier = Modifier.height(transportSectionTopGap))
-                    playerControlPanel()
-                    Spacer(modifier = Modifier.height(toolRowTopGap))
-                    toolRow()
-                    Spacer(modifier = Modifier.height(4.dp))
-                    queueCardContent()
-                }
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    hiddenPlayerContent()
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 72.dp + toolRowTopGap)
-                    ) {
-                        queueCardContent()
                     }
                 }
             }
-        } else {
-            hiddenPlayerContent()
+            // toolRow — measured for dock height, always at bottom
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(bottom = 2.dp)
+            ) {
+                Box(modifier = Modifier.onSizeChanged { rawDockHeightPx = it.height }) {
+                    toolRow()
+                }
+            }
+            // Transport bar — sits above toolRow, fades in/out in place.
+            // No slide: sandwiched between queue list and buttons, any direction covers one of them.
+            AnimatedVisibility(
+                visible = showQueue,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(bottom = dockHeightDp + 2.dp),
+                enter = fadeIn(tween(220)),
+                exit = fadeOut(tween(180))
+            ) {
+                queueTransportBar()
+            }
         }
     }
     if (showLyricsMode) {
@@ -12241,6 +12519,7 @@ internal fun NavidromeLyricsSheetContent(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxSize()
+            .background(if (immersiveEnabled) Color.Black else MaterialTheme.colorScheme.background)
     ) {
         AsyncImage(
             model = overlayBackgroundModel,
@@ -13452,6 +13731,77 @@ private fun formatCompactServerAddress(url: String): String {
 }
 
 @Composable
+private fun QueueProgressStrip(
+    progress: Float,
+    activeColor: Color,
+    trackColor: Color,
+    onProgressChange: (Float) -> Unit,
+    onProgressChangeFinished: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val clampedProgress = progress.coerceIn(0f, 1f)
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubProgress by remember { mutableFloatStateOf(clampedProgress) }
+    var widthPx by remember { mutableFloatStateOf(0f) }
+    val displayProgress = if (isScrubbing) scrubProgress else clampedProgress
+
+    val barHeight by animateDpAsState(
+        targetValue = if (isScrubbing) 8.dp else 3.dp,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 320f),
+        label = "queueStripHeight"
+    )
+
+    LaunchedEffect(clampedProgress) {
+        if (!isScrubbing) scrubProgress = clampedProgress
+    }
+
+    fun xToProgress(x: Float) = if (widthPx > 0f) (x / widthPx).coerceIn(0f, 1f) else clampedProgress
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(24.dp)
+            .onSizeChanged { widthPx = it.width.toFloat() }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    isScrubbing = true
+                    scrubProgress = xToProgress(down.position.x)
+                    onProgressChange(scrubProgress)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.firstOrNull { it.pressed }
+                        if (pressed != null) {
+                            scrubProgress = xToProgress(pressed.position.x)
+                            onProgressChange(scrubProgress)
+                            pressed.consume()
+                        } else break
+                    }
+                    onProgressChangeFinished(scrubProgress)
+                    isScrubbing = false
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(barHeight)
+                .clip(RoundedCornerShape(50))
+                .background(trackColor)
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .fillMaxWidth(displayProgress.coerceAtLeast(0f))
+                .height(barHeight)
+                .clip(RoundedCornerShape(50))
+                .background(activeColor)
+        )
+    }
+}
+
+@Composable
 private fun NavidromePlayerProgressBar(
     progress: Float,
     activeColor: Color,
@@ -13538,13 +13888,14 @@ private fun rememberDominantNavidromeCoverColor(
     enabled: Boolean
 ): Color? {
     val context = LocalContext.current
-    val dominantColorState = produceState<Color?>(initialValue = null, coverUrl, enabled) {
+    var dominantColor by remember { mutableStateOf<Color?>(null) }
+    LaunchedEffect(coverUrl, enabled) {
         if (!enabled || coverUrl.isNullOrBlank()) {
-            value = null
-            return@produceState
+            dominantColor = null
+            return@LaunchedEffect
         }
-
-        value = withContext(Dispatchers.IO) {
+        // Don't reset to null — keep previous color visible until new one is computed
+        withContext(Dispatchers.IO) {
             runCatching {
                 val resolvedCover = splitAuthenticatedUrl(coverUrl)
                 val request = ImageRequest.Builder(context)
@@ -13565,9 +13916,9 @@ private fun rememberDominantNavidromeCoverColor(
                 )
                 averageNavidromeBitmapColor(bitmap)
             }.getOrNull()
-        }
+        }?.let { dominantColor = it }
     }
-    return dominantColorState.value
+    return dominantColor
 }
 
 private fun averageNavidromeBitmapColor(bitmap: Bitmap): Color {
@@ -13657,10 +14008,11 @@ private fun AlbumArt(
     placeholderResId: Int? = null,
     showDownloadedIndicator: Boolean = false,
     showCachedIndicator: Boolean = false,
-    downloadProgressPercent: Int? = null
+    downloadProgressPercent: Int? = null,
+    modifier: Modifier = Modifier
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .width(width)
             .height(height)
     ) {

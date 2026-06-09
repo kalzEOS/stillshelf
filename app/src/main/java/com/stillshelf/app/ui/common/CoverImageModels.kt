@@ -1,5 +1,6 @@
 package com.stillshelf.app.ui.common
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
+import coil.imageLoader
 import coil.request.ImageRequest
 import coil.size.Size
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -38,12 +40,13 @@ private const val SquareCoverMaxAspectRatio = 1.10f
 @Composable
 fun rememberCoverImageModel(
     coverUrl: String?,
-    preferOriginalSize: Boolean = false
+    preferOriginalSize: Boolean = false,
+    crossfadeMs: Int = 0
 ): Any? {
     val context = LocalContext.current
     val normalizedCacheKey = remember(coverUrl) { coverUrl?.let(::normalizeCoverCacheKey) }
     val resolvedUrl = remember(coverUrl) { coverUrl?.let(::splitAuthenticatedUrl) }
-    return remember(coverUrl, normalizedCacheKey, resolvedUrl, context, preferOriginalSize) {
+    return remember(coverUrl, normalizedCacheKey, resolvedUrl, context, preferOriginalSize, crossfadeMs) {
         if (coverUrl.isNullOrBlank()) {
             null
         } else {
@@ -51,7 +54,7 @@ fun rememberCoverImageModel(
                 data(resolvedUrl?.cleanUrl ?: coverUrl)
                 memoryCacheKey(normalizedCacheKey)
                 diskCacheKey(normalizedCacheKey)
-                crossfade(false)
+                if (crossfadeMs > 0) crossfade(crossfadeMs) else crossfade(false)
                 if (preferOriginalSize) {
                     size(Size.ORIGINAL)
                 }
@@ -60,6 +63,26 @@ fun rememberCoverImageModel(
                 }
             }.build()
         }
+    }
+}
+
+suspend fun prefetchCoverImages(context: Context, coverUrls: List<String?>) {
+    coverUrls.forEach { coverUrl ->
+        if (coverUrl.isNullOrBlank()) return@forEach
+        val normalizedKey = normalizeCoverCacheKey(coverUrl)
+        val resolvedUrl = splitAuthenticatedUrl(coverUrl)
+        val request = ImageRequest.Builder(context)
+            .data(resolvedUrl.cleanUrl)
+            .memoryCacheKey(normalizedKey)
+            .diskCacheKey(normalizedKey)
+            .size(Size.ORIGINAL)
+            .apply {
+                resolvedUrl.authToken?.takeIf { it.isNotBlank() }?.let { token ->
+                    addHeader("Authorization", authorizationHeaderValue(token))
+                }
+            }
+            .build()
+        context.imageLoader.execute(request)
     }
 }
 

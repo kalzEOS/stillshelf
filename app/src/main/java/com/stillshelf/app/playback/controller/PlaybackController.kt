@@ -17,6 +17,7 @@ import android.media.AudioManager
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Build.VERSION.SDK_INT
 import android.os.Handler
@@ -39,8 +40,10 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import com.stillshelf.app.core.diagnostics.DiagnosticLogManager
 import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.datastore.SessionPreferences
@@ -170,6 +173,7 @@ class PlaybackController @Inject constructor(
         private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEPS = 5
         private const val SPEAKER_OUTPUT_VOLUME_RAMP_STEP_DELAY_MS = 90L
         private const val OUTPUT_SWITCH_REFRESH_GRACE_MS = 500L
+        private const val PLAYBACK_READINESS_TIMEOUT_MS = 15_000L
         private const val TAG = "PlaybackController"
         const val ACTION_PLAY_PAUSE = "com.stillshelf.app.playback.action.PLAY_PAUSE"
         const val ACTION_REWIND = "com.stillshelf.app.playback.action.REWIND"
@@ -182,6 +186,9 @@ class PlaybackController @Inject constructor(
     private var progressJob: Job? = null
     private var syncQueueJob: Job? = null
     private var pausedReleaseJob: Job? = null
+    private var playbackReadinessTimeoutJob: Job? = null
+    private var playerInitialReadyHandled = false
+    private val oomFallbackStreamingBookIds = mutableSetOf<String>()
     private var currentBookId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
@@ -364,11 +371,12 @@ class PlaybackController @Inject constructor(
         observeActiveSessionSelection()
     }
 
-    fun playBook(bookId: String, startPositionMs: Long? = null) {
+    fun playBook(bookId: String, startPositionMs: Long? = null, forceStreaming: Boolean = false) {
         if (bookId.isBlank()) return
+        val effectiveForceStreaming = forceStreaming || bookId in oomFallbackStreamingBookIds
         logPlaybackTrace(
             "playback_command=play_book start_position_ms=${startPositionMs?.coerceAtLeast(0L)} " +
-                "has_current_book=${currentBookId != null} has_player=${mediaPlayer != null}"
+                "has_current_book=${currentBookId != null} has_player=${mediaPlayer != null} force_streaming=$effectiveForceStreaming"
         )
         if (currentBookId != bookId) {
             attemptedAutoAdvanceTargetsMs.clear()
@@ -401,7 +409,7 @@ class PlaybackController @Inject constructor(
             )
         }
         playRequestJob = scope.launch {
-            val localDownload = bookDownloadManager.getCompletedDownload(bookId)
+            val localDownload = if (effectiveForceStreaming) null else bookDownloadManager.getCompletedDownload(bookId)
             if (localDownload != null) {
                 if (isStalePlayRequest(requestToken)) return@launch
                 val localBook = when (val detailResult = sessionRepository.fetchBookDetail(bookId, forceRefresh = false)) {
@@ -1179,6 +1187,15 @@ class PlaybackController @Inject constructor(
             playBook(book.id, uiState.value.positionMs)
             return
         }
+        // If the player is in an error state, calling play() does nothing useful and hides the error.
+        // Recreate the player from the current position instead.
+        if (runCatching { player.playerError }.getOrNull() != null) {
+            logPlaybackTrace("playback_command=resume_after_error recreating_player")
+            val book = uiState.value.book ?: return
+            releasePlayer(syncProgressBeforeRelease = false)
+            playBook(book.id, uiState.value.positionMs)
+            return
+        }
         clearDucking(player)
         wasPausedForTransientAudioFocusLoss = false
         val focusResult = requestAudioFocusForPlayback()
@@ -1187,6 +1204,9 @@ class PlaybackController @Inject constructor(
             pendingPlayAfterAudioFocusGain = false
             pendingPlayStartsProgressUpdates = false
             runCatching { player.play() }
+            if (!playerInitialReadyHandled && runCatching { player.playbackState }.getOrDefault(Player.STATE_IDLE) == Player.STATE_BUFFERING) {
+                launchPlaybackReadinessTimeout(player)
+            }
             updateUiState { it.copy(isPlaying = true, errorMessage = null) }
             if (progressUpdateMode == ResumeProgressUpdateMode.Immediate) {
                 startProgressUpdates()
@@ -1245,7 +1265,7 @@ class PlaybackController @Inject constructor(
         }
         updateCachedFromUiState()
 
-        var initialReadyHandled = false
+        playerInitialReadyHandled = false
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (player !== mediaPlayer) return
@@ -1257,8 +1277,10 @@ class PlaybackController @Inject constructor(
                 )
                 when (playbackState) {
                     Player.STATE_READY -> {
-                        if (initialReadyHandled) return
-                        initialReadyHandled = true
+                        playbackReadinessTimeoutJob?.cancel()
+                        playbackReadinessTimeoutJob = null
+                        if (playerInitialReadyHandled) return
+                        playerInitialReadyHandled = true
                         applyPlaybackSpeed(player = player, speed = currentPlaybackSpeed)
                         applyAudioEffects(player)
                         val duration = safeDuration(player)
@@ -1316,11 +1338,33 @@ class PlaybackController @Inject constructor(
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 if (player !== mediaPlayer) return
+                playbackReadinessTimeoutJob?.cancel()
+                playbackReadinessTimeoutJob = null
                 diagnosticLogManager.logPlaybackError(
                     tag = TAG,
                     errorType = error::class.java.simpleName,
                     throwable = error
                 )
+                val isOom = generateSequence(error.cause) { it.cause }.any { it is OutOfMemoryError }
+                if (isOom && bookId !in oomFallbackStreamingBookIds) {
+                    if (isNetworkAvailable()) {
+                        logPlaybackTrace("playback_oom_fallback=streaming book_id=$bookId")
+                        oomFallbackStreamingBookIds.add(bookId)
+                        val positionMs = uiState.value.positionMs
+                        releasePlayer(syncProgressBeforeRelease = false)
+                        playBook(bookId, positionMs, forceStreaming = true)
+                        return
+                    } else {
+                        updateUiState {
+                            it.copy(
+                                isLoading = false,
+                                isPlaying = false,
+                                errorMessage = "This file needs more memory than your device has available. Connect to the internet to stream it instead."
+                            )
+                        }
+                        return
+                    }
+                }
                 updateUiState {
                     it.copy(
                         isLoading = false,
@@ -1339,6 +1383,7 @@ class PlaybackController @Inject constructor(
                 trackSelection.localSeekMs.coerceAtLeast(0L)
             )
             player.prepare()
+            launchPlaybackReadinessTimeout(player)
         }.onFailure { throwable ->
             abandonAudioFocus()
             updateUiState {
@@ -1400,6 +1445,8 @@ class PlaybackController @Inject constructor(
         val player = mediaPlayer
         if (player != null) {
             clearDucking(player)
+            playbackReadinessTimeoutJob?.cancel()
+            playbackReadinessTimeoutJob = null
             runCatching { player.pause() }
             updateProgress(player)
         }
@@ -1434,17 +1481,31 @@ class PlaybackController @Inject constructor(
     private fun createAbsPlayer(streamUrl: String): ExoPlayer {
         val sourceTarget = resolveAbsPlaybackSourceTarget(streamUrl)
         val headers = sourceTarget.headers
-        val builder = ExoPlayer.Builder(appContext)
-        if (headers.isNotEmpty()) {
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+        val dataSourceFactory = if (headers.isNotEmpty()) {
             val httpFactory = DefaultHttpDataSource.Factory()
                 .setDefaultRequestProperties(headers)
-            val dataSourceFactory = DefaultDataSource.Factory(appContext, httpFactory)
-            builder.setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            DefaultDataSource.Factory(appContext, httpFactory)
+        } else {
+            DefaultDataSource.Factory(appContext)
         }
-        return builder.build().apply {
-            configurePlayerAudioAttributes(this)
-            applyPreferredOutputDevice(this)
-        }
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                20_000,
+                45_000,
+                5_000,
+                15_000
+            )
+            .build()
+        return ExoPlayer.Builder(appContext, AudioOnlyRenderersFactory(appContext))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory))
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
+                configurePlayerAudioAttributes(this)
+                applyPreferredOutputDevice(this)
+            }
     }
 
     private fun requestAudioFocusForPlayback(): Int {
@@ -1681,12 +1742,35 @@ class PlaybackController @Inject constructor(
         )
     }
 
+    private fun isNetworkAvailable(): Boolean {
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        return cm.activeNetwork != null
+    }
+
+    private fun launchPlaybackReadinessTimeout(player: ExoPlayer) {
+        playbackReadinessTimeoutJob?.cancel()
+        playbackReadinessTimeoutJob = scope.launch {
+            delay(PLAYBACK_READINESS_TIMEOUT_MS)
+            if (player !== mediaPlayer) return@launch
+            if (playerInitialReadyHandled) return@launch
+            logPlaybackTrace("playback_readiness_timeout book_id=$currentBookId")
+            releasePlayer(syncProgressBeforeRelease = false)
+            updateUiState {
+                it.copy(isLoading = false, isPlaying = false, errorMessage = "Playback timed out. Please try again.")
+            }
+        }
+    }
+
     private fun releasePlayer() {
         releasePlayer(syncProgressBeforeRelease = true)
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
         cancelPausedPlayerRelease()
+        playbackReadinessTimeoutJob?.cancel()
+        playbackReadinessTimeoutJob = null
+        playerInitialReadyHandled = false
         if (syncProgressBeforeRelease) {
             syncProgress(
                 force = true,
@@ -2026,6 +2110,7 @@ class PlaybackController @Inject constructor(
         currentBookDurationMs = 0L
         cachedContinueListeningItem = null
         attemptedAutoAdvanceTargetsMs.clear()
+        oomFallbackStreamingBookIds.clear()
         previousRestartState = null
         playbackSyncGate.reset()
         lastCheckpointPositionMs = -1L
@@ -2063,6 +2148,7 @@ class PlaybackController @Inject constructor(
         currentBookDurationMs = 0L
         cachedContinueListeningItem = null
         attemptedAutoAdvanceTargetsMs.clear()
+        oomFallbackStreamingBookIds.clear()
         previousRestartState = null
         playbackSyncGate.reset()
         lastCheckpointPositionMs = -1L

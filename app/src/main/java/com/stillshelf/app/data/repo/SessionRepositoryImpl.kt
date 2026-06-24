@@ -2620,6 +2620,30 @@ class SessionRepositoryImpl @Inject constructor(
         durationSeconds: Double?,
         isFinished: Boolean
     ): AppResult<Unit> {
+        // Podcast episodes use compound IDs: "showId::episodeId"
+        if (bookId.contains("::")) {
+            val parts = bookId.split("::", limit = 2)
+            val showId = parts[0]
+            val episodeId = parts[1]
+            val syncResult = audiobookshelfApi.updateEpisodeProgress(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                showId = showId,
+                episodeId = episodeId,
+                currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+                durationSeconds = durationSeconds,
+                isFinished = isFinished
+            )
+            return if (syncResult.isSuccess) {
+                AppResult.Success(Unit)
+            } else {
+                AppResult.Error(
+                    message = syncResult.exceptionOrNull()?.message ?: "Unable to sync episode progress.",
+                    cause = syncResult.exceptionOrNull()
+                )
+            }
+        }
+
         val syncResult = audiobookshelfApi.updateMediaProgressForItem(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,
@@ -2665,10 +2689,11 @@ class SessionRepositoryImpl @Inject constructor(
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
 
+        val itemId = if (bookId.contains("::")) bookId.substringBefore("::") else bookId
         val createResult = audiobookshelfApi.createBookmark(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,
-            itemId = bookId,
+            itemId = itemId,
             timeSeconds = timeSeconds.coerceAtLeast(0.0),
             title = title
         )

@@ -95,6 +95,7 @@ import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Mic
@@ -7654,6 +7655,7 @@ fun PlayerScreen(
     onBackClick: (() -> Unit)? = null,
     viewModel: PlayerViewModel = hiltViewModel(),
     onGoToBook: ((String) -> Unit)? = null,
+    onGoToPodcastShow: ((String) -> Unit)? = null,
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel(),
     topContentInset: Dp = 0.dp,
@@ -7675,6 +7677,8 @@ fun PlayerScreen(
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
     val bookId = book?.id
+    val isPodcastEpisode = bookId?.contains("::") == true
+    val podcastShowId = if (isPodcastEpisode) bookId?.split("::")?.getOrNull(0) else null
     val isBookDownloaded = downloadedBookKeys.containsDownloadedBook(book)
     val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
@@ -8258,7 +8262,11 @@ fun PlayerScreen(
                         .weight(1f)
                         .padding(start = 8.dp, end = 10.dp)
                         .clickable {
-                            chapterSheetTab = PlayerSheetTab.Chapters
+                            chapterSheetTab = if (isPodcastEpisode && !book?.description.isNullOrBlank()) {
+                                PlayerSheetTab.Description
+                            } else {
+                                PlayerSheetTab.Chapters
+                            }
                             showChapterSheet = true
                         }
                         .basicMarquee(
@@ -8540,22 +8548,24 @@ fun PlayerScreen(
                             showOutputSheet = true
                         }
                     )
-                    PlayerBottomToolItem(
-                        modifier = Modifier.weight(1f),
-                        itemHeight = toolsItemHeight,
-                        label = "Download",
-                        imageVector = Icons.Outlined.Download,
-                        valueText = downloadToolText,
-                        primaryColor = bottomToolsPrimaryColor,
-                        secondaryColor = bottomToolsSecondaryColor,
-                        containerColor = toolsItemContainerColor,
-                        containerBorderColor = toolsItemBorderColor,
-                        isImmersive = immersiveEnabled,
-                        showIconBubble = toolsShowIconBubble,
-                        showSecondaryLabelWhenValue = false,
-                        isHighlighted = isBookDownloaded || hasActivePlayerDownload,
-                        onClick = { viewModel.toggleDownload() }
-                    )
+                    if (!isPodcastEpisode) {
+                        PlayerBottomToolItem(
+                            modifier = Modifier.weight(1f),
+                            itemHeight = toolsItemHeight,
+                            label = "Download",
+                            imageVector = Icons.Outlined.Download,
+                            valueText = downloadToolText,
+                            primaryColor = bottomToolsPrimaryColor,
+                            secondaryColor = bottomToolsSecondaryColor,
+                            containerColor = toolsItemContainerColor,
+                            containerBorderColor = toolsItemBorderColor,
+                            isImmersive = immersiveEnabled,
+                            showIconBubble = toolsShowIconBubble,
+                            showSecondaryLabelWhenValue = false,
+                            isHighlighted = isBookDownloaded || hasActivePlayerDownload,
+                            onClick = { viewModel.toggleDownload() }
+                        )
+                    }
                     Box(modifier = Modifier.weight(1f)) {
                         PlayerBottomToolItem(
                             modifier = Modifier.fillMaxWidth(),
@@ -8688,9 +8698,9 @@ fun PlayerScreen(
                             text = {
                                 Text(
                                     if (effectivePlayerFinished) {
-                                        "Mark as Unfinished"
+                                        if (isPodcastEpisode) "Mark as Unplayed" else "Mark as Unfinished"
                                     } else {
-                                        "Mark as Finished"
+                                        if (isPodcastEpisode) "Mark as Played" else "Mark as Finished"
                                     }
                                 )
                             },
@@ -8714,41 +8724,59 @@ fun PlayerScreen(
                                 }
                             }
                         )
-                        ResetBookProgressMenuItem(
-                            showIcon = true,
-                            onConfirm = {
-                                bottomMenuExpanded = false
-                                viewModel.resetBookProgress()
-                            }
-                        )
-                        AppDropdownMenuItem(
-                            text = { Text("Add to Collection") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Outlined.CollectionsBookmark,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                bottomMenuExpanded = false
-                                addToListBookId = bookId
-                            }
-                        )
-                        AppDropdownMenuItem(
-                            text = { Text("Go to Book") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Outlined.MenuBook,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                bottomMenuExpanded = false
-                                if (!bookId.isNullOrBlank()) {
-                                    onGoToBook?.invoke(bookId)
+                        if (!isPodcastEpisode) {
+                            ResetBookProgressMenuItem(
+                                showIcon = true,
+                                onConfirm = {
+                                    bottomMenuExpanded = false
+                                    viewModel.resetBookProgress()
                                 }
-                            }
                             )
+                            AppDropdownMenuItem(
+                                text = { Text("Add to Collection") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.CollectionsBookmark,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    bottomMenuExpanded = false
+                                    addToListBookId = bookId
+                                }
+                            )
+                            AppDropdownMenuItem(
+                                text = { Text("Go to Book") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Outlined.MenuBook,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    bottomMenuExpanded = false
+                                    if (!bookId.isNullOrBlank()) {
+                                        onGoToBook?.invoke(bookId)
+                                    }
+                                }
+                            )
+                        } else {
+                            AppDropdownMenuItem(
+                                text = { Text("Go to Show") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Mic,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    bottomMenuExpanded = false
+                                    if (!podcastShowId.isNullOrBlank()) {
+                                        onGoToPodcastShow?.invoke(podcastShowId)
+                                    }
+                                }
+                            )
+                        }
                         }
                     }
                 }
@@ -8864,6 +8892,8 @@ fun PlayerScreen(
                     positionSeconds = positionSeconds,
                     isPlaying = playbackUiState.isPlaying,
                     timeLeftLabel = formatTimeLeftLabel(durationSeconds = durationSeconds, positionSeconds = positionSeconds),
+                    description = book.description,
+                    isPodcastEpisode = isPodcastEpisode,
                     onSelectTab = { chapterSheetTab = it },
                     onPlayChapter = { chapterStart -> viewModel.jumpToSeconds(chapterStart) },
                     onPlayBookmark = { bookmarkSeconds ->
@@ -8918,7 +8948,8 @@ fun PlayerScreen(
 
 private enum class PlayerSheetTab {
     Chapters,
-    Bookmarks
+    Bookmarks,
+    Description
 }
 
 @Composable
@@ -8932,6 +8963,8 @@ private fun PlayerChapterBookmarkSheet(
     positionSeconds: Double,
     isPlaying: Boolean,
     timeLeftLabel: String,
+    description: String? = null,
+    isPodcastEpisode: Boolean = false,
     onSelectTab: (PlayerSheetTab) -> Unit,
     onPlayChapter: (Double) -> Unit,
     onPlayBookmark: (Double) -> Unit,
@@ -9058,6 +9091,14 @@ private fun PlayerChapterBookmarkSheet(
                 onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
                 modifier = Modifier.weight(1f)
             )
+            if (!description.isNullOrBlank()) {
+                PlayerSheetTabButton(
+                    title = "Description",
+                    selected = selectedTab == PlayerSheetTab.Description,
+                    onClick = { onSelectTab(PlayerSheetTab.Description) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -9073,7 +9114,7 @@ private fun PlayerChapterBookmarkSheet(
                     ) {
                         PlayerSheetEmptyState(
                             icon = Icons.AutoMirrored.Outlined.ViewList,
-                            title = "This book has no chapters"
+                            title = if (isPodcastEpisode) "This episode has no chapters" else "This book has no chapters"
                         )
                     }
                 } else {
@@ -9258,6 +9299,38 @@ private fun PlayerChapterBookmarkSheet(
                                 }
                             }
                             HorizontalDivider()
+                        }
+                    }
+                }
+            }
+
+            PlayerSheetTab.Description -> {
+                if (description.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PlayerSheetEmptyState(
+                            icon = Icons.Outlined.Info,
+                            title = "No description available"
+                        )
+                    }
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(bottom = 12.dp)
+                    ) {
+                        item {
+                            Text(
+                                text = description,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
                         }
                     }
                 }

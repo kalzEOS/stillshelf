@@ -254,6 +254,15 @@ private fun MainShell() {
                         }
                     )
                 },
+                onGoToPodcastShow = { showId ->
+                    closePlayer(
+                        afterClose = {
+                            tabsNavController.navigate(MainRoute.podcastShow(showId)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                },
                 topContentInset = statusBarTopInset,
                 manageStatusBarAppearance = true
             )

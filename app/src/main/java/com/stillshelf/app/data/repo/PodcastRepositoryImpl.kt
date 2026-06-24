@@ -110,10 +110,13 @@ class PodcastRepositoryImpl @Inject constructor(
             onSuccess = { (showDto, episodeDtos) ->
                 val episodeDto = episodeDtos.firstOrNull { it.id == episodeId }
                     ?: return AppResult.Error("Episode not found.")
-                val audioFileIno = episodeDto.audioUrl
-                    ?: return AppResult.Error("This episode has no playable audio file.")
+                val streamUrl = when {
+                    episodeDto.audioUrl != null ->
+                        api.buildEpisodeStreamUrl(creds.baseUrl, showId, episodeDto.audioUrl, creds.token)
+                    episodeDto.enclosureUrl != null -> episodeDto.enclosureUrl
+                    else -> return AppResult.Error("This episode has no playable audio file.")
+                }
                 val show = showDto.toModel(creds.baseUrl, creds.token)
-                val streamUrl = api.buildEpisodeStreamUrl(creds.baseUrl, showId, audioFileIno, creds.token)
                 val bookSummary = BookSummary(
                     id = "${showId}::${episodeId}",
                     libraryId = show.libraryId,
@@ -124,7 +127,8 @@ class PodcastRepositoryImpl @Inject constructor(
                     coverUrl = show.coverUrl,
                     progressPercent = episodeDto.progressPercent,
                     currentTimeSeconds = episodeDto.currentTimeSeconds,
-                    isFinished = episodeDto.isFinished
+                    isFinished = episodeDto.isFinished,
+                    description = episodeDto.description
                 )
                 AppResult.Success(
                     PlaybackSource(
@@ -222,12 +226,14 @@ class PodcastRepositoryImpl @Inject constructor(
         id = id,
         showId = showId,
         title = title,
+        subtitle = subtitle,
         description = description,
         pubDate = pubDate,
         durationSeconds = durationSeconds,
         season = season,
         episode = episode,
         audioUrl = audioUrl,
+        enclosureUrl = enclosureUrl,
         progressPercent = progressPercent,
         currentTimeSeconds = currentTimeSeconds,
         isFinished = isFinished

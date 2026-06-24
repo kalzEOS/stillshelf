@@ -86,7 +86,8 @@ data class BookSummary(
     val authorIds: List<String> = emptyList(),
     val progressPercent: Double? = null,
     val currentTimeSeconds: Double? = null,
-    val isFinished: Boolean = false
+    val isFinished: Boolean = false,
+    val description: String? = null
 )
 
 data class NamedEntitySummary(
@@ -182,12 +183,14 @@ data class PodcastEpisode(
     val id: String,
     val showId: String,
     val title: String,
+    val subtitle: String? = null,
     val description: String?,
     val pubDate: String?,
     val durationSeconds: Double?,
     val season: String?,
     val episode: String?,
     val audioUrl: String?,
+    val enclosureUrl: String? = null,
     val progressPercent: Double? = null,
     val currentTimeSeconds: Double? = null,
     val isFinished: Boolean = false

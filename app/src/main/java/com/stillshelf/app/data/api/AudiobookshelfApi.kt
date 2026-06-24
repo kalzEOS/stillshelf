@@ -154,12 +154,14 @@ data class AudiobookshelfPodcastEpisodeDto(
     val id: String,
     val showId: String,
     val title: String,
+    val subtitle: String?,
     val description: String?,
     val pubDate: String?,
     val durationSeconds: Double?,
     val season: String?,
     val episode: String?,
     val audioUrl: String?,
+    val enclosureUrl: String?,
     val progressPercent: Double?,
     val currentTimeSeconds: Double?,
     val isFinished: Boolean
@@ -2678,7 +2680,8 @@ class AudiobookshelfApi @Inject constructor(
                 val ep = episodes.optJSONObject(i) ?: continue
                 val id = ep.optString("id").trim().ifBlank { continue }
                 val title = ep.optString("title").trim().ifBlank { "Episode ${i + 1}" }
-                val description = ep.optString("description").trim().ifBlank { null }
+                val subtitle = ep.optString("subtitle").trim().ifBlank { null }
+                val description = ep.optString("description").trim().ifBlank { null }.sanitizeDescriptionText()
                 val pubDate = ep.optString("pubDate").trim().ifBlank { null }
                 val audioFile = ep.optJSONObject("audioFile")
                 val duration = audioFile?.optDoubleOrNull("duration")
@@ -2686,6 +2689,8 @@ class AudiobookshelfApi @Inject constructor(
                 val season = ep.optString("season").trim().ifBlank { null }
                 val episodeNumber = ep.optString("episode").trim().ifBlank { null }
                 val audioFileIno = audioFile?.optString("ino")?.trim()?.ifBlank { null }
+                val enclosureUrl = ep.optString("enclosureURL").trim().ifBlank { null }
+                    ?: ep.optJSONObject("enclosure")?.optString("url")?.trim()?.ifBlank { null }
                 val progressNode = ep.optJSONObject("mediaProgress")
                 val progressPercent = progressNode?.optDoubleOrNull("progress")
                 val currentTime = progressNode?.optDoubleOrNull("currentTime")
@@ -2695,12 +2700,14 @@ class AudiobookshelfApi @Inject constructor(
                         id = id,
                         showId = showId,
                         title = title,
+                        subtitle = subtitle,
                         description = description,
                         pubDate = pubDate,
                         durationSeconds = duration,
                         season = season,
                         episode = episodeNumber,
                         audioUrl = audioFileIno,
+                        enclosureUrl = enclosureUrl,
                         progressPercent = progressPercent,
                         currentTimeSeconds = currentTime,
                         isFinished = isFinished

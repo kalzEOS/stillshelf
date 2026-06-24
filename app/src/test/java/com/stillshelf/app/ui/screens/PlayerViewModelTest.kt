@@ -13,6 +13,7 @@ import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.model.Server
 import com.stillshelf.app.core.model.SessionState
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.data.repo.PodcastRepository
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
@@ -304,6 +305,7 @@ class PlayerViewModelTest {
             ),
             playbackController = controller,
             sessionRepository = testSessionRepository(miniPlayerItem),
+            podcastRepository = mockk(relaxed = true),
             sessionPreferences = testSessionPreferences(prefsDir),
             bookDownloadManager = testDownloadManager()
         )

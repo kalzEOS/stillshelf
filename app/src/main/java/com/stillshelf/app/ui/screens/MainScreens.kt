@@ -4779,6 +4779,7 @@ fun SettingsScreen(
     onManageServers: () -> Unit = {},
     onOpenAdvanced: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    onOpenPodcastSettings: () -> Unit = {},
     onBackClick: (() -> Unit)? = null,
     onHomeClick: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
@@ -5019,6 +5020,23 @@ fun SettingsScreen(
                     infoMessage = null
                     signOutDialogVisible = true
                 }
+            )
+        }
+        Text(
+            text = "PODCASTS",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = sectionCardColor),
+            shape = RoundedCornerShape(18.dp),
+            border = sectionCardBorder
+        ) {
+            SettingsRow(
+                title = "Podcasts",
+                value = "Library selection",
+                trailingContentWidth = 144.dp,
+                onClick = onOpenPodcastSettings
             )
         }
         Text(

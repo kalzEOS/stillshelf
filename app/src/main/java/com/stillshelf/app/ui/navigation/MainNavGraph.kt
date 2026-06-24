@@ -67,6 +67,8 @@ import com.stillshelf.app.ui.screens.PlayerScreen
 import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
 import com.stillshelf.app.ui.screens.podcasts.PodcastsScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastSettingsScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastShowDetailScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
@@ -217,7 +219,11 @@ private fun MainShell() {
                 navController = tabsNavController,
                 onHomeClick = screenHomeClick,
                 onOpenSelectedBook = ::handleBookSelection,
-                onPlayContinueListening = playerViewModel::openPlayer
+                onPlayContinueListening = playerViewModel::openPlayer,
+                onPlayPodcastEpisode = { showId, episodeId, startSeconds ->
+                    playerViewModel.openPodcastEpisode(showId, episodeId, startSeconds)
+                    showPlayer()
+                }
             )
         }
 
@@ -269,7 +275,8 @@ private fun MainTabsNavHost(
     navController: androidx.navigation.NavHostController,
     onHomeClick: (() -> Unit)?,
     onOpenSelectedBook: (String?, Double?) -> Unit,
-    onPlayContinueListening: (String) -> Unit
+    onPlayContinueListening: (String) -> Unit,
+    onPlayPodcastEpisode: (showId: String, episodeId: String, startSeconds: Double?) -> Unit = { _, _, _ -> }
 ) {
     NavHost(
         navController = navController,
@@ -382,19 +389,16 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
-                    navController.navigate(MainRoute.ADVANCED) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ADVANCED) { launchSingleTop = true }
                 },
                 onOpenAbout = {
-                    navController.navigate(MainRoute.ABOUT) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ABOUT) { launchSingleTop = true }
+                },
+                onOpenPodcastSettings = {
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
                 },
                 onManageServers = {
-                    navController.navigate(MainRoute.SERVERS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.SERVERS) { launchSingleTop = true }
                 }
             )
         }
@@ -403,19 +407,16 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
-                    navController.navigate(MainRoute.ADVANCED) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ADVANCED) { launchSingleTop = true }
                 },
                 onOpenAbout = {
-                    navController.navigate(MainRoute.ABOUT) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ABOUT) { launchSingleTop = true }
+                },
+                onOpenPodcastSettings = {
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
                 },
                 onManageServers = {
-                    navController.navigate(MainRoute.SERVERS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.SERVERS) { launchSingleTop = true }
                 }
             )
         }
@@ -427,6 +428,12 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.ADVANCED) {
             AdvancedScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
+            )
+        }
+        composable(MainRoute.PODCAST_SETTINGS) {
+            PodcastSettingsScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick
             )
@@ -623,10 +630,23 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenSettings = {
-                    navController.navigate(MainRoute.SETTINGS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
+                },
+                onShowClick = { showId ->
+                    navController.navigate(MainRoute.podcastShow(showId)) { launchSingleTop = true }
                 }
+            )
+        }
+        composable(
+            route = MainRoute.PODCAST_SHOW_PATTERN,
+            arguments = listOf(
+                navArgument(MainRoute.PODCAST_SHOW_ID_ARG) { type = NavType.StringType }
+            )
+        ) {
+            PodcastShowDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onPlayEpisode = onPlayPodcastEpisode
             )
         }
 

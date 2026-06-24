@@ -12,6 +12,7 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.model.PlaybackProgress
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.util.resolveUnfinishedProgressState
+import com.stillshelf.app.data.repo.PodcastRepository
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
@@ -54,7 +55,8 @@ class PlayerViewModel @Inject constructor(
     private val playbackController: PlaybackController,
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
-    private val bookDownloadManager: BookDownloadManager
+    private val bookDownloadManager: BookDownloadManager,
+    private val podcastRepository: PodcastRepository
 ) : ViewModel() {
     private data class FinishedUndoSnapshot(
         val bookId: String,
@@ -134,6 +136,20 @@ class PlayerViewModel @Inject constructor(
                 }
 
                 is AppResult.Error -> Unit
+            }
+        }
+    }
+
+    fun openPodcastEpisode(showId: String, episodeId: String, startSeconds: Double? = null) {
+        viewModelScope.launch {
+            when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
+                is AppResult.Success -> {
+                    val startMs = startSeconds?.let { (it * 1000.0).toLong().coerceAtLeast(0L) }
+                    playbackController.playFromSource(result.value, startPositionMs = startMs)
+                }
+                is AppResult.Error -> {
+                    mutableActionMessage.value = result.message
+                }
             }
         }
     }

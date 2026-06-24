@@ -3,7 +3,10 @@ package com.stillshelf.app.data.repo
 import com.stillshelf.app.core.database.ServerDao
 import com.stillshelf.app.core.datastore.SecureTokenStorage
 import com.stillshelf.app.core.datastore.SessionPreferences
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.Library
+import com.stillshelf.app.core.model.PlaybackSource
+import com.stillshelf.app.core.model.PlaybackTrack
 import com.stillshelf.app.core.model.PodcastEpisode
 import com.stillshelf.app.core.model.PodcastShow
 import com.stillshelf.app.core.model.PodcastShowDetail
@@ -92,6 +95,79 @@ class PodcastRepositoryImpl @Inject constructor(
             onFailure = { e ->
                 AppResult.Error("Failed to load podcast detail: ${e.message}", e)
             }
+        )
+    }
+
+    override suspend fun fetchPodcastEpisodePlaybackSource(
+        showId: String,
+        episodeId: String
+    ): AppResult<PlaybackSource> {
+        val creds = when (val r = resolveCredentials()) {
+            is AppResult.Success -> r.value
+            is AppResult.Error -> return r
+        }
+        return api.getPodcastShowDetail(creds.baseUrl, creds.token, showId).fold(
+            onSuccess = { (showDto, episodeDtos) ->
+                val episodeDto = episodeDtos.firstOrNull { it.id == episodeId }
+                    ?: return AppResult.Error("Episode not found.")
+                val audioFileIno = episodeDto.audioUrl
+                    ?: return AppResult.Error("This episode has no playable audio file.")
+                val show = showDto.toModel(creds.baseUrl, creds.token)
+                val streamUrl = api.buildEpisodeStreamUrl(creds.baseUrl, showId, audioFileIno, creds.token)
+                val bookSummary = BookSummary(
+                    id = "${showId}::${episodeId}",
+                    libraryId = show.libraryId,
+                    title = episodeDto.title,
+                    authorName = show.author ?: show.title,
+                    narratorName = null,
+                    durationSeconds = episodeDto.durationSeconds,
+                    coverUrl = show.coverUrl,
+                    progressPercent = episodeDto.progressPercent,
+                    currentTimeSeconds = episodeDto.currentTimeSeconds,
+                    isFinished = episodeDto.isFinished
+                )
+                AppResult.Success(
+                    PlaybackSource(
+                        book = bookSummary,
+                        streamUrl = streamUrl,
+                        tracks = listOf(
+                            PlaybackTrack(
+                                startOffsetSeconds = 0.0,
+                                durationSeconds = episodeDto.durationSeconds,
+                                streamUrl = streamUrl
+                            )
+                        )
+                    )
+                )
+            },
+            onFailure = { e ->
+                AppResult.Error("Failed to load episode: ${e.message}", e)
+            }
+        )
+    }
+
+    override suspend fun syncEpisodeProgress(
+        showId: String,
+        episodeId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): AppResult<Unit> {
+        val creds = when (val r = resolveCredentials()) {
+            is AppResult.Success -> r.value
+            is AppResult.Error -> return r
+        }
+        return api.updateEpisodeProgress(
+            baseUrl = creds.baseUrl,
+            authToken = creds.token,
+            showId = showId,
+            episodeId = episodeId,
+            currentTimeSeconds = currentTimeSeconds,
+            durationSeconds = durationSeconds,
+            isFinished = isFinished
+        ).fold(
+            onSuccess = { AppResult.Success(Unit) },
+            onFailure = { e -> AppResult.Error("Failed to sync episode progress: ${e.message}", e) }
         )
     }
 

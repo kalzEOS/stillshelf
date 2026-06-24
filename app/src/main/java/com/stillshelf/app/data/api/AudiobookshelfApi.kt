@@ -534,6 +534,42 @@ class AudiobookshelfApi @Inject constructor(
         }
     }
 
+    suspend fun updateEpisodeProgress(
+        baseUrl: String,
+        authToken: String,
+        showId: String,
+        episodeId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val progress = durationSeconds
+            ?.takeIf { it > 0.0 }
+            ?.let { (currentTimeSeconds / it).coerceIn(0.0, 1.0) }
+
+        val body = JSONObject()
+            .put("currentTime", currentTimeSeconds)
+            .put("isFinished", isFinished)
+            .apply {
+                durationSeconds?.let { put("duration", it) }
+                progress?.let { put("progress", it) }
+            }
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+
+        val url = buildUrl(baseUrl, "api/me/progress/$showId/$episodeId")
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", authHeaderValue(authToken))
+            .method("PATCH", body)
+            .build()
+
+        runCatching {
+            executeRequestWithRetry(request)
+            Unit
+        }
+    }
+
     suspend fun getBookmarks(
         baseUrl: String,
         authToken: String
@@ -2458,6 +2494,22 @@ class AudiobookshelfApi @Inject constructor(
         return addAuthTokenFragment(rawUrl, authToken)
     }
 
+    fun buildEpisodeStreamUrl(
+        baseUrl: String,
+        showId: String,
+        audioFileIno: String,
+        authToken: String
+    ): String {
+        val normalized = baseUrl.removeSuffix("/")
+        val httpUrl = normalized.toHttpUrlOrNull()
+            ?: return addAuthTokenFragment("$normalized/api/items/$showId/file/$audioFileIno", authToken)
+        val rawUrl = httpUrl.newBuilder()
+            .addPathSegments("api/items/$showId/file/$audioFileIno")
+            .build()
+            .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
+    }
+
     fun buildAuthorImageUrl(
         baseUrl: String,
         authorId: String,
@@ -2633,8 +2685,7 @@ class AudiobookshelfApi @Inject constructor(
                     ?: ep.optDoubleOrNull("duration")
                 val season = ep.optString("season").trim().ifBlank { null }
                 val episodeNumber = ep.optString("episode").trim().ifBlank { null }
-                val audioUrl = audioFile?.optString("metadata")
-                    ?.let { JSONObject(it).optString("path")?.ifBlank { null } }
+                val audioFileIno = audioFile?.optString("ino")?.trim()?.ifBlank { null }
                 val progressNode = ep.optJSONObject("mediaProgress")
                 val progressPercent = progressNode?.optDoubleOrNull("progress")
                 val currentTime = progressNode?.optDoubleOrNull("currentTime")
@@ -2649,7 +2700,7 @@ class AudiobookshelfApi @Inject constructor(
                         durationSeconds = duration,
                         season = season,
                         episode = episodeNumber,
-                        audioUrl = audioUrl,
+                        audioUrl = audioFileIno,
                         progressPercent = progressPercent,
                         currentTimeSeconds = currentTime,
                         isFinished = isFinished

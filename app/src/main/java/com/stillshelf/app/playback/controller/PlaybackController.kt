@@ -518,6 +518,40 @@ class PlaybackController @Inject constructor(
         }
     }
 
+    fun playFromSource(
+        source: PlaybackSource,
+        startPositionMs: Long? = null
+    ) {
+        val requestToken = beginPlayRequest()
+        updateUiState {
+            it.copy(isLoading = true, errorMessage = null, sleepTimerExpiredPromptVisible = false)
+        }
+        playRequestJob = scope.launch {
+            val resumeMs = startPositionMs?.coerceAtLeast(0L) ?: run {
+                val progressResult = sessionRepository.fetchPlaybackProgress(source.book.id)
+                val start = resolvePlaybackStart(
+                    bookId = source.book.id,
+                    defaultDurationSeconds = source.book.durationSeconds,
+                    startPositionMs = null,
+                    progressResult = progressResult
+                )
+                start.resumeMs
+            }
+            if (isStalePlayRequest(requestToken)) return@launch
+            cachedContinueListeningItem = ContinueListeningItem(
+                book = source.book,
+                progressPercent = source.book.progressPercent,
+                currentTimeSeconds = source.book.currentTimeSeconds
+            )
+            prepareAndPlay(
+                bookId = source.book.id,
+                book = source.book,
+                playbackSource = source,
+                resumeMs = resumeMs
+            )
+        }
+    }
+
     private fun beginPlayRequest(): Long {
         playRequestJob?.cancel()
         playRequestToken += 1L

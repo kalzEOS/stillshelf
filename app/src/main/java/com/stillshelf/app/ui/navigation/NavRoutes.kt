@@ -61,6 +61,7 @@ object BrowseRoute {
     const val BOOKMARKS = "main/browse/bookmarks"
     const val PLAYLISTS = "main/browse/playlists"
     const val DOWNLOADED = "main/browse/downloaded"
+    const val PODCASTS = "main/browse/podcasts"
 }
 
 object DetailRoute {
@@ -166,6 +167,7 @@ internal fun resolveSafeScreenArea(route: String?): String {
         rawRoute == BrowseRoute.BOOKMARKS -> "browse_bookmarks"
         rawRoute == BrowseRoute.PLAYLISTS -> "browse_playlists"
         rawRoute == BrowseRoute.DOWNLOADED -> "browse_downloaded"
+        rawRoute == BrowseRoute.PODCASTS -> "browse_podcasts"
 
         rawRoute == AuthRoute.SERVERS -> "auth_servers"
         rawRoute == AuthRoute.ADD_SERVER -> "auth_add_server"

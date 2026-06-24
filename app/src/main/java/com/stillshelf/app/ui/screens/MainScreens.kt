@@ -97,6 +97,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Person
@@ -530,6 +531,12 @@ fun HomeScreen(
             title = "Downloaded",
             icon = Icons.Outlined.Download,
             route = BrowseRoute.DOWNLOADED
+        ),
+        ListSectionIds.PODCASTS to LibraryListItem(
+            id = ListSectionIds.PODCASTS,
+            title = "Podcasts",
+            icon = Icons.Outlined.Mic,
+            route = BrowseRoute.PODCASTS
         )
     )
     val orderedListItems = customizeUiState.listSections

@@ -61,8 +61,11 @@ data class ActiveServerDataState(
 data class Library(
     val id: String,
     val serverId: String,
-    val name: String
-)
+    val name: String,
+    val mediaType: String? = null
+) {
+    val isPodcastLibrary: Boolean get() = mediaType?.lowercase() == "podcast"
+}
 
 data class BookSummary(
     val id: String,
@@ -163,6 +166,37 @@ sealed interface SeriesDetailEntry {
         override val stableId: String = "series:$id"
     }
 }
+
+data class PodcastShow(
+    val id: String,
+    val libraryId: String,
+    val title: String,
+    val author: String?,
+    val description: String?,
+    val coverUrl: String?,
+    val numEpisodes: Int,
+    val addedAtMs: Long?
+)
+
+data class PodcastEpisode(
+    val id: String,
+    val showId: String,
+    val title: String,
+    val description: String?,
+    val pubDate: String?,
+    val durationSeconds: Double?,
+    val season: String?,
+    val episode: String?,
+    val audioUrl: String?,
+    val progressPercent: Double? = null,
+    val currentTimeSeconds: Double? = null,
+    val isFinished: Boolean = false
+)
+
+data class PodcastShowDetail(
+    val show: PodcastShow,
+    val episodes: List<PodcastEpisode>
+)
 
 data class SearchResults(
     val books: List<BookSummary>,

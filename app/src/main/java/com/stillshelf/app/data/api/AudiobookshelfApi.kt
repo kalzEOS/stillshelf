@@ -24,7 +24,8 @@ import org.json.JSONObject
 
 data class AudiobookshelfLibraryDto(
     val id: String,
-    val name: String
+    val name: String,
+    val mediaType: String? = null
 )
 
 data class AudiobookshelfServerStatusDto(
@@ -137,6 +138,31 @@ data class AudiobookshelfPlaylistDto(
     val name: String,
     val libraryId: String? = null,
     val itemCount: Int? = null
+)
+
+data class AudiobookshelfPodcastShowDto(
+    val id: String,
+    val libraryId: String,
+    val title: String,
+    val author: String?,
+    val description: String?,
+    val numEpisodes: Int,
+    val addedAtMs: Long?
+)
+
+data class AudiobookshelfPodcastEpisodeDto(
+    val id: String,
+    val showId: String,
+    val title: String,
+    val description: String?,
+    val pubDate: String?,
+    val durationSeconds: Double?,
+    val season: String?,
+    val episode: String?,
+    val audioUrl: String?,
+    val progressPercent: Double?,
+    val currentTimeSeconds: Double?,
+    val isFinished: Boolean
 )
 
 @Singleton
@@ -253,6 +279,46 @@ class AudiobookshelfApi @Inject constructor(
             parseLibraryItems(body, arrayKey = "results")
         }
     }
+
+    suspend fun getPodcastShows(
+        baseUrl: String,
+        authToken: String,
+        libraryId: String,
+        limit: Int = 100,
+        page: Int = 0
+    ): Result<List<AudiobookshelfPodcastShowDto>> = withContext(Dispatchers.IO) {
+        val query = mapOf("limit" to limit.toString(), "page" to page.toString())
+        val url = buildUrl(baseUrl, "api/libraries/$libraryId/items", query)
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", authHeaderValue(authToken))
+            .get()
+            .build()
+
+        runCatching {
+            val body = executeRequestWithRetry(request)
+            parsePodcastShows(body)
+        }
+    }
+
+    suspend fun getPodcastShowDetail(
+        baseUrl: String,
+        authToken: String,
+        showId: String
+    ): Result<Pair<AudiobookshelfPodcastShowDto, List<AudiobookshelfPodcastEpisodeDto>>> =
+        withContext(Dispatchers.IO) {
+            val url = buildUrl(baseUrl, "api/items/$showId", mapOf("expanded" to "1"))
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+
+            runCatching {
+                val body = executeRequestWithRetry(request)
+                parsePodcastShowDetail(body)
+            }
+        }
 
     suspend fun searchLibrary(
         baseUrl: String,
@@ -2450,7 +2516,8 @@ class AudiobookshelfApi @Inject constructor(
                 val id = item.optString("id").ifBlank { item.optString("_id") }
                 val name = item.optString("name")
                 if (id.isNotBlank() && name.isNotBlank()) {
-                    add(AudiobookshelfLibraryDto(id = id, name = name))
+                    val mediaType = item.optString("mediaType").ifBlank { null }
+                    add(AudiobookshelfLibraryDto(id = id, name = name, mediaType = mediaType))
                 }
             }
         }
@@ -2495,6 +2562,99 @@ class AudiobookshelfApi @Inject constructor(
                 val item = sourceArray.optJSONObject(index) ?: continue
                 val parsedItem = parseLibraryItem(item) ?: continue
                 add(parsedItem)
+            }
+        }
+    }
+
+    private fun parsePodcastShows(rawJson: String): List<AudiobookshelfPodcastShowDto> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty() || !trimmed.startsWith("{")) return emptyList()
+        val root = JSONObject(trimmed)
+        val items = root.optJSONArray("results") ?: JSONArray()
+        return buildList {
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                parsePodcastShow(item)?.let { add(it) }
+            }
+        }
+    }
+
+    private fun parsePodcastShow(item: JSONObject): AudiobookshelfPodcastShowDto? {
+        val id = item.optString("id").trim()
+        val libraryId = item.optString("libraryId").trim()
+        if (id.isBlank() || libraryId.isBlank()) return null
+        val media = item.optJSONObject("media")
+        val metadata = media?.optJSONObject("metadata")
+        val title = metadata?.optString("title").orEmpty().trim().ifBlank { return null }
+        val author = metadata?.optString("author")?.trim()?.ifBlank { null }
+        val description = metadata?.optString("description")?.trim()?.ifBlank { null }
+        val numEpisodes = item.optInt("numEpisodes").takeIf { it > 0 }
+            ?: media?.optJSONArray("episodes")?.length()
+            ?: 0
+        val addedAtMs = normalizeEpochMillis(item.optLongOrNull("addedAt"))
+        return AudiobookshelfPodcastShowDto(
+            id = id,
+            libraryId = libraryId,
+            title = title,
+            author = author,
+            description = description,
+            numEpisodes = numEpisodes,
+            addedAtMs = addedAtMs
+        )
+    }
+
+    private fun parsePodcastShowDetail(
+        rawJson: String
+    ): Pair<AudiobookshelfPodcastShowDto, List<AudiobookshelfPodcastEpisodeDto>> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty()) error("Empty response for podcast show detail")
+        val item = JSONObject(trimmed)
+        val show = parsePodcastShow(item)
+            ?: error("Could not parse podcast show from item")
+        val media = item.optJSONObject("media")
+        val episodes = parsePodcastEpisodes(show.id, media?.optJSONArray("episodes"))
+        return show to episodes
+    }
+
+    private fun parsePodcastEpisodes(
+        showId: String,
+        episodes: JSONArray?
+    ): List<AudiobookshelfPodcastEpisodeDto> {
+        if (episodes == null) return emptyList()
+        return buildList {
+            for (i in 0 until episodes.length()) {
+                val ep = episodes.optJSONObject(i) ?: continue
+                val id = ep.optString("id").trim().ifBlank { continue }
+                val title = ep.optString("title").trim().ifBlank { "Episode ${i + 1}" }
+                val description = ep.optString("description").trim().ifBlank { null }
+                val pubDate = ep.optString("pubDate").trim().ifBlank { null }
+                val audioFile = ep.optJSONObject("audioFile")
+                val duration = audioFile?.optDoubleOrNull("duration")
+                    ?: ep.optDoubleOrNull("duration")
+                val season = ep.optString("season").trim().ifBlank { null }
+                val episodeNumber = ep.optString("episode").trim().ifBlank { null }
+                val audioUrl = audioFile?.optString("metadata")
+                    ?.let { JSONObject(it).optString("path")?.ifBlank { null } }
+                val progressNode = ep.optJSONObject("mediaProgress")
+                val progressPercent = progressNode?.optDoubleOrNull("progress")
+                val currentTime = progressNode?.optDoubleOrNull("currentTime")
+                val isFinished = progressNode?.optBoolean("isFinished") ?: false
+                add(
+                    AudiobookshelfPodcastEpisodeDto(
+                        id = id,
+                        showId = showId,
+                        title = title,
+                        description = description,
+                        pubDate = pubDate,
+                        durationSeconds = duration,
+                        season = season,
+                        episode = episodeNumber,
+                        audioUrl = audioUrl,
+                        progressPercent = progressPercent,
+                        currentTimeSeconds = currentTime,
+                        isFinished = isFinished
+                    )
+                )
             }
         }
     }

@@ -66,6 +66,7 @@ import com.stillshelf.app.ui.screens.NarratorDetailScreen
 import com.stillshelf.app.ui.screens.PlayerScreen
 import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastsScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
@@ -612,6 +613,17 @@ private fun MainTabsNavHost(
                 onHomeClick = onHomeClick,
                 onBookClick = { bookId ->
                     navController.navigate(DetailRoute.book(bookId)) {
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+        composable(BrowseRoute.PODCASTS) {
+            PodcastsScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onOpenSettings = {
+                    navController.navigate(MainRoute.SETTINGS) {
                         launchSingleTop = true
                     }
                 }

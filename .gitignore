@@ -33,6 +33,9 @@ keystore.properties
 *.env
 *.env.*
 
+# Planning docs (local only)
+PODCAST_PLAN.md
+
 # Logs / temp
 *.log
 *.tmp

@@ -345,6 +345,7 @@ class PlaybackController @Inject constructor(
     }
 
     val uiState: StateFlow<PlaybackUiState> = mutableUiState.asStateFlow()
+    val hasActivePlayer: Boolean get() = mediaPlayer != null
 
     init {
         createNotificationChannel()

@@ -20,7 +20,8 @@ data class PodcastShowDetailUiState(
     val episodes: List<PodcastEpisode> = emptyList(),
     val episodeQuery: String = "",
     val isLoading: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val rssWarning: String? = null
 )
 
 @HiltViewModel
@@ -42,7 +43,14 @@ class PodcastShowDetailViewModel @Inject constructor(
         load()
     }
 
-    fun refresh() = load()
+    fun refresh() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            // Ask ABS to re-sync the RSS feed before reloading; best-effort, ignore failures.
+            podcastRepository.checkForNewEpisodes(showId)
+            load()
+        }
+    }
 
     fun setEpisodeQuery(query: String) {
         _uiState.value = _uiState.value.copy(
@@ -66,7 +74,8 @@ class PodcastShowDetailViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(
                         show = result.value.show,
                         episodes = applyEpisodeFilter(allEpisodes, _uiState.value.episodeQuery),
-                        isLoading = false
+                        isLoading = false,
+                        rssWarning = result.value.rssError
                     )
                 }
                 is AppResult.Error -> {

@@ -198,7 +198,8 @@ data class PodcastEpisode(
 
 data class PodcastShowDetail(
     val show: PodcastShow,
-    val episodes: List<PodcastEpisode>
+    val episodes: List<PodcastEpisode>,
+    val rssError: String? = null
 )
 
 data class SearchResults(

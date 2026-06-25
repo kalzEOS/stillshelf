@@ -8277,31 +8277,35 @@ fun PlayerScreen(
                             spacing = MarqueeSpacing(48.dp)
                         )
                 )
-                IconButton(
-                    onClick = {
-                        bookmarkFeedbackActive = true
-                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.addBookmark(
-                            positionSeconds = positionSeconds,
-                            title = activeChapterTitle ?: playerTitle
-                        )
-                    },
-                    modifier = Modifier
-                        .size(44.dp)
-                        .graphicsLayer {
-                            scaleX = bookmarkIconScale
-                            scaleY = bookmarkIconScale
-                        }
-                ) {
-                    Icon(
-                        imageVector = if (bookmarkFeedbackActive) {
-                            Icons.Filled.Bookmark
-                        } else {
-                            Icons.Outlined.BookmarkBorder
+                if (!isPodcastEpisode) {
+                    IconButton(
+                        onClick = {
+                            bookmarkFeedbackActive = true
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.addBookmark(
+                                positionSeconds = positionSeconds,
+                                title = activeChapterTitle ?: playerTitle
+                            )
                         },
-                        contentDescription = "Bookmark",
-                        tint = secondaryTextColor
-                    )
+                        modifier = Modifier
+                            .size(44.dp)
+                            .graphicsLayer {
+                                scaleX = bookmarkIconScale
+                                scaleY = bookmarkIconScale
+                            }
+                    ) {
+                        Icon(
+                            imageVector = if (bookmarkFeedbackActive) {
+                                Icons.Filled.Bookmark
+                            } else {
+                                Icons.Outlined.BookmarkBorder
+                            },
+                            contentDescription = "Bookmark",
+                            tint = secondaryTextColor
+                        )
+                    }
+                } else {
+                    Spacer(modifier = Modifier.size(44.dp))
                 }
             }
         }
@@ -8548,24 +8552,22 @@ fun PlayerScreen(
                             showOutputSheet = true
                         }
                     )
-                    if (!isPodcastEpisode) {
-                        PlayerBottomToolItem(
-                            modifier = Modifier.weight(1f),
-                            itemHeight = toolsItemHeight,
-                            label = "Download",
-                            imageVector = Icons.Outlined.Download,
-                            valueText = downloadToolText,
-                            primaryColor = bottomToolsPrimaryColor,
-                            secondaryColor = bottomToolsSecondaryColor,
-                            containerColor = toolsItemContainerColor,
-                            containerBorderColor = toolsItemBorderColor,
-                            isImmersive = immersiveEnabled,
-                            showIconBubble = toolsShowIconBubble,
-                            showSecondaryLabelWhenValue = false,
-                            isHighlighted = isBookDownloaded || hasActivePlayerDownload,
-                            onClick = { viewModel.toggleDownload() }
-                        )
-                    }
+                    PlayerBottomToolItem(
+                        modifier = Modifier.weight(1f),
+                        itemHeight = toolsItemHeight,
+                        label = "Download",
+                        imageVector = Icons.Outlined.Download,
+                        valueText = downloadToolText,
+                        primaryColor = bottomToolsPrimaryColor,
+                        secondaryColor = bottomToolsSecondaryColor,
+                        containerColor = toolsItemContainerColor,
+                        containerBorderColor = toolsItemBorderColor,
+                        isImmersive = immersiveEnabled,
+                        showIconBubble = toolsShowIconBubble,
+                        showSecondaryLabelWhenValue = false,
+                        isHighlighted = isBookDownloaded || hasActivePlayerDownload,
+                        onClick = { viewModel.toggleDownload() }
+                    )
                     Box(modifier = Modifier.weight(1f)) {
                         PlayerBottomToolItem(
                             modifier = Modifier.fillMaxWidth(),
@@ -9085,12 +9087,14 @@ private fun PlayerChapterBookmarkSheet(
                 onClick = { onSelectTab(PlayerSheetTab.Chapters) },
                 modifier = Modifier.weight(1f)
             )
-            PlayerSheetTabButton(
-                title = "Bookmarks",
-                selected = selectedTab == PlayerSheetTab.Bookmarks,
-                onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
-                modifier = Modifier.weight(1f)
-            )
+            if (!isPodcastEpisode) {
+                PlayerSheetTabButton(
+                    title = "Bookmarks",
+                    selected = selectedTab == PlayerSheetTab.Bookmarks,
+                    onClick = { onSelectTab(PlayerSheetTab.Bookmarks) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
             if (!description.isNullOrBlank()) {
                 PlayerSheetTabButton(
                     title = "Description",

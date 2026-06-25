@@ -167,6 +167,12 @@ class PlayerViewModel @Inject constructor(
     fun onPlayPauseClick() {
         val playbackState = playbackController.uiState.value
         if (playbackState.book != null) {
+            val bookId = playbackState.book.id
+            if (!playbackController.hasActivePlayer && bookId.contains("::")) {
+                val (showId, episodeId) = bookId.split("::", limit = 2)
+                openPodcastEpisode(showId, episodeId, startSeconds = playbackState.positionMs / 1000.0)
+                return
+            }
             playbackController.togglePlayPause()
             return
         }
@@ -284,6 +290,16 @@ class PlayerViewModel @Inject constructor(
         val book = uiState.value.book ?: previewItem.value?.book
         if (book == null) {
             mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        if (book.id.contains("::")) {
+            val showId = book.id.substringBefore("::")
+            viewModelScope.launch {
+                when (val result = podcastRepository.checkForNewEpisodes(showId)) {
+                    is AppResult.Success -> mutableActionMessage.value = "Asked server to check for new episodes."
+                    is AppResult.Error -> mutableActionMessage.value = result.message
+                }
+            }
             return
         }
         viewModelScope.launch {
@@ -763,9 +779,17 @@ class PlayerViewModel @Inject constructor(
         if (bookId.isBlank()) return
         if (!forceRefresh && !allowReloadCurrent && loadedBookId == bookId) return
         loadedBookId = bookId
+        if (bookId.contains("::")) {
+            mutableChapters.value = emptyList()
+            mutableBookmarks.value = emptyList()
+            return
+        }
         viewModelScope.launch {
             when (val result = sessionRepository.fetchBookDetail(bookId, forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
+                    // Drop stale responses — loadedBookId may have advanced to a podcast episode
+                    // while fetchBookDetail was in flight, and we must not overwrite the empty state.
+                    if (loadedBookId != bookId) return@launch
                     mutableChapters.value = result.value.chapters
                     mutableBookmarks.value = result.value.bookmarks
                 }

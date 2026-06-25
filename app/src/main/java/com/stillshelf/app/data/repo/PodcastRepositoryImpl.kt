@@ -82,20 +82,19 @@ class PodcastRepositoryImpl @Inject constructor(
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
-        return api.getPodcastShowDetail(
-            baseUrl = creds.baseUrl,
-            authToken = creds.token,
-            showId = showId
-        ).fold(
-            onSuccess = { (showDto, episodeDtos) ->
-                val show = showDto.toModel(creds.baseUrl, creds.token)
-                val episodes = episodeDtos.map { it.toModel() }
-                AppResult.Success(PodcastShowDetail(show = show, episodes = episodes))
-            },
-            onFailure = { e ->
-                AppResult.Error("Failed to load podcast detail: ${e.message}", e)
+        val (showDto, absEpisodeDtos) = api.getPodcastShowDetail(creds.baseUrl, creds.token, showId)
+            .getOrElse { e -> return AppResult.Error("Failed to load podcast detail: ${e.message}", e) }
+        val show = showDto.toModel(creds.baseUrl, creds.token)
+        var rssError: String? = null
+        val allEpisodeDtos = showDto.feedUrl?.let { feedUrl ->
+            val rssResult = api.fetchRssFeedEpisodes(feedUrl, showId)
+            val rssEpisodes = rssResult.getOrElse { e ->
+                rssError = "Could not load full episode list from feed: ${e.message}"
+                emptyList()
             }
-        )
+            mergeEpisodes(absEpisodeDtos, rssEpisodes)
+        } ?: absEpisodeDtos
+        return AppResult.Success(PodcastShowDetail(show = show, episodes = allEpisodeDtos.map { it.toModel() }, rssError = rssError))
     }
 
     override suspend fun fetchPodcastEpisodePlaybackSource(
@@ -106,47 +105,49 @@ class PodcastRepositoryImpl @Inject constructor(
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
-        return api.getPodcastShowDetail(creds.baseUrl, creds.token, showId).fold(
-            onSuccess = { (showDto, episodeDtos) ->
-                val episodeDto = episodeDtos.firstOrNull { it.id == episodeId }
-                    ?: return AppResult.Error("Episode not found.")
-                val streamUrl = when {
-                    episodeDto.audioUrl != null ->
-                        api.buildEpisodeStreamUrl(creds.baseUrl, showId, episodeDto.audioUrl, creds.token)
-                    episodeDto.enclosureUrl != null -> episodeDto.enclosureUrl
-                    else -> return AppResult.Error("This episode has no playable audio file.")
-                }
-                val show = showDto.toModel(creds.baseUrl, creds.token)
-                val bookSummary = BookSummary(
-                    id = "${showId}::${episodeId}",
-                    libraryId = show.libraryId,
-                    title = episodeDto.title,
-                    authorName = show.author ?: show.title,
-                    narratorName = null,
-                    durationSeconds = episodeDto.durationSeconds,
-                    coverUrl = show.coverUrl,
-                    progressPercent = episodeDto.progressPercent,
-                    currentTimeSeconds = episodeDto.currentTimeSeconds,
-                    isFinished = episodeDto.isFinished,
-                    description = episodeDto.description
-                )
-                AppResult.Success(
-                    PlaybackSource(
-                        book = bookSummary,
-                        streamUrl = streamUrl,
-                        tracks = listOf(
-                            PlaybackTrack(
-                                startOffsetSeconds = 0.0,
-                                durationSeconds = episodeDto.durationSeconds,
-                                streamUrl = streamUrl
-                            )
-                        )
+        val (showDto, absEpisodeDtos) = api.getPodcastShowDetail(creds.baseUrl, creds.token, showId)
+            .getOrElse { e -> return AppResult.Error("Failed to load episode: ${e.message}", e) }
+
+        // Prefer ABS (downloaded episode has a local stream URL); fall back to RSS feed
+        val episodeDto = absEpisodeDtos.firstOrNull { it.id == episodeId }
+            ?: showDto.feedUrl?.let { feedUrl ->
+                api.fetchRssFeedEpisodes(feedUrl, showId).getOrNull()
+                    ?.firstOrNull { it.id == episodeId }
+            }
+            ?: return AppResult.Error("Episode not found.")
+
+        val streamUrl = when {
+            episodeDto.audioUrl != null ->
+                api.buildEpisodeStreamUrl(creds.baseUrl, showId, episodeDto.audioUrl, creds.token)
+            episodeDto.enclosureUrl != null -> episodeDto.enclosureUrl
+            else -> return AppResult.Error("This episode has no playable audio file.")
+        }
+        val show = showDto.toModel(creds.baseUrl, creds.token)
+        val bookSummary = BookSummary(
+            id = "${showId}::${episodeId}",
+            libraryId = show.libraryId,
+            title = episodeDto.title,
+            authorName = show.author ?: show.title,
+            narratorName = null,
+            durationSeconds = episodeDto.durationSeconds,
+            coverUrl = show.coverUrl,
+            progressPercent = episodeDto.progressPercent,
+            currentTimeSeconds = episodeDto.currentTimeSeconds,
+            isFinished = episodeDto.isFinished,
+            description = episodeDto.description
+        )
+        return AppResult.Success(
+            PlaybackSource(
+                book = bookSummary,
+                streamUrl = streamUrl,
+                tracks = listOf(
+                    PlaybackTrack(
+                        startOffsetSeconds = 0.0,
+                        durationSeconds = episodeDto.durationSeconds,
+                        streamUrl = streamUrl
                     )
                 )
-            },
-            onFailure = { e ->
-                AppResult.Error("Failed to load episode: ${e.message}", e)
-            }
+            )
         )
     }
 
@@ -183,6 +184,22 @@ class PodcastRepositoryImpl @Inject constructor(
             onFailure = { e -> AppResult.Error("Failed to save podcast library: ${e.message}", e) }
         )
     }
+
+    override suspend fun checkForNewEpisodes(showId: String): AppResult<Unit> {
+        val creds = when (val r = resolveCredentials()) {
+            is AppResult.Success -> r.value
+            is AppResult.Error -> return r
+        }
+        return api.checkForNewPodcastEpisodes(
+            baseUrl = creds.baseUrl,
+            authToken = creds.token,
+            showId = showId
+        ).fold(
+            onSuccess = { AppResult.Success(Unit) },
+            onFailure = { e -> AppResult.Error("Failed to check for new episodes: ${e.message}", e) }
+        )
+    }
+
 
     override suspend fun fetchLibrariesWithMediaType(): AppResult<List<Library>> {
         val creds = when (val r = resolveCredentials()) {
@@ -238,4 +255,31 @@ class PodcastRepositoryImpl @Inject constructor(
         currentTimeSeconds = currentTimeSeconds,
         isFinished = isFinished
     )
+
+    private fun mergeEpisodes(
+        absEpisodes: List<AudiobookshelfPodcastEpisodeDto>,
+        rssEpisodes: List<AudiobookshelfPodcastEpisodeDto>
+    ): List<AudiobookshelfPodcastEpisodeDto> {
+        if (rssEpisodes.isEmpty()) return absEpisodes
+        // Index ABS episodes (downloaded, have progress data) by enclosure URL for O(1) merge
+        val absByEnclosureUrl = absEpisodes
+            .filter { it.enclosureUrl != null }
+            .associateBy { it.enclosureUrl!! }
+        return rssEpisodes.map { rssEp ->
+            val abs = rssEp.enclosureUrl?.let { absByEnclosureUrl[it] }
+            if (abs != null) {
+                // Downloaded: use ABS ID (needed for progress sync) + overlay any missing RSS metadata
+                abs.copy(
+                    description = abs.description ?: rssEp.description,
+                    pubDate = abs.pubDate ?: rssEp.pubDate,
+                    season = abs.season ?: rssEp.season,
+                    episode = abs.episode ?: rssEp.episode,
+                    durationSeconds = abs.durationSeconds ?: rssEp.durationSeconds
+                )
+            } else {
+                // Not downloaded: RSS data only, enclosureUrl used for streaming
+                rssEp
+            }
+        }
+    }
 }

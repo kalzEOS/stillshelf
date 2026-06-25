@@ -190,6 +190,7 @@ private fun MainShell() {
         currentRoute != MainRoute.SERVERS &&
         currentRoute != MainRoute.CUSTOMIZE &&
         currentRoute != MainRoute.LIBRARY_PICKER &&
+        currentRoute != MainRoute.PODCAST_SETTINGS &&
         currentRoute?.startsWith("auth/") != true
     val showMiniPlayerHomeButton = showMiniPlayer && currentRoute != MainTab.Home.route
     val screenHomeClick: (() -> Unit)? = if (showMiniPlayerHomeButton) null else onHomeClick

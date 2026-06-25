@@ -2683,13 +2683,33 @@ class SessionRepositoryImpl @Inject constructor(
         title: String?
     ): AppResult<Unit> {
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+
+        val isPodcastEpisode = bookId.contains("::")
+        val itemId = if (isPodcastEpisode) bookId.substringBefore("::") else bookId
+
+        if (isPodcastEpisode) {
+            val connection = when (val result = getActiveConnection(requireLibrary = false)) {
+                is AppResult.Success -> result.value
+                is AppResult.Error -> return result
+            }
+            return audiobookshelfApi.createBookmark(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = itemId,
+                timeSeconds = timeSeconds.coerceAtLeast(0.0),
+                title = title
+            ).fold(
+                onSuccess = { AppResult.Success(Unit) },
+                onFailure = { e -> AppResult.Error("Failed to save bookmark: ${e.message}", e) }
+            )
+        }
+
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
         }
         val library = connection.library ?: return AppResult.Error("No active library selected.")
 
-        val itemId = if (bookId.contains("::")) bookId.substringBefore("::") else bookId
         val createResult = audiobookshelfApi.createBookmark(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,

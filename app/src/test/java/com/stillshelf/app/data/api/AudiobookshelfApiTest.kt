@@ -1,8 +1,10 @@
 package com.stillshelf.app.data.api
 
 import okhttp3.OkHttpClient
+import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class AudiobookshelfApiTest {
@@ -103,6 +105,47 @@ class AudiobookshelfApiTest {
         assertEquals("Raul Esparza", parsed?.id)
         assertEquals("Raul Esparza", parsed?.name)
     }
+
+    @Test
+    fun parsePodcastEpisodeSelection_prefersEpisodesArrayOverPodcastEpisodes() {
+        // ABS returns the full RSS-backed feed in "episodes".
+        // "podcastEpisodes" in the expanded response may contain only downloaded entries.
+        // We must prefer "episodes" so non-downloaded feed items are not silently dropped.
+        val episodes = JSONArray()
+        val podcastEpisodes = JSONArray()
+
+        val selected = api.selectPodcastEpisodesArrayForTest(
+            episodes = episodes,
+            podcastEpisodes = podcastEpisodes
+        )
+
+        assertNotNull(selected)
+        assertSame(episodes, selected)
+    }
+
+    @Test
+    fun parsePodcastEpisodeSelection_fallsBackToPodcastEpisodesWhenEpisodesAbsent() {
+        val podcastEpisodes = JSONArray()
+
+        val selected = api.selectPodcastEpisodesArrayForTest(
+            episodes = null,
+            podcastEpisodes = podcastEpisodes
+        )
+
+        assertNotNull(selected)
+        assertSame(podcastEpisodes, selected)
+    }
+
+    @Test
+    fun parsePodcastEpisodeSelection_returnsNullWhenBothAbsent() {
+        val selected = api.selectPodcastEpisodesArrayForTest(
+            episodes = null,
+            podcastEpisodes = null
+        )
+
+        assertEquals(null, selected)
+    }
+
 
     @Test
     fun sanitizeDescriptionText_stripsHtmlTags() {

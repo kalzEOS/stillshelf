@@ -365,6 +365,12 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun stopAndResetIfCurrentBook(bookId: String) {
+        if (uiState.value.book?.id == bookId) {
+            playbackController.stopAndResetBookToBeginning(bookId)
+        }
+    }
+
     fun undoMarkAsFinished() {
         val snapshot = pendingFinishedUndoSnapshot ?: return
         pendingFinishedUndoSnapshot = null

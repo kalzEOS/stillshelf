@@ -68,6 +68,7 @@ import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
 import com.stillshelf.app.ui.screens.podcasts.PodcastsScreen
 import com.stillshelf.app.ui.screens.podcasts.PodcastSettingsScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastEpisodeDetailScreen
 import com.stillshelf.app.ui.screens.podcasts.PodcastShowDetailScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
@@ -223,7 +224,6 @@ private fun MainShell() {
                 onPlayContinueListening = playerViewModel::openPlayer,
                 onPlayPodcastEpisode = { showId, episodeId, startSeconds ->
                     playerViewModel.openPodcastEpisode(showId, episodeId, startSeconds)
-                    showPlayer()
                 }
             )
         }
@@ -259,6 +259,15 @@ private fun MainShell() {
                     closePlayer(
                         afterClose = {
                             tabsNavController.navigate(MainRoute.podcastShow(showId)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                },
+                onGoToPodcastEpisode = { showId, episodeId ->
+                    closePlayer(
+                        afterClose = {
+                            tabsNavController.navigate(MainRoute.podcastEpisode(showId, episodeId)) {
                                 launchSingleTop = true
                             }
                         }
@@ -656,6 +665,30 @@ private fun MainTabsNavHost(
             PodcastShowDetailScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
+                onOpenEpisodeDetails = { showId, episodeId ->
+                    navController.navigate(MainRoute.podcastEpisode(showId, episodeId)) {
+                        launchSingleTop = true
+                    }
+                },
+                onPlayEpisode = onPlayPodcastEpisode
+            )
+        }
+
+        composable(
+            route = MainRoute.PODCAST_EPISODE_PATTERN,
+            arguments = listOf(
+                navArgument(MainRoute.PODCAST_EPISODE_SHOW_ID_ARG) { type = NavType.StringType },
+                navArgument(MainRoute.PODCAST_EPISODE_ID_ARG) { type = NavType.StringType }
+            )
+        ) {
+            PodcastEpisodeDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onGoToShow = { showId ->
+                    navController.navigate(MainRoute.podcastShow(showId)) {
+                        launchSingleTop = true
+                    }
+                },
                 onPlayEpisode = onPlayPodcastEpisode
             )
         }

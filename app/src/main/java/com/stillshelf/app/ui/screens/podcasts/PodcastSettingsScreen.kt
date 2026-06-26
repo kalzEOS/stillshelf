@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -97,7 +98,7 @@ fun PodcastSettingsScreen(
             }
             else -> {
                 Text(
-                    text = "Select which library StillShelf should use for podcasts. Only libraries with type \"podcast\" can play back episodes.",
+                    text = "Select which podcast library StillShelf should use. Only libraries with media type \"podcast\" are shown.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -113,31 +114,57 @@ fun PodcastSettingsScreen(
                         onClick = { viewModel.selectLibrary(null) }
                     )
                     val podcasts = uiState.availableLibraries.filter { it.isPodcastLibrary }
-                    val others = uiState.availableLibraries.filterNot { it.isPodcastLibrary }
                     if (podcasts.isNotEmpty()) {
                         HorizontalDivider()
                         podcasts.forEachIndexed { index, lib ->
                             LibraryOptionRow(
                                 label = lib.name,
-                                subtitle = "Podcast library",
                                 selected = uiState.selectedLibraryId == lib.id,
                                 onClick = { viewModel.selectLibrary(lib) }
                             )
-                            if (index < podcasts.lastIndex || others.isNotEmpty()) HorizontalDivider()
-                        }
-                    }
-                    if (others.isNotEmpty()) {
-                        others.forEachIndexed { index, lib ->
-                            LibraryOptionRow(
-                                label = lib.name,
-                                subtitle = "Book library",
-                                selected = uiState.selectedLibraryId == lib.id,
-                                onClick = { viewModel.selectLibrary(lib) }
-                            )
-                            if (index < others.lastIndex) HorizontalDivider()
+                            if (index < podcasts.lastIndex) HorizontalDivider()
                         }
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "DOWNLOADS",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Download episodes to device",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "When on, tapping Download saves the episode to this device. When off, the server fetches and stores it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = uiState.podcastDownloadLocal,
+                    onCheckedChange = viewModel::setDownloadLocal
+                )
             }
         }
 

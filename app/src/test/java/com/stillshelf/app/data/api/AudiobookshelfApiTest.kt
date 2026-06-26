@@ -146,6 +146,31 @@ class AudiobookshelfApiTest {
         assertEquals(null, selected)
     }
 
+    @Test
+    fun parseRssEpisodes_extractsInlineChapters() {
+        val xml = """
+            <rss xmlns:psc="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>episode-1</guid>
+                  <description>Episode body</description>
+                  <psc:chapter start="0:00" end="1:23" title="Intro" />
+                  <psc:chapter start="1:23" title="Main segment" />
+                </item>
+              </channel>
+            </rss>
+        """.trimIndent()
+
+        val parsed = api.parseRssEpisodesForTest(xml = xml, showId = "show-1")
+
+        assertEquals(1, parsed.size)
+        assertEquals(listOf("Intro", "Main segment"), parsed.first().chapters.map { it.title })
+        assertEquals(0.0, parsed.first().chapters.first().startSeconds, 0.0)
+        assertNotNull(parsed.first().chapters.first().endSeconds)
+        assertEquals(83.0, parsed.first().chapters.first().endSeconds!!, 0.0)
+    }
+
 
     @Test
     fun sanitizeDescriptionText_stripsHtmlTags() {

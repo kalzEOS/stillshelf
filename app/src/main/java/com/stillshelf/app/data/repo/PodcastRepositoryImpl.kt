@@ -140,7 +140,15 @@ class PodcastRepositoryImpl @Inject constructor(
             PlaybackSource(
                 book = bookSummary,
                 streamUrl = streamUrl,
-                tracks = listOf(
+                tracks = episodeDto.chapters.takeIf { it.isNotEmpty() }?.map { chapter ->
+                    PlaybackTrack(
+                        startOffsetSeconds = chapter.startSeconds,
+                        durationSeconds = chapter.endSeconds?.let { endSeconds ->
+                            (endSeconds - chapter.startSeconds).takeIf { duration -> duration > 0.0 }
+                        },
+                        streamUrl = streamUrl
+                    )
+                } ?: listOf(
                     PlaybackTrack(
                         startOffsetSeconds = 0.0,
                         durationSeconds = episodeDto.durationSeconds,
@@ -253,7 +261,8 @@ class PodcastRepositoryImpl @Inject constructor(
         enclosureUrl = enclosureUrl,
         progressPercent = progressPercent,
         currentTimeSeconds = currentTimeSeconds,
-        isFinished = isFinished
+        isFinished = isFinished,
+        chapters = chapters
     )
 
     private fun mergeEpisodes(
@@ -274,7 +283,8 @@ class PodcastRepositoryImpl @Inject constructor(
                     pubDate = abs.pubDate ?: rssEp.pubDate,
                     season = abs.season ?: rssEp.season,
                     episode = abs.episode ?: rssEp.episode,
-                    durationSeconds = abs.durationSeconds ?: rssEp.durationSeconds
+                    durationSeconds = abs.durationSeconds ?: rssEp.durationSeconds,
+                    chapters = abs.chapters.ifEmpty { rssEp.chapters }
                 )
             } else {
                 // Not downloaded: RSS data only, enclosureUrl used for streaming

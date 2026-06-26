@@ -193,7 +193,8 @@ data class PodcastEpisode(
     val enclosureUrl: String? = null,
     val progressPercent: Double? = null,
     val currentTimeSeconds: Double? = null,
-    val isFinished: Boolean = false
+    val isFinished: Boolean = false,
+    val chapters: List<BookChapter> = emptyList()
 )
 
 data class PodcastShowDetail(

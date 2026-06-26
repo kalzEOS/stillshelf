@@ -20,7 +20,8 @@ data class PodcastSettingsUiState(
     val selectedLibraryId: String? = null,
     val availableLibraries: List<Library> = emptyList(),
     val isLoadingLibraries: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val podcastDownloadLocal: Boolean = false
 )
 
 @HiltViewModel
@@ -41,7 +42,8 @@ class PodcastSettingsViewModel @Inject constructor(
             val selectedId = if (serverId != null) podcastLibraryIds[serverId] else null
             _uiState.value = _uiState.value.copy(
                 activeServerId = serverId,
-                selectedLibraryId = selectedId
+                selectedLibraryId = selectedId,
+                podcastDownloadLocal = prefs.podcastDownloadLocal
             )
         }.launchIn(viewModelScope)
 
@@ -72,6 +74,12 @@ class PodcastSettingsViewModel @Inject constructor(
         val serverId = _uiState.value.activeServerId ?: return
         viewModelScope.launch {
             podcastRepository.setPodcastLibraryId(serverId, library?.id)
+        }
+    }
+
+    fun setDownloadLocal(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setPodcastDownloadLocal(enabled)
         }
     }
 }

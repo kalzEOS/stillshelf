@@ -7656,6 +7656,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
     onGoToBook: ((String) -> Unit)? = null,
     onGoToPodcastShow: ((String) -> Unit)? = null,
+    onGoToPodcastEpisode: ((String, String) -> Unit)? = null,
     collectionPickerViewModel: CollectionPickerViewModel = hiltViewModel(),
     appearanceViewModel: AppAppearanceViewModel = hiltViewModel(),
     topContentInset: Dp = 0.dp,
@@ -7679,6 +7680,7 @@ fun PlayerScreen(
     val bookId = book?.id
     val isPodcastEpisode = bookId?.contains("::") == true
     val podcastShowId = if (isPodcastEpisode) bookId?.split("::")?.getOrNull(0) else null
+    val podcastEpisodeId = if (isPodcastEpisode) bookId?.split("::")?.getOrNull(1) else null
     val isBookDownloaded = downloadedBookKeys.containsDownloadedBook(book)
     val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
@@ -8775,6 +8777,21 @@ fun PlayerScreen(
                                     bottomMenuExpanded = false
                                     if (!podcastShowId.isNullOrBlank()) {
                                         onGoToPodcastShow?.invoke(podcastShowId)
+                                    }
+                                }
+                            )
+                            AppDropdownMenuItem(
+                                text = { Text("Go to Episode") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Outlined.ChevronRight,
+                                        contentDescription = null
+                                    )
+                                },
+                                onClick = {
+                                    bottomMenuExpanded = false
+                                    if (!podcastShowId.isNullOrBlank() && !podcastEpisodeId.isNullOrBlank()) {
+                                        onGoToPodcastEpisode?.invoke(podcastShowId, podcastEpisodeId)
                                     }
                                 }
                             )

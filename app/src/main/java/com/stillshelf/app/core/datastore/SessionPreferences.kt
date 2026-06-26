@@ -130,6 +130,9 @@ class SessionPreferences @Inject constructor(
     private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
     private val navidromeCacheSizeLimitKey = stringPreferencesKey("navidrome_cache_size_limit")
     private val podcastLibraryIdsKey = stringPreferencesKey("podcast_library_ids")
+    private val podcastDownloadLocalKey = booleanPreferencesKey("podcast_download_local")
+    private val podcastEpisodeStatusFilterKey = stringPreferencesKey("podcast_episode_status_filter")
+    private val podcastEpisodeSortOrderKey = stringPreferencesKey("podcast_episode_sort_order")
 
     val state: Flow<SessionPreferenceState> = dataStore.data
         .map { prefs -> prefs.toSessionPreferenceState() }
@@ -312,6 +315,30 @@ class SessionPreferences @Inject constructor(
 
     fun getPodcastLibraryIds(): Flow<Map<String, String>> =
         dataStore.data.map { prefs -> parseStringMap(prefs[podcastLibraryIdsKey]) }
+
+    suspend fun setPodcastDownloadLocal(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[podcastDownloadLocalKey] = enabled }
+    }
+
+    suspend fun setPodcastEpisodeStatusFilter(filter: String) {
+        dataStore.edit { prefs ->
+            if (filter.isBlank()) {
+                prefs.remove(podcastEpisodeStatusFilterKey)
+            } else {
+                prefs[podcastEpisodeStatusFilterKey] = filter
+            }
+        }
+    }
+
+    suspend fun setPodcastEpisodeSortOrder(sortOrder: String) {
+        dataStore.edit { prefs ->
+            if (sortOrder.isBlank()) {
+                prefs.remove(podcastEpisodeSortOrderKey)
+            } else {
+                prefs[podcastEpisodeSortOrderKey] = sortOrder
+            }
+        }
+    }
 
     suspend fun setNavidromeSession(serverName: String?, baseUrl: String, username: String) {
         dataStore.edit { prefs ->
@@ -1995,7 +2022,10 @@ class SessionPreferences @Inject constructor(
             navidromeCacheSizeLimit = this[navidromeCacheSizeLimitKey] ?: NavidromeCacheSizeOption.default,
             navidromeSkipForwardSeconds = (this[navidromeSkipForwardSecondsKey] ?: 15).coerceIn(10, 60),
             navidromeSkipBackwardSeconds = (this[navidromeSkipBackwardSecondsKey] ?: 15).coerceIn(10, 60),
-            podcastLibraryIds = parseStringMap(this[podcastLibraryIdsKey])
+            podcastLibraryIds = parseStringMap(this[podcastLibraryIdsKey]),
+            podcastDownloadLocal = this[podcastDownloadLocalKey] ?: false,
+            podcastEpisodeStatusFilter = this[podcastEpisodeStatusFilterKey],
+            podcastEpisodeSortOrder = this[podcastEpisodeSortOrderKey]
         )
     }
 }
@@ -2071,7 +2101,10 @@ data class SessionPreferenceState(
     val navidromeCacheSizeLimit: String = NavidromeCacheSizeOption.default,
     val navidromeSkipForwardSeconds: Int = 15,
     val navidromeSkipBackwardSeconds: Int = 15,
-    val podcastLibraryIds: Map<String, String> = emptyMap()
+    val podcastLibraryIds: Map<String, String> = emptyMap(),
+    val podcastDownloadLocal: Boolean = false,
+    val podcastEpisodeStatusFilter: String? = null,
+    val podcastEpisodeSortOrder: String? = null
 )
 
 data class CachedHomeFeedPayload(

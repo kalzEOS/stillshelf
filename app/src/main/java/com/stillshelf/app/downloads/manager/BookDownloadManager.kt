@@ -8,8 +8,8 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackTrack
-import com.stillshelf.app.core.network.authorizationHeaderValue
 import com.stillshelf.app.core.network.splitAuthenticatedUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.storage.DownloadStorage
@@ -273,7 +273,10 @@ class BookDownloadManager @Inject constructor(
         syncDownloadedIds(mutableItems.value)
     }
 
-    suspend fun toggleDownload(book: BookSummary): AppResult<DownloadToggleResult> {
+    suspend fun toggleDownload(
+        book: BookSummary,
+        sourceOverride: PlaybackSource? = null
+    ): AppResult<DownloadToggleResult> {
         val bookId = book.id.trim()
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
         val activeServerId = sessionPreferences.state.first().activeServerId?.trim().orEmpty()
@@ -315,7 +318,8 @@ class BookDownloadManager @Inject constructor(
             )
         )
 
-        val sourceResult = sessionRepository.fetchPlaybackSource(bookId)
+        val sourceResult = sourceOverride?.let { AppResult.Success(it) }
+            ?: sessionRepository.fetchPlaybackSource(bookId)
         if (sourceResult is AppResult.Error) {
             upsertItem(
                 DownloadItem(
@@ -344,6 +348,18 @@ class BookDownloadManager @Inject constructor(
             val enqueuedTracks = mutableListOf<DownloadTrackItem>()
             downloadTracks.forEach { track ->
                 val split = splitAuthenticatedUrl(track.streamUrl)
+                // Embed token as a query parameter so it survives HTTP redirects.
+                // Android DownloadManager drops custom headers on redirect; query params persist.
+                val downloadUrl = split.authToken
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { token ->
+                        split.cleanUrl.toHttpUrlOrNull()
+                            ?.newBuilder()
+                            ?.addQueryParameter("token", token)
+                            ?.build()
+                            ?.toString()
+                    }
+                    ?: split.cleanUrl
                 val destinationName = buildDestinationFilename(
                     serverId = activeServerId,
                     libraryId = libraryId,
@@ -352,7 +368,7 @@ class BookDownloadManager @Inject constructor(
                     trackCount = downloadTracks.size,
                     sourceUrl = split.cleanUrl
                 )
-                val request = DownloadManager.Request(Uri.parse(split.cleanUrl))
+                val request = DownloadManager.Request(Uri.parse(downloadUrl))
                     .setTitle(book.title)
                     .setDescription(book.authorName)
                     .setAllowedOverMetered(true)
@@ -364,11 +380,6 @@ class BookDownloadManager @Inject constructor(
                         Environment.DIRECTORY_PODCASTS,
                         destinationName
                     )
-                split.authToken
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { token ->
-                        request.addRequestHeader("Authorization", authorizationHeaderValue(token))
-                    }
                 val downloadId = downloadManager.enqueue(request)
                 startedDownloadIds += downloadId
                 enqueuedTracks += DownloadTrackItem(
@@ -449,6 +460,21 @@ class BookDownloadManager @Inject constructor(
         }
         localRefs.distinct().forEach(::deleteLocalCopy)
         deleteItem(item.targetKey())
+    }
+
+    // Like getCompletedDownload but skips the libraryId check, needed for podcast episodes
+    // which use the podcast library ID rather than the active audiobook library ID.
+    fun getCompletedDownloadForPodcast(bookId: String): DownloadItem? {
+        val normalized = bookId.trim()
+        if (normalized.isBlank()) return null
+        val serverId = mutableActiveSelection.value.serverId
+        if (serverId.isBlank()) return null
+        return items.value.firstOrNull { item ->
+            item.serverId == serverId &&
+                item.bookId == normalized &&
+                item.status == DownloadStatus.Completed &&
+                item.hasAllLocalTracks(::localResourceExists)
+        }
     }
 
     fun getCompletedDownload(bookId: String): DownloadItem? {

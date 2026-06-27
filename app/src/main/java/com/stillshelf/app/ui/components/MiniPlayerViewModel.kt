@@ -8,6 +8,8 @@ import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.PodcastRepository
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.toLocalPlaybackSource
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.applyBookProgressMutation
@@ -39,7 +41,8 @@ class MiniPlayerViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val playbackController: PlaybackController,
     private val sessionPreferences: SessionPreferences,
-    private val podcastRepository: PodcastRepository
+    private val podcastRepository: PodcastRepository,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private companion object {
         private const val PLAYBACK_START_TIMEOUT_MS = 6_000L
@@ -97,24 +100,24 @@ class MiniPlayerViewModel @Inject constructor(
     private suspend fun loadPodcastEpisodeItem(compoundId: String) {
         val (showId, episodeId) = compoundId.split("::", limit = 2)
         when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
-            is AppResult.Success -> {
-                if (playbackController.uiState.value.toMiniPlayerItem() != null) return
-                val book = result.value.book
-                val item = ContinueListeningItem(
-                    book = book,
-                    progressPercent = book.progressPercent,
-                    currentTimeSeconds = book.currentTimeSeconds
-                )
-                mutableUiState.update {
-                    it.copy(
-                        isLoading = false,
-                        item = item,
-                        displayTitle = book.title,
-                        isPlaying = false,
-                        errorMessage = null
-                    )
-                }
-            }
+                        is AppResult.Success -> {
+                            if (playbackController.uiState.value.toMiniPlayerItem() != null) return
+                            val book = result.value.book
+                            val item = ContinueListeningItem(
+                                book = book,
+                                progressPercent = book.progressPercent,
+                                currentTimeSeconds = book.currentTimeSeconds
+                            )
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    item = item,
+                                    displayTitle = book.title,
+                                    isPlaying = false,
+                                    errorMessage = null
+                                )
+                            }
+                        }
             is AppResult.Error -> loadAudiobookItem()
         }
     }
@@ -160,7 +163,13 @@ class MiniPlayerViewModel @Inject constructor(
                     when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
                         is AppResult.Success -> {
                             val startMs = if (resumeSeconds > 0.0) (resumeSeconds * 1000.0).toLong() else null
-                            playbackController.playFromSource(result.value, startPositionMs = startMs)
+                            val localDownload = bookDownloadManager
+                                .getCompletedDownload(result.value.book.id)
+                                ?.toLocalPlaybackSource(result.value.book)
+                            playbackController.playFromSource(
+                                localDownload ?: result.value,
+                                startPositionMs = startMs
+                            )
                         }
                         is AppResult.Error -> mutableUiState.update { it.copy(errorMessage = result.message) }
                     }

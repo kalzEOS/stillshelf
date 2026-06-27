@@ -9,6 +9,9 @@ fun PodcastEpisode.resolvedProgressFraction(
     activePlaybackPositionMs: Long? = null,
     activePlaybackDurationMs: Long? = null
 ): Double? {
+    // isFinished is authoritative: show 100% regardless of where the media player sits.
+    if (isFinished) return 1.0
+
     val episodeBookId = "$showId::$id"
     if (activePlaybackBookId == episodeBookId) {
         val liveDurationSeconds = activePlaybackDurationMs

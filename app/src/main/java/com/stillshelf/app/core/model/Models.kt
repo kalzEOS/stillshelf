@@ -203,6 +203,14 @@ data class PodcastShowDetail(
     val rssError: String? = null
 )
 
+data class PodcastEpisodeMutation(
+    val showId: String,
+    val episodeId: String,
+    val isFinished: Boolean,
+    val currentTimeSeconds: Double,
+    val durationSeconds: Double?
+)
+
 data class SearchResults(
     val books: List<BookSummary>,
     val authors: List<NamedEntitySummary>,

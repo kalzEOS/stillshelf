@@ -9,12 +9,16 @@ import com.stillshelf.app.core.model.PlaybackSource
 import com.stillshelf.app.core.model.PlaybackTrack
 import com.stillshelf.app.core.model.PodcastEpisode
 import com.stillshelf.app.core.model.PodcastShow
+import com.stillshelf.app.core.model.PodcastEpisodeMutation
 import com.stillshelf.app.core.model.PodcastShowDetail
 import com.stillshelf.app.core.network.ActiveServerEndpointResolver
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.api.AudiobookshelfApi
 import com.stillshelf.app.data.api.AudiobookshelfPodcastEpisodeDto
 import com.stillshelf.app.data.api.AudiobookshelfPodcastShowDto
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,6 +31,10 @@ class PodcastRepositoryImpl @Inject constructor(
     private val serverDao: ServerDao,
     private val endpointResolver: ActiveServerEndpointResolver
 ) : PodcastRepository {
+
+    private val episodeMutations = MutableSharedFlow<PodcastEpisodeMutation>(extraBufferCapacity = 8)
+
+    override fun observeEpisodeMutations(): Flow<PodcastEpisodeMutation> = episodeMutations.asSharedFlow()
 
     private data class ServerCredentials(
         val baseUrl: String,
@@ -159,6 +167,61 @@ class PodcastRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun fetchPodcastEpisodeDownloadSource(
+        showId: String,
+        episodeId: String
+    ): AppResult<PlaybackSource> {
+        val creds = when (val r = resolveCredentials()) {
+            is AppResult.Success -> r.value
+            is AppResult.Error -> return r
+        }
+        val (showDto, absEpisodeDtos) = api.getPodcastShowDetail(creds.baseUrl, creds.token, showId)
+            .getOrElse { e -> return AppResult.Error("Failed to load episode: ${e.message}", e) }
+
+        val episodeDto = absEpisodeDtos.firstOrNull { it.id == episodeId }
+            ?: showDto.feedUrl?.let { feedUrl ->
+                api.fetchRssFeedEpisodes(feedUrl, showId).getOrNull()
+                    ?.firstOrNull { it.id == episodeId }
+            }
+            ?: return AppResult.Error("Episode not found.")
+
+        // Prefer enclosureUrl (public CDN) over ABS file URL: CDN sends Content-Length and needs no
+        // auth, avoiding the header-stripping issues Android DownloadManager has on redirects.
+        val downloadUrl = episodeDto.enclosureUrl
+            ?: episodeDto.audioUrl?.let { ino ->
+                api.buildEpisodeStreamUrl(creds.baseUrl, showId, ino, creds.token)
+            }
+            ?: return AppResult.Error("This episode has no downloadable audio file.")
+
+        val show = showDto.toModel(creds.baseUrl, creds.token)
+        val bookSummary = BookSummary(
+            id = "${showId}::${episodeId}",
+            libraryId = show.libraryId,
+            title = episodeDto.title,
+            authorName = show.author ?: show.title,
+            narratorName = null,
+            durationSeconds = episodeDto.durationSeconds,
+            coverUrl = show.coverUrl,
+            progressPercent = episodeDto.progressPercent,
+            currentTimeSeconds = episodeDto.currentTimeSeconds,
+            isFinished = episodeDto.isFinished,
+            description = episodeDto.description
+        )
+        return AppResult.Success(
+            PlaybackSource(
+                book = bookSummary,
+                streamUrl = downloadUrl,
+                tracks = listOf(
+                    PlaybackTrack(
+                        startOffsetSeconds = 0.0,
+                        durationSeconds = episodeDto.durationSeconds,
+                        streamUrl = downloadUrl
+                    )
+                )
+            )
+        )
+    }
+
     override suspend fun syncEpisodeProgress(
         showId: String,
         episodeId: String,
@@ -179,8 +242,38 @@ class PodcastRepositoryImpl @Inject constructor(
             durationSeconds = durationSeconds,
             isFinished = isFinished
         ).fold(
-            onSuccess = { AppResult.Success(Unit) },
-            onFailure = { e -> AppResult.Error("Failed to sync episode progress: ${e.message}", e) }
+            onSuccess = {
+                episodeMutations.tryEmit(
+                    PodcastEpisodeMutation(
+                        showId = showId,
+                        episodeId = episodeId,
+                        isFinished = isFinished,
+                        currentTimeSeconds = currentTimeSeconds,
+                        durationSeconds = durationSeconds
+                    )
+                )
+                AppResult.Success(Unit)
+            },
+            onFailure = { e ->
+                val msg = e.message.orEmpty()
+                if ("(HTTP 404)" in msg) {
+                    // Episode not tracked in ABS (RSS-only episode with no ABS ID).
+                    // Local state is already updated optimistically; silently emit the
+                    // mutation so other screens stay consistent.
+                    episodeMutations.tryEmit(
+                        PodcastEpisodeMutation(
+                            showId = showId,
+                            episodeId = episodeId,
+                            isFinished = isFinished,
+                            currentTimeSeconds = currentTimeSeconds,
+                            durationSeconds = durationSeconds
+                        )
+                    )
+                    AppResult.Success(Unit)
+                } else {
+                    AppResult.Error("Failed to sync episode progress: ${e.message}", e)
+                }
+            }
         )
     }
 

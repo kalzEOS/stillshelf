@@ -3,11 +3,14 @@ package com.stillshelf.app.ui.screens.podcasts
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.PodcastEpisode
 import com.stillshelf.app.core.model.PodcastShow
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.data.repo.PodcastRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.DownloadStatus
 import com.stillshelf.app.ui.navigation.MainRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,14 +29,16 @@ data class PodcastShowDetailUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val rssWarning: String? = null,
-    val syncError: String? = null
+    val syncError: String? = null,
+    val podcastDownloadLocal: Boolean = false
 )
 
 @HiltViewModel
 class PodcastShowDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val podcastRepository: PodcastRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
 
     private val showId: String = checkNotNull(
@@ -50,6 +55,12 @@ class PodcastShowDetailViewModel @Inject constructor(
             restoreUiPreferences()
             load()
         }
+        viewModelScope.launch {
+            sessionPreferences.state.collect { prefs ->
+                _uiState.value = _uiState.value.copy(podcastDownloadLocal = prefs.podcastDownloadLocal)
+            }
+        }
+        observeExternalEpisodeMutations()
     }
 
     fun refresh() {
@@ -157,40 +168,131 @@ class PodcastShowDetailViewModel @Inject constructor(
     fun markEpisodePlayed(episodeId: String) {
         val episode = allEpisodes.firstOrNull { it.id == episodeId } ?: return
         updateEpisodeLocally(episodeId) { it.copy(isFinished = true, progressPercent = 1.0) }
+        _uiState.value = _uiState.value.copy(syncError = null)
         viewModelScope.launch {
-            podcastRepository.syncEpisodeProgress(
-                showId = showId,
-                episodeId = episodeId,
-                currentTimeSeconds = episode.durationSeconds ?: 0.0,
-                durationSeconds = episode.durationSeconds,
-                isFinished = true
-            )
+            when (
+                val result = podcastRepository.syncEpisodeProgress(
+                    showId = showId,
+                    episodeId = episodeId,
+                    currentTimeSeconds = episode.durationSeconds ?: 0.0,
+                    durationSeconds = episode.durationSeconds,
+                    isFinished = true
+                )
+            ) {
+                is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+            }
         }
     }
 
     fun markEpisodeUnplayed(episodeId: String) {
+        val episode = allEpisodes.firstOrNull { it.id == episodeId } ?: return
         updateEpisodeLocally(episodeId) { it.copy(isFinished = false, progressPercent = null, currentTimeSeconds = null) }
+        _uiState.value = _uiState.value.copy(syncError = null)
         viewModelScope.launch {
-            podcastRepository.syncEpisodeProgress(
-                showId = showId,
-                episodeId = episodeId,
-                currentTimeSeconds = 0.0,
-                durationSeconds = null,
-                isFinished = false
-            )
+            when (
+                val result = podcastRepository.syncEpisodeProgress(
+                    showId = showId,
+                    episodeId = episodeId,
+                    currentTimeSeconds = 0.0,
+                    durationSeconds = episode.durationSeconds,
+                    isFinished = false
+                )
+            ) {
+                is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+            }
         }
     }
 
     fun resetEpisodeProgress(episodeId: String) {
+        val episode = allEpisodes.firstOrNull { it.id == episodeId } ?: return
         updateEpisodeLocally(episodeId) { it.copy(progressPercent = null, currentTimeSeconds = null, isFinished = false) }
+        _uiState.value = _uiState.value.copy(syncError = null)
         viewModelScope.launch {
-            podcastRepository.syncEpisodeProgress(
-                showId = showId,
-                episodeId = episodeId,
-                currentTimeSeconds = 0.0,
-                durationSeconds = null,
-                isFinished = false
-            )
+            when (
+                val result = podcastRepository.syncEpisodeProgress(
+                    showId = showId,
+                    episodeId = episodeId,
+                    currentTimeSeconds = 0.0,
+                    durationSeconds = episode.durationSeconds,
+                    isFinished = false
+                )
+            ) {
+                is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+            }
+        }
+    }
+
+    fun toggleEpisodeDownload(episodeId: String) {
+        val episode = allEpisodes.firstOrNull { it.id == episodeId } ?: return
+        val show = _uiState.value.show ?: return
+        val compoundId = "$showId::$episodeId"
+        viewModelScope.launch {
+            val activeServerId = sessionPreferences.state.first().activeServerId?.trim().orEmpty()
+            val hasExistingDownload = bookDownloadManager.items.value.any { item ->
+                item.bookId == compoundId &&
+                    item.serverId == activeServerId &&
+                    item.libraryId == show.libraryId &&
+                    item.status != DownloadStatus.Failed
+            }
+            if (hasExistingDownload) {
+                val book = BookSummary(
+                    id = compoundId,
+                    libraryId = show.libraryId,
+                    title = episode.title,
+                    authorName = show.author ?: show.title,
+                    narratorName = null,
+                    durationSeconds = episode.durationSeconds,
+                    coverUrl = show.coverUrl
+                )
+                when (val result = bookDownloadManager.toggleDownload(book)) {
+                    is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                    is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+                }
+                return@launch
+            }
+            if (!_uiState.value.podcastDownloadLocal) {
+                _uiState.value = _uiState.value.copy(
+                    syncError = "Enable device downloads in Settings > Podcasts to download episodes."
+                )
+                return@launch
+            }
+            when (val result = podcastRepository.fetchPodcastEpisodeDownloadSource(showId, episodeId)) {
+                is AppResult.Success -> {
+                    when (
+                        val downloadResult = bookDownloadManager.toggleDownload(
+                            book = result.value.book,
+                            sourceOverride = result.value
+                        )
+                    ) {
+                        is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                        is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = downloadResult.message)
+                    }
+                }
+                is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+            }
+        }
+    }
+
+    private fun observeExternalEpisodeMutations() {
+        viewModelScope.launch {
+            podcastRepository.observeEpisodeMutations().collect { mutation ->
+                if (mutation.showId != showId) return@collect
+                updateEpisodeLocally(mutation.episodeId) { episode ->
+                    val progressPercent = if (mutation.durationSeconds != null && mutation.durationSeconds > 0.0) {
+                        (mutation.currentTimeSeconds / mutation.durationSeconds).coerceIn(0.0, 1.0)
+                    } else {
+                        if (mutation.isFinished) 1.0 else null
+                    }
+                    episode.copy(
+                        isFinished = mutation.isFinished,
+                        currentTimeSeconds = mutation.currentTimeSeconds,
+                        progressPercent = progressPercent
+                    )
+                }
+            }
         }
     }
 

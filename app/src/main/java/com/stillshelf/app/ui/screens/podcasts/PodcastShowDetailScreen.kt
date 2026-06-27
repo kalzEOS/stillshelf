@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
@@ -45,7 +48,9 @@ import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -71,13 +76,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.PodcastEpisode
 import com.stillshelf.app.core.model.PodcastShow
 import com.stillshelf.app.core.util.isPlaybackComplete
@@ -89,6 +97,8 @@ import com.stillshelf.app.ui.screens.PlayerViewModel
 import kotlin.math.PI
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 private val screenHorizontalPadding = 16.dp
 
@@ -103,6 +113,8 @@ fun PodcastShowDetailScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadedBookKeys by playerViewModel.downloadedBookKeys.collectAsStateWithLifecycle()
+    val downloadProgressByUiKey by playerViewModel.downloadProgressByUiKey.collectAsStateWithLifecycle()
     val keyboardController = LocalSoftwareKeyboardController.current
     val episodeProgressCache = remember(uiState.show?.id) { mutableStateMapOf<String, Double>() }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
@@ -248,8 +260,10 @@ fun PodcastShowDetailScreen(
                         show = uiState.show,
                         episodes = uiState.episodes,
                         showId = uiState.show?.id ?: "",
+                        downloadedBookKeys = downloadedBookKeys,
+                        downloadProgressByUiKey = downloadProgressByUiKey,
+                        allowDeviceDownloads = uiState.podcastDownloadLocal,
                         episodeQuery = uiState.episodeQuery,
-                        episodeStatusFilter = uiState.episodeStatusFilter,
                         playingBookId = playerState.book?.id,
                         playingPositionMs = playerState.positionMs,
                         playingDurationMs = playerState.durationMs,
@@ -263,6 +277,7 @@ fun PodcastShowDetailScreen(
                         onTogglePlayPause = playerViewModel::onPlayPauseClick,
                         onMarkPlayed = viewModel::markEpisodePlayed,
                         onMarkUnplayed = viewModel::markEpisodeUnplayed,
+                        onToggleDownload = viewModel::toggleEpisodeDownload,
                         onResetProgress = { episodeId ->
                             viewModel.resetEpisodeProgress(episodeId)
                             val showId = uiState.show?.id
@@ -536,8 +551,10 @@ private fun EpisodeList(
     show: PodcastShow?,
     episodes: List<PodcastEpisode>,
     showId: String,
+    downloadedBookKeys: Set<String>,
+    downloadProgressByUiKey: Map<String, Int>,
+    allowDeviceDownloads: Boolean,
     episodeQuery: String,
-    episodeStatusFilter: EpisodeStatusFilter,
     playingBookId: String?,
     playingPositionMs: Long,
     playingDurationMs: Long,
@@ -549,80 +566,117 @@ private fun EpisodeList(
     onTogglePlayPause: () -> Unit,
     onMarkPlayed: (episodeId: String) -> Unit,
     onMarkUnplayed: (episodeId: String) -> Unit,
+    onToggleDownload: (episodeId: String) -> Unit,
     onResetProgress: (episodeId: String) -> Unit
 ) {
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(0.dp),
-        contentPadding = PaddingValues(bottom = 120.dp)
-    ) {
-        if (show != null) {
-            item(key = "show-hero") {
-                ShowHero(show = show, episodeCount = episodeCount)
-            }
-            stickyHeader(key = "collapsed-bar") {
-                if (isCollapsed && !isSearchActive) {
-                    CollapsedShowBar(show = show, episodeCount = episodeCount)
+    val scope = rememberCoroutineScope()
+    val showScrollToTop by remember(listState, isSearchActive) {
+        derivedStateOf { !isSearchActive && listState.firstVisibleItemIndex > 4 }
+    }
+
+    Box(modifier = modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
+            if (show != null) {
+                item(key = "show-hero") {
+                    ShowHero(show = show, episodeCount = episodeCount)
+                }
+                stickyHeader(key = "collapsed-bar") {
+                    if (isCollapsed && !isSearchActive) {
+                        CollapsedShowBar(show = show, episodeCount = episodeCount)
+                    }
                 }
             }
-        }
 
-        if (!rssWarning.isNullOrBlank()) {
-            item(key = "rss-warning") {
-                Text(
-                    text = rssWarning,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 4.dp)
-                )
-            }
-        }
-
-        if (episodes.isEmpty()) {
-            item(key = "episodes-empty") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 48.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+            if (!rssWarning.isNullOrBlank()) {
+                item(key = "rss-warning") {
                     Text(
-                        text = if (episodeQuery.isNotBlank()) "No episodes match \"$episodeQuery\""
-                        else "No episodes found.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
+                        text = rssWarning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp, vertical = 4.dp)
                     )
                 }
             }
-        } else {
-            items(episodes, key = { it.id }) { episode ->
-                val episodeBookId = "$showId::${episode.id}"
-                val isCurrent = playingBookId == episodeBookId
-                val currentProgress = episode.resolvedProgressFraction(
-                    activePlaybackBookId = playingBookId,
-                    activePlaybackPositionMs = playingPositionMs,
-                    activePlaybackDurationMs = playingDurationMs
+
+            if (episodes.isEmpty()) {
+                item(key = "episodes-empty") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 48.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (episodeQuery.isNotBlank()) "No episodes match \"$episodeQuery\""
+                            else "No episodes found.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                items(episodes, key = { it.id }) { episode ->
+                    val episodeBookId = "$showId::${episode.id}"
+                    val showLibraryId = show?.libraryId
+                    val downloadUiKey = showLibraryId?.let { "$it|$episodeBookId" }
+                    val isLocallyDownloaded = when {
+                        downloadUiKey != null -> downloadedBookKeys.contains(downloadUiKey)
+                        else -> downloadedBookKeys.contains(episodeBookId)
+                    }
+                    val activeDownloadProgressPercent = downloadUiKey?.let { downloadProgressByUiKey[it] }
+                        ?: downloadProgressByUiKey[episodeBookId]
+                    val isCurrent = playingBookId == episodeBookId
+                    val currentProgress = episode.resolvedProgressFraction(
+                        activePlaybackBookId = playingBookId,
+                        activePlaybackPositionMs = playingPositionMs,
+                        activePlaybackDurationMs = playingDurationMs
+                    )
+                    val cachedProgress = episodeProgressCache[episode.id]
+                    EpisodeRow(
+                        episode = episode,
+                        isCurrent = isCurrent,
+                        isPlaying = isCurrent && isPlayerPlaying,
+                        progressFraction = currentProgress,
+                        cachedProgressFraction = cachedProgress,
+                        isDownloaded = isLocallyDownloaded,
+                        downloadProgressPercent = activeDownloadProgressPercent,
+                        allowDeviceDownloads = allowDeviceDownloads,
+                        onOpenDetails = { onOpenEpisodeDetails(showId, episode.id) },
+                        onPlay = { onPlayEpisode(showId, episode.id, episode.currentTimeSeconds) },
+                        onTogglePlayPause = onTogglePlayPause,
+                        onMarkPlayed = { onMarkPlayed(episode.id) },
+                        onMarkUnplayed = { onMarkUnplayed(episode.id) },
+                        onToggleDownload = { onToggleDownload(episode.id) },
+                        onResetProgress = { onResetProgress(episode.id) }
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+
+        if (showScrollToTop) {
+            FloatingActionButton(
+                onClick = {
+                    scope.launch {
+                        listState.animateScrollToItem(0)
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 128.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.KeyboardArrowUp,
+                    contentDescription = "Scroll to top"
                 )
-                val cachedProgress = episodeProgressCache[episode.id]
-                EpisodeRow(
-                    episode = episode,
-                    isCurrent = isCurrent,
-                    isPlaying = isCurrent && isPlayerPlaying,
-                    progressFraction = currentProgress,
-                    cachedProgressFraction = cachedProgress,
-                    isPlaybackVisible = episode.matchesStatusFilter(episodeStatusFilter),
-                    onOpenDetails = { onOpenEpisodeDetails(showId, episode.id) },
-                    onPlay = { onPlayEpisode(showId, episode.id, episode.currentTimeSeconds) },
-                    onTogglePlayPause = onTogglePlayPause,
-                    onMarkPlayed = { onMarkPlayed(episode.id) },
-                    onMarkUnplayed = { onMarkUnplayed(episode.id) },
-                    onResetProgress = { onResetProgress(episode.id) }
-                )
-                HorizontalDivider()
             }
         }
     }
@@ -636,12 +690,15 @@ private fun EpisodeRow(
     isPlaying: Boolean,
     progressFraction: Double?,
     cachedProgressFraction: Double?,
-    isPlaybackVisible: Boolean,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    allowDeviceDownloads: Boolean,
     onOpenDetails: () -> Unit,
     onPlay: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onMarkPlayed: () -> Unit,
     onMarkUnplayed: () -> Unit,
+    onToggleDownload: () -> Unit,
     onResetProgress: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -654,50 +711,56 @@ private fun EpisodeRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(IntrinsicSize.Min)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Play/pause button stays independent from the played-state badge.
+        // Left column: play/pause, visualizer, and (at bottom) played checkmark
         Column(
-            modifier = Modifier.padding(top = 1.dp),
+            modifier = Modifier.padding(top = 1.dp).fillMaxHeight(),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Box(modifier = Modifier.size(36.dp)) {
-                val buttonIcon = when {
-                    isPlaying -> Icons.Outlined.Pause
-                    else -> Icons.Outlined.PlayArrow
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Box(modifier = Modifier.size(36.dp)) {
+                    val buttonIcon = when {
+                        isPlaying -> Icons.Outlined.Pause
+                        else -> Icons.Outlined.PlayArrow
+                    }
+                    val buttonContentDescription = when {
+                        isPlaying -> "Pause episode"
+                        isCurrent -> "Resume episode"
+                        else -> "Play episode"
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .clickable(onClick = if (isCurrent) onTogglePlayPause else onPlay),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = buttonIcon,
+                            contentDescription = buttonContentDescription,
+                            tint = if (isCurrent) primaryColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
-                val buttonContentDescription = when {
-                    isPlaying -> "Pause episode"
-                    isCurrent -> "Resume episode"
-                    else -> "Play episode"
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .clickable(onClick = if (isCurrent) onTogglePlayPause else onPlay),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = buttonIcon,
-                        contentDescription = buttonContentDescription,
-                        tint = if (isCurrent) primaryColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
+                PodcastPlayingVisualizer(
+                    isPlaying = isPlaying,
+                    isCurrent = isCurrent,
+                    color = primaryColor
+                )
             }
-            PodcastPlayingVisualizer(
-                isPlaying = isPlaying,
-                isCurrent = isCurrent,
-                color = primaryColor
-            )
-            if (isPlaybackVisible && isPlaybackComplete) {
+            Spacer(modifier = Modifier.weight(1f))
+            if (isPlaybackComplete) {
                 Box(
                     modifier = Modifier
-                        .size(20.dp)
+                        .size(16.dp)
                         .clip(CircleShape)
                         .background(primaryColor.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center
@@ -705,7 +768,7 @@ private fun EpisodeRow(
                     Icon(
                         imageVector = Icons.Outlined.CheckCircle,
                         contentDescription = "Played episode",
-                        modifier = Modifier.size(13.dp),
+                        modifier = Modifier.size(11.dp),
                         tint = primaryColor
                     )
                 }
@@ -758,21 +821,61 @@ private fun EpisodeRow(
             }
         }
 
-        // Server-downloaded indicator
-        if (episode.audioUrl != null) {
+        val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+        val showDownloaded = isDownloaded || hasActiveDownload
+        val showDownloadAction = allowDeviceDownloads || showDownloaded
+        val showRemoteAvailable = episode.audioUrl != null && !showDownloaded
+
+        // Download indicator — 24dp badge matching book list style
+        if (showDownloaded) {
+            val activeProgress = downloadProgressPercent?.coerceIn(0, 100)
+            Box(
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (hasActiveDownload) {
+                    CircularProgressIndicator(
+                        progress = { (activeProgress ?: 0) / 100f },
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        color = primaryColor
+                    )
+                    Text(
+                        text = "${activeProgress ?: 0}%",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 7.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = "Downloaded",
+                        modifier = Modifier.size(13.dp),
+                        tint = primaryColor
+                    )
+                }
+            }
+        } else if (showRemoteAvailable) {
             Box(
                 modifier = Modifier
                     .padding(top = 2.dp)
                     .size(20.dp)
                     .clip(CircleShape)
-                    .background(primaryColor.copy(alpha = 0.12f)),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Download,
-                    contentDescription = "On server",
+                    imageVector = Icons.Outlined.CloudQueue,
+                    contentDescription = "Available on server",
                     modifier = Modifier.size(13.dp),
-                    tint = primaryColor
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -818,6 +921,15 @@ private fun EpisodeRow(
                     },
                     onClick = { menuExpanded = false; onResetProgress() }
                 )
+                if (showDownloadAction) {
+                    AppDropdownMenuItem(
+                        text = { Text(if (showDownloaded || hasActiveDownload) "Remove Download" else "Download") },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        onClick = { menuExpanded = false; onToggleDownload() }
+                    )
+                }
             }
         }
 

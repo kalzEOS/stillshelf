@@ -16,6 +16,7 @@ import com.stillshelf.app.data.repo.PodcastRepository
 import com.stillshelf.app.data.repo.SessionRepository
 import com.stillshelf.app.downloads.manager.BookDownloadManager
 import com.stillshelf.app.downloads.manager.DownloadItem
+import com.stillshelf.app.downloads.manager.toLocalPlaybackSource
 import com.stillshelf.app.playback.controller.PlaybackPositionCommand
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.PlaybackUiState
@@ -25,6 +26,7 @@ import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.activeDownloadProgressByUiKey
 import com.stillshelf.app.ui.common.completedDownloadUiKeys
 import com.stillshelf.app.ui.common.downloadProgressForBook
+import com.stillshelf.app.ui.common.asLocalPlaybackSource
 import com.stillshelf.app.ui.common.withBookProgressMutation
 import com.stillshelf.app.ui.navigation.MainRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,6 +37,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -80,6 +84,8 @@ class PlayerViewModel @Inject constructor(
     val downloadedBookKeys: StateFlow<Set<String>> = mutableDownloadedBookKeys.asStateFlow()
     private val mutableDownloadProgressPercent = MutableStateFlow<Int?>(null)
     val downloadProgressPercent: StateFlow<Int?> = mutableDownloadProgressPercent.asStateFlow()
+    private val mutableDownloadProgressByUiKey = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val downloadProgressByUiKey: StateFlow<Map<String, Int>> = mutableDownloadProgressByUiKey.asStateFlow()
     private val mutableMarkFinishedUndoEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val markFinishedUndoEvents: SharedFlow<Unit> = mutableMarkFinishedUndoEvents.asSharedFlow()
     private var currentDownloadItems: List<DownloadItem> = emptyList()
@@ -91,6 +97,7 @@ class PlayerViewModel @Inject constructor(
         observeControlPrefs()
         observeDownloads()
         observeBookProgressMutations()
+        observePodcastEpisodeMutations()
         openPlayer(
             bookId = savedStateHandle.get<String>(MainRoute.PLAYER_BOOK_ID_ARG),
             startSeconds = savedStateHandle
@@ -141,14 +148,40 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun openPodcastEpisode(showId: String, episodeId: String, startSeconds: Double? = null) {
+        val compoundId = "$showId::$episodeId"
+        val startMs = startSeconds?.let { (it * 1000.0).toLong().coerceAtLeast(0L) }
         viewModelScope.launch {
+            // Fetch the remote playback source so chapter metadata stays intact when we
+            // can map a completed download back to its local file.
             when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
                 is AppResult.Success -> {
-                    val startMs = startSeconds?.let { (it * 1000.0).toLong().coerceAtLeast(0L) }
-                    playbackController.playFromSource(result.value, startPositionMs = startMs)
+                    val localDownload = bookDownloadManager
+                        .getCompletedDownloadForPodcast(result.value.book.id)
+                        ?.localPath
+                        ?.let { result.value.asLocalPlaybackSource(it) }
+                    playbackController.playFromSource(
+                        localDownload ?: result.value,
+                        startPositionMs = startMs
+                    )
                 }
                 is AppResult.Error -> {
-                    mutableActionMessage.value = result.message
+                    val offlineSource = bookDownloadManager.getCompletedDownloadForPodcast(compoundId)?.let { item ->
+                        val book = BookSummary(
+                            id = item.bookId,
+                            libraryId = item.libraryId,
+                            title = item.title,
+                            authorName = item.authorName,
+                            narratorName = null,
+                            durationSeconds = item.durationSeconds,
+                            coverUrl = item.coverUrl
+                        )
+                        item.toLocalPlaybackSource(book)
+                    }
+                    if (offlineSource != null) {
+                        playbackController.playFromSource(offlineSource, startPositionMs = startMs)
+                    } else {
+                        mutableActionMessage.value = result.message
+                    }
                 }
             }
         }
@@ -164,12 +197,26 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private fun observePodcastEpisodeMutations() {
+        viewModelScope.launch {
+            podcastRepository.observeEpisodeMutations().collect { mutation ->
+                if (!mutation.isFinished) return@collect
+                val currentBook = playbackController.uiState.value.book ?: return@collect
+                val compoundId = "${mutation.showId}::${mutation.episodeId}"
+                if (currentBook.id != compoundId) return@collect
+                // Seek the active player to the end so the mini/full-screen player shows 100%.
+                playbackController.seekToProgress(1.0f, commit = false)
+            }
+        }
+    }
+
     fun onPlayPauseClick() {
         val playbackState = playbackController.uiState.value
         if (playbackState.book != null) {
             val bookId = playbackState.book.id
-            if (!playbackController.hasActivePlayer && bookId.contains("::")) {
-                val (showId, episodeId) = bookId.split("::", limit = 2)
+            val podcastIds = bookId.splitPodcastId()
+            if (!playbackController.hasActivePlayer && podcastIds != null) {
+                val (showId, episodeId) = podcastIds
                 openPodcastEpisode(showId, episodeId, startSeconds = playbackState.positionMs / 1000.0)
                 return
             }
@@ -292,11 +339,39 @@ class PlayerViewModel @Inject constructor(
             mutableActionMessage.value = "Book details not ready yet."
             return
         }
-        if (book.id.contains("::")) {
-            val showId = book.id.substringBefore("::")
+        book.id.splitPodcastId()?.let { (showId, episodeId) ->
             viewModelScope.launch {
-                when (val result = podcastRepository.checkForNewEpisodes(showId)) {
-                    is AppResult.Success -> mutableActionMessage.value = "Asked server to check for new episodes."
+                val activeServerId = sessionPreferences.state.first().activeServerId?.trim().orEmpty()
+                val hasExistingDownload = bookDownloadManager.items.value.any { item ->
+                    item.bookId == book.id &&
+                        item.serverId == activeServerId &&
+                        item.libraryId == book.libraryId &&
+                        item.status != com.stillshelf.app.downloads.manager.DownloadStatus.Failed
+                }
+                if (hasExistingDownload) {
+                    when (val result = bookDownloadManager.toggleDownload(book)) {
+                        is AppResult.Success -> mutableActionMessage.value = result.value.message
+                        is AppResult.Error -> mutableActionMessage.value = result.message
+                    }
+                    return@launch
+                }
+                val podcastDownloadLocal = sessionPreferences.state.first().podcastDownloadLocal
+                if (!podcastDownloadLocal) {
+                    mutableActionMessage.value = "Enable device downloads in Settings > Podcasts to download episodes."
+                    return@launch
+                }
+                when (val result = podcastRepository.fetchPodcastEpisodeDownloadSource(showId, episodeId)) {
+                    is AppResult.Success -> {
+                        when (
+                            val downloadResult = bookDownloadManager.toggleDownload(
+                                book = result.value.book,
+                                sourceOverride = result.value
+                            )
+                        ) {
+                            is AppResult.Success -> mutableActionMessage.value = downloadResult.value.message
+                            is AppResult.Error -> mutableActionMessage.value = downloadResult.message
+                        }
+                    }
                     is AppResult.Error -> mutableActionMessage.value = result.message
                 }
             }
@@ -325,9 +400,46 @@ class PlayerViewModel @Inject constructor(
 
     fun resetBookProgress() {
         val activeBook = uiState.value.book ?: previewItem.value?.book
+        val capturedPreviewItem = previewItem.value
         val bookId = activeBook?.id
         if (bookId.isNullOrBlank()) {
             mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        if (bookId.contains("::")) {
+            val (showId, episodeId) = bookId.splitPodcastId()!!
+            viewModelScope.launch {
+                when (
+                    val result = podcastRepository.syncEpisodeProgress(
+                        showId = showId,
+                        episodeId = episodeId,
+                        currentTimeSeconds = 0.0,
+                        durationSeconds = activeBook.durationSeconds,
+                        isFinished = false
+                    )
+                ) {
+                    is AppResult.Success -> {
+                        if (uiState.value.book?.id == bookId) {
+                            playbackController.stopAndResetBookToBeginning(bookId)
+                        } else {
+                            mutablePreviewItem.value = capturedPreviewItem?.copy(
+                                book = activeBook.copy(
+                                    isFinished = false,
+                                    progressPercent = 0.0,
+                                    currentTimeSeconds = 0.0
+                                ),
+                                progressPercent = 0.0,
+                                currentTimeSeconds = 0.0
+                            )
+                        }
+                        mutableActionMessage.value = "Episode progress reset."
+                    }
+
+                    is AppResult.Error -> {
+                        mutableActionMessage.value = result.message
+                    }
+                }
+            }
             return
         }
         viewModelScope.launch {
@@ -344,7 +456,7 @@ class PlayerViewModel @Inject constructor(
                     if (uiState.value.book?.id == bookId) {
                         playbackController.stopAndResetBookToBeginning(bookId)
                     } else {
-                        mutablePreviewItem.value = previewItem.value?.copy(
+                        mutablePreviewItem.value = capturedPreviewItem?.copy(
                             book = activeBook.copy(
                                 isFinished = false,
                                 progressPercent = 0.0,
@@ -582,9 +694,58 @@ class PlayerViewModel @Inject constructor(
 
     private fun setBookFinishedState(finished: Boolean) {
         val activeBook = uiState.value.book ?: previewItem.value?.book
+        val capturedPreviewItem = previewItem.value
         val bookId = activeBook?.id
         if (bookId.isNullOrBlank()) {
             mutableActionMessage.value = "Book details not ready yet."
+            return
+        }
+        if (bookId.contains("::")) {
+            val (showId, episodeId) = bookId.splitPodcastId()!!
+            val liveDurationSeconds = playbackController.uiState.value.durationMs
+                .takeIf { it > 0L }?.toDouble()?.div(1000.0)
+            val currentTimeSeconds = if (finished) {
+                activeBook.durationSeconds ?: liveDurationSeconds ?: activeBook.currentTimeSeconds ?: 0.0
+            } else {
+                0.0
+            }
+            viewModelScope.launch {
+                when (
+                    val result = podcastRepository.syncEpisodeProgress(
+                        showId = showId,
+                        episodeId = episodeId,
+                        currentTimeSeconds = currentTimeSeconds,
+                        durationSeconds = activeBook.durationSeconds ?: liveDurationSeconds,
+                        isFinished = finished
+                    )
+                ) {
+                    is AppResult.Success -> {
+                        if (uiState.value.book?.id == bookId) {
+                            if (finished) {
+                                playbackController.stopAndResetBookToStart(bookId)
+                            } else {
+                                playbackController.stopAndResetBookToBeginning(bookId)
+                            }
+                        } else {
+                            val duration = activeBook.durationSeconds?.coerceAtLeast(0.0) ?: 0.0
+                            mutablePreviewItem.value = ContinueListeningItem(
+                                book = activeBook.copy(
+                                    isFinished = finished,
+                                    progressPercent = if (finished) 1.0 else 0.0,
+                                    currentTimeSeconds = if (finished) duration else 0.0
+                                ),
+                                progressPercent = if (finished) 1.0 else 0.0,
+                                currentTimeSeconds = if (finished) duration else 0.0
+                            )
+                        }
+                        mutableActionMessage.value = if (finished) null else "Marked as unplayed."
+                    }
+
+                    is AppResult.Error -> {
+                        mutableActionMessage.value = result.message
+                    }
+                }
+            }
             return
         }
         viewModelScope.launch {
@@ -827,7 +988,11 @@ class PlayerViewModel @Inject constructor(
 
     private fun observeDownloads() {
         viewModelScope.launch {
-            bookDownloadManager.activeItems.collect { items ->
+            combine(bookDownloadManager.items, sessionPreferences.state) { items, pref ->
+                val activeServerId = pref.activeServerId?.trim().orEmpty()
+                if (activeServerId.isBlank()) items
+                else items.filter { it.serverId.trim() == activeServerId }
+            }.collect { items ->
                 syncCurrentDownloadState(items)
             }
         }
@@ -836,11 +1001,10 @@ class PlayerViewModel @Inject constructor(
     private fun syncCurrentDownloadState(items: List<DownloadItem> = currentDownloadItems) {
         currentDownloadItems = items
         mutableDownloadedBookKeys.value = items.completedDownloadUiKeys()
+        val progressByKey = items.activeDownloadProgressByUiKey()
+        mutableDownloadProgressByUiKey.value = progressByKey
         val activeBook = uiState.value.book ?: previewItem.value?.book
-        val progress = items
-            .activeDownloadProgressByUiKey()
-            .downloadProgressForBook(activeBook)
-        mutableDownloadProgressPercent.value = progress
+        mutableDownloadProgressPercent.value = progressByKey.downloadProgressForBook(activeBook)
     }
 
     private fun bookmarkMatches(source: BookBookmark, target: BookBookmark): Boolean {
@@ -859,5 +1023,11 @@ class PlayerViewModel @Inject constructor(
             !target.title.isNullOrBlank() &&
             source.title.trim().equals(target.title.trim(), ignoreCase = true)
         return timeMatches || titleMatches
+    }
+
+    private fun String.splitPodcastId(): Pair<String, String>? {
+        val idx = indexOf("::")
+        if (idx < 0) return null
+        return substring(0, idx) to substring(idx + 2)
     }
 }

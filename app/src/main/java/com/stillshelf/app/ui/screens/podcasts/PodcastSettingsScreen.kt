@@ -155,7 +155,7 @@ fun PodcastSettingsScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        text = "When on, tapping Download saves the episode to this device. When off, the server fetches and stores it.",
+                        text = "When on, tapping Download saves the episode on this device for offline playback. When off, podcasts stream only and local download actions are hidden unless the episode is already on this device.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

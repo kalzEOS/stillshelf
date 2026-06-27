@@ -7674,6 +7674,7 @@ fun PlayerScreen(
     val controlPrefs by viewModel.controlPrefs.collectAsStateWithLifecycle()
     val downloadedBookKeys by viewModel.downloadedBookKeys.collectAsStateWithLifecycle()
     val playerDownloadProgressPercent by viewModel.downloadProgressPercent.collectAsStateWithLifecycle()
+    val playerDownloadProgressByUiKey by viewModel.downloadProgressByUiKey.collectAsStateWithLifecycle()
     val collectionPickerUiState by collectionPickerViewModel.uiState.collectAsStateWithLifecycle()
     val appearanceUiState by appearanceViewModel.uiState.collectAsStateWithLifecycle()
     val book = playbackUiState.book ?: previewItem?.book
@@ -7682,7 +7683,8 @@ fun PlayerScreen(
     val podcastShowId = if (isPodcastEpisode) bookId?.split("::")?.getOrNull(0) else null
     val podcastEpisodeId = if (isPodcastEpisode) bookId?.split("::")?.getOrNull(1) else null
     val isBookDownloaded = downloadedBookKeys.containsDownloadedBook(book)
-    val activeDownloadProgressPercent = playerDownloadProgressPercent?.coerceIn(0, 100)
+    val activeDownloadProgressPercent = playerDownloadProgressByUiKey.downloadProgressForBook(book)
+        ?: playerDownloadProgressPercent?.coerceIn(0, 100)
     val hasActivePlayerDownload = activeDownloadProgressPercent != null && activeDownloadProgressPercent in 0..99
     val downloadToolText = if (hasActivePlayerDownload) {
         "${activeDownloadProgressPercent}%"

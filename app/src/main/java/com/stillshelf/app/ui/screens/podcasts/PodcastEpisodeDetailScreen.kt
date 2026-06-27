@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stillshelf.app.core.model.BookChapter
@@ -90,6 +92,8 @@ fun PodcastEpisodeDetailScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val playbackState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val downloadedBookKeys by playerViewModel.downloadedBookKeys.collectAsStateWithLifecycle()
+    val downloadProgressByUiKey by playerViewModel.downloadProgressByUiKey.collectAsStateWithLifecycle()
     var selectedTab by rememberSaveable { mutableStateOf(PodcastEpisodeDetailTab.About) }
     val compoundEpisodeId = uiState.show?.id?.let { showId ->
         uiState.episode?.id?.let { epId -> "$showId::$epId" }
@@ -100,14 +104,30 @@ fun PodcastEpisodeDetailScreen(
             .fillMaxSize()
             .padding(horizontal = screenHorizontalPadding, vertical = 14.dp)
     ) {
+        val show = uiState.show
+        val episode = uiState.episode
+        val showLibraryId = show?.libraryId
+        val downloadUiKey = showLibraryId?.let { lid -> compoundEpisodeId?.let { "$lid|$it" } }
+        val isLocallyDownloaded = when {
+            downloadUiKey != null -> downloadedBookKeys.contains(downloadUiKey)
+            compoundEpisodeId != null -> downloadedBookKeys.contains(compoundEpisodeId)
+            else -> false
+        }
+        val activeDownloadProgressPercent = downloadUiKey?.let { downloadProgressByUiKey[it] }
+            ?: compoundEpisodeId?.let { downloadProgressByUiKey[it] }
+
         PodcastEpisodeDetailTopBar(
-            show = uiState.show,
-            episode = uiState.episode,
+            show = show,
+            episode = episode,
             isLoading = uiState.isLoading,
             onBackClick = onBackClick,
             onHomeClick = onHomeClick,
             onRefresh = viewModel::refresh,
             onGoToShow = onGoToShow,
+            allowDeviceDownloads = uiState.podcastDownloadLocal,
+            isDownloaded = isLocallyDownloaded,
+            downloadProgressPercent = activeDownloadProgressPercent,
+            onToggleDownload = viewModel::toggleDownload,
             onMarkPlayed = viewModel::markEpisodePlayed,
             onMarkUnplayed = viewModel::markEpisodeUnplayed,
             onResetProgress = {
@@ -155,13 +175,13 @@ fun PodcastEpisodeDetailScreen(
             }
 
             else -> {
-                val show = uiState.show!!
-                val episode = uiState.episode!!
+                val currentShow = show!!
+                val currentEpisode = episode!!
                 val activeEpisodeId = playbackState.book?.id
-                    ?.takeIf { id -> id.startsWith("${show.id}::") }
+                    ?.takeIf { id -> id.startsWith("${currentShow.id}::") }
                     ?.substringAfter("::")
-                val isCurrent = activeEpisodeId == episode.id
-                val liveProgress = episode.resolvedProgressFraction(
+                val isCurrent = activeEpisodeId == currentEpisode.id
+                val liveProgress = currentEpisode.resolvedProgressFraction(
                     activePlaybackBookId = playbackState.book?.id,
                     activePlaybackPositionMs = playbackState.positionMs,
                     activePlaybackDurationMs = playbackState.durationMs
@@ -171,12 +191,12 @@ fun PodcastEpisodeDetailScreen(
                 } else {
                     liveProgress
                 }
-                val hasProgress = episode.hasPlaybackProgress(
+                val hasProgress = currentEpisode.hasPlaybackProgress(
                     activePlaybackBookId = playbackState.book?.id,
                     activePlaybackPositionMs = playbackState.positionMs,
                     activePlaybackDurationMs = playbackState.durationMs
                 )
-                val isFinished = episode.isPlaybackComplete(
+                val isFinished = currentEpisode.isPlaybackComplete(
                     activePlaybackBookId = playbackState.book?.id,
                     activePlaybackPositionMs = playbackState.positionMs,
                     activePlaybackDurationMs = playbackState.durationMs
@@ -186,9 +206,9 @@ fun PodcastEpisodeDetailScreen(
                     hasProgress = hasProgress
                 )
                 val startSeconds = resolveStartedProgressSeconds(
-                    currentTimeSeconds = episode.currentTimeSeconds,
-                    durationSeconds = episode.durationSeconds,
-                    progressPercent = episode.progressPercent
+                    currentTimeSeconds = currentEpisode.currentTimeSeconds,
+                    durationSeconds = currentEpisode.durationSeconds,
+                    progressPercent = currentEpisode.progressPercent
                 )
                 val listenProgress = when {
                     isFinished -> 0f
@@ -203,8 +223,10 @@ fun PodcastEpisodeDetailScreen(
                 ) {
                     item {
                         PodcastEpisodeHero(
-                            show = show,
-                            episode = episode,
+                            show = currentShow,
+                            episode = currentEpisode,
+                            showDownloadIndicator = isLocallyDownloaded,
+                            downloadProgressPercent = activeDownloadProgressPercent,
                             onGoToShow = onGoToShow
                         )
                     }
@@ -214,7 +236,7 @@ fun PodcastEpisodeDetailScreen(
                             progress = listenProgress,
                             materialDesignEnabled = LocalMaterialDesignEnabled.current,
                             onClick = {
-                                onPlayEpisode(show.id, episode.id, startSeconds)
+                                onPlayEpisode(currentShow.id, currentEpisode.id, startSeconds)
                             }
                         )
                     }
@@ -249,7 +271,7 @@ fun PodcastEpisodeDetailScreen(
                     when (selectedTab) {
                         PodcastEpisodeDetailTab.About -> {
                             item {
-                                val aboutText = episode.description?.ifBlank { null } ?: episode.subtitle?.ifBlank { null }
+                                val aboutText = currentEpisode.description?.ifBlank { null } ?: currentEpisode.subtitle?.ifBlank { null }
                                     ?: "No description available."
                                 PodcastDetailAboutText(aboutText)
                             }
@@ -260,28 +282,28 @@ fun PodcastEpisodeDetailScreen(
                                 )
                             }
                             item {
-                                PodcastDetailValueRow(title = "Show", value = show.title)
+                                PodcastDetailValueRow(title = "Show", value = currentShow.title)
                             }
                             item {
                                 PodcastDetailValueRow(
                                     title = "Published",
-                                    value = episode.pubDate?.ifBlank { "Unknown" } ?: "Unknown"
+                                    value = currentEpisode.pubDate?.ifBlank { "Unknown" } ?: "Unknown"
                                 )
                             }
                             item {
                                 PodcastDetailValueRow(
                                     title = "Duration",
-                                    value = formatDurationHoursMinutes(episode.durationSeconds).ifBlank { "Unknown" }
+                                    value = formatDurationHoursMinutes(currentEpisode.durationSeconds).ifBlank { "Unknown" }
                                 )
                             }
-                            if (!episode.season.isNullOrBlank()) {
+                            if (!currentEpisode.season.isNullOrBlank()) {
                                 item {
-                                    PodcastDetailValueRow(title = "Season", value = episode.season!!)
+                                    PodcastDetailValueRow(title = "Season", value = currentEpisode.season!!)
                                 }
                             }
-                            if (!episode.episode.isNullOrBlank()) {
+                            if (!currentEpisode.episode.isNullOrBlank()) {
                                 item {
-                                    PodcastDetailValueRow(title = "Episode", value = episode.episode!!)
+                                    PodcastDetailValueRow(title = "Episode", value = currentEpisode.episode!!)
                                 }
                             }
                             item {
@@ -389,6 +411,10 @@ private fun PodcastEpisodeDetailTopBar(
     onHomeClick: (() -> Unit)?,
     onRefresh: () -> Unit,
     onGoToShow: (showId: String) -> Unit,
+    allowDeviceDownloads: Boolean,
+    isDownloaded: Boolean,
+    downloadProgressPercent: Int?,
+    onToggleDownload: () -> Unit,
     onMarkPlayed: () -> Unit,
     onMarkUnplayed: () -> Unit,
     onResetProgress: () -> Unit
@@ -433,6 +459,9 @@ private fun PodcastEpisodeDetailTopBar(
         }
         val episodeReady = show != null && episode != null
         val showId = show?.id
+        val hasActiveDownload = downloadProgressPercent != null && downloadProgressPercent in 0..99
+        val showDownloadAction = allowDeviceDownloads || isDownloaded || hasActiveDownload
+        val downloadLabel = if (isDownloaded || hasActiveDownload) "Remove Download" else "Download"
         Box {
             var menuExpanded by remember { mutableStateOf(false) }
             IconButton(onClick = { menuExpanded = true }) {
@@ -460,6 +489,20 @@ private fun PodcastEpisodeDetailTopBar(
                     }
                 )
                 HorizontalDivider()
+                if (showDownloadAction) {
+                    AppDropdownMenuItem(
+                        text = { Text(downloadLabel) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.Download, contentDescription = null)
+                        },
+                        enabled = episodeReady,
+                        onClick = {
+                            onToggleDownload()
+                            menuExpanded = false
+                        }
+                    )
+                    HorizontalDivider()
+                }
                 if (episode?.isFinished != true) {
                     AppDropdownMenuItem(
                         text = { Text("Mark as Played") },
@@ -547,6 +590,8 @@ private fun ResetEpisodeProgressMenuItem(
 private fun PodcastEpisodeHero(
     show: PodcastShow,
     episode: PodcastEpisode,
+    showDownloadIndicator: Boolean,
+    downloadProgressPercent: Int?,
     onGoToShow: (showId: String) -> Unit
 ) {
     Column(
@@ -555,13 +600,22 @@ private fun PodcastEpisodeHero(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Spacer(modifier = Modifier.height(8.dp))
-        FramedCoverImage(
-            coverUrl = show.coverUrl,
-            contentDescription = episode.title,
-            modifier = Modifier
-                .size(180.dp)
-                .clip(RoundedCornerShape(12.dp))
-        )
+        Box(modifier = Modifier.size(180.dp)) {
+            FramedCoverImage(
+                coverUrl = show.coverUrl,
+                contentDescription = episode.title,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(12.dp))
+            )
+            PodcastDownloadBadge(
+                showDownloadIndicator = showDownloadIndicator,
+                downloadProgressPercent = downloadProgressPercent,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 4.dp, end = 4.dp)
+            )
+        }
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -621,6 +675,50 @@ private fun PodcastEpisodeHero(
             }
         }
         HorizontalDivider()
+    }
+}
+
+@Composable
+private fun PodcastDownloadBadge(
+    showDownloadIndicator: Boolean,
+    downloadProgressPercent: Int?,
+    modifier: Modifier = Modifier
+) {
+    val progress = downloadProgressPercent?.coerceIn(0, 100)
+    val showProgress = progress != null && progress in 0..99
+    val showCompleted = showDownloadIndicator && !showProgress
+    if (!showProgress && !showCompleted) return
+    Box(
+        modifier = modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (showProgress) {
+            CircularProgressIndicator(
+                progress = { progress!! / 100f },
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.4.dp,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "$progress%",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 8.sp
+                ),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Outlined.Download,
+                contentDescription = "Downloaded",
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
 

@@ -3687,14 +3687,21 @@ class SessionRepositoryImpl @Inject constructor(
     ) {
         val entities = libraries
             .asSequence()
-            .map { it.id.trim() to it.name.trim() }
-            .filter { (id, _) -> id.isNotEmpty() }
-            .distinctBy { (id, _) -> id }
-            .map { (id, name) ->
+            .map { dto ->
+                Triple(
+                    dto.id.trim(),
+                    dto.name.trim(),
+                    dto.mediaType?.trim()?.lowercase()?.ifBlank { null }
+                )
+            }
+            .filter { (id, _, _) -> id.isNotEmpty() }
+            .distinctBy { (id, _, _) -> id }
+            .map { (id, name, mediaType) ->
                 LibraryEntity(
                     id = id,
                     serverId = serverId,
-                    name = name.ifBlank { "Unnamed library" }
+                    name = name.ifBlank { "Unnamed library" },
+                    mediaType = mediaType
                 )
             }
             .toList()

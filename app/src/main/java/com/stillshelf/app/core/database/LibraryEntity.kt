@@ -20,5 +20,6 @@ import androidx.room.Index
 data class LibraryEntity(
     val id: String,
     val serverId: String,
-    val name: String
+    val name: String,
+    val mediaType: String? = null
 )

@@ -136,8 +136,7 @@ class PlayerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val lastPlayedId = sessionPreferences.state.first().lastPlayedBookId
-            val hasAudiobookPreview = loadAudiobookPreview()
-            if (!hasAudiobookPreview && !lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
+            if (!lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
                 val (showId, episodeId) = lastPlayedId.split("::", limit = 2)
                 when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
                     is AppResult.Success -> {
@@ -153,19 +152,14 @@ class PlayerViewModel @Inject constructor(
                     is AppResult.Error -> Unit
                 }
             }
-        }
-    }
-
-    private suspend fun loadAudiobookPreview(): Boolean {
-        return when (val result = sessionRepository.fetchMiniPlayerItem()) {
-            is AppResult.Success -> {
-                mutablePreviewItem.value = result.value
-                result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
-                syncCurrentDownloadState()
-                result.value != null
+            when (val result = sessionRepository.fetchMiniPlayerItem()) {
+                is AppResult.Success -> {
+                    mutablePreviewItem.value = result.value
+                    result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
+                    syncCurrentDownloadState()
+                }
+                is AppResult.Error -> Unit
             }
-
-            is AppResult.Error -> false
         }
     }
 

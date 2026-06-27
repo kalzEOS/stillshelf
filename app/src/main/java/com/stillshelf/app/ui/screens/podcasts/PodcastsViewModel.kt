@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -60,7 +61,7 @@ class PodcastsViewModel @Inject constructor(
         }.launchIn(viewModelScope)
     }
 
-    fun refresh() = loadShows()
+    fun refresh() = loadShows(forceRefresh = true)
 
     fun clearError() {
         _uiState.value = _uiState.value.copy(errorMessage = null)
@@ -106,27 +107,35 @@ class PodcastsViewModel @Inject constructor(
         }
     }
 
-    private fun loadShows() {
-        _uiState.value.podcastLibraryId ?: return
+    private fun loadShows(forceRefresh: Boolean = false) {
+        val libraryId = _uiState.value.podcastLibraryId ?: return
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            when (val result = podcastRepository.fetchPodcastShows(forceRefresh = true)) {
+            val serverId = sessionPreferences.state.first().activeServerId.orEmpty()
+            // Show cached data immediately so navigation feels instant
+            val cached = podcastRepository.getCachedPodcastShows(serverId, libraryId)
+            if (cached != null) {
+                allShows = cached
+                _uiState.value = _uiState.value.copy(
+                    shows = applyFilterAndSort(allShows, _uiState.value.searchQuery, _uiState.value.sortKey),
+                    isLoading = false
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+            }
+            when (val result = podcastRepository.fetchPodcastShows(forceRefresh = forceRefresh)) {
                 is AppResult.Success -> {
                     allShows = result.value
                     _uiState.value = _uiState.value.copy(
-                        shows = applyFilterAndSort(
-                            allShows,
-                            _uiState.value.searchQuery,
-                            _uiState.value.sortKey
-                        ),
-                        isLoading = false
+                        shows = applyFilterAndSort(allShows, _uiState.value.searchQuery, _uiState.value.sortKey),
+                        isLoading = false,
+                        errorMessage = null
                     )
                 }
                 is AppResult.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        errorMessage = result.message
-                    )
+                    // Keep showing stale data if we have it; only surface the error if screen is empty
+                    if (cached == null) {
+                        _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = result.message)
+                    }
                 }
             }
         }

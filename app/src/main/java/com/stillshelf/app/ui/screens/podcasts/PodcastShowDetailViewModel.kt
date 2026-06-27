@@ -53,6 +53,16 @@ class PodcastShowDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             restoreUiPreferences()
+            // Pre-populate from in-memory cache so the screen isn't blank while loading
+            val serverId = sessionPreferences.state.first().activeServerId.orEmpty()
+            podcastRepository.getCachedPodcastShowDetail(serverId, showId)?.let { cached ->
+                allEpisodes = cached.episodes
+                _uiState.value = _uiState.value.copy(
+                    show = cached.show,
+                    episodes = applyFilter(allEpisodes, _uiState.value.episodeQuery, _uiState.value.episodeStatusFilter, _uiState.value.episodeSortOrder),
+                    rssWarning = cached.rssError
+                )
+            }
             load()
         }
         viewModelScope.launch {
@@ -67,7 +77,7 @@ class PodcastShowDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, syncError = null)
             val syncResult = podcastRepository.checkForNewEpisodes(showId)
-            doLoad()
+            doLoad(forceRefresh = true)
             if (syncResult is AppResult.Error && _uiState.value.show != null) {
                 _uiState.value = _uiState.value.copy(syncError = "Could not check for new episodes: ${syncResult.message}")
             }
@@ -135,13 +145,16 @@ class PodcastShowDetailViewModel @Inject constructor(
 
     private fun load() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, syncError = null)
+            // Only show the loading spinner if there's nothing on screen yet
+            if (_uiState.value.show == null) {
+                _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, syncError = null)
+            }
             doLoad()
         }
     }
 
-    private suspend fun doLoad() {
-        when (val result = podcastRepository.fetchPodcastShowDetail(showId)) {
+    private suspend fun doLoad(forceRefresh: Boolean = false) {
+        when (val result = podcastRepository.fetchPodcastShowDetail(showId, forceRefresh = forceRefresh)) {
             is AppResult.Success -> {
                 allEpisodes = result.value.episodes
                 _uiState.value = _uiState.value.copy(

@@ -1,5 +1,6 @@
 package com.stillshelf.app.core.util
 
+import com.stillshelf.app.core.datastore.PlaybackCheckpointSnapshot
 import com.stillshelf.app.core.model.PodcastEpisode
 
 private const val FinishedProgressThreshold = 0.995
@@ -52,6 +53,23 @@ fun PodcastEpisode.hasPlaybackProgress(
         activePlaybackPositionMs = activePlaybackPositionMs,
         activePlaybackDurationMs = activePlaybackDurationMs
     )?.let { it > 0.01 } == true
+}
+
+fun PodcastEpisode.withCheckpointOverride(checkpoint: PlaybackCheckpointSnapshot): PodcastEpisode {
+    // Prefer the checkpoint if it shows more progress than the server returned, or if the episode
+    // is marked finished. This handles RSS-only episodes (server always returns null) and cases
+    // where the local sync hasn't completed yet.
+    val checkpointProgress = if (checkpoint.durationSeconds != null && checkpoint.durationSeconds > 0.0) {
+        (checkpoint.currentTimeSeconds / checkpoint.durationSeconds).coerceIn(0.0, 1.0)
+    } else null
+    val serverProgress = currentTimeSeconds ?: 0.0
+    val useCheckpoint = checkpoint.isFinished || checkpoint.currentTimeSeconds > serverProgress
+    if (!useCheckpoint) return this
+    return copy(
+        isFinished = checkpoint.isFinished,
+        currentTimeSeconds = checkpoint.currentTimeSeconds,
+        progressPercent = if (checkpoint.isFinished) 1.0 else (checkpointProgress ?: progressPercent)
+    )
 }
 
 fun PodcastEpisode.isPlaybackComplete(

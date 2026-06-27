@@ -9,6 +9,8 @@ import com.stillshelf.app.core.util.AppResult
 import kotlinx.coroutines.flow.Flow
 
 interface PodcastRepository {
+    fun getCachedPodcastShows(serverId: String, libraryId: String): List<PodcastShow>?
+    fun getCachedPodcastShowDetail(serverId: String, showId: String): PodcastShowDetail?
     suspend fun fetchPodcastShows(forceRefresh: Boolean = false): AppResult<List<PodcastShow>>
     suspend fun fetchPodcastShowDetail(showId: String, forceRefresh: Boolean = false): AppResult<PodcastShowDetail>
     suspend fun fetchPodcastEpisodePlaybackSource(showId: String, episodeId: String): AppResult<PlaybackSource>

@@ -13,6 +13,7 @@ import com.stillshelf.app.core.model.PodcastEpisodeMutation
 import com.stillshelf.app.core.model.PodcastShowDetail
 import com.stillshelf.app.core.network.ActiveServerEndpointResolver
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.core.util.withCheckpointOverride
 import com.stillshelf.app.data.api.AudiobookshelfApi
 import com.stillshelf.app.data.api.AudiobookshelfPodcastEpisodeDto
 import com.stillshelf.app.data.api.AudiobookshelfPodcastShowDto
@@ -33,6 +34,31 @@ class PodcastRepositoryImpl @Inject constructor(
 ) : PodcastRepository {
 
     private val episodeMutations = MutableSharedFlow<PodcastEpisodeMutation>(extraBufferCapacity = 8)
+
+    private data class TimedCache<T>(val value: T, val savedAtMs: Long = System.currentTimeMillis()) {
+        fun isFresh(maxAgeMs: Long) = System.currentTimeMillis() - savedAtMs < maxAgeMs
+    }
+
+    private companion object {
+        const val SHOWS_CACHE_MAX_AGE_MS = 20 * 60 * 1000L
+        const val SHOW_DETAIL_CACHE_MAX_AGE_MS = 20 * 60 * 1000L
+    }
+
+    private var showsCache: TimedCache<List<PodcastShow>>? = null
+    private var showsCacheKey: String = ""
+    private val showDetailCache = mutableMapOf<String, TimedCache<PodcastShowDetail>>()
+
+    override fun getCachedPodcastShows(serverId: String, libraryId: String): List<PodcastShow>? {
+        if (showsCacheKey != "$serverId/$libraryId") return null
+        return showsCache?.value
+    }
+
+    override fun getCachedPodcastShowDetail(serverId: String, showId: String): PodcastShowDetail? =
+        showDetailCache["$serverId/$showId"]?.value
+
+    private fun invalidateShowDetailCache(showId: String) {
+        showDetailCache.keys.removeAll { it.endsWith("/$showId") }
+    }
 
     override fun observeEpisodeMutations(): Flow<PodcastEpisodeMutation> = episodeMutations.asSharedFlow()
 
@@ -68,13 +94,22 @@ class PodcastRepositoryImpl @Inject constructor(
         val libraryIds = sessionPreferences.getPodcastLibraryIds().first()
         val libraryId = libraryIds[creds.serverId]
             ?: return AppResult.Error("No podcast library configured. Please select one in Settings → Podcasts.")
+        val cacheKey = "${creds.serverId}/$libraryId"
+        if (!forceRefresh && showsCacheKey == cacheKey) {
+            showsCache?.takeIf { it.isFresh(SHOWS_CACHE_MAX_AGE_MS) }?.let {
+                return AppResult.Success(it.value)
+            }
+        }
         return api.getPodcastShows(
             baseUrl = creds.baseUrl,
             authToken = creds.token,
             libraryId = libraryId
         ).fold(
             onSuccess = { dtos ->
-                AppResult.Success(dtos.map { it.toModel(creds.baseUrl, creds.token) })
+                val shows = dtos.map { it.toModel(creds.baseUrl, creds.token) }
+                showsCache = TimedCache(shows)
+                showsCacheKey = cacheKey
+                AppResult.Success(shows)
             },
             onFailure = { e ->
                 AppResult.Error("Failed to load podcasts: ${e.message}", e)
@@ -90,6 +125,12 @@ class PodcastRepositoryImpl @Inject constructor(
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
+        val cacheKey = "${creds.serverId}/$showId"
+        if (!forceRefresh) {
+            showDetailCache[cacheKey]?.takeIf { it.isFresh(SHOW_DETAIL_CACHE_MAX_AGE_MS) }?.let { cached ->
+                return AppResult.Success(applyLocalCheckpoints(cached.value, creds.serverId))
+            }
+        }
         val (showDto, absEpisodeDtos) = api.getPodcastShowDetail(creds.baseUrl, creds.token, showId)
             .getOrElse { e -> return AppResult.Error("Failed to load podcast detail: ${e.message}", e) }
         val show = showDto.toModel(creds.baseUrl, creds.token)
@@ -102,7 +143,26 @@ class PodcastRepositoryImpl @Inject constructor(
             }
             mergeEpisodes(absEpisodeDtos, rssEpisodes)
         } ?: absEpisodeDtos
-        return AppResult.Success(PodcastShowDetail(show = show, episodes = allEpisodeDtos.map { it.toModel() }, rssError = rssError))
+        val detail = PodcastShowDetail(
+            show = show,
+            episodes = allEpisodeDtos.map { it.toModel() },
+            rssError = rssError
+        )
+        showDetailCache[cacheKey] = TimedCache(detail)
+        return AppResult.Success(applyLocalCheckpoints(detail, creds.serverId))
+    }
+
+    private suspend fun applyLocalCheckpoints(detail: PodcastShowDetail, serverId: String): PodcastShowDetail {
+        val checkpoints = sessionPreferences.getPlaybackCheckpoints()
+            .filter { it.serverId == serverId }
+            .associateBy { it.bookId }
+        if (checkpoints.isEmpty()) return detail
+        val showId = detail.show.id
+        val episodes = detail.episodes.map { episode ->
+            val checkpoint = checkpoints["$showId::${episode.id}"] ?: return@map episode
+            episode.withCheckpointOverride(checkpoint)
+        }
+        return detail.copy(episodes = episodes)
     }
 
     override suspend fun fetchPodcastEpisodePlaybackSource(
@@ -233,6 +293,7 @@ class PodcastRepositoryImpl @Inject constructor(
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
+        invalidateShowDetailCache(showId)
         return api.updateEpisodeProgress(
             baseUrl = creds.baseUrl,
             authToken = creds.token,
@@ -291,6 +352,7 @@ class PodcastRepositoryImpl @Inject constructor(
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
+        invalidateShowDetailCache(showId)
         return api.checkForNewPodcastEpisodes(
             baseUrl = creds.baseUrl,
             authToken = creds.token,

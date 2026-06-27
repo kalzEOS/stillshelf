@@ -89,9 +89,10 @@ class MiniPlayerViewModel @Inject constructor(
 
         viewModelScope.launch {
             val lastPlayedId = sessionPreferences.state.first().lastPlayedBookId
-            val hasAudiobookItem = loadAudiobookItem()
-            if (!hasAudiobookItem && !lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
+            if (!lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
                 loadPodcastEpisodeItem(lastPlayedId)
+            } else {
+                loadAudiobookItem()
             }
         }
     }
@@ -120,17 +121,7 @@ class MiniPlayerViewModel @Inject constructor(
                                 )
                             }
                         }
-            is AppResult.Error -> {
-                mutableUiState.update {
-                    it.copy(
-                        isLoading = false,
-                        item = null,
-                        displayTitle = "Nothing playing",
-                        isPlaying = false,
-                        errorMessage = result.message
-                    )
-                }
-            }
+            is AppResult.Error -> loadAudiobookItem()
         }
     }
 

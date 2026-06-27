@@ -73,6 +73,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -156,6 +157,24 @@ fun PodcastShowDetailScreen(
         }
     }
 
+    // Scroll-derived alpha for the compact title in the top bar.
+    // 0f while hero is fully visible → 1f once hero is ~80% scrolled off.
+    val compactTitleAlpha by remember(listState) {
+        derivedStateOf {
+            val heroInfo = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.key == "show-hero" }
+            when {
+                heroInfo == null && listState.firstVisibleItemIndex > 0 -> 1f
+                heroInfo == null -> 0f
+                heroInfo.size <= 0 -> 0f
+                else -> {
+                    val scrolled = (-heroInfo.offset.toFloat() / heroInfo.size.toFloat())
+                    ((scrolled - 0.4f) / 0.4f).coerceIn(0f, 1f)
+                }
+            }
+        }
+    }
+
     val displayEpisodeCount = if (uiState.episodes.isNotEmpty()) {
         uiState.episodes.size
     } else {
@@ -177,6 +196,7 @@ fun PodcastShowDetailScreen(
             episodeStatusFilter = uiState.episodeStatusFilter,
             episodeSortOrder = uiState.episodeSortOrder,
             searchExpanded = showSearchField,
+            compactTitleAlpha = compactTitleAlpha,
             onRefresh = viewModel::refresh,
             onToggleSearch = {
                 searchExpanded = !showSearchField
@@ -305,6 +325,7 @@ private fun ShowDetailHeader(
     episodeStatusFilter: EpisodeStatusFilter,
     episodeSortOrder: EpisodeSortOrder,
     searchExpanded: Boolean,
+    compactTitleAlpha: Float = 1f,
     onRefresh: () -> Unit,
     onToggleSearch: () -> Unit,
     onSetEpisodeStatusFilter: (EpisodeStatusFilter) -> Unit,
@@ -349,10 +370,12 @@ private fun ShowDetailHeader(
         }
         Text(
             text = show?.title ?: "Podcast",
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.titleMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .weight(1f)
+                .alpha(compactTitleAlpha)
         )
         IconButton(onClick = onToggleSearch) {
             Icon(

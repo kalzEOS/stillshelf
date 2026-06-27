@@ -170,6 +170,12 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `libraries` ADD COLUMN `mediaType` TEXT")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -179,7 +185,7 @@ object DatabaseModule {
         AppDatabase::class.java,
         "stillshelf.db"
     )
-        .addMigrations(MIGRATION_2_3)
+        .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
         .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
         .build()
 

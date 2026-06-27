@@ -181,6 +181,12 @@ fun PodcastEpisodeDetailScreen(
                     ?.takeIf { id -> id.startsWith("${currentShow.id}::") }
                     ?.substringAfter("::")
                 val isCurrent = activeEpisodeId == currentEpisode.id
+                val effectiveDurationSeconds = if (isCurrent && playbackState.durationMs > 0L) {
+                    maxOf(currentEpisode.durationSeconds ?: 0.0, playbackState.durationMs / 1000.0)
+                        .takeIf { it > 0.0 }
+                } else {
+                    currentEpisode.durationSeconds
+                }
                 val liveProgress = currentEpisode.resolvedProgressFraction(
                     activePlaybackBookId = playbackState.book?.id,
                     activePlaybackPositionMs = playbackState.positionMs,
@@ -225,6 +231,7 @@ fun PodcastEpisodeDetailScreen(
                         PodcastEpisodeHero(
                             show = currentShow,
                             episode = currentEpisode,
+                            effectiveDurationSeconds = effectiveDurationSeconds,
                             showDownloadIndicator = isLocallyDownloaded,
                             downloadProgressPercent = activeDownloadProgressPercent,
                             onGoToShow = onGoToShow
@@ -236,7 +243,7 @@ fun PodcastEpisodeDetailScreen(
                             progress = listenProgress,
                             materialDesignEnabled = LocalMaterialDesignEnabled.current,
                             onClick = {
-                                onPlayEpisode(currentShow.id, currentEpisode.id, startSeconds)
+                                viewModel.playEpisode(onPlayEpisode)
                             }
                         )
                     }
@@ -293,7 +300,7 @@ fun PodcastEpisodeDetailScreen(
                             item {
                                 PodcastDetailValueRow(
                                     title = "Duration",
-                                    value = formatDurationHoursMinutes(currentEpisode.durationSeconds).ifBlank { "Unknown" }
+                                    value = formatDurationHoursMinutes(effectiveDurationSeconds).ifBlank { "Unknown" }
                                 )
                             }
                             if (!currentEpisode.season.isNullOrBlank()) {
@@ -590,6 +597,7 @@ private fun ResetEpisodeProgressMenuItem(
 private fun PodcastEpisodeHero(
     show: PodcastShow,
     episode: PodcastEpisode,
+    effectiveDurationSeconds: Double?,
     showDownloadIndicator: Boolean,
     downloadProgressPercent: Int?,
     onGoToShow: (showId: String) -> Unit
@@ -659,7 +667,7 @@ private fun PodcastEpisodeHero(
             }
             val metadata = buildList {
                 episode.pubDate?.let { add(it) }
-                episode.durationSeconds?.let { add(formatDurationHoursMinutes(it)) }
+                effectiveDurationSeconds?.let { add(formatDurationHoursMinutes(it)) }
                 episode.season?.let { add("Season $it") }
                 episode.episode?.let { add("Episode $it") }
             }.joinToString(" · ")

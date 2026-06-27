@@ -2635,6 +2635,22 @@ class SessionRepositoryImpl @Inject constructor(
                 isFinished = isFinished
             )
             return if (syncResult.isSuccess) {
+                if (isFinished) {
+                    clearHomeFeedCache("mark_podcast_progress_finished")
+                    clearContentCaches()
+                }
+                putLocalProgressOverride(
+                    serverId = connection.server.id,
+                    mutation = BookProgressMutation(
+                        bookId = bookId,
+                        progressPercent = durationSeconds
+                            ?.takeIf { it > 0.0 }
+                            ?.let { duration -> (currentTimeSeconds.coerceAtLeast(0.0) / duration).coerceIn(0.0, 1.0) },
+                        currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+                        durationSeconds = durationSeconds,
+                        isFinished = isFinished
+                    )
+                )
                 AppResult.Success(Unit)
             } else {
                 AppResult.Error(

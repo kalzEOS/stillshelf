@@ -7699,8 +7699,11 @@ fun PlayerScreen(
         }
     }
     val durationSeconds = when {
+        playbackUiState.durationMs > 0L -> maxOf(
+            playbackUiState.durationMs / 1000.0,
+            book?.durationSeconds ?: 0.0
+        )
         book?.durationSeconds != null && book.durationSeconds > 0.0 -> book.durationSeconds
-        playbackUiState.durationMs > 0L -> playbackUiState.durationMs / 1000.0
         else -> previewItem?.book?.durationSeconds ?: 0.0
     }
     val positionSeconds = if (playbackUiState.book != null) {

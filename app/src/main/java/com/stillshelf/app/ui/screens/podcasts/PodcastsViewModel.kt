@@ -54,7 +54,13 @@ class PodcastsViewModel @Inject constructor(
             val serverId = prefs.activeServerId
             val libraryId = if (serverId != null) podcastLibraryIds[serverId] else null
             val previousLibraryId = _uiState.value.podcastLibraryId
-            _uiState.value = _uiState.value.copy(podcastLibraryId = libraryId)
+            val layoutMode = prefs.podcastShowsLayoutMode
+                ?.let { raw -> enumValueOrNull<PodcastsLayoutMode>(raw) }
+                ?: PodcastsLayoutMode.Grid
+            _uiState.value = _uiState.value.copy(
+                podcastLibraryId = libraryId,
+                layoutMode = layoutMode
+            )
             if (libraryId != null && libraryId != previousLibraryId) {
                 loadShows()
             }
@@ -76,6 +82,9 @@ class PodcastsViewModel @Inject constructor(
 
     fun setLayoutMode(value: PodcastsLayoutMode) {
         _uiState.value = _uiState.value.copy(layoutMode = value)
+        viewModelScope.launch {
+            sessionPreferences.setPodcastShowsLayoutMode(value.name)
+        }
     }
 
     fun setSortKey(value: PodcastsSortKey) {
@@ -139,5 +148,9 @@ class PodcastsViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private inline fun <reified T : Enum<T>> enumValueOrNull(raw: String): T? {
+        return runCatching { enumValueOf<T>(raw) }.getOrNull()
     }
 }

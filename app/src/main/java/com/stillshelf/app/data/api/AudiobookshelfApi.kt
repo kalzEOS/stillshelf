@@ -636,12 +636,12 @@ class AudiobookshelfApi @Inject constructor(
         var guid: String? = null
         var chapters = mutableListOf<BookChapter>()
         val currentText = StringBuilder()
+        var currentTextTag: String? = null
 
         var eventType = parser.eventType
         while (eventType != XmlPullParser.END_DOCUMENT) {
             when (eventType) {
                 XmlPullParser.START_TAG -> {
-                    currentText.clear()
                     val tagName = parser.name?.lowercase(Locale.ROOT).orEmpty()
                     when (tagName) {
                         "item" -> {
@@ -650,6 +650,14 @@ class AudiobookshelfApi @Inject constructor(
                             pubDate = null; duration = null; episodeNum = null
                             seasonNum = null; enclosureUrl = null; guid = null
                             chapters = mutableListOf()
+                            currentText.clear()
+                            currentTextTag = null
+                        }
+                        "title", "itunes:subtitle", "description", "content:encoded",
+                        "pubdate", "duration", "itunes:duration", "episode", "itunes:episode",
+                        "season", "itunes:season", "guid" -> if (inItem && currentTextTag == null) {
+                            currentText.clear()
+                            currentTextTag = tagName
                         }
                         "enclosure" -> if (inItem) {
                             enclosureUrl = parser.getAttributeValue(null, "url")?.trim()?.ifBlank { null }
@@ -682,19 +690,28 @@ class AudiobookshelfApi @Inject constructor(
                         }
                     }
                 }
-                XmlPullParser.TEXT, XmlPullParser.CDSECT -> if (inItem) currentText.append(parser.text)
+                XmlPullParser.TEXT, XmlPullParser.CDSECT -> if (inItem && currentTextTag != null) {
+                    currentText.append(parser.text)
+                }
                 XmlPullParser.END_TAG -> if (inItem) {
-                    val text = currentText.toString().trim()
-                    when (parser.name?.lowercase(Locale.ROOT).orEmpty()) {
-                        "title" -> title = text.ifBlank { null }
-                        "itunes:subtitle" -> subtitle = text.ifBlank { null }
-                        "description" -> if (description == null) description = text.ifBlank { null }
-                        "content:encoded" -> contentEncoded = text.ifBlank { null }
-                        "pubdate" -> pubDate = text.ifBlank { null }
-                        "duration", "itunes:duration" -> duration = text.ifBlank { null }
-                        "episode", "itunes:episode" -> episodeNum = text.ifBlank { null }
-                        "season", "itunes:season" -> seasonNum = text.ifBlank { null }
-                        "guid" -> guid = text.ifBlank { null }
+                    val tagName = parser.name?.lowercase(Locale.ROOT).orEmpty()
+                    if (tagName == currentTextTag) {
+                        val text = currentText.toString().trim()
+                        when (tagName) {
+                            "title" -> title = text.ifBlank { null }
+                            "itunes:subtitle" -> subtitle = text.ifBlank { null }
+                            "description" -> if (description == null) description = text.ifBlank { null }
+                            "content:encoded" -> contentEncoded = text.ifBlank { null }
+                            "pubdate" -> pubDate = text.ifBlank { null }
+                            "duration", "itunes:duration" -> duration = text.ifBlank { null }
+                            "episode", "itunes:episode" -> episodeNum = text.ifBlank { null }
+                            "season", "itunes:season" -> seasonNum = text.ifBlank { null }
+                            "guid" -> guid = text.ifBlank { null }
+                        }
+                        currentText.clear()
+                        currentTextTag = null
+                    }
+                    when (tagName) {
                         "item" -> {
                             val epId = guid ?: enclosureUrl
                             if (epId != null) {

@@ -23,6 +23,7 @@ import javax.inject.Inject
 data class PodcastShowDetailUiState(
     val show: PodcastShow? = null,
     val episodes: List<PodcastEpisode> = emptyList(),
+    val continueListeningEpisode: PodcastEpisode? = null,
     val episodeQuery: String = "",
     val episodeStatusFilter: EpisodeStatusFilter = EpisodeStatusFilter.All,
     val episodeSortOrder: EpisodeSortOrder = EpisodeSortOrder.Newest,
@@ -49,6 +50,8 @@ class PodcastShowDetailViewModel @Inject constructor(
     val uiState: StateFlow<PodcastShowDetailUiState> = _uiState.asStateFlow()
 
     private var allEpisodes: List<PodcastEpisode> = emptyList()
+    private var lastPlayedBookId: String? = null
+    private var lastPlayedEpisodeIdForShow: String? = null
 
     init {
         viewModelScope.launch {
@@ -60,6 +63,7 @@ class PodcastShowDetailViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     show = cached.show,
                     episodes = applyFilter(allEpisodes, _uiState.value.episodeQuery, _uiState.value.episodeStatusFilter, _uiState.value.episodeSortOrder),
+                    continueListeningEpisode = resolveContinueListeningEpisode(),
                     rssWarning = cached.rssError
                 )
             }
@@ -67,7 +71,12 @@ class PodcastShowDetailViewModel @Inject constructor(
         }
         viewModelScope.launch {
             sessionPreferences.state.collect { prefs ->
-                _uiState.value = _uiState.value.copy(podcastDownloadLocal = prefs.podcastDownloadLocal)
+                lastPlayedBookId = prefs.lastPlayedBookId
+                lastPlayedEpisodeIdForShow = prefs.podcastLastPlayedByShow[showId]
+                _uiState.value = _uiState.value.copy(
+                    podcastDownloadLocal = prefs.podcastDownloadLocal,
+                    continueListeningEpisode = resolveContinueListeningEpisode()
+                )
             }
         }
         observeExternalEpisodeMutations()
@@ -78,7 +87,11 @@ class PodcastShowDetailViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, syncError = null)
             val syncResult = podcastRepository.checkForNewEpisodes(showId)
             doLoad(forceRefresh = true)
-            if (syncResult is AppResult.Error && _uiState.value.show != null) {
+            if (
+                syncResult is AppResult.Error &&
+                _uiState.value.show != null &&
+                !podcastRepository.isUnsupportedCheckForNewEpisodesError(syncResult.message)
+            ) {
                 _uiState.value = _uiState.value.copy(syncError = "Could not check for new episodes: ${syncResult.message}")
             }
         }
@@ -165,6 +178,7 @@ class PodcastShowDetailViewModel @Inject constructor(
                         _uiState.value.episodeStatusFilter,
                         _uiState.value.episodeSortOrder
                     ),
+                    continueListeningEpisode = resolveContinueListeningEpisode(),
                     isLoading = false,
                     rssWarning = result.value.rssError
                 )
@@ -195,6 +209,36 @@ class PodcastShowDetailViewModel @Inject constructor(
                 is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
                 is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
             }
+        }
+    }
+
+    fun playEpisode(
+        episodeId: String,
+        onPlayEpisode: (showId: String, episodeId: String, startSeconds: Double?) -> Unit
+    ) {
+        val episode = allEpisodes.firstOrNull { it.id == episodeId } ?: return
+        if (episode.isFinished) {
+            updateEpisodeLocally(episodeId) {
+                it.copy(isFinished = false, progressPercent = null, currentTimeSeconds = null)
+            }
+            _uiState.value = _uiState.value.copy(syncError = null)
+            viewModelScope.launch {
+                when (
+                    val result = podcastRepository.syncEpisodeProgress(
+                        showId = showId,
+                        episodeId = episodeId,
+                        currentTimeSeconds = 0.0,
+                        durationSeconds = episode.durationSeconds,
+                        isFinished = false
+                    )
+                ) {
+                    is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                    is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+                }
+            }
+            onPlayEpisode(showId, episodeId, 0.0)
+        } else {
+            onPlayEpisode(showId, episodeId, episode.currentTimeSeconds)
         }
     }
 
@@ -317,8 +361,22 @@ class PodcastShowDetailViewModel @Inject constructor(
                 query = _uiState.value.episodeQuery,
                 filter = _uiState.value.episodeStatusFilter,
                 sortOrder = _uiState.value.episodeSortOrder
-            )
+            ),
+            continueListeningEpisode = resolveContinueListeningEpisode()
         )
+    }
+
+    private fun resolveContinueListeningEpisode(): PodcastEpisode? {
+        val lastPlayedEpisodeId = lastPlayedEpisodeIdForShow
+            ?: lastPlayedBookId
+                ?.takeIf { it.startsWith("$showId::") }
+                ?.substringAfter("::")
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return allEpisodes.firstOrNull { episode ->
+            episode.id == lastPlayedEpisodeId &&
+                !episode.isFinished
+        }
     }
 
     private suspend fun restoreUiPreferences() {

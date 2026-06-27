@@ -130,7 +130,9 @@ class SessionPreferences @Inject constructor(
     private val navidromeRecentSearchTermsKey = stringPreferencesKey("navidrome_recent_search_terms")
     private val navidromeCacheSizeLimitKey = stringPreferencesKey("navidrome_cache_size_limit")
     private val podcastLibraryIdsKey = stringPreferencesKey("podcast_library_ids")
+    private val podcastLastPlayedByShowKey = stringPreferencesKey("podcast_last_played_by_show")
     private val podcastDownloadLocalKey = booleanPreferencesKey("podcast_download_local")
+    private val podcastShowsLayoutModeKey = stringPreferencesKey("podcast_shows_layout_mode")
     private val podcastEpisodeStatusFilterKey = stringPreferencesKey("podcast_episode_status_filter")
     private val podcastEpisodeSortOrderKey = stringPreferencesKey("podcast_episode_sort_order")
 
@@ -316,8 +318,29 @@ class SessionPreferences @Inject constructor(
     fun getPodcastLibraryIds(): Flow<Map<String, String>> =
         dataStore.data.map { prefs -> parseStringMap(prefs[podcastLibraryIdsKey]) }
 
+    suspend fun setPodcastLastPlayedEpisode(showId: String, episodeId: String) {
+        val normalizedShowId = showId.trim()
+        val normalizedEpisodeId = episodeId.trim()
+        if (normalizedShowId.isBlank() || normalizedEpisodeId.isBlank()) return
+        dataStore.edit { prefs ->
+            val current = parseStringMap(prefs[podcastLastPlayedByShowKey]).toMutableMap()
+            current[normalizedShowId] = normalizedEpisodeId
+            prefs[podcastLastPlayedByShowKey] = encodeStringMap(current)
+        }
+    }
+
     suspend fun setPodcastDownloadLocal(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[podcastDownloadLocalKey] = enabled }
+    }
+
+    suspend fun setPodcastShowsLayoutMode(layoutMode: String) {
+        dataStore.edit { prefs ->
+            if (layoutMode.isBlank()) {
+                prefs.remove(podcastShowsLayoutModeKey)
+            } else {
+                prefs[podcastShowsLayoutModeKey] = layoutMode
+            }
+        }
     }
 
     suspend fun setPodcastEpisodeStatusFilter(filter: String) {
@@ -2023,7 +2046,9 @@ class SessionPreferences @Inject constructor(
             navidromeSkipForwardSeconds = (this[navidromeSkipForwardSecondsKey] ?: 15).coerceIn(10, 60),
             navidromeSkipBackwardSeconds = (this[navidromeSkipBackwardSecondsKey] ?: 15).coerceIn(10, 60),
             podcastLibraryIds = parseStringMap(this[podcastLibraryIdsKey]),
+            podcastLastPlayedByShow = parseStringMap(this[podcastLastPlayedByShowKey]),
             podcastDownloadLocal = this[podcastDownloadLocalKey] ?: false,
+            podcastShowsLayoutMode = this[podcastShowsLayoutModeKey],
             podcastEpisodeStatusFilter = this[podcastEpisodeStatusFilterKey],
             podcastEpisodeSortOrder = this[podcastEpisodeSortOrderKey]
         )
@@ -2102,7 +2127,9 @@ data class SessionPreferenceState(
     val navidromeSkipForwardSeconds: Int = 15,
     val navidromeSkipBackwardSeconds: Int = 15,
     val podcastLibraryIds: Map<String, String> = emptyMap(),
+    val podcastLastPlayedByShow: Map<String, String> = emptyMap(),
     val podcastDownloadLocal: Boolean = false,
+    val podcastShowsLayoutMode: String? = null,
     val podcastEpisodeStatusFilter: String? = null,
     val podcastEpisodeSortOrder: String? = null
 )

@@ -52,12 +52,17 @@ class HomeMenuViewModel @Inject constructor(
             ) { libraries, sessionState, servers ->
                 Triple(libraries, sessionState, servers)
             }.collect { (libraries, sessionState, servers) ->
+                val bookLibraries = libraries.filter { library ->
+                    library.isBookLibrary || library.mediaType.isNullOrBlank()
+                }
                 mutableUiState.update {
                     it.copy(
-                        libraries = libraries,
+                        libraries = bookLibraries,
                         servers = servers,
                         activeServerId = sessionState.activeServerId,
-                        activeLibraryId = sessionState.activeLibraryId
+                        activeLibraryId = sessionState.activeLibraryId.takeIf { libraryId ->
+                            bookLibraries.any { library -> library.id == libraryId }
+                        }
                     )
                 }
             }

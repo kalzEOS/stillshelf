@@ -77,6 +77,31 @@ class PodcastEpisodeDetailViewModel @Inject constructor(
         }
     }
 
+    fun playEpisode(onPlayEpisode: (showId: String, episodeId: String, startSeconds: Double?) -> Unit) {
+        val episode = _uiState.value.episode ?: return
+        if (episode.isFinished) {
+            updateEpisodeLocally { it.copy(isFinished = false, progressPercent = null, currentTimeSeconds = null) }
+            _uiState.value = _uiState.value.copy(syncError = null)
+            viewModelScope.launch {
+                when (
+                    val result = podcastRepository.syncEpisodeProgress(
+                        showId = showId,
+                        episodeId = episodeId,
+                        currentTimeSeconds = 0.0,
+                        durationSeconds = episode.durationSeconds,
+                        isFinished = false
+                    )
+                ) {
+                    is AppResult.Success -> _uiState.value = _uiState.value.copy(syncError = null)
+                    is AppResult.Error -> _uiState.value = _uiState.value.copy(syncError = result.message)
+                }
+            }
+            onPlayEpisode(showId, episodeId, 0.0)
+        } else {
+            onPlayEpisode(showId, episodeId, episode.currentTimeSeconds)
+        }
+    }
+
     fun markEpisodeUnplayed() {
         val episode = _uiState.value.episode ?: return
         updateEpisodeLocally { it.copy(isFinished = false, progressPercent = null, currentTimeSeconds = null) }

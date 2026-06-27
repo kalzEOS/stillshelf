@@ -259,6 +259,7 @@ fun PodcastShowDetailScreen(
                         episodeCount = displayEpisodeCount,
                         show = uiState.show,
                         episodes = uiState.episodes,
+                        continueListeningEpisode = uiState.continueListeningEpisode,
                         showId = uiState.show?.id ?: "",
                         downloadedBookKeys = downloadedBookKeys,
                         downloadProgressByUiKey = downloadProgressByUiKey,
@@ -274,6 +275,9 @@ fun PodcastShowDetailScreen(
                             onOpenEpisodeDetails(showId, episodeId)
                         },
                         onPlayEpisode = onPlayEpisode,
+                        onPlayEpisodeRequest = { episodeId ->
+                            viewModel.playEpisode(episodeId, onPlayEpisode)
+                        },
                         onTogglePlayPause = playerViewModel::onPlayPauseClick,
                         onMarkPlayed = viewModel::markEpisodePlayed,
                         onMarkUnplayed = viewModel::markEpisodeUnplayed,
@@ -550,6 +554,7 @@ private fun EpisodeList(
     episodeCount: Int,
     show: PodcastShow?,
     episodes: List<PodcastEpisode>,
+    continueListeningEpisode: PodcastEpisode?,
     showId: String,
     downloadedBookKeys: Set<String>,
     downloadProgressByUiKey: Map<String, Int>,
@@ -563,6 +568,7 @@ private fun EpisodeList(
     rssWarning: String?,
     onOpenEpisodeDetails: (showId: String, episodeId: String) -> Unit,
     onPlayEpisode: (showId: String, episodeId: String, startSeconds: Double?) -> Unit,
+    onPlayEpisodeRequest: (episodeId: String) -> Unit,
     onTogglePlayPause: () -> Unit,
     onMarkPlayed: (episodeId: String) -> Unit,
     onMarkUnplayed: (episodeId: String) -> Unit,
@@ -623,6 +629,94 @@ private fun EpisodeList(
                     }
                 }
             } else {
+                if (continueListeningEpisode != null && !isSearchActive) {
+                    item(key = "continue-listening-${continueListeningEpisode.id}") {
+                        val episode = continueListeningEpisode
+                        val episodeBookId = "$showId::${episode.id}"
+                        val showLibraryId = show?.libraryId
+                        val downloadUiKey = showLibraryId?.let { "$it|$episodeBookId" }
+                        val isLocallyDownloaded = when {
+                            downloadUiKey != null -> downloadedBookKeys.contains(downloadUiKey)
+                            else -> downloadedBookKeys.contains(episodeBookId)
+                        }
+                        val activeDownloadProgressPercent = downloadUiKey?.let { downloadProgressByUiKey[it] }
+                            ?: downloadProgressByUiKey[episodeBookId]
+                        val isCurrent = playingBookId == episodeBookId
+                        val statusLabel = when {
+                            isCurrent && isPlayerPlaying -> "Playing"
+                            isCurrent -> "Paused"
+                            else -> "Last played"
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 14.dp, bottom = 16.dp),
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.26f),
+                            tonalElevation = 1.dp
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary)
+                                    )
+                                    Text(
+                                        text = statusLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                EpisodeRow(
+                                    episode = episode,
+                                    isCurrent = isCurrent,
+                                    isPlaying = isCurrent && isPlayerPlaying,
+                                    activeDurationMs = if (isCurrent) playingDurationMs else 0L,
+                                    progressFraction = episode.resolvedProgressFraction(
+                                        activePlaybackBookId = playingBookId,
+                                        activePlaybackPositionMs = playingPositionMs,
+                                        activePlaybackDurationMs = playingDurationMs
+                                    ),
+                                    cachedProgressFraction = episodeProgressCache[episode.id],
+                                    isDownloaded = isLocallyDownloaded,
+                                    downloadProgressPercent = activeDownloadProgressPercent,
+                                    allowDeviceDownloads = allowDeviceDownloads,
+                                    onOpenDetails = { onOpenEpisodeDetails(showId, episode.id) },
+                                    onPlay = { onPlayEpisodeRequest(episode.id) },
+                                    onTogglePlayPause = onTogglePlayPause,
+                                    onMarkPlayed = { onMarkPlayed(episode.id) },
+                                    onMarkUnplayed = { onMarkUnplayed(episode.id) },
+                                    onToggleDownload = { onToggleDownload(episode.id) },
+                                    onResetProgress = { onResetProgress(episode.id) }
+                                )
+                            }
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(bottom = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f)
+                        )
+                    }
+                    item(key = "episodes-section-label") {
+                        Text(
+                            text = "All Episodes",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 2.dp)
+                        )
+                    }
+                }
                 items(episodes, key = { it.id }) { episode ->
                     val episodeBookId = "$showId::${episode.id}"
                     val showLibraryId = show?.libraryId
@@ -644,13 +738,14 @@ private fun EpisodeList(
                         episode = episode,
                         isCurrent = isCurrent,
                         isPlaying = isCurrent && isPlayerPlaying,
+                        activeDurationMs = if (isCurrent) playingDurationMs else 0L,
                         progressFraction = currentProgress,
                         cachedProgressFraction = cachedProgress,
                         isDownloaded = isLocallyDownloaded,
                         downloadProgressPercent = activeDownloadProgressPercent,
                         allowDeviceDownloads = allowDeviceDownloads,
                         onOpenDetails = { onOpenEpisodeDetails(showId, episode.id) },
-                        onPlay = { onPlayEpisode(showId, episode.id, episode.currentTimeSeconds) },
+                        onPlay = { onPlayEpisodeRequest(episode.id) },
                         onTogglePlayPause = onTogglePlayPause,
                         onMarkPlayed = { onMarkPlayed(episode.id) },
                         onMarkUnplayed = { onMarkUnplayed(episode.id) },
@@ -688,6 +783,7 @@ private fun EpisodeRow(
     episode: PodcastEpisode,
     isCurrent: Boolean,
     isPlaying: Boolean,
+    activeDurationMs: Long = 0L,
     progressFraction: Double?,
     cachedProgressFraction: Double?,
     isDownloaded: Boolean,
@@ -739,7 +835,7 @@ private fun EpisodeRow(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(CircleShape)
-                            .clickable(onClick = if (isCurrent) onTogglePlayPause else onPlay),
+                            .clickable(onClick = if (isCurrent && !isPlaybackComplete) onTogglePlayPause else onPlay),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -802,7 +898,11 @@ private fun EpisodeRow(
             }
             val meta = buildList {
                 episode.pubDate?.let { add(it) }
-                episode.durationSeconds?.let { add(formatDuration(it)) }
+                val effectiveDuration = if (isCurrent && activeDurationMs > 0L)
+                    maxOf(episode.durationSeconds ?: 0.0, activeDurationMs / 1000.0).takeIf { it > 0.0 }
+                else
+                    episode.durationSeconds
+                effectiveDuration?.let { add(formatDuration(it)) }
             }.joinToString(" · ")
             if (meta.isNotBlank()) {
                 Text(

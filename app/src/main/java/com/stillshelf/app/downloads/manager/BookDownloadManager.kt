@@ -380,6 +380,9 @@ class BookDownloadManager @Inject constructor(
                         Environment.DIRECTORY_PODCASTS,
                         destinationName
                     )
+                split.authToken
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { token -> request.addRequestHeader("Authorization", "Bearer $token") }
                 val downloadId = downloadManager.enqueue(request)
                 startedDownloadIds += downloadId
                 enqueuedTracks += DownloadTrackItem(

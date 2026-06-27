@@ -74,7 +74,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -539,11 +541,17 @@ class PlaybackController @Inject constructor(
                 start.resumeMs
             }
             if (isStalePlayRequest(requestToken)) return@launch
+            currentCoroutineContext().ensureActive()
             cachedContinueListeningItem = ContinueListeningItem(
                 book = source.book,
                 progressPercent = source.book.progressPercent,
                 currentTimeSeconds = source.book.currentTimeSeconds
             )
+            sessionRepository.setLastPlayedBookId(source.book.id)
+            currentCoroutineContext().ensureActive()
+            source.book.id.splitPodcastId()?.let { (showId, episodeId) ->
+                sessionPreferences.setPodcastLastPlayedEpisode(showId, episodeId)
+            }
             prepareAndPlay(
                 bookId = source.book.id,
                 book = source.book,
@@ -1862,7 +1870,7 @@ class PlaybackController @Inject constructor(
         val bookId = currentBookId ?: return
         val state = uiState.value
         val currentMs = state.positionMs.coerceAtLeast(0L)
-        val durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0)
+        val durationSeconds = state.resolvedProgressDurationSeconds()
         val checkpoint = persistPlaybackCheckpointIfNeeded(force = force, isFinished = isFinished)
         if (!playbackSyncGate.shouldSync(currentPositionMs = currentMs, force = force)) return
         enqueueProgressSyncRequest(
@@ -1927,7 +1935,7 @@ class PlaybackController @Inject constructor(
             serverId = observedActiveServerId,
             bookId = bookId,
             currentTimeSeconds = positionMs / 1000.0,
-            durationSeconds = state.book?.durationSeconds ?: state.durationMs.takeIf { it > 0L }?.div(1000.0),
+            durationSeconds = state.resolvedProgressDurationSeconds(),
             isFinished = isFinished,
             savedAtMs = System.currentTimeMillis()
         )
@@ -2067,6 +2075,19 @@ class PlaybackController @Inject constructor(
             positionMs = state.positionMs,
             fallbackDurationMs = state.durationMs.takeIf { it > 0L }
         )
+    }
+
+    private fun PlaybackUiState.resolvedProgressDurationSeconds(): Double? {
+        val metadataDuration = book?.durationSeconds?.takeIf { it.isFinite() && it > 0.0 }
+        val liveDuration = durationMs.takeIf { it > 0L }?.div(1000.0)
+        return listOfNotNull(metadataDuration, liveDuration).maxOrNull()
+    }
+
+    private fun String.splitPodcastId(): Pair<String, String>? {
+        val parts = split("::", limit = 2)
+        val showId = parts.getOrNull(0)?.takeIf { it.isNotBlank() } ?: return null
+        val episodeId = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return null
+        return showId to episodeId
     }
 
     private fun observePlaybackPreferences() {

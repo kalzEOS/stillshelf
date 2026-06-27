@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -42,22 +43,29 @@ class PodcastRepositoryImpl @Inject constructor(
     private companion object {
         const val SHOWS_CACHE_MAX_AGE_MS = 20 * 60 * 1000L
         const val SHOW_DETAIL_CACHE_MAX_AGE_MS = 20 * 60 * 1000L
+        const val PODCAST_SHOWS_PAGE_SIZE = 100
+        const val PODCAST_SHOWS_MAX_PAGES = 50
     }
 
     private var showsCache: TimedCache<List<PodcastShow>>? = null
     private var showsCacheKey: String = ""
+    private val cacheLock = Any()
     private val showDetailCache = mutableMapOf<String, TimedCache<PodcastShowDetail>>()
 
     override fun getCachedPodcastShows(serverId: String, libraryId: String): List<PodcastShow>? {
-        if (showsCacheKey != "$serverId/$libraryId") return null
-        return showsCache?.value
+        return synchronized(cacheLock) {
+            if (showsCacheKey != "$serverId/$libraryId") return@synchronized null
+            showsCache?.value
+        }
     }
 
     override fun getCachedPodcastShowDetail(serverId: String, showId: String): PodcastShowDetail? =
-        showDetailCache["$serverId/$showId"]?.value
+        synchronized(cacheLock) { showDetailCache["$serverId/$showId"]?.value }
 
     private fun invalidateShowDetailCache(showId: String) {
-        showDetailCache.keys.removeAll { it.endsWith("/$showId") }
+        synchronized(cacheLock) {
+            showDetailCache.keys.removeAll { it.endsWith("/$showId") }
+        }
     }
 
     override fun observeEpisodeMutations(): Flow<PodcastEpisodeMutation> = episodeMutations.asSharedFlow()
@@ -68,7 +76,7 @@ class PodcastRepositoryImpl @Inject constructor(
         val serverId: String
     )
 
-    private suspend fun resolveCredentials(): AppResult<ServerCredentials> {
+    private suspend fun resolveCredentials(forceFreshEndpoint: Boolean = false): AppResult<ServerCredentials> {
         val prefs = sessionPreferences.state.first()
         val serverId = prefs.activeServerId
             ?: return AppResult.Error("No active server selected.")
@@ -76,7 +84,11 @@ class PodcastRepositoryImpl @Inject constructor(
             ?: return AppResult.Error("Server not found.")
         val token = secureTokenStorage.getToken(serverId)
             ?: return AppResult.Error("No saved session for this server. Please log in again.")
-        val resolvedStatus = endpointResolver.resolveForServer(server)
+        val resolvedStatus = if (forceFreshEndpoint) {
+            endpointResolver.resolveFreshForServer(server)
+        } else {
+            endpointResolver.resolveForServer(server)
+        }
         return AppResult.Success(
             ServerCredentials(
                 baseUrl = resolvedStatus.effectiveBaseUrl,
@@ -95,26 +107,39 @@ class PodcastRepositoryImpl @Inject constructor(
         val libraryId = libraryIds[creds.serverId]
             ?: return AppResult.Error("No podcast library configured. Please select one in Settings → Podcasts.")
         val cacheKey = "${creds.serverId}/$libraryId"
-        if (!forceRefresh && showsCacheKey == cacheKey) {
-            showsCache?.takeIf { it.isFresh(SHOWS_CACHE_MAX_AGE_MS) }?.let {
-                return AppResult.Success(it.value)
+        if (!forceRefresh) {
+            synchronized(cacheLock) {
+                if (showsCacheKey == cacheKey) {
+                    showsCache?.takeIf { it.isFresh(SHOWS_CACHE_MAX_AGE_MS) }?.let {
+                        return AppResult.Success(it.value)
+                    }
+                }
             }
         }
-        return api.getPodcastShows(
-            baseUrl = creds.baseUrl,
-            authToken = creds.token,
-            libraryId = libraryId
-        ).fold(
-            onSuccess = { dtos ->
-                val shows = dtos.map { it.toModel(creds.baseUrl, creds.token) }
-                showsCache = TimedCache(shows)
-                showsCacheKey = cacheKey
-                AppResult.Success(shows)
-            },
-            onFailure = { e ->
-                AppResult.Error("Failed to load podcasts: ${e.message}", e)
+        val allDtos = mutableListOf<AudiobookshelfPodcastShowDto>()
+        val seenIds = mutableSetOf<String>()
+        var page = 0
+        while (page < PODCAST_SHOWS_MAX_PAGES) {
+            val pageDtos = api.getPodcastShows(
+                baseUrl = creds.baseUrl,
+                authToken = creds.token,
+                libraryId = libraryId,
+                limit = PODCAST_SHOWS_PAGE_SIZE,
+                page = page
+            ).getOrElse { e ->
+                return AppResult.Error("Failed to load podcasts: ${e.message}", e)
             }
-        )
+            val newDtos = pageDtos.filter { seenIds.add(it.id) }
+            allDtos += newDtos
+            if (pageDtos.size < PODCAST_SHOWS_PAGE_SIZE || newDtos.isEmpty()) break
+            page += 1
+        }
+        val shows = allDtos.map { it.toModel(creds.baseUrl, creds.token) }
+        synchronized(cacheLock) {
+            showsCache = TimedCache(shows)
+            showsCacheKey = cacheKey
+        }
+        return AppResult.Success(shows)
     }
 
     override suspend fun fetchPodcastShowDetail(
@@ -127,7 +152,9 @@ class PodcastRepositoryImpl @Inject constructor(
         }
         val cacheKey = "${creds.serverId}/$showId"
         if (!forceRefresh) {
-            showDetailCache[cacheKey]?.takeIf { it.isFresh(SHOW_DETAIL_CACHE_MAX_AGE_MS) }?.let { cached ->
+            synchronized(cacheLock) { showDetailCache[cacheKey] }
+                ?.takeIf { it.isFresh(SHOW_DETAIL_CACHE_MAX_AGE_MS) }
+                ?.let { cached ->
                 return AppResult.Success(applyLocalCheckpoints(cached.value, creds.serverId))
             }
         }
@@ -148,7 +175,9 @@ class PodcastRepositoryImpl @Inject constructor(
             episodes = allEpisodeDtos.map { it.toModel() },
             rssError = rssError
         )
-        showDetailCache[cacheKey] = TimedCache(detail)
+        synchronized(cacheLock) {
+            showDetailCache[cacheKey] = TimedCache(detail)
+        }
         return AppResult.Success(applyLocalCheckpoints(detail, creds.serverId))
     }
 
@@ -169,7 +198,7 @@ class PodcastRepositoryImpl @Inject constructor(
         showId: String,
         episodeId: String
     ): AppResult<PlaybackSource> {
-        val creds = when (val r = resolveCredentials()) {
+        val creds = when (val r = resolveCredentials(forceFreshEndpoint = true)) {
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }
@@ -363,6 +392,9 @@ class PodcastRepositoryImpl @Inject constructor(
         )
     }
 
+    override fun isUnsupportedCheckForNewEpisodesError(message: String): Boolean =
+        "(HTTP 404)" in message
+
 
     override suspend fun fetchLibrariesWithMediaType(): AppResult<List<Library>> {
         val creds = when (val r = resolveCredentials()) {
@@ -427,10 +459,15 @@ class PodcastRepositoryImpl @Inject constructor(
         if (rssEpisodes.isEmpty()) return absEpisodes
         // Index ABS episodes (downloaded, have progress data) by enclosure URL for O(1) merge
         val absByEnclosureUrl = absEpisodes
-            .filter { it.enclosureUrl != null }
-            .associateBy { it.enclosureUrl!! }
+            .mapNotNull { episode -> episode.enclosureUrl?.normalizedEpisodeUrl()?.let { it to episode } }
+            .toMap()
         return rssEpisodes.map { rssEp ->
-            val abs = rssEp.enclosureUrl?.let { absByEnclosureUrl[it] }
+            val normalizedRssUrl = rssEp.enclosureUrl?.normalizedEpisodeUrl()
+            val abs = normalizedRssUrl?.let { absByEnclosureUrl[it] }
+                ?: absEpisodes.firstOrNull { absEp ->
+                    absEp.title.equals(rssEp.title, ignoreCase = true) &&
+                        hasStrongMetadataMatch(absEp, rssEp)
+                }
             if (abs != null) {
                 // Downloaded: use ABS ID (needed for progress sync) + overlay any missing RSS metadata
                 abs.copy(
@@ -446,5 +483,32 @@ class PodcastRepositoryImpl @Inject constructor(
                 rssEp
             }
         }
+    }
+
+    private fun String.normalizedEpisodeUrl(): String {
+        val parsed = trim().toHttpUrlOrNull() ?: return trim().removeSuffix("/")
+        val normalizedPath = parsed.encodedPath.trimEnd('/')
+        return parsed.newBuilder()
+            .encodedPath(normalizedPath.ifBlank { "/" })
+            .query(null)
+            .fragment(null)
+            .build()
+            .toString()
+    }
+
+    private fun durationsCompatible(left: Double?, right: Double?): Boolean {
+        if (left == null || right == null) return true
+        return kotlin.math.abs(left - right) <= 2.0
+    }
+
+    private fun hasStrongMetadataMatch(
+        left: AudiobookshelfPodcastEpisodeDto,
+        right: AudiobookshelfPodcastEpisodeDto
+    ): Boolean {
+        val samePubDate = left.pubDate != null && left.pubDate == right.pubDate
+        val sameDuration = left.durationSeconds != null &&
+            right.durationSeconds != null &&
+            durationsCompatible(left.durationSeconds, right.durationSeconds)
+        return samePubDate || sameDuration
     }
 }

@@ -135,15 +135,37 @@ class PlayerViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchMiniPlayerItem()) {
-                is AppResult.Success -> {
-                    mutablePreviewItem.value = result.value
-                    result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
-                    syncCurrentDownloadState()
+            val lastPlayedId = sessionPreferences.state.first().lastPlayedBookId
+            val hasAudiobookPreview = loadAudiobookPreview()
+            if (!hasAudiobookPreview && !lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
+                val (showId, episodeId) = lastPlayedId.split("::", limit = 2)
+                when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
+                    is AppResult.Success -> {
+                        val book = result.value.book
+                        mutablePreviewItem.value = ContinueListeningItem(
+                            book = book,
+                            progressPercent = book.progressPercent,
+                            currentTimeSeconds = book.currentTimeSeconds
+                        )
+                        syncCurrentDownloadState()
+                        return@launch
+                    }
+                    is AppResult.Error -> Unit
                 }
-
-                is AppResult.Error -> Unit
             }
+        }
+    }
+
+    private suspend fun loadAudiobookPreview(): Boolean {
+        return when (val result = sessionRepository.fetchMiniPlayerItem()) {
+            is AppResult.Success -> {
+                mutablePreviewItem.value = result.value
+                result.value?.book?.id?.let { loadBookMetadata(it, forceRefresh = true) }
+                syncCurrentDownloadState()
+                result.value != null
+            }
+
+            is AppResult.Error -> false
         }
     }
 
@@ -215,9 +237,13 @@ class PlayerViewModel @Inject constructor(
         if (playbackState.book != null) {
             val bookId = playbackState.book.id
             val podcastIds = bookId.splitPodcastId()
-            if (!playbackController.hasActivePlayer && podcastIds != null) {
+            val isEpisodeFinished = playbackState.book.isFinished == true ||
+                (playbackState.durationMs > 0L &&
+                    playbackState.positionMs.toDouble() / playbackState.durationMs.toDouble() >= 0.995)
+            if (podcastIds != null && (isEpisodeFinished || !playbackController.hasActivePlayer)) {
                 val (showId, episodeId) = podcastIds
-                openPodcastEpisode(showId, episodeId, startSeconds = playbackState.positionMs / 1000.0)
+                val startSeconds = if (isEpisodeFinished) 0.0 else playbackState.positionMs / 1000.0
+                openPodcastEpisode(showId, episodeId, startSeconds = startSeconds)
                 return
             }
             playbackController.togglePlayPause()
@@ -753,7 +779,10 @@ class PlayerViewModel @Inject constructor(
             val preservedProgress = if (finished) {
                 val currentDurationSeconds = when {
                     uiState.value.book?.id == bookId && uiState.value.durationMs > 0L -> {
-                        uiState.value.durationMs / 1000.0
+                        maxOf(
+                            activeBook.durationSeconds ?: 0.0,
+                            uiState.value.durationMs / 1000.0
+                        ).takeIf { it > 0.0 }
                     }
 
                     else -> activeBook.durationSeconds

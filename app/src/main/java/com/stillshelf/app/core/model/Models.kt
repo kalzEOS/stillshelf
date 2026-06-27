@@ -65,6 +65,7 @@ data class Library(
     val mediaType: String? = null
 ) {
     val isPodcastLibrary: Boolean get() = mediaType?.lowercase() == "podcast"
+    val isBookLibrary: Boolean get() = mediaType?.lowercase() == "book"
 }
 
 data class BookSummary(

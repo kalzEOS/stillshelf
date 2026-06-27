@@ -25,5 +25,6 @@ interface PodcastRepository {
     suspend fun setPodcastLibraryId(serverId: String, libraryId: String?): AppResult<Unit>
     suspend fun fetchLibrariesWithMediaType(): AppResult<List<Library>>
     suspend fun checkForNewEpisodes(showId: String): AppResult<Unit>
+    fun isUnsupportedCheckForNewEpisodesError(message: String): Boolean
     fun observeEpisodeMutations(): Flow<PodcastEpisodeMutation>
 }

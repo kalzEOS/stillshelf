@@ -1,5 +1,11 @@
 package com.stillshelf.app.ui.screens.podcasts
 
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -76,6 +82,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -116,6 +123,7 @@ fun PodcastShowDetailScreen(
     val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val downloadedBookKeys by playerViewModel.downloadedBookKeys.collectAsStateWithLifecycle()
     val downloadProgressByUiKey by playerViewModel.downloadProgressByUiKey.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val episodeProgressCache = remember(uiState.show?.id) { mutableStateMapOf<String, Double>() }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
@@ -180,6 +188,10 @@ fun PodcastShowDetailScreen(
     } else {
         uiState.show?.numEpisodes ?: 0
     }
+    val refreshEpisodes = {
+        Toast.makeText(context, "Refreshing episodes...", Toast.LENGTH_SHORT).show()
+        viewModel.refresh()
+    }
 
     Column(
         modifier = Modifier
@@ -197,7 +209,7 @@ fun PodcastShowDetailScreen(
             episodeSortOrder = uiState.episodeSortOrder,
             searchExpanded = showSearchField,
             compactTitleAlpha = compactTitleAlpha,
-            onRefresh = viewModel::refresh,
+            onRefresh = refreshEpisodes,
             onToggleSearch = {
                 searchExpanded = !showSearchField
                 if (showSearchField) viewModel.setEpisodeQuery("")
@@ -614,11 +626,6 @@ private fun EpisodeList(
                 item(key = "show-hero") {
                     ShowHero(show = show, episodeCount = episodeCount)
                 }
-                stickyHeader(key = "collapsed-bar") {
-                    if (isCollapsed && !isSearchActive) {
-                        CollapsedShowBar(show = show, episodeCount = episodeCount)
-                    }
-                }
             }
 
             if (!rssWarning.isNullOrBlank()) {
@@ -777,6 +784,17 @@ private fun EpisodeList(
                     )
                     HorizontalDivider()
                 }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = show != null && isCollapsed && !isSearchActive,
+            enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { -it },
+            exit = fadeOut(tween(180)) + slideOutVertically(tween(180)) { -it },
+            modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+        ) {
+            if (show != null) {
+                CollapsedShowBar(show = show, episodeCount = episodeCount)
             }
         }
 

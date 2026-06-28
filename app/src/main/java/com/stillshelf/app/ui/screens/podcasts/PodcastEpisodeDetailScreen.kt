@@ -1,5 +1,6 @@
 package com.stillshelf.app.ui.screens.podcasts
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,9 +96,14 @@ fun PodcastEpisodeDetailScreen(
     val playbackState by playerViewModel.uiState.collectAsStateWithLifecycle()
     val downloadedBookKeys by playerViewModel.downloadedBookKeys.collectAsStateWithLifecycle()
     val downloadProgressByUiKey by playerViewModel.downloadProgressByUiKey.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var selectedTab by rememberSaveable { mutableStateOf(PodcastEpisodeDetailTab.About) }
     val compoundEpisodeId = uiState.show?.id?.let { showId ->
         uiState.episode?.id?.let { epId -> "$showId::$epId" }
+    }
+    val refreshEpisodeDetails = {
+        Toast.makeText(context, "Refreshing episode details...", Toast.LENGTH_SHORT).show()
+        viewModel.refresh()
     }
 
     Column(
@@ -122,7 +129,7 @@ fun PodcastEpisodeDetailScreen(
             isLoading = uiState.isLoading,
             onBackClick = onBackClick,
             onHomeClick = onHomeClick,
-            onRefresh = viewModel::refresh,
+            onRefresh = refreshEpisodeDetails,
             onGoToShow = onGoToShow,
             allowDeviceDownloads = uiState.podcastDownloadLocal,
             isDownloaded = isLocallyDownloaded,

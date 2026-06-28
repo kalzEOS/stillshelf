@@ -18,7 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -406,7 +406,7 @@ private fun PodcastsShowsGrid(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(bottom = 120.dp)
     ) {
-        items(shows, key = { it.id }) { show ->
+        gridItems(shows, key = { it.id }) { show ->
             PodcastShowCard(show = show, onClick = { onShowClick(show.id) })
         }
     }

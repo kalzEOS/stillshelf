@@ -47,6 +47,14 @@ class PodcastsViewModel @Inject constructor(
     private var allShows: List<PodcastShow> = emptyList()
 
     init {
+        viewModelScope.launch {
+            val prefs = sessionPreferences.state.first()
+            _uiState.value = _uiState.value.copy(
+                layoutMode = prefs.podcastShowsLayoutMode
+                    ?.let { raw -> enumValueOrNull<PodcastsLayoutMode>(raw) }
+                    ?: PodcastsLayoutMode.Grid
+            )
+        }
         combine(
             sessionPreferences.state,
             sessionPreferences.getPodcastLibraryIds()
@@ -54,13 +62,7 @@ class PodcastsViewModel @Inject constructor(
             val serverId = prefs.activeServerId
             val libraryId = if (serverId != null) podcastLibraryIds[serverId] else null
             val previousLibraryId = _uiState.value.podcastLibraryId
-            val layoutMode = prefs.podcastShowsLayoutMode
-                ?.let { raw -> enumValueOrNull<PodcastsLayoutMode>(raw) }
-                ?: PodcastsLayoutMode.Grid
-            _uiState.value = _uiState.value.copy(
-                podcastLibraryId = libraryId,
-                layoutMode = layoutMode
-            )
+            _uiState.value = _uiState.value.copy(podcastLibraryId = libraryId)
             if (libraryId != null && libraryId != previousLibraryId) {
                 loadShows()
             }

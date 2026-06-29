@@ -6,7 +6,10 @@ import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
+import com.stillshelf.app.data.repo.PodcastRepository
 import com.stillshelf.app.data.repo.SessionRepository
+import com.stillshelf.app.downloads.manager.BookDownloadManager
+import com.stillshelf.app.downloads.manager.toLocalPlaybackSource
 import com.stillshelf.app.playback.controller.PlaybackController
 import com.stillshelf.app.playback.controller.secondsToPlaybackPositionMs
 import com.stillshelf.app.ui.common.applyBookProgressMutation
@@ -19,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -36,7 +40,9 @@ data class MiniPlayerUiState(
 class MiniPlayerViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val playbackController: PlaybackController,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val podcastRepository: PodcastRepository,
+    private val bookDownloadManager: BookDownloadManager
 ) : ViewModel() {
     private companion object {
         private const val PLAYBACK_START_TIMEOUT_MS = 6_000L
@@ -82,32 +88,74 @@ class MiniPlayerViewModel @Inject constructor(
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            when (val result = sessionRepository.fetchMiniPlayerItem()) {
-                is AppResult.Success -> {
-                    playbackController.cacheContinueListeningItem(result.value)
-                    result.value?.book?.id?.let(::ensureBookChapters)
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            item = result.value,
-                            displayTitle = resolvePlayerTitle(result.value),
-                            isPlaying = false,
-                            errorMessage = null
-                        )
-                    }
-                }
+            val lastPlayedId = sessionPreferences.state.first().lastPlayedBookId
+            if (!lastPlayedId.isNullOrBlank() && lastPlayedId.contains("::")) {
+                loadPodcastEpisodeItem(lastPlayedId)
+            } else {
+                loadAudiobookItem()
+            }
+        }
+    }
 
-                is AppResult.Error -> {
-                    mutableUiState.update {
-                        it.copy(
-                            isLoading = false,
-                            item = null,
-                            displayTitle = "Nothing playing",
-                            isPlaying = false,
-                            errorMessage = result.message
-                        )
-                    }
+    private suspend fun loadPodcastEpisodeItem(compoundId: String) {
+        val (showId, episodeId) = compoundId.split("::", limit = 2)
+        when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
+                        is AppResult.Success -> {
+                            if (playbackController.uiState.value.toMiniPlayerItem() != null) {
+                                mutableUiState.update { it.copy(isLoading = false, errorMessage = null) }
+                                return
+                            }
+                            val book = result.value.book
+                            val item = ContinueListeningItem(
+                                book = book,
+                                progressPercent = book.progressPercent,
+                                currentTimeSeconds = book.currentTimeSeconds
+                            )
+                            mutableUiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    item = item,
+                                    displayTitle = book.title,
+                                    isPlaying = false,
+                                    errorMessage = null
+                                )
+                            }
+                        }
+            is AppResult.Error -> loadAudiobookItem()
+        }
+    }
+
+    private suspend fun loadAudiobookItem(): Boolean {
+        return when (val result = sessionRepository.fetchMiniPlayerItem()) {
+            is AppResult.Success -> {
+                playbackController.cacheContinueListeningItem(result.value)
+                result.value?.book?.id?.let(::ensureBookChapters)
+                if (playbackController.uiState.value.toMiniPlayerItem() != null) {
+                    mutableUiState.update { it.copy(isLoading = false, errorMessage = null) }
+                    return true
                 }
+                mutableUiState.update {
+                    it.copy(
+                        isLoading = false,
+                        item = result.value,
+                        displayTitle = resolvePlayerTitle(result.value),
+                        isPlaying = false,
+                        errorMessage = null
+                    )
+                }
+                result.value != null
+            }
+            is AppResult.Error -> {
+                mutableUiState.update {
+                    it.copy(
+                        isLoading = false,
+                        item = null,
+                        displayTitle = "Nothing playing",
+                        isPlaying = false,
+                        errorMessage = result.message
+                    )
+                }
+                false
             }
         }
     }
@@ -115,6 +163,30 @@ class MiniPlayerViewModel @Inject constructor(
     fun onPlayPauseClick() {
         val playbackState = playbackController.uiState.value
         if (playbackState.book != null) {
+            val bookId = playbackState.book.id
+            val isEpisodeFinished = playbackState.book.isFinished == true ||
+                (playbackState.durationMs > 0L &&
+                    playbackState.positionMs.toDouble() / playbackState.durationMs.toDouble() >= 0.995)
+            if (bookId.contains("::") && (isEpisodeFinished || !playbackController.hasActivePlayer)) {
+                val (showId, episodeId) = bookId.split("::", limit = 2)
+                val resumeSeconds = if (isEpisodeFinished) 0.0 else playbackState.positionMs / 1000.0
+                viewModelScope.launch {
+                    when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
+                        is AppResult.Success -> {
+                            val startMs = if (resumeSeconds > 0.0) (resumeSeconds * 1000.0).toLong() else null
+                            val localDownload = bookDownloadManager
+                                .getCompletedDownloadForPodcast(result.value.book.id)
+                                ?.toLocalPlaybackSource(result.value.book)
+                            playbackController.playFromSource(
+                                localDownload ?: result.value,
+                                startPositionMs = startMs
+                            )
+                        }
+                        is AppResult.Error -> mutableUiState.update { it.copy(errorMessage = result.message) }
+                    }
+                }
+                return
+            }
             playbackController.togglePlayPause()
             return
         }
@@ -234,7 +306,7 @@ class MiniPlayerViewModel @Inject constructor(
     }
 
     private fun ensureBookChapters(bookId: String) {
-        if (bookId.isBlank()) return
+        if (bookId.isBlank() || bookId.contains("::")) return
         if (chapterCache.containsKey(bookId) || loadingChaptersForBookId == bookId) return
         loadingChaptersForBookId = bookId
         viewModelScope.launch {
@@ -310,8 +382,10 @@ private fun findActiveChapterIndex(chapters: List<BookChapter>, positionSeconds:
 
 private fun com.stillshelf.app.playback.controller.PlaybackUiState.toMiniPlayerItem(): ContinueListeningItem? {
     val currentBook = book ?: return null
-    val durationSeconds = currentBook.durationSeconds?.takeIf { it > 0.0 }
-        ?: if (durationMs > 0L) durationMs / 1000.0 else null
+    val durationSeconds = listOfNotNull(
+        currentBook.durationSeconds?.takeIf { it > 0.0 },
+        durationMs.takeIf { it > 0L }?.div(1000.0)
+    ).maxOrNull()
     val positionSeconds = positionMs.coerceAtLeast(0L) / 1000.0
     val progress = durationSeconds
         ?.takeIf { it > 0.0 }
@@ -319,7 +393,7 @@ private fun com.stillshelf.app.playback.controller.PlaybackUiState.toMiniPlayerI
 
     return ContinueListeningItem(
         book = currentBook.copy(
-            durationSeconds = currentBook.durationSeconds?.takeIf { it > 0.0 } ?: durationSeconds
+            durationSeconds = durationSeconds ?: currentBook.durationSeconds
         ),
         progressPercent = progress,
         currentTimeSeconds = positionSeconds

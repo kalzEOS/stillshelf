@@ -33,6 +33,7 @@ object ListSectionIds {
     const val BOOKMARKS = "bookmarks"
     const val PLAYLISTS = "playlists"
     const val DOWNLOADED = "downloaded"
+    const val PODCASTS = "podcasts"
 }
 
 object HomeSectionIds {
@@ -57,7 +58,8 @@ class CustomizeViewModel @Inject constructor(
         ToggleSectionItem(ListSectionIds.GENRES, "Genres"),
         ToggleSectionItem(ListSectionIds.BOOKMARKS, "Bookmarks"),
         ToggleSectionItem(ListSectionIds.PLAYLISTS, "Playlists"),
-        ToggleSectionItem(ListSectionIds.DOWNLOADED, "Downloaded")
+        ToggleSectionItem(ListSectionIds.DOWNLOADED, "Downloaded"),
+        ToggleSectionItem(ListSectionIds.PODCASTS, "Podcasts")
     )
     private val defaultPersonalizedSections = listOf(
         ToggleSectionItem(HomeSectionIds.CONTINUE, "Continue Listening"),

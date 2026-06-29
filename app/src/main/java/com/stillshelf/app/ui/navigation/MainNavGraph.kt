@@ -66,6 +66,10 @@ import com.stillshelf.app.ui.screens.NarratorDetailScreen
 import com.stillshelf.app.ui.screens.PlayerScreen
 import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.screens.PlaylistsBrowseScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastsScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastSettingsScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastEpisodeDetailScreen
+import com.stillshelf.app.ui.screens.podcasts.PodcastShowDetailScreen
 import com.stillshelf.app.ui.screens.PlaylistDetailScreen
 import com.stillshelf.app.ui.screens.SearchScreen
 import com.stillshelf.app.ui.screens.ServersManagementScreen
@@ -187,6 +191,7 @@ private fun MainShell() {
         currentRoute != MainRoute.SERVERS &&
         currentRoute != MainRoute.CUSTOMIZE &&
         currentRoute != MainRoute.LIBRARY_PICKER &&
+        currentRoute != MainRoute.PODCAST_SETTINGS &&
         currentRoute?.startsWith("auth/") != true
     val showMiniPlayerHomeButton = showMiniPlayer && currentRoute != MainTab.Home.route
     val screenHomeClick: (() -> Unit)? = if (showMiniPlayerHomeButton) null else onHomeClick
@@ -216,7 +221,10 @@ private fun MainShell() {
                 navController = tabsNavController,
                 onHomeClick = screenHomeClick,
                 onOpenSelectedBook = ::handleBookSelection,
-                onPlayContinueListening = playerViewModel::openPlayer
+                onPlayContinueListening = playerViewModel::openPlayer,
+                onPlayPodcastEpisode = { showId, episodeId, startSeconds ->
+                    playerViewModel.openPodcastEpisode(showId, episodeId, startSeconds)
+                }
             )
         }
 
@@ -247,6 +255,24 @@ private fun MainShell() {
                         }
                     )
                 },
+                onGoToPodcastShow = { showId ->
+                    closePlayer(
+                        afterClose = {
+                            tabsNavController.navigate(MainRoute.podcastShow(showId)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                },
+                onGoToPodcastEpisode = { showId, episodeId ->
+                    closePlayer(
+                        afterClose = {
+                            tabsNavController.navigate(MainRoute.podcastEpisode(showId, episodeId)) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                },
                 topContentInset = statusBarTopInset,
                 manageStatusBarAppearance = true
             )
@@ -268,7 +294,8 @@ private fun MainTabsNavHost(
     navController: androidx.navigation.NavHostController,
     onHomeClick: (() -> Unit)?,
     onOpenSelectedBook: (String?, Double?) -> Unit,
-    onPlayContinueListening: (String) -> Unit
+    onPlayContinueListening: (String) -> Unit,
+    onPlayPodcastEpisode: (showId: String, episodeId: String, startSeconds: Double?) -> Unit = { _, _, _ -> }
 ) {
     NavHost(
         navController = navController,
@@ -381,19 +408,16 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
-                    navController.navigate(MainRoute.ADVANCED) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ADVANCED) { launchSingleTop = true }
                 },
                 onOpenAbout = {
-                    navController.navigate(MainRoute.ABOUT) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ABOUT) { launchSingleTop = true }
+                },
+                onOpenPodcastSettings = {
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
                 },
                 onManageServers = {
-                    navController.navigate(MainRoute.SERVERS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.SERVERS) { launchSingleTop = true }
                 }
             )
         }
@@ -402,19 +426,16 @@ private fun MainTabsNavHost(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
-                    navController.navigate(MainRoute.ADVANCED) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ADVANCED) { launchSingleTop = true }
                 },
                 onOpenAbout = {
-                    navController.navigate(MainRoute.ABOUT) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.ABOUT) { launchSingleTop = true }
+                },
+                onOpenPodcastSettings = {
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
                 },
                 onManageServers = {
-                    navController.navigate(MainRoute.SERVERS) {
-                        launchSingleTop = true
-                    }
+                    navController.navigate(MainRoute.SERVERS) { launchSingleTop = true }
                 }
             )
         }
@@ -426,6 +447,12 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.ADVANCED) {
             AdvancedScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick
+            )
+        }
+        composable(MainRoute.PODCAST_SETTINGS) {
+            PodcastSettingsScreen(
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick
             )
@@ -615,6 +642,54 @@ private fun MainTabsNavHost(
                         launchSingleTop = true
                     }
                 }
+            )
+        }
+        composable(BrowseRoute.PODCASTS) {
+            PodcastsScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onOpenSettings = {
+                    navController.navigate(MainRoute.PODCAST_SETTINGS) { launchSingleTop = true }
+                },
+                onShowClick = { showId ->
+                    navController.navigate(MainRoute.podcastShow(showId)) { launchSingleTop = true }
+                }
+            )
+        }
+        composable(
+            route = MainRoute.PODCAST_SHOW_PATTERN,
+            arguments = listOf(
+                navArgument(MainRoute.PODCAST_SHOW_ID_ARG) { type = NavType.StringType }
+            )
+        ) {
+            PodcastShowDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onOpenEpisodeDetails = { showId, episodeId ->
+                    navController.navigate(MainRoute.podcastEpisode(showId, episodeId)) {
+                        launchSingleTop = true
+                    }
+                },
+                onPlayEpisode = onPlayPodcastEpisode
+            )
+        }
+
+        composable(
+            route = MainRoute.PODCAST_EPISODE_PATTERN,
+            arguments = listOf(
+                navArgument(MainRoute.PODCAST_EPISODE_SHOW_ID_ARG) { type = NavType.StringType },
+                navArgument(MainRoute.PODCAST_EPISODE_ID_ARG) { type = NavType.StringType }
+            )
+        ) {
+            PodcastEpisodeDetailScreen(
+                onBackClick = { navController.popBackStack() },
+                onHomeClick = onHomeClick,
+                onGoToShow = { showId ->
+                    navController.navigate(MainRoute.podcastShow(showId)) {
+                        launchSingleTop = true
+                    }
+                },
+                onPlayEpisode = onPlayPodcastEpisode
             )
         }
 

@@ -2,13 +2,17 @@ package com.stillshelf.app.data.api
 
 import java.math.BigDecimal
 import java.io.IOException
+import java.io.StringReader
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.stillshelf.app.core.network.addAuthTokenFragment
 import com.stillshelf.app.core.network.authorizationHeaderValue
+import com.stillshelf.app.core.model.BookChapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -24,7 +28,8 @@ import org.json.JSONObject
 
 data class AudiobookshelfLibraryDto(
     val id: String,
-    val name: String
+    val name: String,
+    val mediaType: String? = null
 )
 
 data class AudiobookshelfServerStatusDto(
@@ -137,6 +142,35 @@ data class AudiobookshelfPlaylistDto(
     val name: String,
     val libraryId: String? = null,
     val itemCount: Int? = null
+)
+
+data class AudiobookshelfPodcastShowDto(
+    val id: String,
+    val libraryId: String,
+    val title: String,
+    val author: String?,
+    val description: String?,
+    val feedUrl: String?,
+    val numEpisodes: Int,
+    val addedAtMs: Long?
+)
+
+data class AudiobookshelfPodcastEpisodeDto(
+    val id: String,
+    val showId: String,
+    val title: String,
+    val subtitle: String?,
+    val description: String?,
+    val pubDate: String?,
+    val durationSeconds: Double?,
+    val season: String?,
+    val episode: String?,
+    val audioUrl: String?,
+    val enclosureUrl: String?,
+    val progressPercent: Double?,
+    val currentTimeSeconds: Double?,
+    val isFinished: Boolean,
+    val chapters: List<BookChapter> = emptyList()
 )
 
 @Singleton
@@ -253,6 +287,46 @@ class AudiobookshelfApi @Inject constructor(
             parseLibraryItems(body, arrayKey = "results")
         }
     }
+
+    suspend fun getPodcastShows(
+        baseUrl: String,
+        authToken: String,
+        libraryId: String,
+        limit: Int = 100,
+        page: Int = 0
+    ): Result<List<AudiobookshelfPodcastShowDto>> = withContext(Dispatchers.IO) {
+        val query = mapOf("limit" to limit.toString(), "page" to page.toString())
+        val url = buildUrl(baseUrl, "api/libraries/$libraryId/items", query)
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", authHeaderValue(authToken))
+            .get()
+            .build()
+
+        runCatching {
+            val body = executeRequestWithRetry(request)
+            parsePodcastShows(body)
+        }
+    }
+
+    suspend fun getPodcastShowDetail(
+        baseUrl: String,
+        authToken: String,
+        showId: String
+    ): Result<Pair<AudiobookshelfPodcastShowDto, List<AudiobookshelfPodcastEpisodeDto>>> =
+        withContext(Dispatchers.IO) {
+            val url = buildUrl(baseUrl, "api/items/$showId", mapOf("expanded" to "1"))
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", authHeaderValue(authToken))
+                .get()
+                .build()
+
+            runCatching {
+                val body = executeRequestWithRetry(request)
+                parsePodcastShowDetail(body)
+            }
+        }
 
     suspend fun searchLibrary(
         baseUrl: String,
@@ -465,6 +539,328 @@ class AudiobookshelfApi @Inject constructor(
                 .build()
             executeRequestWithRetry(postRequest)
             Unit
+        }
+    }
+
+    suspend fun updateEpisodeProgress(
+        baseUrl: String,
+        authToken: String,
+        showId: String,
+        episodeId: String,
+        currentTimeSeconds: Double,
+        durationSeconds: Double?,
+        isFinished: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val progress = durationSeconds
+            ?.takeIf { it > 0.0 }
+            ?.let { (currentTimeSeconds / it).coerceIn(0.0, 1.0) }
+
+        val body = JSONObject()
+            .put("currentTime", currentTimeSeconds)
+            .put("isFinished", isFinished)
+            .apply {
+                durationSeconds?.let { put("duration", it) }
+                progress?.let { put("progress", it) }
+            }
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
+
+        val url = buildUrl(baseUrl, "api/me/progress/$showId/$episodeId")
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", authHeaderValue(authToken))
+            .method("PATCH", body)
+            .build()
+
+        runCatching {
+            executeRequestWithRetry(request)
+            Unit
+        }
+    }
+
+    suspend fun checkForNewPodcastEpisodes(
+        baseUrl: String,
+        authToken: String,
+        showId: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val url = buildUrl(baseUrl, "api/podcasts/$showId/checknew")
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", authHeaderValue(authToken))
+            .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        runCatching {
+            executeRequestWithRetry(request)
+            Unit
+        }
+    }
+
+    suspend fun fetchRssFeedEpisodes(
+        feedUrl: String,
+        showId: String
+    ): Result<List<AudiobookshelfPodcastEpisodeDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder().url(feedUrl).build()
+            val xml = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("RSS fetch failed: ${response.code}")
+                response.body?.string() ?: error("Empty RSS response")
+            }
+            parseRssEpisodes(xml, showId)
+        }
+    }
+
+    private fun parseRssEpisodes(xml: String, showId: String): List<AudiobookshelfPodcastEpisodeDto> {
+        val parser = runCatching { XmlPullParserFactory.newInstance().newPullParser() }.getOrNull()
+            ?: return parseRssEpisodesWithDom(xml, showId)
+        return parseRssEpisodesWithPullParser(xml, showId, parser)
+    }
+
+    private fun parseRssEpisodesWithPullParser(
+        xml: String,
+        showId: String,
+        parser: XmlPullParser
+    ): List<AudiobookshelfPodcastEpisodeDto> {
+        parser.setInput(StringReader(xml))
+
+        val episodes = mutableListOf<AudiobookshelfPodcastEpisodeDto>()
+        var inItem = false
+        var title: String? = null
+        var subtitle: String? = null
+        var description: String? = null
+        var contentEncoded: String? = null
+        var pubDate: String? = null
+        var duration: String? = null
+        var episodeNum: String? = null
+        var seasonNum: String? = null
+        var enclosureUrl: String? = null
+        var guid: String? = null
+        var chapters = mutableListOf<BookChapter>()
+        val currentText = StringBuilder()
+        var currentTextTag: String? = null
+
+        var eventType = parser.eventType
+        while (eventType != XmlPullParser.END_DOCUMENT) {
+            when (eventType) {
+                XmlPullParser.START_TAG -> {
+                    val tagName = parser.name?.lowercase(Locale.ROOT).orEmpty()
+                    when (tagName) {
+                        "item" -> {
+                            inItem = true
+                            title = null; subtitle = null; description = null; contentEncoded = null
+                            pubDate = null; duration = null; episodeNum = null
+                            seasonNum = null; enclosureUrl = null; guid = null
+                            chapters = mutableListOf()
+                            currentText.clear()
+                            currentTextTag = null
+                        }
+                        "title", "itunes:subtitle", "description", "content:encoded",
+                        "pubdate", "duration", "itunes:duration", "episode", "itunes:episode",
+                        "season", "itunes:season", "guid" -> if (inItem && currentTextTag == null) {
+                            currentText.clear()
+                            currentTextTag = tagName
+                        }
+                        "enclosure" -> if (inItem) {
+                            enclosureUrl = parser.getAttributeValue(null, "url")?.trim()?.ifBlank { null }
+                        }
+                        else -> if (inItem) {
+                            if (tagName == "chapter" || tagName.endsWith(":chapter")) {
+                                val startSeconds = parseRssDurationToSeconds(
+                                    parser.getAttributeValue(null, "start")?.trim()?.ifBlank { null }
+                                )?.coerceAtLeast(0.0)
+                                if (startSeconds != null) {
+                                    val endSeconds = parseRssDurationToSeconds(
+                                        parser.getAttributeValue(null, "end")?.trim()?.ifBlank { null }
+                                    )?.takeIf { it >= startSeconds }
+                                    val chapterTitle = parser.getAttributeValue(null, "title")
+                                        ?.trim()
+                                        ?.ifBlank { null }
+                                        ?: parser.getAttributeValue(null, "label")
+                                            ?.trim()
+                                            ?.ifBlank { null }
+                                        ?: "Chapter ${chapters.size + 1}"
+                                    chapters.add(
+                                        BookChapter(
+                                            title = chapterTitle,
+                                            startSeconds = startSeconds,
+                                            endSeconds = endSeconds
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                XmlPullParser.TEXT, XmlPullParser.CDSECT -> if (inItem && currentTextTag != null) {
+                    currentText.append(parser.text)
+                }
+                XmlPullParser.END_TAG -> if (inItem) {
+                    val tagName = parser.name?.lowercase(Locale.ROOT).orEmpty()
+                    if (tagName == currentTextTag) {
+                        val text = currentText.toString().trim()
+                        when (tagName) {
+                            "title" -> title = text.ifBlank { null }
+                            "itunes:subtitle" -> subtitle = text.ifBlank { null }
+                            "description" -> if (description == null) description = text.ifBlank { null }
+                            "content:encoded" -> contentEncoded = text.ifBlank { null }
+                            "pubdate" -> pubDate = text.ifBlank { null }
+                            "duration", "itunes:duration" -> duration = text.ifBlank { null }
+                            "episode", "itunes:episode" -> episodeNum = text.ifBlank { null }
+                            "season", "itunes:season" -> seasonNum = text.ifBlank { null }
+                            "guid" -> guid = text.ifBlank { null }
+                        }
+                        currentText.clear()
+                        currentTextTag = null
+                    }
+                    when (tagName) {
+                        "item" -> {
+                            val epId = guid ?: enclosureUrl
+                            if (epId != null) {
+                                episodes.add(
+                                    AudiobookshelfPodcastEpisodeDto(
+                                        id = epId,
+                                        showId = showId,
+                                        title = title ?: "Episode",
+                                        subtitle = subtitle,
+                                        description = (contentEncoded ?: description).sanitizeDescriptionText(),
+                                        pubDate = pubDate,
+                                        durationSeconds = parseRssDurationToSeconds(duration),
+                                        season = seasonNum,
+                                        episode = episodeNum,
+                                        audioUrl = null,
+                                        enclosureUrl = enclosureUrl,
+                                        progressPercent = null,
+                                        currentTimeSeconds = null,
+                                        isFinished = false,
+                                        chapters = chapters.toList()
+                                    )
+                                )
+                            }
+                            inItem = false
+                        }
+                    }
+                }
+            }
+            eventType = parser.next()
+        }
+        return episodes
+    }
+
+    private fun parseRssEpisodesWithDom(
+        xml: String,
+        showId: String
+    ): List<AudiobookshelfPodcastEpisodeDto> {
+        val document = runCatching {
+            javax.xml.parsers.DocumentBuilderFactory.newInstance()
+                .apply { isNamespaceAware = false }
+                .newDocumentBuilder()
+                .parse(org.xml.sax.InputSource(StringReader(xml)))
+        }.getOrElse { return emptyList() }
+
+        val itemNodes = document.getElementsByTagName("item")
+        return buildList {
+            for (itemIndex in 0 until itemNodes.length) {
+                val item = itemNodes.item(itemIndex) as? org.w3c.dom.Element ?: continue
+                var title: String? = null
+                var subtitle: String? = null
+                var description: String? = null
+                var contentEncoded: String? = null
+                var pubDate: String? = null
+                var duration: String? = null
+                var episodeNum: String? = null
+                var seasonNum: String? = null
+                var enclosureUrl: String? = null
+                var guid: String? = null
+                val chapters = mutableListOf<BookChapter>()
+
+                val children = item.childNodes
+                for (childIndex in 0 until children.length) {
+                    val child = children.item(childIndex)
+                    if (child.nodeType != org.w3c.dom.Node.ELEMENT_NODE) continue
+                    val tagName = child.nodeName.lowercase(Locale.ROOT)
+                    when {
+                        tagName == "title" -> title = child.textContent?.trim()?.ifBlank { null }
+                        tagName == "itunes:subtitle" -> subtitle = child.textContent?.trim()?.ifBlank { null }
+                        tagName == "description" && description == null -> {
+                            description = child.textContent?.trim()?.ifBlank { null }
+                        }
+                        tagName == "content:encoded" -> contentEncoded = child.textContent?.trim()?.ifBlank { null }
+                        tagName == "pubdate" -> pubDate = child.textContent?.trim()?.ifBlank { null }
+                        tagName == "duration" || tagName == "itunes:duration" -> {
+                            duration = child.textContent?.trim()?.ifBlank { null }
+                        }
+                        tagName == "episode" || tagName == "itunes:episode" -> {
+                            episodeNum = child.textContent?.trim()?.ifBlank { null }
+                        }
+                        tagName == "season" || tagName == "itunes:season" -> {
+                            seasonNum = child.textContent?.trim()?.ifBlank { null }
+                        }
+                        tagName == "guid" -> guid = child.textContent?.trim()?.ifBlank { null }
+                        tagName == "enclosure" -> {
+                            enclosureUrl = child.attributes?.getNamedItem("url")?.nodeValue
+                                ?.trim()?.ifBlank { null }
+                        }
+                        tagName == "chapter" || tagName.endsWith(":chapter") -> {
+                            val startSeconds = parseRssDurationToSeconds(
+                                child.attributes?.getNamedItem("start")?.nodeValue?.trim()?.ifBlank { null }
+                            )?.coerceAtLeast(0.0)
+                            if (startSeconds != null) {
+                                val endSeconds = parseRssDurationToSeconds(
+                                    child.attributes?.getNamedItem("end")?.nodeValue?.trim()?.ifBlank { null }
+                                )?.takeIf { it >= startSeconds }
+                                val chapterTitle = child.attributes?.getNamedItem("title")?.nodeValue
+                                    ?.trim()?.ifBlank { null }
+                                    ?: child.attributes?.getNamedItem("label")?.nodeValue
+                                        ?.trim()?.ifBlank { null }
+                                    ?: "Chapter ${chapters.size + 1}"
+                                chapters.add(
+                                    BookChapter(
+                                        title = chapterTitle,
+                                        startSeconds = startSeconds,
+                                        endSeconds = endSeconds
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val epId = guid ?: enclosureUrl
+                if (epId != null) {
+                    add(
+                        AudiobookshelfPodcastEpisodeDto(
+                            id = epId,
+                            showId = showId,
+                            title = title ?: "Episode",
+                            subtitle = subtitle,
+                            description = (contentEncoded ?: description).sanitizeDescriptionText(),
+                            pubDate = pubDate,
+                            durationSeconds = parseRssDurationToSeconds(duration),
+                            season = seasonNum,
+                            episode = episodeNum,
+                            audioUrl = null,
+                            enclosureUrl = enclosureUrl,
+                            progressPercent = null,
+                            currentTimeSeconds = null,
+                            isFinished = false,
+                            chapters = chapters
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun parseRssDurationToSeconds(duration: String?): Double? {
+        if (duration.isNullOrBlank()) return null
+        return if (duration.contains(':')) {
+            val parts = duration.split(':').map { it.toDoubleOrNull() ?: 0.0 }
+            when (parts.size) {
+                2 -> parts[0] * 60 + parts[1]
+                3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+                else -> null
+            }
+        } else {
+            duration.toDoubleOrNull()
         }
     }
 
@@ -2392,6 +2788,22 @@ class AudiobookshelfApi @Inject constructor(
         return addAuthTokenFragment(rawUrl, authToken)
     }
 
+    fun buildEpisodeStreamUrl(
+        baseUrl: String,
+        showId: String,
+        audioFileIno: String,
+        authToken: String
+    ): String {
+        val normalized = baseUrl.removeSuffix("/")
+        val httpUrl = normalized.toHttpUrlOrNull()
+            ?: return addAuthTokenFragment("$normalized/api/items/$showId/file/$audioFileIno", authToken)
+        val rawUrl = httpUrl.newBuilder()
+            .addPathSegments("api/items/$showId/file/$audioFileIno")
+            .build()
+            .toString()
+        return addAuthTokenFragment(rawUrl, authToken)
+    }
+
     fun buildAuthorImageUrl(
         baseUrl: String,
         authorId: String,
@@ -2450,7 +2862,8 @@ class AudiobookshelfApi @Inject constructor(
                 val id = item.optString("id").ifBlank { item.optString("_id") }
                 val name = item.optString("name")
                 if (id.isNotBlank() && name.isNotBlank()) {
-                    add(AudiobookshelfLibraryDto(id = id, name = name))
+                    val mediaType = item.optString("mediaType").ifBlank { null }
+                    add(AudiobookshelfLibraryDto(id = id, name = name, mediaType = mediaType))
                 }
             }
         }
@@ -2495,6 +2908,121 @@ class AudiobookshelfApi @Inject constructor(
                 val item = sourceArray.optJSONObject(index) ?: continue
                 val parsedItem = parseLibraryItem(item) ?: continue
                 add(parsedItem)
+            }
+        }
+    }
+
+    private fun parsePodcastShows(rawJson: String): List<AudiobookshelfPodcastShowDto> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty() || !trimmed.startsWith("{")) return emptyList()
+        val root = JSONObject(trimmed)
+        val items = root.optJSONArray("results") ?: JSONArray()
+        return buildList {
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                parsePodcastShow(item)?.let { add(it) }
+            }
+        }
+    }
+
+    private fun parsePodcastShow(item: JSONObject): AudiobookshelfPodcastShowDto? {
+        val id = item.opt("id")?.toString()?.trim().orEmpty()
+        val libraryId = item.opt("libraryId")?.toString()?.trim().orEmpty()
+        if (id.isBlank() || libraryId.isBlank()) return null
+        val media = item.optJSONObject("media")
+        val metadata = media?.optJSONObject("metadata")
+        val title = metadata?.opt("title")?.toString()?.trim().orEmpty()
+            .ifBlank { item.opt("title")?.toString()?.trim().orEmpty() }
+            .ifBlank { media?.opt("title")?.toString()?.trim().orEmpty() }
+            .ifBlank { return null }
+        val author = metadata?.opt("author")?.toString()?.trim()?.ifBlank { null }
+            ?: item.opt("author")?.toString()?.trim()?.ifBlank { null }
+            ?: media?.opt("author")?.toString()?.trim()?.ifBlank { null }
+        val description = metadata?.opt("description")?.toString()?.trim()?.ifBlank { null }
+            ?: item.opt("description")?.toString()?.trim()?.ifBlank { null }
+            ?: media?.opt("description")?.toString()?.trim()?.ifBlank { null }
+        val feedUrl = metadata?.opt("feedUrl")?.toString()?.trim()?.ifBlank { null }
+        val numEpisodes = item.optInt("numEpisodes").takeIf { it > 0 }
+            ?: media?.optJSONArray("episodes")?.length()
+            ?: media?.optJSONArray("podcastEpisodes")?.length()
+            ?: 0
+        val addedAtMs = normalizeEpochMillis(item.optLongOrNull("addedAt"))
+        return AudiobookshelfPodcastShowDto(
+            id = id,
+            libraryId = libraryId,
+            title = title,
+            author = author,
+            description = description,
+            feedUrl = feedUrl,
+            numEpisodes = numEpisodes,
+            addedAtMs = addedAtMs
+        )
+    }
+
+    private fun parsePodcastShowDetail(
+        rawJson: String
+    ): Pair<AudiobookshelfPodcastShowDto, List<AudiobookshelfPodcastEpisodeDto>> {
+        val trimmed = rawJson.trim()
+        if (trimmed.isEmpty()) error("Empty response for podcast show detail")
+        val item = JSONObject(trimmed)
+        val show = parsePodcastShow(item)
+            ?: error("Could not parse podcast show from item")
+        val media = item.optJSONObject("media")
+        // Both "episodes" and "podcastEpisodes" contain only server-downloaded episodes.
+        // Non-downloaded episodes are fetched from the RSS feed separately and merged in
+        // PodcastRepositoryImpl. Either field is fine here; "episodes" is tried first as
+        // it appears on more ABS versions.
+        val episodes = parsePodcastEpisodes(
+            showId = show.id,
+            episodes = media?.optJSONArray("episodes")
+                ?: media?.optJSONArray("podcastEpisodes")
+        )
+        return show to episodes
+    }
+
+    private fun parsePodcastEpisodes(
+        showId: String,
+        episodes: JSONArray?
+    ): List<AudiobookshelfPodcastEpisodeDto> {
+        if (episodes == null) return emptyList()
+        return buildList {
+            for (i in 0 until episodes.length()) {
+                val ep = episodes.opt(i) as? JSONObject ?: continue
+                val id = ep.opt("id")?.toString()?.trim().orEmpty().ifBlank { continue }
+                val title = ep.opt("title")?.toString()?.trim()?.ifBlank { null } ?: "Episode ${i + 1}"
+                val subtitle = ep.opt("subtitle")?.toString()?.trim()?.ifBlank { null }
+                val description = ep.opt("description")?.toString()?.trim()?.ifBlank { null }.sanitizeDescriptionText()
+                val pubDate = ep.opt("pubDate")?.toString()?.trim()?.ifBlank { null }
+                val audioFile = ep.optJSONObject("audioFile")
+                val duration = audioFile?.optDoubleOrNull("duration")
+                    ?: ep.optDoubleOrNull("duration")
+                val season = ep.opt("season")?.toString()?.trim()?.ifBlank { null }
+                val episodeNumber = ep.opt("episode")?.toString()?.trim()?.ifBlank { null }
+                val audioFileIno = audioFile?.opt("ino")?.toString()?.trim()?.ifBlank { null }
+                val enclosureUrl = ep.opt("enclosureURL")?.toString()?.trim()?.ifBlank { null }
+                    ?: ep.optJSONObject("enclosure")?.opt("url")?.toString()?.trim()?.ifBlank { null }
+                val progressNode = ep.optJSONObject("mediaProgress")
+                val progressPercent = progressNode?.optDoubleOrNull("progress")
+                val currentTime = progressNode?.optDoubleOrNull("currentTime")
+                val isFinished = progressNode?.optBoolean("isFinished") ?: false
+                add(
+                    AudiobookshelfPodcastEpisodeDto(
+                        id = id,
+                        showId = showId,
+                        title = title,
+                        subtitle = subtitle,
+                        description = description,
+                        pubDate = pubDate,
+                        durationSeconds = duration,
+                        season = season,
+                        episode = episodeNumber,
+                        audioUrl = audioFileIno,
+                        enclosureUrl = enclosureUrl,
+                        progressPercent = progressPercent,
+                        currentTimeSeconds = currentTime,
+                        isFinished = isFinished
+                    )
+                )
             }
         }
     }
@@ -3144,6 +3672,19 @@ class AudiobookshelfApi @Inject constructor(
     }
 
     internal fun sanitizeDescriptionTextForTest(value: String?): String? = value.sanitizeDescriptionText()
+
+    internal fun selectPodcastEpisodesArrayForTest(
+        episodes: JSONArray?,
+        podcastEpisodes: JSONArray? = null
+    ): JSONArray? {
+        return episodes ?: podcastEpisodes
+    }
+
+    internal fun parseRssEpisodesForTest(
+        xml: String,
+        showId: String
+    ): List<AudiobookshelfPodcastEpisodeDto> = parseRssEpisodes(xml, showId)
+
 
     private fun JSONObject.toNarratorEntity(): AudiobookshelfNamedEntityDto? {
         return narratorEntityFromValues(

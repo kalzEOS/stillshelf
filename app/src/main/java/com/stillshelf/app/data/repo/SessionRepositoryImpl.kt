@@ -2620,6 +2620,46 @@ class SessionRepositoryImpl @Inject constructor(
         durationSeconds: Double?,
         isFinished: Boolean
     ): AppResult<Unit> {
+        // Podcast episodes use compound IDs: "showId::episodeId"
+        if (bookId.contains("::")) {
+            val parts = bookId.split("::", limit = 2)
+            val showId = parts[0]
+            val episodeId = parts[1]
+            val syncResult = audiobookshelfApi.updateEpisodeProgress(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                showId = showId,
+                episodeId = episodeId,
+                currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+                durationSeconds = durationSeconds,
+                isFinished = isFinished
+            )
+            return if (syncResult.isSuccess) {
+                if (isFinished) {
+                    clearHomeFeedCache("mark_podcast_progress_finished")
+                    clearContentCaches()
+                }
+                putLocalProgressOverride(
+                    serverId = connection.server.id,
+                    mutation = BookProgressMutation(
+                        bookId = bookId,
+                        progressPercent = durationSeconds
+                            ?.takeIf { it > 0.0 }
+                            ?.let { duration -> (currentTimeSeconds.coerceAtLeast(0.0) / duration).coerceIn(0.0, 1.0) },
+                        currentTimeSeconds = currentTimeSeconds.coerceAtLeast(0.0),
+                        durationSeconds = durationSeconds,
+                        isFinished = isFinished
+                    )
+                )
+                AppResult.Success(Unit)
+            } else {
+                AppResult.Error(
+                    message = syncResult.exceptionOrNull()?.message ?: "Unable to sync episode progress.",
+                    cause = syncResult.exceptionOrNull()
+                )
+            }
+        }
+
         val syncResult = audiobookshelfApi.updateMediaProgressForItem(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,
@@ -2659,6 +2699,27 @@ class SessionRepositoryImpl @Inject constructor(
         title: String?
     ): AppResult<Unit> {
         if (bookId.isBlank()) return AppResult.Error("Invalid book id.")
+
+        val isPodcastEpisode = bookId.contains("::")
+        val itemId = if (isPodcastEpisode) bookId.substringBefore("::") else bookId
+
+        if (isPodcastEpisode) {
+            val connection = when (val result = getActiveConnection(requireLibrary = false)) {
+                is AppResult.Success -> result.value
+                is AppResult.Error -> return result
+            }
+            return audiobookshelfApi.createBookmark(
+                baseUrl = connection.server.baseUrl,
+                authToken = connection.token,
+                itemId = itemId,
+                timeSeconds = timeSeconds.coerceAtLeast(0.0),
+                title = title
+            ).fold(
+                onSuccess = { AppResult.Success(Unit) },
+                onFailure = { e -> AppResult.Error("Failed to save bookmark: ${e.message}", e) }
+            )
+        }
+
         val connection = when (val result = getActiveConnection(requireLibrary = true)) {
             is AppResult.Success -> result.value
             is AppResult.Error -> return result
@@ -2668,7 +2729,7 @@ class SessionRepositoryImpl @Inject constructor(
         val createResult = audiobookshelfApi.createBookmark(
             baseUrl = connection.server.baseUrl,
             authToken = connection.token,
-            itemId = bookId,
+            itemId = itemId,
             timeSeconds = timeSeconds.coerceAtLeast(0.0),
             title = title
         )
@@ -3626,14 +3687,21 @@ class SessionRepositoryImpl @Inject constructor(
     ) {
         val entities = libraries
             .asSequence()
-            .map { it.id.trim() to it.name.trim() }
-            .filter { (id, _) -> id.isNotEmpty() }
-            .distinctBy { (id, _) -> id }
-            .map { (id, name) ->
+            .map { dto ->
+                Triple(
+                    dto.id.trim(),
+                    dto.name.trim(),
+                    dto.mediaType?.trim()?.lowercase()?.ifBlank { null }
+                )
+            }
+            .filter { (id, _, _) -> id.isNotEmpty() }
+            .distinctBy { (id, _, _) -> id }
+            .map { (id, name, mediaType) ->
                 LibraryEntity(
                     id = id,
                     serverId = serverId,
-                    name = name.ifBlank { "Unnamed library" }
+                    name = name.ifBlank { "Unnamed library" },
+                    mediaType = mediaType
                 )
             }
             .toList()

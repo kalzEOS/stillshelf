@@ -61,8 +61,12 @@ data class ActiveServerDataState(
 data class Library(
     val id: String,
     val serverId: String,
-    val name: String
-)
+    val name: String,
+    val mediaType: String? = null
+) {
+    val isPodcastLibrary: Boolean get() = mediaType?.lowercase() == "podcast"
+    val isBookLibrary: Boolean get() = mediaType?.lowercase() == "book"
+}
 
 data class BookSummary(
     val id: String,
@@ -83,7 +87,8 @@ data class BookSummary(
     val authorIds: List<String> = emptyList(),
     val progressPercent: Double? = null,
     val currentTimeSeconds: Double? = null,
-    val isFinished: Boolean = false
+    val isFinished: Boolean = false,
+    val description: String? = null
 )
 
 data class NamedEntitySummary(
@@ -163,6 +168,49 @@ sealed interface SeriesDetailEntry {
         override val stableId: String = "series:$id"
     }
 }
+
+data class PodcastShow(
+    val id: String,
+    val libraryId: String,
+    val title: String,
+    val author: String?,
+    val description: String?,
+    val coverUrl: String?,
+    val numEpisodes: Int,
+    val addedAtMs: Long?
+)
+
+data class PodcastEpisode(
+    val id: String,
+    val showId: String,
+    val title: String,
+    val subtitle: String? = null,
+    val description: String?,
+    val pubDate: String?,
+    val durationSeconds: Double?,
+    val season: String?,
+    val episode: String?,
+    val audioUrl: String?,
+    val enclosureUrl: String? = null,
+    val progressPercent: Double? = null,
+    val currentTimeSeconds: Double? = null,
+    val isFinished: Boolean = false,
+    val chapters: List<BookChapter> = emptyList()
+)
+
+data class PodcastShowDetail(
+    val show: PodcastShow,
+    val episodes: List<PodcastEpisode>,
+    val rssError: String? = null
+)
+
+data class PodcastEpisodeMutation(
+    val showId: String,
+    val episodeId: String,
+    val isFinished: Boolean,
+    val currentTimeSeconds: Double,
+    val durationSeconds: Double?
+)
 
 data class SearchResults(
     val books: List<BookSummary>,

@@ -14,4 +14,10 @@ abstract class RepositoryModule {
     abstract fun bindSessionRepository(
         impl: SessionRepositoryImpl
     ): SessionRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPodcastRepository(
+        impl: PodcastRepositoryImpl
+    ): PodcastRepository
 }

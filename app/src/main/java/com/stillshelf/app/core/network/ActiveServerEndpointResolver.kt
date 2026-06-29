@@ -259,6 +259,19 @@ class ActiveServerEndpointResolver @Inject constructor(
         )
     }
 
+    suspend fun resolveFreshForServer(
+        server: ServerEntity
+    ): ActiveServerConnectionStatus {
+        return resolveForServer(
+            server = server,
+            prefState = sessionPreferences.state.first(),
+            networkType = networkMonitor.currentConnectionType(),
+            previousStatus = lastObservedResolvedStatus?.takeIf { it.serverId == server.id }
+        ).also { resolvedStatus ->
+            lastObservedResolvedStatus = resolvedStatus
+        }
+    }
+
     suspend fun resolveForServer(
         server: ServerEntity,
         prefState: SessionPreferenceState,

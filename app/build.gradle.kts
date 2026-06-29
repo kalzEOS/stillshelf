@@ -15,8 +15,8 @@ if (keystorePropertiesFile.exists()) {
 }
 val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { key -> !keystoreProperties.getProperty(key).isNullOrBlank() }
-val appVersionCode = 119
-val appVersionName = "0.7.7"
+val appVersionCode = 130
+val appVersionName = "0.8.0"
 
 android {
     namespace = "com.stillshelf.app"
@@ -89,9 +89,11 @@ android {
     }
 }
 
+/*
 dependencyLocking {
     lockAllConfigurations()
 }
+*/
 
 // Run: ./gradlew jacocoTestReport
 // Output: app/build/reports/jacoco/jacocoTestReport/html/index.html

@@ -31,6 +31,18 @@ object MainRoute {
     const val SETTINGS = "main/settings"
     const val ABOUT = "main/settings/about"
     const val ADVANCED = "main/settings/advanced"
+    const val PODCAST_SETTINGS = "main/settings/podcasts"
+    const val PODCAST_SHOW_ID_ARG = "podcastShowId"
+    const val PODCAST_SHOW_PATTERN = "main/podcast/show/{$PODCAST_SHOW_ID_ARG}"
+    const val PODCAST_EPISODE_SHOW_ID_ARG = "podcastEpisodeShowId"
+    const val PODCAST_EPISODE_ID_ARG = "podcastEpisodeId"
+    const val PODCAST_EPISODE_PATTERN =
+        "main/podcast/show/{$PODCAST_EPISODE_SHOW_ID_ARG}/episode/{$PODCAST_EPISODE_ID_ARG}"
+
+    fun podcastShow(showId: String): String = "main/podcast/show/${android.net.Uri.encode(showId)}"
+    fun podcastEpisode(showId: String, episodeId: String): String {
+        return "main/podcast/show/${android.net.Uri.encode(showId)}/episode/${android.net.Uri.encode(episodeId)}"
+    }
     const val PLAYER = "main/player"
     const val PLAYER_BOOK_ID_ARG = "bookId"
     const val PLAYER_START_SECONDS_ARG = "startSeconds"
@@ -61,6 +73,7 @@ object BrowseRoute {
     const val BOOKMARKS = "main/browse/bookmarks"
     const val PLAYLISTS = "main/browse/playlists"
     const val DOWNLOADED = "main/browse/downloaded"
+    const val PODCASTS = "main/browse/podcasts"
 }
 
 object DetailRoute {
@@ -147,6 +160,9 @@ internal fun resolveSafeScreenArea(route: String?): String {
         rawRoute == MainRoute.SETTINGS -> "settings"
         rawRoute == MainRoute.ABOUT -> "about"
         rawRoute == MainRoute.ADVANCED -> "advanced"
+        rawRoute == MainRoute.PODCAST_SETTINGS -> "podcast_settings"
+        rawRoute.startsWith("main/podcast/show/") && rawRoute.contains("/episode/") -> "podcast_episode_detail"
+        rawRoute.startsWith("main/podcast/show/") -> "podcast_show_detail"
         rawRoute == MainRoute.PLAYER || rawRoute.startsWith("main/player") -> "player"
         rawRoute == MainRoute.SERVERS -> "servers"
         rawRoute == MainRoute.LIBRARY_PICKER -> "library_picker"
@@ -166,6 +182,7 @@ internal fun resolveSafeScreenArea(route: String?): String {
         rawRoute == BrowseRoute.BOOKMARKS -> "browse_bookmarks"
         rawRoute == BrowseRoute.PLAYLISTS -> "browse_playlists"
         rawRoute == BrowseRoute.DOWNLOADED -> "browse_downloaded"
+        rawRoute == BrowseRoute.PODCASTS -> "browse_podcasts"
 
         rawRoute == AuthRoute.SERVERS -> "auth_servers"
         rawRoute == AuthRoute.ADD_SERVER -> "auth_add_server"

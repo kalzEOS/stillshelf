@@ -15,5 +15,6 @@ fun ServerEntity.toModel(): Server = Server(
 fun LibraryEntity.toModel(): Library = Library(
     id = id,
     serverId = serverId,
-    name = name
+    name = name,
+    mediaType = mediaType
 )

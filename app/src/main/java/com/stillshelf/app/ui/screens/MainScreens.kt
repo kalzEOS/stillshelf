@@ -59,6 +59,7 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -148,6 +149,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -7393,17 +7395,18 @@ fun BookDetailScreen(
                         } else {
                             itemsIndexed(detail.chapters) { index, chapter ->
                                 val isActive = index == activeChapterIndex
+                                val chapterContainerColor = if (isActive) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                } else if (appearanceUiState.materialDesignEnabled) {
+                                    MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
+                                }
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(
-                                            if (appearanceUiState.materialDesignEnabled) {
-                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.7f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
-                                            }
-                                        )
+                                        .background(chapterContainerColor)
                                         .clickable { viewModel.playChapter(chapter.startSeconds) }
                                         .padding(horizontal = 12.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -7415,7 +7418,11 @@ fun BookDetailScreen(
                                         Text(
                                             text = chapter.title,
                                             style = MaterialTheme.typography.titleMedium,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = if (isActive) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
                                         )
                                         Text(
                                             text = formatChapterDurationForRow(
@@ -7430,6 +7437,7 @@ fun BookDetailScreen(
                                     }
                                     if (isActive) {
                                         ChapterPlaybackIndicator(
+                                            isPlaying = isPlayingDetailBookNow && playbackUiState.isPlaying,
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
@@ -7497,6 +7505,7 @@ fun BookDetailScreen(
                                     ) {
                                         if (isActiveBookmark) {
                                             ChapterPlaybackIndicator(
+                                                isPlaying = isPlayingDetailBookNow && playbackUiState.isPlaying,
                                                 tint = MaterialTheme.colorScheme.primary
                                             )
                                         }
@@ -9152,17 +9161,18 @@ private fun PlayerChapterBookmarkSheet(
                     ) {
                         itemsIndexed(chapters) { index, chapter ->
                             val isActiveChapter = index == activeChapterIndex
+                            val chapterContainerColor = if (isActiveChapter) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            } else if (materialDesignEnabled) {
+                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
+                            }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(
-                                        if (materialDesignEnabled) {
-                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f)
-                                        }
-                                    )
+                                    .background(chapterContainerColor)
                                     .clickable { onPlayChapter(chapter.startSeconds) }
                                     .padding(horizontal = 12.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -9176,7 +9186,11 @@ private fun PlayerChapterBookmarkSheet(
                                         style = MaterialTheme.typography.titleMedium,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        color = if (isActiveChapter) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
                                     )
                                     Text(
                                         text = formatChapterDurationForRow(
@@ -9191,6 +9205,7 @@ private fun PlayerChapterBookmarkSheet(
                                 }
                                 if (isActiveChapter) {
                                     ChapterPlaybackIndicator(
+                                        isPlaying = isPlaying,
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
@@ -9287,6 +9302,7 @@ private fun PlayerChapterBookmarkSheet(
                                 ) {
                                     if (isActiveBookmark) {
                                         ChapterPlaybackIndicator(
+                                            isPlaying = isPlaying,
                                             tint = MaterialTheme.colorScheme.primary
                                         )
                                     }
@@ -10924,36 +10940,53 @@ private fun formatChapterDurationForRow(
 
 @Composable
 private fun ChapterPlaybackIndicator(
+    isPlaying: Boolean,
+    isCurrent: Boolean = true,
     tint: Color
 ) {
-    Row(
-        modifier = Modifier
-            .width(14.dp)
-            .height(18.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height(9.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(tint)
+    val playTransitionProgress by animateFloatAsState(
+        targetValue = if (isCurrent) 1f else 0f,
+        animationSpec = tween(durationMillis = if (isCurrent) 260 else 420, easing = FastOutSlowInEasing),
+        label = "chapterVisualizerPlayState"
+    )
+    val phase = if (isPlaying) {
+        val transition = rememberInfiniteTransition(label = "chapterVisualizer")
+        val animatedPhase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(animation = tween(durationMillis = 720, easing = LinearEasing)),
+            label = "chapterVisualizerPhase"
         )
-        Box(
+        animatedPhase
+    } else {
+        0f
+    }
+    var pausedPhase by remember { mutableStateOf(0f) }
+    if (isPlaying) SideEffect { pausedPhase = phase }
+    val resolvedPhase = if (isPlaying) phase else pausedPhase
+    val offsets = remember { listOf(0f, 0.28f, 0.56f, 0.82f) }
+
+    Box(modifier = Modifier.width(24.dp).height(12.dp)) {
+        Row(
             modifier = Modifier
-                .width(3.dp)
-                .height(14.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(tint)
-        )
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height(11.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(tint)
-        )
+                .fillMaxSize()
+                .padding(bottom = 1.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            offsets.forEach { offset ->
+                val fraction = ((sin((resolvedPhase + offset) * (2.0 * Math.PI)).toFloat() + 1f) / 2f)
+                val targetHeight = 3.dp + (8.dp * fraction)
+                val height = 2.dp + ((targetHeight - 2.dp) * playTransitionProgress)
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .align(Alignment.Bottom)
+                        .height(height)
+                        .background(tint.copy(alpha = if (isCurrent) 1f else 0f))
+                )
+            }
+        }
     }
 }
 

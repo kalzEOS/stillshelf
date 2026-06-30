@@ -219,6 +219,15 @@ private fun DownloadItem.hasAllLocalTracks(
     }
 }
 
+private fun DownloadItem.hasEmptyTracks(
+    localFileSize: (String?) -> Long
+): Boolean {
+    val normalizedTracks = resolvedTracks()
+    return normalizedTracks.isNotEmpty() && normalizedTracks.any { track ->
+        localFileSize(track.localPath) <= 0L
+    }
+}
+
 data class DownloadToggleResult(
     val nowDownloaded: Boolean,
     val message: String
@@ -301,7 +310,7 @@ class BookDownloadManager @Inject constructor(
             )
         }
         if (existing?.status == DownloadStatus.Failed) {
-            deleteItem(targetKey)
+            removeDownload(bookId = bookId, serverId = activeServerId, libraryId = libraryId)
         }
 
         upsertItem(
@@ -613,14 +622,30 @@ class BookDownloadManager @Inject constructor(
                 fallbackProgressPercent.coerceIn(0, 100)
             }
             return when (status) {
-                DownloadManager.STATUS_SUCCESSFUL -> DownloadTrackProgressSnapshot(
-                    track = track,
-                    status = DownloadTrackRuntimeStatus.Completed,
-                    progressPercent = 100,
-                    downloadedBytes = downloaded.coerceAtLeast(0L),
-                    totalBytes = total.coerceAtLeast(0L),
-                    localPath = resolveLocalPath(localUri) ?: track.localPath
-                )
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    if (downloaded <= 0L) {
+                        // Empty file — CDN redirect or error response with no body.
+                        // Treat as failed so the caller can restore the previous icon state.
+                        DownloadTrackProgressSnapshot(
+                            track = track,
+                            status = DownloadTrackRuntimeStatus.Failed,
+                            progressPercent = 0,
+                            downloadedBytes = 0L,
+                            totalBytes = total.coerceAtLeast(0L),
+                            localPath = track.localPath,
+                            errorMessage = "Download produced an empty file."
+                        )
+                    } else {
+                        DownloadTrackProgressSnapshot(
+                            track = track,
+                            status = DownloadTrackRuntimeStatus.Completed,
+                            progressPercent = 100,
+                            downloadedBytes = downloaded,
+                            totalBytes = total.coerceAtLeast(0L),
+                            localPath = resolveLocalPath(localUri) ?: track.localPath
+                        )
+                    }
+                }
 
                 DownloadManager.STATUS_FAILED -> DownloadTrackProgressSnapshot(
                     track = track,
@@ -632,7 +657,32 @@ class BookDownloadManager @Inject constructor(
                     errorMessage = "Download failed ($reason)"
                 )
 
-                DownloadManager.STATUS_PAUSED,
+                DownloadManager.STATUS_PAUSED -> {
+                    // PAUSED_QUEUED_FOR_WIFI (3): OEM or system restriction is overriding
+                    // setAllowedOverMetered(true) and queuing this for WiFi only.
+                    // Fail immediately so the UI icon state is restored rather than stuck.
+                    if (reason == DownloadManager.PAUSED_QUEUED_FOR_WIFI) {
+                        DownloadTrackProgressSnapshot(
+                            track = track,
+                            status = DownloadTrackRuntimeStatus.Failed,
+                            progressPercent = 0,
+                            downloadedBytes = downloaded.coerceAtLeast(0L),
+                            totalBytes = total.coerceAtLeast(0L),
+                            localPath = track.localPath,
+                            errorMessage = "Download blocked by device Wi-Fi restriction."
+                        )
+                    } else {
+                        DownloadTrackProgressSnapshot(
+                            track = track,
+                            status = DownloadTrackRuntimeStatus.Downloading,
+                            progressPercent = progress,
+                            downloadedBytes = downloaded.coerceAtLeast(0L),
+                            totalBytes = total.coerceAtLeast(0L),
+                            localPath = track.localPath
+                        )
+                    }
+                }
+
                 DownloadManager.STATUS_PENDING,
                 DownloadManager.STATUS_RUNNING -> DownloadTrackProgressSnapshot(
                     track = track,
@@ -653,6 +703,22 @@ class BookDownloadManager @Inject constructor(
                 )
             }
         }
+    }
+
+    private fun localFileSize(localPath: String?): Long {
+        val ref = localPath?.trim().orEmpty()
+        if (ref.isBlank()) return 0L
+        return runCatching {
+            if (ref.startsWith("content://")) {
+                appContext.contentResolver.openFileDescriptor(Uri.parse(ref), "r")
+                    ?.use { it.statSize.coerceAtLeast(0L) } ?: 0L
+            } else if (ref.startsWith("file://")) {
+                val path = Uri.parse(ref).path.orEmpty()
+                if (path.isBlank()) 0L else File(path).length()
+            } else {
+                File(ref).length()
+            }
+        }.getOrDefault(0L)
     }
 
     private fun localResourceExists(localPath: String?): Boolean {
@@ -745,7 +811,7 @@ class BookDownloadManager @Inject constructor(
         mutex.withLock {
             val sanitized = mutableItems.value.filterNot { item ->
                 item.status == DownloadStatus.Completed &&
-                    !item.hasAllLocalTracks(::localResourceExists)
+                    (!item.hasAllLocalTracks(::localResourceExists) || item.hasEmptyTracks(::localFileSize))
             }
             if (sanitized != mutableItems.value) {
                 persistItemsLocked(sanitized)

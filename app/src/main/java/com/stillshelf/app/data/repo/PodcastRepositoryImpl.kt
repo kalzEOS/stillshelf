@@ -260,7 +260,7 @@ class PodcastRepositoryImpl @Inject constructor(
         showId: String,
         episodeId: String
     ): AppResult<PlaybackSource> {
-        val creds = when (val r = resolveCredentials()) {
+        val creds = when (val r = resolveCredentials(forceFreshEndpoint = true)) {
             is AppResult.Success -> r.value
             is AppResult.Error -> return r
         }

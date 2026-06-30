@@ -17,10 +17,14 @@ import com.stillshelf.app.core.util.withCheckpointOverride
 import com.stillshelf.app.data.api.AudiobookshelfApi
 import com.stillshelf.app.data.api.AudiobookshelfPodcastEpisodeDto
 import com.stillshelf.app.data.api.AudiobookshelfPodcastShowDto
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -274,9 +278,10 @@ class PodcastRepositoryImpl @Inject constructor(
             }
             ?: return AppResult.Error("Episode not found.")
 
-        // Prefer enclosureUrl (public CDN) over ABS file URL: CDN sends Content-Length and needs no
-        // auth, avoiding the header-stripping issues Android DownloadManager has on redirects.
-        val downloadUrl = episodeDto.enclosureUrl
+        // Prefer enclosureUrl (public CDN) over ABS file URL — CDN needs no auth, so the token
+        // survives redirects. But podcast feed URLs chain through analytics trackers (5+ hops),
+        // which exceeds DownloadManager's redirect limit. Pre-resolve to the final URL first.
+        val downloadUrl = episodeDto.enclosureUrl?.let { resolveRedirectUrl(it) }
             ?: episodeDto.audioUrl?.let { ino ->
                 api.buildEpisodeStreamUrl(creds.baseUrl, showId, ino, creds.token)
             }
@@ -418,6 +423,35 @@ class PodcastRepositoryImpl @Inject constructor(
                 AppResult.Error("Failed to load libraries: ${e.message}", e)
             }
         )
+    }
+
+    // Follows HTTP redirects for a public (no-auth) CDN URL and returns the final destination.
+    // Podcast enclosure URLs chain through analytics trackers (5+ hops), exceeding Android's
+    // DownloadManager redirect limit. Resolves via HEAD; falls back to original URL on error.
+    private suspend fun resolveRedirectUrl(url: String): String = withContext(Dispatchers.IO) {
+        runCatching {
+            var current = url
+            for (attempt in 0 until 15) {
+                val conn = URL(current).openConnection() as HttpURLConnection
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "HEAD"
+                conn.connectTimeout = 8_000
+                conn.readTimeout = 8_000
+                try {
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val location = conn.getHeaderField("Location") ?: break
+                        current = if (location.startsWith("http")) location
+                                  else URL(URL(current), location).toString()
+                    } else {
+                        break
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            }
+            current
+        }.getOrDefault(url)
     }
 
     private fun AudiobookshelfPodcastShowDto.toModel(baseUrl: String, token: String): PodcastShow {

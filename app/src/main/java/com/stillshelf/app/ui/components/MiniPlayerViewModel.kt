@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BookChapter
+import com.stillshelf.app.core.model.BookSummary
 import com.stillshelf.app.core.model.ContinueListeningItem
 import com.stillshelf.app.core.util.AppResult
 import com.stillshelf.app.data.repo.PodcastRepository
@@ -171,9 +172,9 @@ class MiniPlayerViewModel @Inject constructor(
                 val (showId, episodeId) = bookId.split("::", limit = 2)
                 val resumeSeconds = if (isEpisodeFinished) 0.0 else playbackState.positionMs / 1000.0
                 viewModelScope.launch {
+                    val startMs = if (resumeSeconds > 0.0) (resumeSeconds * 1000.0).toLong() else null
                     when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
                         is AppResult.Success -> {
-                            val startMs = if (resumeSeconds > 0.0) (resumeSeconds * 1000.0).toLong() else null
                             val localDownload = bookDownloadManager
                                 .getCompletedDownloadForPodcast(result.value.book.id)
                                 ?.toLocalPlaybackSource(result.value.book)
@@ -182,7 +183,28 @@ class MiniPlayerViewModel @Inject constructor(
                                 startPositionMs = startMs
                             )
                         }
-                        is AppResult.Error -> mutableUiState.update { it.copy(errorMessage = result.message) }
+                        is AppResult.Error -> {
+                            val offlineSource = bookDownloadManager
+                                .getCompletedDownloadForPodcast(bookId)
+                                ?.let { item ->
+                                    item.toLocalPlaybackSource(
+                                        BookSummary(
+                                            id = item.bookId,
+                                            libraryId = item.libraryId,
+                                            title = item.title,
+                                            authorName = item.authorName,
+                                            narratorName = null,
+                                            durationSeconds = item.durationSeconds,
+                                            coverUrl = item.coverUrl
+                                        )
+                                    )
+                                }
+                            if (offlineSource != null) {
+                                playbackController.playFromSource(offlineSource, startPositionMs = startMs)
+                            } else {
+                                mutableUiState.update { it.copy(errorMessage = result.message) }
+                            }
+                        }
                     }
                 }
                 return
@@ -199,16 +221,58 @@ class MiniPlayerViewModel @Inject constructor(
                 errorMessage = null
             )
         }
+        val fallbackBookId = fallbackItem.book.id
+        if (fallbackBookId.contains("::")) {
+            val (showId, episodeId) = fallbackBookId.split("::", limit = 2)
+            val resumeSeconds = fallbackItem.currentTimeSeconds ?: 0.0
+            viewModelScope.launch {
+                val startMs = if (resumeSeconds > 0.0) (resumeSeconds * 1000.0).toLong() else null
+                when (val result = podcastRepository.fetchPodcastEpisodePlaybackSource(showId, episodeId)) {
+                    is AppResult.Success -> {
+                        val localDownload = bookDownloadManager
+                            .getCompletedDownloadForPodcast(result.value.book.id)
+                            ?.toLocalPlaybackSource(result.value.book)
+                        playbackController.playFromSource(
+                            localDownload ?: result.value,
+                            startPositionMs = startMs
+                        )
+                    }
+                    is AppResult.Error -> {
+                        val offlineSource = bookDownloadManager
+                            .getCompletedDownloadForPodcast(fallbackBookId)
+                            ?.let { item ->
+                                item.toLocalPlaybackSource(
+                                    BookSummary(
+                                        id = item.bookId,
+                                        libraryId = item.libraryId,
+                                        title = item.title,
+                                        authorName = item.authorName,
+                                        narratorName = null,
+                                        durationSeconds = item.durationSeconds,
+                                        coverUrl = item.coverUrl
+                                    )
+                                )
+                            }
+                        if (offlineSource != null) {
+                            playbackController.playFromSource(offlineSource, startPositionMs = startMs)
+                        } else {
+                            mutableUiState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                        }
+                    }
+                }
+            }
+            return
+        }
         val fallbackStartPositionMs = secondsToPlaybackPositionMs(fallbackItem.currentTimeSeconds)
         if (fallbackStartPositionMs != null && fallbackStartPositionMs > 0L) {
             playbackController.playBookFromPosition(
-                bookId = fallbackItem.book.id,
+                bookId = fallbackBookId,
                 startPositionMs = fallbackStartPositionMs
             )
         } else {
-            playbackController.playBook(fallbackItem.book.id)
+            playbackController.playBook(fallbackBookId)
         }
-        startPlaybackWatchdog(bookId = fallbackItem.book.id)
+        startPlaybackWatchdog(bookId = fallbackBookId)
     }
 
     fun onRewindClick() {

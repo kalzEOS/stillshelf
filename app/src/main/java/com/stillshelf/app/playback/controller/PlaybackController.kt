@@ -412,7 +412,14 @@ class PlaybackController @Inject constructor(
             )
         }
         playRequestJob = scope.launch {
-            val localDownload = if (effectiveForceStreaming) null else bookDownloadManager.getCompletedDownload(bookId)
+            val isPodcastEpisode = bookId.splitPodcastId() != null
+            val localDownload = if (effectiveForceStreaming) null else {
+                if (isPodcastEpisode) {
+                    bookDownloadManager.getCompletedDownloadForPodcast(bookId)
+                } else {
+                    bookDownloadManager.getCompletedDownload(bookId)
+                }
+            }
             if (localDownload != null) {
                 if (isStalePlayRequest(requestToken)) return@launch
                 val localBook = when (val detailResult = sessionRepository.fetchBookDetail(bookId, forceRefresh = false)) {
@@ -428,6 +435,9 @@ class PlaybackController @Inject constructor(
                     )
                 }
                 sessionRepository.setLastPlayedBookId(localBook.id)
+                localBook.id.splitPodcastId()?.let { (showId, episodeId) ->
+                    sessionPreferences.setPodcastLastPlayedEpisode(showId, episodeId)
+                }
                 val progressResult = sessionRepository.fetchPlaybackProgress(localBook.id)
                 if (isStalePlayRequest(requestToken)) return@launch
                 val start = resolvePlaybackStart(
@@ -469,6 +479,16 @@ class PlaybackController @Inject constructor(
                     playbackSource = playbackSource,
                     resumeMs = start.resumeMs
                 )
+                return@launch
+            }
+
+            if (isPodcastEpisode) {
+                updateUiState {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = "This episode is not downloaded. Open it from the podcast list to play."
+                    )
+                }
                 return@launch
             }
 

@@ -100,26 +100,62 @@ class NavidromeDownloadManager @Inject constructor(
         }
     }
 
+    suspend fun cancelOutOfWindowCacheDownloads(keepTrackIds: Set<String>) = mutex.withLock {
+        val selection = mutableActiveSelection.value
+        val updated = mutableItems.value.map { item ->
+            if (item.serverId == selection.serverId &&
+                item.libraryId == selection.libraryId &&
+                item.isPlaybackCache &&
+                item.trackId !in keepTrackIds &&
+                (item.status == NavidromeDownloadStatus.Queued || item.status == NavidromeDownloadStatus.Downloading)
+            ) {
+                item.downloadId?.let { id -> downloadManager.remove(id) }
+                item.copy(
+                    status = NavidromeDownloadStatus.Failed,
+                    progressPercent = 0,
+                    downloadId = null,
+                    errorMessage = null
+                )
+            } else {
+                item
+            }
+        }
+        if (updated == mutableItems.value) return@withLock
+        mutableItems.value = updated
+        downloadStorage.persistItems(updated)
+    }
+
+    suspend fun evictOutOfWindowCacheItems(keepTrackIds: Set<String>) = mutex.withLock {
+        val selection = mutableActiveSelection.value
+        val (toEvict, toKeep) = mutableItems.value.partition { item ->
+            item.serverId == selection.serverId &&
+                item.libraryId == selection.libraryId &&
+                item.isPlaybackCache &&
+                item.trackId !in keepTrackIds
+        }
+        if (toEvict.isEmpty()) return@withLock
+        toEvict.forEach { item ->
+            item.downloadId?.let { id -> downloadManager.remove(id) }
+            item.localPath?.let { path -> runCatching { File(path).delete() } }
+        }
+        mutableItems.value = toKeep
+        downloadStorage.persistItems(toKeep)
+    }
+
     private suspend fun cancelStalePlaybackCacheDownloads() {
         mutex.withLock {
             val stale = mutableItems.value.filter {
                 it.isPlaybackCache &&
                     (it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading)
             }
-            // Per-server/library threshold: only cancel entries for a given context when their
-            // count exceeds the cap, indicating a legacy overload state. This avoids cancelling
-            // valid in-progress downloads for other servers when one context is overloaded.
-            val toCancel = stale
-                .groupBy { it.serverId to it.libraryId }
-                .filter { (_, items) -> items.size > 25 }
-                .values.flatten()
-            if (toCancel.isEmpty()) return
-            val cancelTrackKeys = toCancel.map { it.serverId to it.libraryId to it.trackId }.toSet()
-            toCancel.forEach { item -> item.downloadId?.let { id -> downloadManager.remove(id) } }
+            // Always cancel in-progress cache downloads on startup. Navidrome stream URLs
+            // expire between sessions, so preserving in-progress cache downloads is futile —
+            // the system DM would retry with an expired URL and stall indefinitely.
+            if (stale.isEmpty()) return
+            stale.forEach { item -> item.downloadId?.let { id -> downloadManager.remove(id) } }
             val cleaned = mutableItems.value.map { item ->
                 if (item.isPlaybackCache &&
-                    (item.status == NavidromeDownloadStatus.Queued || item.status == NavidromeDownloadStatus.Downloading) &&
-                    (item.serverId to item.libraryId to item.trackId) in cancelTrackKeys
+                    (item.status == NavidromeDownloadStatus.Queued || item.status == NavidromeDownloadStatus.Downloading)
                 ) {
                     item.copy(
                         status = NavidromeDownloadStatus.Failed,

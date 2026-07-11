@@ -1213,6 +1213,24 @@ class NavidromePlayerController @Inject constructor(
                     refreshedQueue.mapNotNull { it.coverUrl }
                 )
             }
+            // Detect jumps outside the current cache window and evict stale items.
+            // If the new window shares no tracks with ANY cached item (in-flight or completed),
+            // the user jumped entirely outside the cached range — evict everything outside the
+            // new window (cancels in-flight AND deletes completed files to free budget).
+            // If the new window overlaps with completed items but not with in-flight downloads,
+            // only cancel the stale in-flight downloads without touching completed files.
+            if (!isActive) return@launch
+            val warmupTrackIds = refreshedQueue.map { it.id }.toSet()
+            val currentCacheSnapshot = downloadManager.activeCacheItemsSnapshot()
+            val currentCachedIds = currentCacheSnapshot.map { it.trackId }.toSet()
+            val activeInFlightIds = currentCacheSnapshot
+                .filter { it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading }
+                .map { it.trackId }.toSet()
+            if (currentCachedIds.isNotEmpty() && warmupTrackIds.none { it in currentCachedIds }) {
+                downloadManager.evictOutOfWindowCacheItems(keepTrackIds = warmupTrackIds)
+            } else if (activeInFlightIds.isNotEmpty() && warmupTrackIds.none { it in activeInFlightIds }) {
+                downloadManager.cancelOutOfWindowCacheDownloads(keepTrackIds = warmupTrackIds)
+            }
             val cacheLimitBytes = sessionPreferences.state.first()
                 .navidromeCacheSizeLimit
                 .let { NavidromeCacheSizeOption.toBytes(it) }

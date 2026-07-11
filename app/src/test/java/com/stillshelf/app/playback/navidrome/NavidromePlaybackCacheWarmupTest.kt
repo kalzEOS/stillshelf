@@ -1,8 +1,11 @@
 package com.stillshelf.app.playback.navidrome
 
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadItem
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavidromePlaybackCacheWarmupTest {
@@ -49,12 +52,33 @@ class NavidromePlaybackCacheWarmupTest {
     }
 
     @Test
-    fun selectNavidromePlaybackWarmupTracks_returnsAllTracks() {
+    fun selectNavidromePlaybackWarmupTracks_capsAtMaxInFlight() {
         val tracks = (0 until 30).map { track("track-$it") }
 
         val selected = selectNavidromePlaybackWarmupTracks(tracks = tracks)
 
-        assertEquals(tracks.map { it.id }, selected.map { it.id })
+        assertEquals(MAX_IN_FLIGHT_CACHE_DOWNLOADS, selected.size)
+        assertEquals((0 until MAX_IN_FLIGHT_CACHE_DOWNLOADS).map { "track-$it" }, selected.map { it.id })
+    }
+
+    @Test
+    fun selectNavidromePlaybackWarmupTracks_respectsFromIndex() {
+        val tracks = (0 until 50).map { track("track-$it") }
+
+        val selected = selectNavidromePlaybackWarmupTracks(tracks = tracks, fromIndex = 10)
+
+        assertEquals(MAX_IN_FLIGHT_CACHE_DOWNLOADS, selected.size)
+        assertEquals((10 until 10 + MAX_IN_FLIGHT_CACHE_DOWNLOADS).map { "track-$it" }, selected.map { it.id })
+    }
+
+    @Test
+    fun selectNavidromePlaybackWarmupTracks_nearEndReturnsRemaining() {
+        val tracks = (0 until 30).map { track("track-$it") }
+
+        val selected = selectNavidromePlaybackWarmupTracks(tracks = tracks, fromIndex = 20)
+
+        assertEquals(10, selected.size)
+        assertEquals((20 until 30).map { "track-$it" }, selected.map { it.id })
     }
 
     @Test
@@ -125,6 +149,90 @@ class NavidromePlaybackCacheWarmupTest {
         assertFalse(staleSignature == freshSignature)
     }
 
+    // admitWarmupTracks: in-flight cap enforcement
+
+    @Test
+    fun admitWarmupTracks_noInFlight_admitsUpToCap() {
+        val candidates = (0 until 30).map { track("track-$it") }
+
+        val admitted = admitWarmupTracks(
+            candidates = candidates,
+            currentItems = emptyList(),
+            cacheLimitBytes = Long.MAX_VALUE
+        )
+
+        assertEquals(MAX_IN_FLIGHT_CACHE_DOWNLOADS, admitted.size)
+    }
+
+    @Test
+    fun admitWarmupTracks_inFlightAtCap_admitsNothing() {
+        val candidates = (0 until 10).map { track("track-$it") }
+        val inFlight = (0 until MAX_IN_FLIGHT_CACHE_DOWNLOADS).map {
+            cacheItem("in-$it", NavidromeDownloadStatus.Downloading)
+        }
+
+        val admitted = admitWarmupTracks(
+            candidates = candidates,
+            currentItems = inFlight,
+            cacheLimitBytes = Long.MAX_VALUE
+        )
+
+        assertTrue(admitted.isEmpty())
+    }
+
+    @Test
+    fun admitWarmupTracks_partialInFlight_admitsRemainingSlots() {
+        val inFlightCount = 10
+        val candidates = (0 until 20).map { track("track-$it") }
+        val inFlight = (0 until inFlightCount).map { cacheItem("in-$it", NavidromeDownloadStatus.Downloading) }
+
+        val admitted = admitWarmupTracks(
+            candidates = candidates,
+            currentItems = inFlight,
+            cacheLimitBytes = Long.MAX_VALUE
+        )
+
+        assertEquals(MAX_IN_FLIGHT_CACHE_DOWNLOADS - inFlightCount, admitted.size)
+    }
+
+    @Test
+    fun admitWarmupTracks_finiteLimit_includesInFlightReservation() {
+        val bytesPerSong = 8L * 1024 * 1024
+        val limitBytes = 3 * bytesPerSong  // room for 3 songs total
+        val inFlight = listOf(cacheItem("in-0", NavidromeDownloadStatus.Downloading))  // 1 reserved
+        // 2 slots remain in budget; 1 in-flight counts against reservation so only 1 new song fits
+        val candidates = (0 until 5).map { track("track-$it") }
+
+        val admitted = admitWarmupTracks(
+            candidates = candidates,
+            currentItems = inFlight,
+            cacheLimitBytes = limitBytes,
+            defaultBytesPerSong = bytesPerSong
+        )
+
+        assertEquals(2, admitted.size)
+    }
+
+    @Test
+    fun admitWarmupTracks_budgetExhausted_admitsNothing() {
+        val bytesPerSong = 8L * 1024 * 1024
+        val completed = listOf(
+            cacheItem("done-0", NavidromeDownloadStatus.Completed, fileSizeBytes = bytesPerSong),
+            cacheItem("done-1", NavidromeDownloadStatus.Completed, fileSizeBytes = bytesPerSong),
+        )
+        val limitBytes = 2 * bytesPerSong  // already at limit
+        val candidates = listOf(track("track-0"))
+
+        val admitted = admitWarmupTracks(
+            candidates = candidates,
+            currentItems = completed,
+            cacheLimitBytes = limitBytes,
+            defaultBytesPerSong = bytesPerSong
+        )
+
+        assertTrue(admitted.isEmpty())
+    }
+
     private fun track(id: String, streamUrl: String = "https://example.com/$id.mp3"): NavidromeTrack {
         return NavidromeTrack(
             id = id,
@@ -139,6 +247,31 @@ class NavidromePlaybackCacheWarmupTest {
             streamUrl = streamUrl,
             formatLabel = "MP3",
             bitRateKbps = 320
+        )
+    }
+
+    private fun cacheItem(
+        trackId: String,
+        status: NavidromeDownloadStatus,
+        fileSizeBytes: Long? = null
+    ): NavidromeDownloadItem {
+        return NavidromeDownloadItem(
+            serverId = "srv",
+            libraryId = "_all",
+            trackId = trackId,
+            albumId = null,
+            albumSongCount = null,
+            artistId = null,
+            title = trackId,
+            artistName = "Artist",
+            albumName = "Album",
+            coverUrl = null,
+            durationSeconds = 180,
+            formatLabel = "MP3",
+            status = status,
+            progressPercent = if (status == NavidromeDownloadStatus.Completed) 100 else 0,
+            fileSizeBytes = fileSizeBytes,
+            isPlaybackCache = true
         )
     }
 }

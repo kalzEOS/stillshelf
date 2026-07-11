@@ -73,6 +73,16 @@ class NavidromeDownloadManager @Inject constructor(
         }
     }
 
+    fun activeCacheItemsSnapshot(): List<NavidromeDownloadItem> {
+        val selection = mutableActiveSelection.value
+        return mutableItems.value.filter { item ->
+            item.serverId == selection.serverId &&
+                item.libraryId == selection.libraryId &&
+                item.isPlaybackCache &&
+                item.status != NavidromeDownloadStatus.Failed
+        }
+    }
+
     init {
         scope.launch {
             sessionPreferences.state.collect { state ->
@@ -85,7 +95,44 @@ class NavidromeDownloadManager @Inject constructor(
             }
         }
         scope.launch {
+            cancelStalePlaybackCacheDownloads()
             refreshProgress()
+        }
+    }
+
+    private suspend fun cancelStalePlaybackCacheDownloads() {
+        mutex.withLock {
+            val stale = mutableItems.value.filter {
+                it.isPlaybackCache &&
+                    (it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading)
+            }
+            // Per-server/library threshold: only cancel entries for a given context when their
+            // count exceeds the cap, indicating a legacy overload state. This avoids cancelling
+            // valid in-progress downloads for other servers when one context is overloaded.
+            val toCancel = stale
+                .groupBy { it.serverId to it.libraryId }
+                .filter { (_, items) -> items.size > 25 }
+                .values.flatten()
+            if (toCancel.isEmpty()) return
+            val cancelTrackKeys = toCancel.map { it.serverId to it.libraryId to it.trackId }.toSet()
+            toCancel.forEach { item -> item.downloadId?.let { id -> downloadManager.remove(id) } }
+            val cleaned = mutableItems.value.map { item ->
+                if (item.isPlaybackCache &&
+                    (item.status == NavidromeDownloadStatus.Queued || item.status == NavidromeDownloadStatus.Downloading) &&
+                    (item.serverId to item.libraryId to item.trackId) in cancelTrackKeys
+                ) {
+                    item.copy(
+                        status = NavidromeDownloadStatus.Failed,
+                        progressPercent = 0,
+                        downloadId = null,
+                        errorMessage = null
+                    )
+                } else {
+                    item
+                }
+            }
+            mutableItems.value = cleaned
+            downloadStorage.persistItems(cleaned)
         }
     }
 
@@ -479,54 +526,57 @@ class NavidromeDownloadManager @Inject constructor(
         }
         val snapshots = mutableMapOf<Long, NavidromeDownloadItem>()
         if (activeItems.isNotEmpty()) {
-            val query = DownloadManager.Query().setFilterById(*activeItems.mapNotNull { it.downloadId }.toLongArray())
-            downloadManager.query(query)?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    val downloadId = cursor.getLongOrNull(DownloadManager.COLUMN_ID) ?: continue
-                    val status = cursor.getIntOrNull(DownloadManager.COLUMN_STATUS)
-                    val downloadedBytes = cursor.getLongOrNull(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR) ?: 0L
-                    val totalBytes = cursor.getLongOrNull(DownloadManager.COLUMN_TOTAL_SIZE_BYTES) ?: -1L
-                    val progress = if (downloadedBytes > 0L && totalBytes > 0L) {
-                        ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                    } else {
-                        0
+            val downloadIds = activeItems.mapNotNull { it.downloadId }
+            for (chunk in downloadIds.chunked(500)) {
+                val query = DownloadManager.Query().setFilterById(*chunk.toLongArray())
+                downloadManager.query(query)?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val downloadId = cursor.getLongOrNull(DownloadManager.COLUMN_ID) ?: continue
+                        val status = cursor.getIntOrNull(DownloadManager.COLUMN_STATUS)
+                        val downloadedBytes = cursor.getLongOrNull(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR) ?: 0L
+                        val totalBytes = cursor.getLongOrNull(DownloadManager.COLUMN_TOTAL_SIZE_BYTES) ?: -1L
+                        val progress = if (downloadedBytes > 0L && totalBytes > 0L) {
+                            ((downloadedBytes * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                        } else {
+                            0
+                        }
+                        val localUri = cursor.getStringOrNull(DownloadManager.COLUMN_LOCAL_URI)
+                        val localPath = localUri
+                            ?.takeIf { it.startsWith("file://") }
+                            ?.let(Uri::parse)
+                            ?.path
+                        val matchedItem = activeItems.firstOrNull { it.downloadId == downloadId } ?: continue
+                        val updatedItem = when (status) {
+                            DownloadManager.STATUS_PENDING, DownloadManager.STATUS_PAUSED -> matchedItem.copy(
+                                status = NavidromeDownloadStatus.Queued,
+                                progressPercent = progress,
+                                errorMessage = null,
+                                updatedAtMs = System.currentTimeMillis()
+                            )
+                            DownloadManager.STATUS_RUNNING -> matchedItem.copy(
+                                status = NavidromeDownloadStatus.Downloading,
+                                progressPercent = progress,
+                                errorMessage = null,
+                                updatedAtMs = System.currentTimeMillis()
+                            )
+                            DownloadManager.STATUS_SUCCESSFUL -> matchedItem.copy(
+                                status = NavidromeDownloadStatus.Completed,
+                                progressPercent = 100,
+                                localPath = localPath ?: matchedItem.localPath,
+                                fileSizeBytes = totalBytes.takeIf { it > 0L } ?: matchedItem.fileSizeBytes,
+                                errorMessage = null,
+                                updatedAtMs = System.currentTimeMillis()
+                            )
+                            DownloadManager.STATUS_FAILED -> matchedItem.copy(
+                                status = NavidromeDownloadStatus.Failed,
+                                progressPercent = 0,
+                                errorMessage = "Download failed.",
+                                updatedAtMs = System.currentTimeMillis()
+                            )
+                            else -> matchedItem
+                        }
+                        snapshots[downloadId] = updatedItem
                     }
-                    val localUri = cursor.getStringOrNull(DownloadManager.COLUMN_LOCAL_URI)
-                    val localPath = localUri
-                        ?.takeIf { it.startsWith("file://") }
-                        ?.let(Uri::parse)
-                        ?.path
-                    val matchedItem = activeItems.firstOrNull { it.downloadId == downloadId } ?: continue
-                    val updatedItem = when (status) {
-                        DownloadManager.STATUS_PENDING, DownloadManager.STATUS_PAUSED -> matchedItem.copy(
-                            status = NavidromeDownloadStatus.Queued,
-                            progressPercent = progress,
-                            errorMessage = null,
-                            updatedAtMs = System.currentTimeMillis()
-                        )
-                        DownloadManager.STATUS_RUNNING -> matchedItem.copy(
-                            status = NavidromeDownloadStatus.Downloading,
-                            progressPercent = progress,
-                            errorMessage = null,
-                            updatedAtMs = System.currentTimeMillis()
-                        )
-                        DownloadManager.STATUS_SUCCESSFUL -> matchedItem.copy(
-                            status = NavidromeDownloadStatus.Completed,
-                            progressPercent = 100,
-                            localPath = localPath ?: matchedItem.localPath,
-                            fileSizeBytes = totalBytes.takeIf { it > 0L } ?: matchedItem.fileSizeBytes,
-                            errorMessage = null,
-                            updatedAtMs = System.currentTimeMillis()
-                        )
-                        DownloadManager.STATUS_FAILED -> matchedItem.copy(
-                            status = NavidromeDownloadStatus.Failed,
-                            progressPercent = 0,
-                            errorMessage = "Download failed.",
-                            updatedAtMs = System.currentTimeMillis()
-                        )
-                        else -> matchedItem
-                    }
-                    snapshots[downloadId] = updatedItem
                 }
             }
         }

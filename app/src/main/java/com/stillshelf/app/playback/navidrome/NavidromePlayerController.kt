@@ -53,7 +53,9 @@ import com.stillshelf.app.core.model.NavidromeQueueDisplayMode
 import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.NavidromeTrack
 import com.stillshelf.app.data.repo.NavidromeRepository
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadItem
 import com.stillshelf.app.downloads.navidrome.NavidromeDownloadManager
+import com.stillshelf.app.downloads.navidrome.NavidromeDownloadStatus
 import com.stillshelf.app.playback.notification.PlaybackActionReceiver
 import com.stillshelf.app.playback.service.PlaybackServiceController
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -78,6 +80,8 @@ internal const val NAVIDROME_PLAYBACK_MEDIA_SCHEME = "stillshelf-navidrome"
 internal const val NAVIDROME_PLAYBACK_MEDIA_AUTHORITY = "playback"
 internal const val NAVIDROME_PLAYBACK_TRACK_ID_QUERY_PARAMETER = "trackId"
 internal const val NAVIDROME_PLAYBACK_STREAM_URL_QUERY_PARAMETER = "streamUrl"
+internal const val MAX_IN_FLIGHT_CACHE_DOWNLOADS = 25
+private const val DEFAULT_CACHE_BYTES_PER_SONG = 8L * 1024L * 1024L
 internal fun normalizeNavidromePlaybackWarmupTracks(tracks: List<NavidromeTrack>): List<NavidromeTrack> {
     return tracks
         .distinctBy { it.id }
@@ -102,9 +106,41 @@ internal fun buildNavidromePlaybackWarmupSignature(
 }
 
 internal fun selectNavidromePlaybackWarmupTracks(
-    tracks: List<NavidromeTrack>
+    tracks: List<NavidromeTrack>,
+    fromIndex: Int = 0
 ): List<NavidromeTrack> {
-    return tracks
+    return tracks.drop(fromIndex).take(MAX_IN_FLIGHT_CACHE_DOWNLOADS)
+}
+
+internal fun admitWarmupTracks(
+    candidates: List<NavidromeTrack>,
+    currentItems: List<NavidromeDownloadItem>,
+    cacheLimitBytes: Long?,
+    defaultBytesPerSong: Long = DEFAULT_CACHE_BYTES_PER_SONG
+): List<NavidromeTrack> {
+    val inFlightCount = currentItems.count {
+        it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading
+    }
+    val slotsAvailable = (MAX_IN_FLIGHT_CACHE_DOWNLOADS - inFlightCount).coerceAtLeast(0)
+    if (slotsAvailable == 0) return emptyList()
+
+    if (cacheLimitBytes == null || cacheLimitBytes == Long.MAX_VALUE) {
+        return candidates.take(slotsAvailable)
+    }
+
+    val completedWithSize = currentItems.filter {
+        it.status == NavidromeDownloadStatus.Completed && it.fileSizeBytes != null
+    }
+    val avgBytes = if (completedWithSize.isNotEmpty()) {
+        completedWithSize.sumOf { it.fileSizeBytes!! } / completedWithSize.size
+    } else {
+        defaultBytesPerSong
+    }
+    val completedBytes = completedWithSize.sumOf { it.fileSizeBytes!! }
+    val reservation = inFlightCount.toLong() * avgBytes
+    val maxByBudget = ((cacheLimitBytes - completedBytes - reservation).coerceAtLeast(0L) / avgBytes).toInt()
+
+    return candidates.take(minOf(slotsAvailable, maxByBudget))
 }
 
 internal fun buildNavidromePlaybackMediaUri(trackId: String, streamUrl: String): Uri {
@@ -416,6 +452,7 @@ class NavidromePlayerController @Inject constructor(
     private var pausedReleaseJob: Job? = null
     private var outputRecoveryJob: Job? = null
     private var playbackCacheWarmupJob: Job? = null
+    private var playbackCacheRefillJob: Job? = null
     @Volatile private var queueTracks: List<NavidromeTrack> = emptyList()
     private var queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL
     private var recentTracks: List<NavidromeTrack> = emptyList()
@@ -1117,6 +1154,8 @@ class NavidromePlayerController @Inject constructor(
     private fun cancelPlaybackCacheWarmup(clearSignature: Boolean) {
         playbackCacheWarmupJob?.cancel()
         playbackCacheWarmupJob = null
+        playbackCacheRefillJob?.cancel()
+        playbackCacheRefillJob = null
         playbackCacheWarmupRetryJob?.cancel()
         playbackCacheWarmupRetryJob = null
         playbackCacheWarmupRetrySignature = null
@@ -1126,8 +1165,10 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun schedulePlaybackCacheWarmup(tracks: List<NavidromeTrack>) {
+        val currentIndex = mutableState.value.currentIndex.coerceAtLeast(0)
         val warmupTracks = selectNavidromePlaybackWarmupTracks(
-            tracks = normalizeNavidromePlaybackWarmupTracks(tracks)
+            tracks = normalizeNavidromePlaybackWarmupTracks(tracks),
+            fromIndex = currentIndex
         )
         if (warmupTracks.isEmpty()) {
             cancelPlaybackCacheWarmup(clearSignature = true)
@@ -1179,7 +1220,12 @@ class NavidromePlayerController @Inject constructor(
                 downloadManager.evictPlaybackCacheToLimit(cacheLimitBytes)
             }
             if (!isActive) return@launch
-            val prefetchResult = downloadManager.prefetchPlaybackQueue(refreshedQueue)
+            val admittedQueue = admitWarmupTracks(
+                candidates = refreshedQueue,
+                currentItems = downloadManager.activeCacheItemsSnapshot(),
+                cacheLimitBytes = cacheLimitBytes
+            )
+            val prefetchResult = downloadManager.prefetchPlaybackQueue(admittedQueue)
             if (!isActive) return@launch
             scope.launch(Dispatchers.Main.immediate) {
                 if (playbackCacheWarmupSignature != signature) {
@@ -1200,12 +1246,14 @@ class NavidromePlayerController @Inject constructor(
                         playbackCacheWarmupRetryJob?.cancel()
                         playbackCacheWarmupRetryJob = null
                         playbackCacheWarmupRetrySignature = null
+                        val keepTrackIds = queueTracks.map { it.id }.toSet()
                         scope.launch(Dispatchers.IO) {
-                            downloadManager.prunePlaybackCache(warmupTracks.map { it.id }.toSet())
+                            downloadManager.prunePlaybackCache(keepTrackIds)
                             if (cacheLimitBytes != null) {
                                 downloadManager.evictPlaybackCacheToLimit(cacheLimitBytes)
                             }
                         }
+                        startPlaybackCacheRefillObserver()
                     }
                     is com.stillshelf.app.core.util.AppResult.Error -> {
                         logPlaybackTrace(
@@ -1216,6 +1264,93 @@ class NavidromePlayerController @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    private fun startPlaybackCacheRefillObserver() {
+        playbackCacheRefillJob?.cancel()
+        playbackCacheRefillJob = scope.launch(Dispatchers.IO) {
+            // Run one refill immediately in case all warmup tracks completed before this
+            // observer started. This is inside playbackCacheRefillJob so it is cancelled
+            // together with the observer if the queue switches or playback stops.
+            triggerCacheRefill()
+            var lastCompleted = downloadManager.items.value
+                .filter { it.isPlaybackCache && it.status == NavidromeDownloadStatus.Completed }
+                .map { it.trackId }
+                .toSet()
+            downloadManager.items.collect { items ->
+                val currentCompleted = items
+                    .filter { it.isPlaybackCache && it.status == NavidromeDownloadStatus.Completed }
+                    .map { it.trackId }
+                    .toSet()
+                val newlyCompleted = currentCompleted - lastCompleted
+                lastCompleted = currentCompleted
+                if (newlyCompleted.isNotEmpty()) {
+                    triggerCacheRefill()
+                }
+            }
+        }
+    }
+
+    private suspend fun triggerCacheRefill() {
+        val cacheLimitBytes = sessionPreferences.state.first()
+            .navidromeCacheSizeLimit
+            .let { NavidromeCacheSizeOption.toBytes(it) }
+        if (cacheLimitBytes == null) return
+
+        if (cacheLimitBytes != Long.MAX_VALUE) {
+            downloadManager.evictPlaybackCacheToLimit(cacheLimitBytes)
+        }
+
+        while (true) {
+            val currentItems = downloadManager.activeCacheItemsSnapshot()
+            val inFlightCount = currentItems.count {
+                it.status == NavidromeDownloadStatus.Queued || it.status == NavidromeDownloadStatus.Downloading
+            }
+            if (inFlightCount >= MAX_IN_FLIGHT_CACHE_DOWNLOADS) return
+
+            if (cacheLimitBytes != Long.MAX_VALUE) {
+                val completedBytes = currentItems.filter {
+                    it.status == NavidromeDownloadStatus.Completed && it.fileSizeBytes != null
+                }.sumOf { it.fileSizeBytes!! }
+                val avgBytes = estimateAvgBytesPerCachedSong(currentItems)
+                val reservation = inFlightCount.toLong() * avgBytes
+                if (cacheLimitBytes - completedBytes - reservation < avgBytes) return
+            }
+
+            val currentIndex = mutableState.value.currentIndex.coerceAtLeast(0)
+            val activeIds = currentItems
+                .map { it.trackId }
+                .toSet()
+
+            val candidate = queueTracks
+                .drop(currentIndex)
+                .firstOrNull { track ->
+                    track.id.isNotBlank() &&
+                        track.streamUrl.isNotBlank() &&
+                        !track.id.startsWith("radio:") &&
+                        track.id !in activeIds
+                } ?: return
+
+            val refreshed = when (val result = navidromeRepository.refreshPlayableTracks(listOf(candidate))) {
+                is com.stillshelf.app.core.util.AppResult.Success -> result.value.firstOrNull() ?: return
+                is com.stillshelf.app.core.util.AppResult.Error -> return
+            }
+
+            val enqueued = downloadManager.prefetchPlaybackQueue(listOf(refreshed))
+            if (enqueued is com.stillshelf.app.core.util.AppResult.Error ||
+                (enqueued is com.stillshelf.app.core.util.AppResult.Success && enqueued.value == 0)) return
+        }
+    }
+
+    private fun estimateAvgBytesPerCachedSong(items: List<NavidromeDownloadItem>): Long {
+        val completedWithSize = items.filter {
+            it.status == NavidromeDownloadStatus.Completed && it.fileSizeBytes != null
+        }
+        return if (completedWithSize.isNotEmpty()) {
+            completedWithSize.sumOf { it.fileSizeBytes!! } / completedWithSize.size
+        } else {
+            DEFAULT_CACHE_BYTES_PER_SONG
         }
     }
 

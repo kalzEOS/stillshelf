@@ -10,6 +10,9 @@ The goal is a smooth, practical Android experience for browsing, managing, and l
 
 Both m4b and mp3 formats are supported on the Audiobooks part. 
 
+## Maintenance Status
+​StillShelf is stable and feature-complete! I use this app daily, so it is actively maintained for bugs, API breaks, and Android OS compatibility, even if there are long gaps between commits. Feel free to open an issue if you encounter any bugs.
+
 ## Building
 
 StillShelf can be built directly from source using Gradle.

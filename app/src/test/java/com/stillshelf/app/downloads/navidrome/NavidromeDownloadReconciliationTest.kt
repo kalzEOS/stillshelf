@@ -6,15 +6,52 @@ import org.junit.Test
 class NavidromeDownloadReconciliationTest {
 
     @Test
+    fun newFailureMessage_reportsActiveDownloadFailureOnce() {
+        val active = sampleItem(
+            status = NavidromeDownloadStatus.Downloading,
+            downloadId = null,
+            workId = "work-1"
+        )
+        val failed = active.copy(
+            status = NavidromeDownloadStatus.Failed,
+            workId = null,
+            errorMessage = "Download failed: server returned HTTP 401."
+        )
+
+        assertEquals(
+            "Download failed: server returned HTTP 401.",
+            newNavidromeDownloadFailureMessage(listOf(active), listOf(failed))
+        )
+        assertEquals(null, newNavidromeDownloadFailureMessage(listOf(failed), listOf(failed)))
+    }
+
+    @Test
+    fun newFailureMessage_ignoresPlaybackCacheFailure() {
+        val active = sampleItem(
+            status = NavidromeDownloadStatus.Downloading,
+            downloadId = null,
+            workId = "cache-work"
+        ).copy(isPlaybackCache = true)
+        val failed = active.copy(
+            status = NavidromeDownloadStatus.Failed,
+            workId = null,
+            errorMessage = "Cache failed."
+        )
+
+        assertEquals(null, newNavidromeDownloadFailureMessage(listOf(active), listOf(failed)))
+    }
+
+    @Test
     fun reconcileNavidromeDownloadItems_marksInterruptedActiveDownloadAsFailed() {
         val item = sampleItem(
             status = NavidromeDownloadStatus.Downloading,
-            downloadId = 41L
+            downloadId = null,
+            workId = "work-41"
         )
 
         val reconciled = reconcileNavidromeDownloadItems(
             items = listOf(item),
-            snapshotsByDownloadId = emptyMap(),
+            snapshotsByWorkId = emptyMap(),
             localFileExists = { true }
         )
 
@@ -32,7 +69,7 @@ class NavidromeDownloadReconciliationTest {
 
         val reconciled = reconcileNavidromeDownloadItems(
             items = listOf(item),
-            snapshotsByDownloadId = emptyMap(),
+            snapshotsByWorkId = emptyMap(),
             localFileExists = { false }
         )
 
@@ -50,7 +87,7 @@ class NavidromeDownloadReconciliationTest {
 
         val reconciled = reconcileNavidromeDownloadItems(
             items = listOf(item),
-            snapshotsByDownloadId = emptyMap(),
+            snapshotsByWorkId = emptyMap(),
             localFileExists = { true }
         )
 
@@ -61,6 +98,7 @@ class NavidromeDownloadReconciliationTest {
     private fun sampleItem(
         status: NavidromeDownloadStatus,
         downloadId: Long?,
+        workId: String? = null,
         localPath: String? = "/tmp/sample.mp3"
     ): NavidromeDownloadItem {
         return NavidromeDownloadItem(
@@ -79,6 +117,7 @@ class NavidromeDownloadReconciliationTest {
             status = status,
             progressPercent = 50,
             downloadId = downloadId,
+            workId = workId,
             localPath = localPath,
             errorMessage = null,
             updatedAtMs = 0L

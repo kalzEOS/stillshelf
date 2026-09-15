@@ -30,6 +30,7 @@ data class NavidromeDownloadItem(
     val status: NavidromeDownloadStatus,
     val progressPercent: Int,
     val downloadId: Long? = null,
+    val workId: String? = null,
     val localPath: String? = null,
     val fileSizeBytes: Long? = null,
     val errorMessage: String? = null,
@@ -80,6 +81,7 @@ class NavidromeDownloadStorage @Inject constructor(
                             }.getOrDefault(NavidromeDownloadStatus.Queued),
                             progressPercent = node.optInt("progressPercent", 0).coerceIn(0, 100),
                             downloadId = node.optLong("downloadId").takeIf { it > 0L },
+                            workId = node.optString("workId").ifBlank { null },
                             localPath = node.optString("localPath").ifBlank { null },
                             fileSizeBytes = node.optLong("fileSizeBytes").takeIf { it > 0L },
                             errorMessage = node.optString("errorMessage").ifBlank { null },
@@ -113,6 +115,7 @@ class NavidromeDownloadStorage @Inject constructor(
                         .put("status", item.status.name)
                         .put("progressPercent", item.progressPercent)
                         .put("downloadId", item.downloadId)
+                        .put("workId", item.workId)
                         .put("localPath", item.localPath)
                         .put("fileSizeBytes", item.fileSizeBytes)
                         .put("errorMessage", item.errorMessage)

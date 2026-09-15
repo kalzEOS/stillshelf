@@ -1162,6 +1162,16 @@ class NavidromeDownloadsViewModel @Inject constructor(
         NavidromeDownloadsUiState()
     )
 
+    init {
+        viewModelScope.launch {
+            downloadManager.failures.collect { message ->
+                mutableFeedbackState.update {
+                    it.copy(actionMessage = null, errorMessage = message)
+                }
+            }
+        }
+    }
+
     val uiState: StateFlow<NavidromeDownloadsUiState> = combine(
         downloadManager.activeItems,
         downloadManager.activeCacheItems,

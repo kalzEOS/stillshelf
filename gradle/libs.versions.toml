@@ -26,6 +26,7 @@ robolectric = "4.13"
 reorderable = "2.4.2"
 androidxTestCore = "1.6.1"
 androidxTestExtJunit = "1.2.1"
+espresso = "3.7.0"
 mockk = "1.13.12"
 
 [libraries]
@@ -72,6 +73,7 @@ mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 mockk-android = { group = "io.mockk", name = "mockk-android", version.ref = "mockk" }
 reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderable" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 
 [plugins]

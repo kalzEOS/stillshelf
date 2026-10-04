@@ -73,6 +73,7 @@ class SessionPreferences @Inject constructor(
     private val navidromeThemeModeKey = stringPreferencesKey("navidrome_theme_mode")
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
     private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
+    private val navidromeKeepScreenOnForLyricsKey = booleanPreferencesKey("navidrome_keep_screen_on_for_lyrics")
     private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
     private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
     private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
@@ -700,6 +701,12 @@ class SessionPreferences @Inject constructor(
     suspend fun setNavidromeImmersivePlayerEnabled(enabled: Boolean) {
         dataStore.edit { prefs ->
             prefs[navidromeImmersivePlayerEnabledKey] = enabled
+        }
+    }
+
+    suspend fun setNavidromeKeepScreenOnForLyrics(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[navidromeKeepScreenOnForLyricsKey] = enabled
         }
     }
 
@@ -2002,6 +2009,7 @@ class SessionPreferences @Inject constructor(
             navidromeThemeMode = this[navidromeThemeModeKey] ?: "follow_system",
             navidromeMaterialDesignEnabled = this[navidromeMaterialDesignEnabledKey] ?: false,
             navidromeImmersivePlayerEnabled = this[navidromeImmersivePlayerEnabledKey] ?: false,
+            navidromeKeepScreenOnForLyrics = this[navidromeKeepScreenOnForLyricsKey] ?: false,
             requiresLibrarySelection = this[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = this[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(this[hiddenBrowseSectionsKey]),
@@ -2085,6 +2093,7 @@ data class SessionPreferenceState(
     val navidromeThemeMode: String = "follow_system",
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,
+    val navidromeKeepScreenOnForLyrics: Boolean = false,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),

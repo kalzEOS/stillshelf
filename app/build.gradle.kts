@@ -15,8 +15,8 @@ if (keystorePropertiesFile.exists()) {
 }
 val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
     .all { key -> !keystoreProperties.getProperty(key).isNullOrBlank() }
-val appVersionCode = 136
-val appVersionName = "0.8.6"
+val appVersionCode = 137
+val appVersionName = "0.8.7"
 
 android {
     namespace = "com.stillshelf.app"
@@ -76,6 +76,10 @@ android {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
         }
+    }
+
+    packaging {
+        resources.merges += setOf("META-INF/LICENSE.md", "META-INF/LICENSE-notice.md")
     }
 
     compileOptions {
@@ -175,6 +179,7 @@ dependencies {
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.mockk.android)
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 

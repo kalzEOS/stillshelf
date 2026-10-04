@@ -3,7 +3,9 @@
 package com.stillshelf.app.ui.screens.navidrome
 
 import android.annotation.SuppressLint
+import android.view.WindowManager
 import android.app.Activity
+import android.content.ContextWrapper
 import android.os.Build
 import android.content.Intent
 import android.graphics.Bitmap
@@ -801,6 +803,7 @@ fun NavidromeAppRoute(
                 onToggleFavorite = playerViewModel::toggleFavoriteTrack,
                 onToggleDownload = { track -> downloadsViewModel.toggleTrackDownload(track) },
                 immersiveEnabled = appearanceUiState.navidromeImmersivePlayerEnabled,
+                keepScreenOnForLyrics = appearanceUiState.navidromeKeepScreenOnForLyrics,
                 materialDesignEnabled = appearanceUiState.navidromeMaterialDesignEnabled,
                 lyricsUiState = lyricsUiState,
                 onAddToPlaylist = { track ->
@@ -5293,6 +5296,12 @@ private fun NavidromeSettingsRoute(
                         ?: if (uiState.lyricsSources.isEmpty()) "Not configured" else "Choose source",
                     valueTextAlign = TextAlign.End,
                     onClick = onOpenLyricsSources
+                )
+                DividerLine()
+                SettingsSwitchRow(
+                    title = "Keep Screen On for Lyrics",
+                    checked = appearanceUiState.navidromeKeepScreenOnForLyrics,
+                    onCheckedChange = { appearanceViewModel.setNavidromeKeepScreenOnForLyrics(it) }
                 )
             }
         }
@@ -11224,6 +11233,7 @@ private fun NavidromeExpandedPlayerSheet(
     onToggleDownload: ((NavidromeTrack) -> Unit)? = null,
     immersiveEnabled: Boolean = false,
     materialDesignEnabled: Boolean = false,
+    keepScreenOnForLyrics: Boolean = false,
     onAddToPlaylist: ((NavidromeTrack) -> Unit)? = null,
     onShowLyrics: () -> Unit,
     onDismissLyrics: () -> Unit,
@@ -12248,6 +12258,7 @@ private fun NavidromeExpandedPlayerSheet(
                 playbackPositionMs = state.positionMs,
                 isPlaying = state.isPlaying,
                 isRadio = isRadio,
+                keepScreenOn = keepScreenOnForLyrics,
                 durationMs = state.durationMs,
                 coverUrl = playerArtworkUrl,
                 onPrevious = onPrevious,
@@ -12298,6 +12309,7 @@ internal fun NavidromeLyricsSheetContent(
     playbackPositionMs: Int,
     isPlaying: Boolean,
     isRadio: Boolean,
+    keepScreenOn: Boolean,
     durationMs: Int,
     coverUrl: String?,
     onPrevious: () -> Unit,
@@ -12308,6 +12320,7 @@ internal fun NavidromeLyricsSheetContent(
     immersiveBaseColor: Color = Color(0xFF26343B)
 ) {
     val view = LocalView.current
+
     val overlayBackgroundModel = rememberCoverImageModel(coverUrl, preferOriginalSize = true)
     val headerTitleColor = if (immersiveEnabled) {
         Color.White
@@ -12373,6 +12386,21 @@ internal fun NavidromeLyricsSheetContent(
     }
     val lyricsWindow = remember(view) {
         (view.parent as? DialogWindowProvider)?.window
+    }
+    val keepScreenOnWindow = remember(view, lyricsWindow) {
+        lyricsWindow ?: generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>()
+            .firstOrNull()?.window
+    }
+    DisposableEffect(keepScreenOnWindow, keepScreenOn) {
+        if (keepScreenOn) {
+            keepScreenOnWindow?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            keepScreenOnWindow?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            keepScreenOnWindow?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
     val lyricsListState = rememberLazyListState()
     val scope = rememberCoroutineScope()

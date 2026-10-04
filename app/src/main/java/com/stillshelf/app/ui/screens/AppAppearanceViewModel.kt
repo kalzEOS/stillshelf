@@ -20,6 +20,7 @@ data class AppAppearanceUiState(
     val materialDesignEnabled: Boolean = false,
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,
+    val navidromeKeepScreenOnForLyrics: Boolean = false,
     val immersivePlayerEnabled: Boolean = false,
     val playerBottomToolsStyle: String = "dock"
 ) {
@@ -57,6 +58,7 @@ class AppAppearanceViewModel @Inject constructor(
                         materialDesignEnabled = state.materialDesignEnabled,
                         navidromeMaterialDesignEnabled = state.navidromeMaterialDesignEnabled,
                         navidromeImmersivePlayerEnabled = state.navidromeImmersivePlayerEnabled,
+                        navidromeKeepScreenOnForLyrics = state.navidromeKeepScreenOnForLyrics,
                         immersivePlayerEnabled = state.immersivePlayerEnabled,
                         playerBottomToolsStyle = state.playerBottomToolsStyle
                     )
@@ -95,6 +97,12 @@ class AppAppearanceViewModel @Inject constructor(
     fun setNavidromeImmersivePlayerEnabled(enabled: Boolean) {
         viewModelScope.launch {
             sessionPreferences.setNavidromeImmersivePlayerEnabled(enabled)
+        }
+    }
+
+    fun setNavidromeKeepScreenOnForLyrics(enabled: Boolean) {
+        viewModelScope.launch {
+            sessionPreferences.setNavidromeKeepScreenOnForLyrics(enabled)
         }
     }
 

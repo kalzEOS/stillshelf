@@ -73,7 +73,9 @@ data class NavidromeTrackDto(
     val contentType: String?,
     val bitRateKbps: Int?,
     val sizeBytes: Long? = null,
-    val musicBrainzId: String? = null
+    val musicBrainzId: String? = null,
+    val genres: List<String> = emptyList(),
+    val releaseYear: Int? = null
 )
 
 data class NavidromeLyricsLineDto(
@@ -782,7 +784,15 @@ class NavidromeApi @Inject constructor(
             contentType = item.optString("contentType").ifBlank { null },
             bitRateKbps = bitRateKbps,
             sizeBytes = sizeBytes,
-            musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" }
+            musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" },
+            genres = buildList {
+                item.optJSONArray("genres")?.let { array -> repeat(array.length()) { i ->
+                    array.optJSONObject(i)?.optString("name")?.normalizeNavidromeText()?.takeIf { it.isNotBlank() }?.let(::add)
+                } }
+                if (isEmpty()) item.optString("genre").normalizeNavidromeText().takeUnless { it.isBlank() || it == "null" }?.let(::add)
+            }.distinctBy { it.lowercase(java.util.Locale.ROOT) }.take(32),
+            releaseYear = (item.optJSONObject("originalReleaseDate")?.optInt("year")?.takeIf { it > 0 }
+                ?: item.optInt("year")).takeIf { it in 1000..java.time.LocalDate.now().year + 1 }
         )
     }
 

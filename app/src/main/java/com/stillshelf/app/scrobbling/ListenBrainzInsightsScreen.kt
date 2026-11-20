@@ -30,12 +30,13 @@ internal fun ListenBrainzInsightsScreen(refresh: Int, viewModel: ListenBrainzIns
 }
 
 @Composable
-internal fun ListenBrainzInsightsDashboard(state: InsightsUiState, onPeriod: (InsightPeriod) -> Unit, onRetry: () -> Unit = {}) {
+internal fun ListenBrainzInsightsDashboard(state: InsightsUiState, onPeriod: (InsightPeriod) -> Unit, onRetry: () -> Unit = {},
+    heading: String = "ListenBrainz insights", zone: ZoneId = ZoneOffset.UTC, local: Boolean = false) {
     if (!state.enabled) return
     val loading = state.loading || state.results.values.any { it.loading }
-    Column(Modifier.fillMaxWidth().testTag("listenbrainz-insights"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxWidth().testTag(if (local) "local-listening-insights" else "listenbrainz-insights"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         HorizontalDivider()
-        Text("ListenBrainz insights", style = MaterialTheme.typography.titleMedium)
+        Text(heading, style = MaterialTheme.typography.titleMedium)
         ListeningChoice("Statistics period", state.period, InsightPeriod.entries.associateWith { it.label }, true, onPeriod)
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().testTag("insights-loading"))
         if (state.results.values.any { it.error }) {
@@ -52,10 +53,10 @@ internal fun ListenBrainzInsightsDashboard(state: InsightsUiState, onPeriod: (In
                 Column(Modifier.fillMaxWidth().testTag("insight-${data.kind.name}"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(data.kind.title, style = MaterialTheme.typography.titleMedium)
                     when (data.kind) {
-                        InsightKind.DAILY -> InsightHourGrid(data)
-                        InsightKind.EVOLUTION -> InsightEvolution(data, state.period)
+                        InsightKind.DAILY -> InsightHourGrid(data, if (local) zone.id else "UTC")
+                        InsightKind.EVOLUTION -> InsightEvolution(data, state.period, local && state.period == InsightPeriod.ALL)
                         InsightKind.ARTIST_ALBUMS -> ArtistAlbumInsight(data)
-                        InsightKind.ERAS -> EraInsight(data)
+                        InsightKind.ERAS -> EraInsight(data, local)
                         InsightKind.GENRES -> {
                             Text("Top genres by tagged listens · Genres can overlap", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             InsightBars(data.rows, data.kind.name)
@@ -66,7 +67,7 @@ internal fun ListenBrainzInsightsDashboard(state: InsightsUiState, onPeriod: (In
                         }
                         else -> InsightBars(data.rows, data.kind.name)
                     }
-                    InsightDates(data)
+                    InsightDates(data, zone, local)
                 }
             }
         }
@@ -82,9 +83,9 @@ private fun ArtistAlbumInsight(data: InsightDataset) {
 }
 
 @Composable
-private fun EraInsight(data: InsightDataset) {
+private fun EraInsight(data: InsightDataset, local: Boolean = false) {
     var decade by rememberSaveable(data) { mutableStateOf<Int?>(null) }
-    Text("Listens by original release year · Unmapped years excluded", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(if (local) "Listens by tagged release year · Missing years excluded" else "Listens by original release year · Unmapped years excluded", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (decade != null) TextButton(onClick = { decade = null }) { Text("All decades") }
     val rows = if (decade == null) data.rows.groupBy { it.index!! / 10 * 10 }.toSortedMap().map { (year, values) ->
         InsightRow("${year}s", values.sumOf(InsightRow::count), index = year)
@@ -93,10 +94,10 @@ private fun EraInsight(data: InsightDataset) {
 }
 
 @Composable
-private fun InsightDates(data: InsightDataset) {
+private fun InsightDates(data: InsightDataset, zone: ZoneId = ZoneOffset.UTC, endExclusive: Boolean = false) {
     val format = DateTimeFormatter.ofPattern("MMM d, yyyy")
     val coverage = if (data.from != null && data.to != null) {
-        "${Instant.ofEpochSecond(data.from).atZone(ZoneOffset.UTC).format(format)} – ${Instant.ofEpochSecond(data.to).atZone(ZoneOffset.UTC).format(format)}"
+        "${Instant.ofEpochSecond(data.from).atZone(zone).format(format)} – ${Instant.ofEpochSecond(data.to - if (endExclusive) 1 else 0).atZone(zone).format(format)}"
     } else ""
     val updated = data.updated?.let { "Updated ${Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).format(format)}" }.orEmpty()
     if (coverage.isNotEmpty() || updated.isNotEmpty()) Text(listOf(coverage, updated).filter(String::isNotEmpty).joinToString(" · "),

@@ -36,7 +36,10 @@ data class NavidromeDownloadItem(
     val errorMessage: String? = null,
     val isPlaybackCache: Boolean = false,
     val updatedAtMs: Long = System.currentTimeMillis(),
-    val lastAccessedAtMs: Long = updatedAtMs
+    val lastAccessedAtMs: Long = updatedAtMs,
+    val musicBrainzId: String? = null,
+    val genres: List<String> = emptyList(),
+    val releaseYear: Int? = null
 )
 
 @Singleton
@@ -87,7 +90,10 @@ class NavidromeDownloadStorage @Inject constructor(
                             errorMessage = node.optString("errorMessage").ifBlank { null },
                             isPlaybackCache = node.optBoolean("isPlaybackCache", false),
                             updatedAtMs = node.optLong("updatedAtMs", System.currentTimeMillis()),
-                            lastAccessedAtMs = node.optLong("lastAccessedAtMs", node.optLong("updatedAtMs", System.currentTimeMillis()))
+                            lastAccessedAtMs = node.optLong("lastAccessedAtMs", node.optLong("updatedAtMs", System.currentTimeMillis())),
+                            musicBrainzId = node.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" },
+                            genres = node.optJSONArray("genres")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) } }.orEmpty(),
+                            releaseYear = node.optInt("releaseYear").takeIf { it > 0 }
                         )
                     )
                 }
@@ -122,6 +128,9 @@ class NavidromeDownloadStorage @Inject constructor(
                         .put("isPlaybackCache", item.isPlaybackCache)
                         .put("updatedAtMs", item.updatedAtMs)
                         .put("lastAccessedAtMs", item.lastAccessedAtMs)
+                        .put("musicBrainzId", item.musicBrainzId)
+                        .put("genres", JSONArray(item.genres))
+                        .put("releaseYear", item.releaseYear)
                 )
             }
         }.toString()

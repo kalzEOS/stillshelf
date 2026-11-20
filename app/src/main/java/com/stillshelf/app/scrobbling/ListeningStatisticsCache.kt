@@ -46,7 +46,7 @@ internal fun listeningStatisticsCacheKey(settings: ListeningSettings, session: N
     if (settings.statisticsSource == StatisticsSource.EXTERNAL) {
         val connection = settings.connection ?: return null
         fields += listOf(connection.provider.name, connection.revision, connection.username, connection.serverUrl.trimEnd('/'))
-    } else if (session == null) return null
+    } else if (settings.statisticsSource == StatisticsSource.NAVIDROME && session == null) return null
     // Local IDs and artwork are scoped to the active library server, even for external counts.
     fields += listOf(session?.serverId.orEmpty(), session?.username.orEmpty(), session?.baseUrl.orEmpty())
     val identity = fields.joinToString("") { "${it.length}:$it" }

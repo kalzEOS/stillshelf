@@ -40,6 +40,12 @@ class ListeningSubmissionQueue @Inject constructor(
     private val mutex = Mutex()
     private val mutableStatus = MutableStateFlow<String?>(null)
     val status = mutableStatus.asStateFlow()
+    private val mutableDirectStatus = MutableStateFlow<Pair<String, String>?>(null)
+    val directStatus = mutableDirectStatus.asStateFlow()
+    private fun reportStatus(owner: String, message: String) {
+        mutableStatus.value = message
+        if (owner != "navidrome") mutableDirectStatus.value = owner to message
+    }
     fun storageFailure() {
         mutableStatus.value = "Could not securely save this listen for submission. Check secure storage on this device."
     }
@@ -94,16 +100,16 @@ class ListeningSubmissionQueue @Inject constructor(
                     clients.forProvider(connection.provider).submit(connection, listen)
                 }
                 remaining.remove(record)
-                mutableStatus.value = "Last listen submitted successfully."
+                reportStatus(owner, "Last listen submitted successfully.")
             } catch (e: CancellationException) { throw e } catch (e: ListeningApiException) {
-                mutableStatus.value = e.message
+                reportStatus(owner, e.message ?: "The listening service rejected this listen.")
                 if (e.retryable) { retry = true; unavailableOwners += owner; continue }
                 // Pause authorization failures until the user repairs this same account connection.
                 // A connection edit schedules another drain; account changes invalidate ownership.
                 if (e.status in setOf(401, 403, 4, 9, 10, 13, 15, 26)) { unavailableOwners += owner; continue }
                 remaining.remove(record)
             } catch (_: IOException) {
-                mutableStatus.value = "Listening service unavailable. Saved listens will retry when connected."
+                reportStatus(owner, "Listening service unavailable. Saved listens will retry when connected.")
                 retry = true
                 unavailableOwners += owner
             }

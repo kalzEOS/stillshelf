@@ -280,7 +280,10 @@ internal data class NavidromeTrackSnapshotPayload(
     val streamUrl: String,
     val formatLabel: String?,
     val bitRateKbps: Int?,
-    val sizeBytes: Long? = null
+    val sizeBytes: Long? = null,
+    val musicBrainzId: String? = null,
+    val genres: List<String> = emptyList(),
+    val releaseYear: Int? = null
 )
 
 internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
@@ -297,7 +300,8 @@ internal fun NavidromeTrack.toSnapshotPayload(): NavidromeTrackSnapshotPayload {
         streamUrl = streamUrl,
         formatLabel = formatLabel,
         bitRateKbps = bitRateKbps,
-        sizeBytes = sizeBytes
+        sizeBytes = sizeBytes,
+        musicBrainzId = musicBrainzId, genres = genres, releaseYear = releaseYear
     )
 }
 
@@ -316,7 +320,8 @@ internal fun NavidromeTrackSnapshotPayload.toTrack(): NavidromeTrack? {
         streamUrl = streamUrl.trim(),
         formatLabel = formatLabel?.takeIf { it.isNotBlank() },
         bitRateKbps = bitRateKbps?.takeIf { it > 0 },
-        sizeBytes = sizeBytes?.takeIf { it > 0L }
+        sizeBytes = sizeBytes?.takeIf { it > 0L },
+        musicBrainzId = musicBrainzId, genres = genres, releaseYear = releaseYear
     )
 }
 
@@ -337,6 +342,9 @@ internal fun serializeNavidromeTrackSnapshot(track: NavidromeTrack): JSONObject 
             payload.formatLabel?.let { put("formatLabel", it) }
             payload.bitRateKbps?.let { put("bitRateKbps", it) }
             payload.sizeBytes?.let { put("sizeBytes", it) }
+            payload.musicBrainzId?.let { put("musicBrainzId", it) }
+            put("genres", org.json.JSONArray(payload.genres))
+            payload.releaseYear?.let { put("releaseYear", it) }
         }
 }
 
@@ -354,7 +362,10 @@ internal fun parseNavidromeTrackSnapshot(item: JSONObject): NavidromeTrack? {
         streamUrl = item.optString("streamUrl").trim(),
         formatLabel = item.optString("formatLabel").ifBlank { null },
         bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
-        sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
+        sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes"),
+        musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" },
+        genres = item.optJSONArray("genres")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) } }.orEmpty(),
+        releaseYear = item.optInt("releaseYear").takeIf { it > 0 }
     ).toTrack()
 }
 
@@ -1745,7 +1756,7 @@ class NavidromePlayerController @Inject constructor(
             ?: fallbackIndex.takeIf { queueTracks.isNotEmpty() }
             ?: -1
         val currentTrack = queueTracks.getOrNull(currentIndex)
-        listeningTracker.sample(currentTrack, activePlayer.isPlaying)
+        listeningTracker.sample(currentTrack, activePlayer.isPlaying, activePlayer.currentPosition)
         if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
             recentTracks = buildList {
                 add(currentTrack)

@@ -5,7 +5,8 @@ internal class ListenAccumulator {
     private var trackId: String? = null
     private var lastElapsedMs = 0L
     private var wasPlaying = false
-    private var listenedMs = 0L
+    var listenedMs = 0L
+        private set
     private var emitted = false
     private var startedAt: Long? = null
 

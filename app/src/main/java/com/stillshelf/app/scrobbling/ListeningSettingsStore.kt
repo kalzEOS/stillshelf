@@ -35,16 +35,27 @@ class ListeningSettingsStore @Inject constructor(private val secrets: SecureToke
             showStatistics = json.optBoolean("showStatistics"),
             statisticsSource = StatisticsSource.valueOf(json.getString("statisticsSource")),
             connection = if (modern) connections.firstOrNull { it.revision == json.optString("statisticsConnectionId") } else legacy,
-            connections = connections, sendingConnectionId = senderId, multipleConnections = true
+            connections = connections, sendingConnectionId = senderId, multipleConnections = true,
+            localRecordingEnabled = json.optBoolean("localRecordingEnabled", false),
+            previousStatisticsSource = runCatching { StatisticsSource.valueOf(json.optString("previousStatisticsSource")) }.getOrDefault(StatisticsSource.NAVIDROME)
         )
     }
 
     suspend fun update(transform: (ListeningSettings) -> ListeningSettings) = mutex.withLock {
         loadLocked()
-        val updated = transform(mutableState.value).copy(loaded = true)
+        val previous = mutableState.value
+        var updated = transform(previous).copy(loaded = true)
+        if (updated.statisticsSource == StatisticsSource.LOCAL && previous.statisticsSource != StatisticsSource.LOCAL)
+            updated = updated.copy(previousStatisticsSource = previous.statisticsSource)
+        if (!updated.localRecordingEnabled && updated.statisticsSource == StatisticsSource.LOCAL)
+            updated = updated.copy(statisticsSource = updated.previousStatisticsSource.takeIf {
+                it != StatisticsSource.LOCAL && (it != StatisticsSource.EXTERNAL || updated.connection != null)
+            } ?: StatisticsSource.NAVIDROME)
         val json = JSONObject().put("schema", 2).put("method", updated.method.name)
             .put("enabled", updated.scrobblingEnabled).put("showStatistics", updated.showStatistics)
             .put("statisticsSource", updated.statisticsSource.name)
+            .put("localRecordingEnabled", updated.localRecordingEnabled)
+            .put("previousStatisticsSource", updated.previousStatisticsSource.name)
             .put("connections", JSONArray(updated.savedConnections.map { it.toJson() }))
             .put("statisticsConnectionId", updated.connection?.revision.orEmpty())
             .put("sendingConnectionId", updated.sendingConnection?.revision.orEmpty())

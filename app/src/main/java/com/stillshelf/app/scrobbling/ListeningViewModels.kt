@@ -25,6 +25,7 @@ class ListeningSettingsViewModel @Inject constructor(
 ) : ViewModel() {
     val settings = store.state
     val submissionStatus = queue.status
+    val directSubmissionStatus = queue.directStatus
     private val mutableMessage = MutableStateFlow<String?>(null)
     val message = mutableMessage.asStateFlow()
     private val mutableBusy = MutableStateFlow(false)
@@ -177,7 +178,8 @@ class ListeningStatisticsViewModel @Inject constructor(
     private val navidrome: NavidromeListeningClient,
     private val repository: NavidromeRepository,
     private val cache: ListeningStatisticsCache,
-    artistAliases: ListeningArtistAliases? = null
+    artistAliases: ListeningArtistAliases? = null,
+    private val localHistory: LocalListeningRepository? = null
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ListeningStatisticsUiState())
     val state = mutableState.asStateFlow()
@@ -191,6 +193,19 @@ class ListeningStatisticsViewModel @Inject constructor(
     private val libraryMatches = mutableMapOf<LibraryEntryKey, ListeningEntry>()
 
     private fun entryKey(entry: ListeningEntry, kind: String) = LibraryEntryKey(kind, entry.title, entry.subtitle, entry.albumName, entry.musicBrainzArtistId, entry.musicBrainzReleaseId, entry.musicBrainzRecordingId)
+
+    private suspend fun localArtwork(stats: ListeningStatistics): ListeningStatistics {
+        fun artId(row: ListeningEntry, artist: Boolean) = if (artist) row.artistId?.let { "ar-$it" } else row.albumId?.let { "al-$it" }
+        val ids = (stats.topArtists.mapNotNull { artId(it, true) } +
+            (stats.topAlbums + stats.topTracks + stats.recent).mapNotNull { artId(it, false) }).toSet()
+        // Authenticated image URLs are constructed for the active account only, never persisted
+        // in the local history database or included in its portable export.
+        val urls = repository.listeningCoverArtUrls(ids)
+        fun rows(entries: List<ListeningEntry>, artist: Boolean = false) = entries.map { row ->
+            row.copy(artworkUrl = artId(row, artist)?.let(urls::get)) }
+        return stats.copy(topArtists = rows(stats.topArtists, true), topAlbums = rows(stats.topAlbums),
+            topTracks = rows(stats.topTracks), recent = rows(stats.recent))
+    }
 
     private fun withLibraryMatches(stats: ListeningStatistics): ListeningStatistics {
         fun rows(entries: List<ListeningEntry>, kind: String) = entries.map { entry ->
@@ -217,7 +232,7 @@ class ListeningStatisticsViewModel @Inject constructor(
     }
 
     fun resolveEntry(entry: ListeningEntry, kind: String) {
-        if (store.state.value.statisticsSource != StatisticsSource.EXTERNAL || entry.artistId != null || entry.albumId != null) return
+        if (store.state.value.statisticsSource == StatisticsSource.NAVIDROME || entry.artistId != null || entry.albumId != null) return
         val key = entryKey(entry, kind)
         if (!resolving.add(key)) return
         val generation = requestGeneration
@@ -271,16 +286,18 @@ class ListeningStatisticsViewModel @Inject constructor(
 
     fun loadMore(chart: ListeningChart) {
         val settings = store.state.value
-        val connection = settings.connection ?: return
+        val connection = settings.connection
         val current = mutableState.value
         val stats = current.statistics ?: return
-        if (settings.statisticsSource != StatisticsSource.EXTERNAL || chart !in stats.moreCharts || current.loadingMore != null) return
+        if (settings.statisticsSource == StatisticsSource.NAVIDROME || chart !in stats.moreCharts || current.loadingMore != null) return
         val generation = requestGeneration
         val offset = when(chart) { ListeningChart.ARTISTS -> stats.topArtists.size; ListeningChart.ALBUMS -> stats.topAlbums.size; ListeningChart.TRACKS -> stats.topTracks.size }
         mutableState.value = current.copy(loadingMore = chart, pageError = null)
         viewModelScope.launch {
             try {
-                val page = clients.forProvider(connection.provider).chartPage(connection, chart, offset) ?: return@launch
+                val page = if (settings.statisticsSource == StatisticsSource.LOCAL)
+                    localHistory?.chartPage(chart, offset, repository.currentPlaybackSessionKey()) ?: return@launch
+                else clients.forProvider(connection?.provider ?: return@launch).chartPage(connection, chart, offset) ?: return@launch
                 if (generation != requestGeneration) return@launch
                 val now = mutableState.value
                 val data = now.statistics ?: return@launch
@@ -297,6 +314,21 @@ class ListeningStatisticsViewModel @Inject constructor(
     }
 
     init {
+        localHistory?.let { history -> viewModelScope.launch {
+            history.changes.collect {
+                if (store.state.value.statisticsSource != StatisticsSource.LOCAL) return@collect
+                val generation = requestGeneration
+                val summary = try { history.summary() }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { refresh(); return@collect }
+                if (generation != requestGeneration || store.state.value.statisticsSource != StatisticsSource.LOCAL) return@collect
+                val current = mutableState.value
+                val stats = current.statistics
+                if (stats != null && stats.totalScrobbles == summary.count) {
+                    // Duration checkpoints must not discard ranking pages or cancel load-more.
+                    mutableState.value = current.copy(statistics = stats.copy(listeningSeconds = summary.milliseconds / 1000))
+                } else refresh()
+            }
+        } }
         viewModelScope.launch {
             try { store.load() } catch (_: Exception) {
                 mutableState.value = ListeningStatisticsUiState(error = "Secure listening settings could not be loaded.")
@@ -317,12 +349,18 @@ class ListeningStatisticsViewModel @Inject constructor(
         refreshJob?.cancel()
         val settings = store.state.value
         if (!settings.showStatistics) { mutableState.value = ListeningStatisticsUiState(); return }
-        val sourceLabel = if (settings.statisticsSource == StatisticsSource.NAVIDROME) "Navidrome · Recorded history"
-            else settings.connection?.provider?.label ?: "External Scrobbling Service · Not configured"
-        val key = listeningStatisticsCacheKey(settings, currentSession)
-        if (key != activeCacheKey) libraryMatches.clear()
-        val previous = mutableState.value.statistics.takeIf { key != null && key == activeCacheKey }
-        activeCacheKey = key
+        val sourceLabel = when (settings.statisticsSource) {
+            StatisticsSource.NAVIDROME -> "Navidrome · Recorded history"
+            StatisticsSource.LOCAL -> "Local Listening History · On this device"
+            StatisticsSource.EXTERNAL -> settings.connection?.provider?.label ?: "External Scrobbling Service · Not configured"
+        }
+        // Local history is the durable source of truth, not a network snapshot. Never cache it
+        // in the external-provider cache, which could outlive an explicit history deletion.
+        val identityKey = listeningStatisticsCacheKey(settings, currentSession)
+        val key = identityKey.takeUnless { settings.statisticsSource == StatisticsSource.LOCAL }
+        if (identityKey != activeCacheKey) libraryMatches.clear()
+        val previous = mutableState.value.statistics.takeIf { identityKey != null && identityKey == activeCacheKey }
+        activeCacheKey = identityKey
         mutableState.value = ListeningStatisticsUiState(enabled = true, loading = true, sourceLabel = sourceLabel, statistics = previous)
         refreshJob = viewModelScope.launch {
             try {
@@ -331,13 +369,18 @@ class ListeningStatisticsViewModel @Inject constructor(
                     if (generation != requestGeneration) return@launch
                     if (saved != null) mutableState.value = mutableState.value.copy(statistics = withLibraryMatches(saved), sourceLabel = saved.sourceLabel, isCached = true)
                 }
-                val stats = when (settings.statisticsSource) {
+                val raw = when (settings.statisticsSource) {
                     StatisticsSource.NAVIDROME -> navidrome.statistics()
+                    StatisticsSource.LOCAL -> {
+                        require(settings.localRecordingEnabled) { "Enable local recording in Settings to use local statistics." }
+                        checkNotNull(localHistory).statistics(repository.currentPlaybackSessionKey())
+                    }
                     StatisticsSource.EXTERNAL -> {
                         val connection = settings.connection ?: throw IllegalArgumentException("Configure an external service in Scrobbling & Statistics.")
                         clients.forProvider(connection.provider).statistics(connection)
                     }
                 }
+                val stats = if (settings.statisticsSource == StatisticsSource.LOCAL) localArtwork(raw) else raw
                 coroutineContext.ensureActive()
                 val current = store.state.value
                 if (generation != requestGeneration || !current.showStatistics || current.statisticsSource != settings.statisticsSource ||

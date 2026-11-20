@@ -50,11 +50,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 @Composable
-fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewModel: ListeningSettingsViewModel = hiltViewModel()) {
+fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewModel: ListeningSettingsViewModel = hiltViewModel(),
+    localViewModel: LocalListeningViewModel = hiltViewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val authorizationUrl by viewModel.authorizationUrl.collectAsStateWithLifecycle()
+    val directStatus by viewModel.directSubmissionStatus.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -94,14 +96,20 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                     }
                     val connections = settings.savedConnections
                     val sources = linkedMapOf("navidrome" to "Navidrome history").apply {
+                        if (settings.localRecordingEnabled) put("local", "Local Listening History")
                         connections.forEach { put(it.revision, it.choiceLabel(connections)) }
                         if (settings.statisticsSource == StatisticsSource.EXTERNAL && settings.connection == null) put("unavailable", "Connection unavailable")
                         put("add", "Add Connection…")
                     }
-                    ListeningChoice("Statistics from", if (settings.statisticsSource == StatisticsSource.NAVIDROME) "navidrome" else settings.connection?.revision ?: "unavailable", sources, !busy) { source ->
+                    ListeningChoice("Statistics from", when (settings.statisticsSource) {
+                        StatisticsSource.NAVIDROME -> "navidrome"
+                        StatisticsSource.LOCAL -> "local"
+                        StatisticsSource.EXTERNAL -> settings.connection?.revision ?: "unavailable"
+                    }, sources, !busy) { source ->
                         when (source) {
                             "add", "unavailable" -> { statisticsSetup = true; manageId = null; manageOpen = true }
                             "navidrome" -> viewModel.update { it.copy(statisticsSource = StatisticsSource.NAVIDROME) }
+                            "local" -> viewModel.update { it.copy(statisticsSource = StatisticsSource.LOCAL) }
                             else -> viewModel.update { current -> current.copy(statisticsSource = StatisticsSource.EXTERNAL,
                                 connection = current.savedConnections.firstOrNull { it.revision == source }) }
                         }
@@ -112,7 +120,7 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                         statisticsSetup = connections.isEmpty()
                         manageId = settings.connection?.revision ?: settings.sendingConnection?.revision ?: connections.firstOrNull()?.revision
                         manageOpen = true
-                    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Manage Connection") }
+                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("manage-statistics-connection")) { Text("Manage Connection") }
                     androidx.compose.material3.HorizontalDivider()
                     Text("Direct Scrobbling (Optional)", style = MaterialTheme.typography.titleMedium)
                     ListeningToggle("Send scrobbles from StillShelf", "Off by default. Navidrome can handle scrobbling instead.", settings.canSubmit, !busy) { enabled ->
@@ -124,10 +132,12 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                             else { statisticsSetup = connections.isEmpty(); manageId = sender?.revision; manageOpen = true }
                         }
                     }
-                    if (connections.size > 1) ListeningChoice("Send to", settings.sendingConnection?.revision ?: "choose",
+                    ListeningChoice("Send to", settings.sendingConnection?.revision ?: "choose",
                         linkedMapOf("choose" to "Choose a connection").apply {
                             connections.forEach { put(it.revision, it.choiceLabel(connections)) }
+                            put("add", "Add Connection…")
                         }, !busy) { id ->
+                        if (id == "add") { manageId = null; statisticsSetup = false; manageOpen = true }
                         val selected = connections.firstOrNull { it.revision == id }
                         if (selected != null) {
                             if (settings.scrobblingEnabled) {
@@ -136,10 +146,24 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                             } else viewModel.update { it.copy(sendingConnectionId = id, multipleConnections = true) }
                         }
                     }
-                    if (settings.canSubmit) Text("StillShelf sends scrobbles directly to the connected service.", style = MaterialTheme.typography.bodySmall)
-                    else if (connections.isEmpty() || settings.sendingConnection?.hasSubmissionCredentials == false)
-                        Text("Connect a service with scrobbling credentials before enabling submissions.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = {
+                        statisticsSetup = false
+                        manageId = settings.sendingConnection?.revision
+                        manageOpen = true
+                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("manage-sending-connection")) { Text("Manage Connection") }
+                    Text(when {
+                        settings.sendingConnection == null -> "Choose a saved connection in Send to, or add one in Manage Connection."
+                        settings.sendingConnection?.hasSubmissionCredentials != true -> "Add scrobbling credentials in Manage Connection before enabling submissions."
+                        settings.canSubmit -> "Direct scrobbling enabled for ${settings.sendingConnection!!.provider.label}."
+                        else -> "Connection saved. Enable direct scrobbling to send listens."
+                    }, style = MaterialTheme.typography.bodySmall)
+                    directStatus?.takeIf { it.first == settings.sendingConnection?.revision }?.let {
+                        Text(it.second, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("direct-submission-status"))
+                    }
                 }
+            }
+            item(key = "local-listening-settings") {
+                if (settings.loaded) LocalListeningSettings(settings, localViewModel)
             }
         }
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(16.dp))
@@ -213,7 +237,7 @@ private fun ListeningSecretField(label: String, value: String, change: (String) 
 }
 
 @Composable
-private fun ListeningSettingsCard(content: @Composable () -> Unit) {
+internal fun ListeningSettingsCard(content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))) {
@@ -222,7 +246,7 @@ private fun ListeningSettingsCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ListeningToggle(title: String, description: String, checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) {
+internal fun ListeningToggle(title: String, description: String, checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(description, style = MaterialTheme.typography.bodySmall) }
         Switch(checked, change, enabled = enabled, modifier = Modifier.semantics { contentDescription = title })

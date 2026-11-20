@@ -38,6 +38,17 @@ class ListeningPlaybackTrackerTest {
     private val clients = mockk<ListeningClients> { every { forProvider(any()) } returns external }
     private val track = NavidromeTrack("track", "Song", "Artist", "Album", "album", "artist", null, 60, null, "stream", null, null)
 
+    @Test fun localRecordingIsSampledIndependentlyAndNeverAddsNativeOrExternalSubmissions() = runTest {
+        val local = mockk<LocalListeningRecorder>(relaxed = true)
+        state.value = state.value.copy(localRecordingEnabled = true, scrobblingEnabled = false, showStatistics = false)
+        val tracker = ListeningPlaybackTracker(settings, queue, repository, native, clients, local)
+        repeat(40) { tracker.sample(track, true); ShadowSystemClock.advanceBy(Duration.ofSeconds(1)) }
+        verify(exactly = 40) { local.sample(track, true, "session", true, any(), any(), null) }
+        coVerify(exactly = 1) { queue.enqueue(any(), "session", "navidrome") }
+        coVerify(exactly = 0) { queue.enqueue(any(), "session", connection.revision) }
+        coVerify(exactly = 0) { external.playingNow(any(), any()) }
+    }
+
     @Test fun progressCheckpointsDoNotResetEitherQualificationOrRepeatNowPlaying() = runTest {
         val session = com.stillshelf.app.core.model.NavidromeSession("server", "Server", "https://server.invalid", "user")
         val sessions = MutableSharedFlow<com.stillshelf.app.core.model.NavidromeSession?>(replay = 1).also { it.tryEmit(session) }

@@ -1536,7 +1536,11 @@ class NavidromeRepository @Inject constructor(
         AppResult.Success(results)
     }
 
-    private suspend fun currentAuth(requireFreshConnection: Boolean = false): NavidromeAuth? {
+    internal suspend fun listeningCoverArtUrl(coverArtId: String): String? = currentAuth()?.let {
+        navidromeApi.coverArtUrl(it, coverArtId, size = 200)
+    }
+
+    internal suspend fun currentAuth(requireFreshConnection: Boolean = false): NavidromeAuth? {
         ensureMigratedLegacySession()
         val state = sessionPreferences.state.first()
         val activeServer = resolveActiveServer(state) ?: return null
@@ -2620,7 +2624,8 @@ class NavidromeRepository @Inject constructor(
             name = name,
             albumCount = albumCount,
             coverUrl = navidromeApi.coverArtUrl(auth, coverArtId, size = 400),
-            imageUrl = artistImageUrl
+            imageUrl = artistImageUrl,
+            musicBrainzId = musicBrainzId
         )
     }
 
@@ -2636,7 +2641,8 @@ class NavidromeRepository @Inject constructor(
             songCount = songCount,
             durationSeconds = durationSeconds,
             coverUrl = navidromeApi.coverArtUrl(auth, coverArtId, size = 600),
-            genre = genre
+            genre = genre,
+            musicBrainzId = musicBrainzId
         )
     }
 
@@ -2661,7 +2667,8 @@ class NavidromeRepository @Inject constructor(
                     ?.takeIf { it.isNotBlank() }
                     ?.uppercase(),
             bitRateKbps = bitRateKbps,
-            sizeBytes = sizeBytes
+            sizeBytes = sizeBytes,
+            musicBrainzId = musicBrainzId
         )
     }
 

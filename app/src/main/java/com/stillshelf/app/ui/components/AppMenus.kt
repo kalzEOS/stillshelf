@@ -4,18 +4,31 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu as M3DropdownMenu
 import androidx.compose.material3.DropdownMenuItem as M3DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.MenuItemColors
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 
@@ -28,6 +41,7 @@ fun AppDropdownMenu(
     properties: PopupProperties = PopupProperties(focusable = true),
     containerColorOverride: Color? = null,
     borderOverride: BorderStroke? = null,
+    preferBelowField: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val materialDesignEnabled = LocalMaterialDesignEnabled.current
@@ -47,6 +61,22 @@ fun AppDropdownMenu(
         )
     }
 
+    if (preferBelowField) {
+        if (expanded) {
+            val density = LocalDensity.current
+            val margin = with(density) { 8.dp.roundToPx() }
+            val gap = with(density) { 4.dp.roundToPx() }
+            val position = remember(margin, gap) { FieldMenuPositionProvider(margin, gap) }
+            Popup(popupPositionProvider = position, onDismissRequest = onDismissRequest, properties = properties) {
+                Surface(shape = RoundedCornerShape(10.dp), color = containerColor, border = border,
+                    tonalElevation = if (materialDesignEnabled) 8.dp else 0.dp,
+                    shadowElevation = if (materialDesignEnabled) 8.dp else 6.dp) {
+                    Column(modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp), content = content)
+                }
+            }
+        }
+        return
+    }
     M3DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
@@ -60,6 +90,22 @@ fun AppDropdownMenu(
         border = border,
         content = content
     )
+}
+
+/** Field menus prefer the space immediately below their anchor, with a small safe screen margin. */
+internal class FieldMenuPositionProvider(private val margin: Int, private val gap: Int) : PopupPositionProvider {
+    override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
+        val x = if (layoutDirection == LayoutDirection.Ltr) anchorBounds.left else anchorBounds.right - popupContentSize.width
+        val below = anchorBounds.bottom + gap
+        val above = anchorBounds.top - gap - popupContentSize.height
+        val maxY = (windowSize.height - margin - popupContentSize.height).coerceAtLeast(margin)
+        val y = when {
+            below <= maxY -> below
+            above >= margin -> above
+            else -> below.coerceIn(margin, maxY)
+        }
+        return IntOffset(x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)), y)
+    }
 }
 
 @Composable

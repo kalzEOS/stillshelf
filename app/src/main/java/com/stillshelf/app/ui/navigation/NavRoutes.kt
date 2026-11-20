@@ -2,6 +2,11 @@ package com.stillshelf.app.ui.navigation
 
 import android.net.Uri
 
+/** Covers nested Settings pages as well as the Settings tab. */
+fun isSettingsAreaRoute(route: String?): Boolean = route == MainTab.Settings.route ||
+    route == MainRoute.SETTINGS || route?.startsWith("${MainRoute.SETTINGS}/") == true ||
+    route == NavidromeRoute.SETTINGS || route?.startsWith("${NavidromeRoute.SETTINGS}/") == true
+
 object GraphRoute {
     const val BACKEND_SELECTOR = "backend_selector"
     const val AUTH = "auth_graph"
@@ -29,6 +34,8 @@ object MainRoute {
     const val SHELL = "main/shell"
     const val CUSTOMIZE = "main/customize"
     const val SETTINGS = "main/settings"
+    const val LISTENING_SETTINGS = "main/settings/listening"
+    const val LISTENING_STATISTICS = "main/listening-statistics"
     const val ABOUT = "main/settings/about"
     const val ADVANCED = "main/settings/advanced"
     const val PODCAST_SETTINGS = "main/settings/podcasts"
@@ -243,6 +250,8 @@ object NavidromeRoute {
     const val PLAYLIST_ID_ARG = "playlistId"
     const val SEARCH = "navidrome/search"
     const val SETTINGS = "navidrome/settings"
+    const val LISTENING_SETTINGS = "navidrome/settings/listening"
+    const val LISTENING_STATISTICS = "navidrome/listening-statistics"
     const val EQUALIZER = "navidrome/settings/equalizer"
     const val LYRICS_SOURCES = "navidrome/settings/lyrics-sources"
     const val SERVERS = "navidrome/settings/servers"

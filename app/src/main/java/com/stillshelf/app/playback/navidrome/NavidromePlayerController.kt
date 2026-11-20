@@ -382,7 +382,8 @@ class NavidromePlayerController @Inject constructor(
     private val sessionPreferences: SessionPreferences,
     private val downloadManager: NavidromeDownloadManager,
     private val navidromeRepository: NavidromeRepository,
-    private val diagnosticLogManager: DiagnosticLogManager
+    private val diagnosticLogManager: DiagnosticLogManager,
+    private val listeningTracker: com.stillshelf.app.scrobbling.ListeningPlaybackTracker
 ) {
     private companion object {
         const val TAG = "NavidromePlayerController"
@@ -497,6 +498,8 @@ class NavidromePlayerController @Inject constructor(
 
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // Rebuilding a queue around the same current track is not another listen.
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) listeningTracker.transition()
             updateStateFromPlayer()
         }
 
@@ -1462,6 +1465,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     private fun releasePlayer(clearQueue: Boolean) {
+        listeningTracker.sample(if (clearQueue) null else mutableState.value.currentTrack, false)
         val activePlayer = player
         if (activePlayer != null) {
             stopProgressUpdates()
@@ -1741,6 +1745,7 @@ class NavidromePlayerController @Inject constructor(
             ?: fallbackIndex.takeIf { queueTracks.isNotEmpty() }
             ?: -1
         val currentTrack = queueTracks.getOrNull(currentIndex)
+        listeningTracker.sample(currentTrack, activePlayer.isPlaying)
         if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
             recentTracks = buildList {
                 add(currentTrack)

@@ -37,6 +37,7 @@ object ListSectionIds {
 }
 
 object HomeSectionIds {
+    const val LISTENING_STATISTICS = "listening_statistics"
     const val CONTINUE = "continue_listening"
     const val LISTEN_AGAIN = "listen_again"
     const val RECENTLY_ADDED = "recently_added"
@@ -67,7 +68,8 @@ class CustomizeViewModel @Inject constructor(
         ToggleSectionItem(HomeSectionIds.RECENTLY_ADDED, "Recently Added"),
         ToggleSectionItem(HomeSectionIds.RECENT_SERIES, "Recent Series"),
         ToggleSectionItem(HomeSectionIds.DISCOVER, "Discover"),
-        ToggleSectionItem(HomeSectionIds.NEWEST_AUTHORS, "Newest Authors")
+        ToggleSectionItem(HomeSectionIds.NEWEST_AUTHORS, "Newest Authors"),
+        ToggleSectionItem(HomeSectionIds.LISTENING_STATISTICS, "Listening Statistics")
     )
 
     private val mutableUiState = MutableStateFlow(

@@ -36,6 +36,51 @@ keystore.properties
 # Planning docs (local only)
 PODCAST_PLAN.md
 
+# Personal references, investigation notes and device verification (local only).
+# Keep public documentation such as PRIVACY_POLICY.md publishable.
+/docs/screenshots/
+/docs/scrobbling-*.md
+/docs/listenbrainz-*.md
+/AGENTS.md
+/MYRULES.md
+/SERVERS.md
+/RTK.md
+/.agents/
+/.codex
+/private/
+/local-private/
+/secrets/
+/tmp/
+
+# Local service credentials, listening-history exports and diagnostic captures.
+*token*.txt
+*token*.json
+*credentials*.json
+*credentials*.properties
+*credentials*.txt
+*secrets*.json
+*secrets*.properties
+*secrets*.txt
+*listenbrainz*token*
+*scrobbling*token*
+*listening-history*.json
+*listening-history*.csv
+*listenbrainz*export*.json
+*listenbrainz*export*.zip
+*scrobble*export*.json
+*scrobble*export*.csv
+*.har
+*.logcat
+*.hprof
+*.ab
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+
 # Logs / temp
 *.log
 *.tmp

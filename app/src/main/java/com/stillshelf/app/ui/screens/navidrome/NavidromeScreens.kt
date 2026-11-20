@@ -707,6 +707,7 @@ fun NavidromeAppRoute(
     val context = LocalContext.current
     val showMiniPlayer = playerState.currentTrack != null
     val showBottomPlayerShell = showMiniPlayer &&
+        !com.stillshelf.app.ui.navigation.isSettingsAreaRoute(currentRoute) &&
         currentRoute != NavidromeRoute.SETTINGS &&
         currentRoute != NavidromeRoute.EQUALIZER &&
         currentRoute != NavidromeRoute.LYRICS_SOURCES &&
@@ -884,6 +885,7 @@ fun NavidromeAppRoute(
                     onOpenSearch = { navController.navigate(NavidromeRoute.SEARCH) },
                     onOpenSettings = { navController.navigate(NavidromeRoute.SETTINGS) },
                     onOpenCustomize = { navController.navigate(NavidromeRoute.CUSTOMIZE) },
+                    onOpenListeningStatistics = { navController.navigate(NavidromeRoute.LISTENING_STATISTICS) },
                     onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) },
                     onOpenLyricsSources = { navController.navigate(NavidromeRoute.LYRICS_SOURCES) },
                     onSwitchMode = onSwitchMode,
@@ -956,6 +958,7 @@ fun NavidromeAppRoute(
             }
             composable(NavidromeRoute.SETTINGS) {
                 NavidromeSettingsRoute(
+                    onOpenListeningSettings = { navController.navigate(NavidromeRoute.LISTENING_SETTINGS) },
                     onBack = { navController.popBackStack() },
                     onHome = topHomeAction,
                     onSwitchMode = onSwitchMode,
@@ -964,6 +967,18 @@ fun NavidromeAppRoute(
                     onOpenServers = { navController.navigate(NavidromeRoute.SERVERS) },
                     onOpenAdvanced = { navController.navigate(NavidromeRoute.ADVANCED) },
                     onOpenAbout = { navController.navigate(NavidromeRoute.ABOUT) }
+                )
+            }
+            composable(NavidromeRoute.LISTENING_STATISTICS) {
+                com.stillshelf.app.scrobbling.ListeningStatisticsScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenArtist = { navController.navigate(NavidromeRoute.artist(it)) },
+                    onOpenAlbum = { navController.navigate(NavidromeRoute.album(it)) }
+                )
+            }
+            composable(NavidromeRoute.LISTENING_SETTINGS) {
+                com.stillshelf.app.scrobbling.ListeningSettingsScreen(
+                    onBack = { navController.popBackStack() }, onHome = { navigateHome() }
                 )
             }
             composable(NavidromeRoute.EQUALIZER) {
@@ -1177,6 +1192,7 @@ private fun NavidromeHomeRoute(
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
+    onOpenListeningStatistics: () -> Unit,
     onOpenServers: () -> Unit,
     onOpenLyricsSources: () -> Unit,
     onSwitchMode: () -> Unit,
@@ -1266,6 +1282,7 @@ private fun NavidromeHomeRoute(
         onRefresh = viewModel::refresh,
         onOpenSettings = onOpenSettings,
         onOpenCustomize = onOpenCustomize,
+        onOpenListeningStatistics = onOpenListeningStatistics,
         onOpenServers = onOpenServers,
         onOpenLyricsSources = onOpenLyricsSources,
         onSelectServer = homeMenuViewModel::onServerSelected,
@@ -1314,6 +1331,7 @@ private fun NavidromeHomeScreen(
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCustomize: () -> Unit,
+    onOpenListeningStatistics: () -> Unit,
     onOpenServers: () -> Unit,
     onOpenLyricsSources: () -> Unit,
     onSelectServer: (String) -> Unit,
@@ -1783,6 +1801,12 @@ private fun NavidromeHomeScreen(
                     return@forEach
                 }
                 when (section.id) {
+                    NavidromeHomeSectionIds.LISTENING_STATISTICS -> {
+                        item(key = section.id) {
+                            com.stillshelf.app.scrobbling.ListeningStatisticsSection(onOpenArtist = onOpenArtist, onOpenAlbum = onOpenAlbum,
+                                onSeeAll = onOpenListeningStatistics)
+                        }
+                    }
                     NavidromeHomeSectionIds.CONTINUE -> {
                         item(key = "${section.id}-title") {
                             SectionTitle(
@@ -5142,6 +5166,7 @@ private fun NavidromeAlbumDetailRoute(
 
 @Composable
 private fun NavidromeSettingsRoute(
+    onOpenListeningSettings: () -> Unit,
     onBack: () -> Unit,
     onHome: (() -> Unit)?,
     onSwitchMode: () -> Unit,
@@ -5401,6 +5426,15 @@ private fun NavidromeSettingsRoute(
                     valueTextAlign = TextAlign.End,
                     onClick = if (uiState.isClearingCache) null else ({ clearCachedMusicDialogVisible = true })
                 )
+            }
+        }
+        item {
+            Text("LISTENING HISTORY", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = AppScreenHorizontalPadding))
+        }
+        item {
+            GroupedSettingsCard(containerColor = sectionCardColor, border = sectionCardBorder) {
+                NavidromeSettingsRow(title = "Scrobbling & Statistics", onClick = onOpenListeningSettings)
             }
         }
         if (uiState.appUpdatesEnabled) {
@@ -7698,7 +7732,7 @@ private fun NavidromeLyricsSourcesRoute(
 }
 
 @Composable
-private fun StandardTopScreen(
+internal fun StandardTopScreen(
     title: String,
     onBack: () -> Unit,
     onHome: (() -> Unit)? = null,

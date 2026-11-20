@@ -423,6 +423,7 @@ object NavidromeListSectionIds {
 }
 
 object NavidromeHomeSectionIds {
+    const val LISTENING_STATISTICS = "navidrome_listening_statistics"
     const val CONTINUE = "navidrome_continue_listening"
     const val RECENTLY_ADDED = "navidrome_recently_added"
     const val DISCOVER = "navidrome_discover"
@@ -476,7 +477,8 @@ class NavidromeCustomizeViewModel @Inject constructor(
         ToggleSectionItem(NavidromeHomeSectionIds.RECENTLY_ADDED, "Recently Added"),
         ToggleSectionItem(NavidromeHomeSectionIds.DISCOVER, "Discover"),
         ToggleSectionItem(NavidromeHomeSectionIds.ARTISTS, "Artists"),
-        ToggleSectionItem(NavidromeHomeSectionIds.PLAYLISTS, "Playlists")
+        ToggleSectionItem(NavidromeHomeSectionIds.PLAYLISTS, "Playlists"),
+        ToggleSectionItem(NavidromeHomeSectionIds.LISTENING_STATISTICS, "Listening Statistics")
     )
 
     private val mutableUiState = MutableStateFlow(

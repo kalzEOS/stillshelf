@@ -50,7 +50,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 @Composable
-fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewModel: ListeningSettingsViewModel = hiltViewModel()) {
+fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewModel: ListeningSettingsViewModel = hiltViewModel(),
+    localViewModel: LocalListeningViewModel = hiltViewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
@@ -94,14 +95,20 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                     }
                     val connections = settings.savedConnections
                     val sources = linkedMapOf("navidrome" to "Navidrome history").apply {
+                        if (settings.localRecordingEnabled) put("local", "Local Listening History")
                         connections.forEach { put(it.revision, it.choiceLabel(connections)) }
                         if (settings.statisticsSource == StatisticsSource.EXTERNAL && settings.connection == null) put("unavailable", "Connection unavailable")
                         put("add", "Add Connection…")
                     }
-                    ListeningChoice("Statistics from", if (settings.statisticsSource == StatisticsSource.NAVIDROME) "navidrome" else settings.connection?.revision ?: "unavailable", sources, !busy) { source ->
+                    ListeningChoice("Statistics from", when (settings.statisticsSource) {
+                        StatisticsSource.NAVIDROME -> "navidrome"
+                        StatisticsSource.LOCAL -> "local"
+                        StatisticsSource.EXTERNAL -> settings.connection?.revision ?: "unavailable"
+                    }, sources, !busy) { source ->
                         when (source) {
                             "add", "unavailable" -> { statisticsSetup = true; manageId = null; manageOpen = true }
                             "navidrome" -> viewModel.update { it.copy(statisticsSource = StatisticsSource.NAVIDROME) }
+                            "local" -> viewModel.update { it.copy(statisticsSource = StatisticsSource.LOCAL) }
                             else -> viewModel.update { current -> current.copy(statisticsSource = StatisticsSource.EXTERNAL,
                                 connection = current.savedConnections.firstOrNull { it.revision == source }) }
                         }
@@ -140,6 +147,9 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                     else if (connections.isEmpty() || settings.sendingConnection?.hasSubmissionCredentials == false)
                         Text("Connect a service with scrobbling credentials before enabling submissions.", style = MaterialTheme.typography.bodySmall)
                 }
+            }
+            item(key = "local-listening-settings") {
+                if (settings.loaded) LocalListeningSettings(settings, localViewModel)
             }
         }
         SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().imePadding().padding(16.dp))
@@ -213,7 +223,7 @@ private fun ListeningSecretField(label: String, value: String, change: (String) 
 }
 
 @Composable
-private fun ListeningSettingsCard(content: @Composable () -> Unit) {
+internal fun ListeningSettingsCard(content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f))) {
@@ -222,7 +232,7 @@ private fun ListeningSettingsCard(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ListeningToggle(title: String, description: String, checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) {
+internal fun ListeningToggle(title: String, description: String, checked: Boolean, enabled: Boolean, change: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(description, style = MaterialTheme.typography.bodySmall) }
         Switch(checked, change, enabled = enabled, modifier = Modifier.semantics { contentDescription = title })

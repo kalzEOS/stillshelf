@@ -18,7 +18,8 @@ class ListeningPlaybackTracker @Inject constructor(
     private val queue: ListeningSubmissionQueue,
     private val repository: NavidromeRepository,
     private val navidrome: NavidromeListeningClient,
-    private val clients: ListeningClients
+    private val clients: ListeningClients,
+    private val local: LocalListeningRecorder? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val accumulator = ListenAccumulator()
@@ -29,6 +30,9 @@ class ListeningPlaybackTracker @Inject constructor(
     private var sessionKey: String? = null
 
     init {
+        scope.launch { settings.state.map { it.loaded && it.localRecordingEnabled }.distinctUntilChanged().collect {
+            local?.transition()
+        } }
         scope.launch {
             runCatching { settings.load() }
             // SessionPreferences also emits for playback checkpoints. Only a real account,
@@ -42,9 +46,9 @@ class ListeningPlaybackTracker @Inject constructor(
         }
     }
 
-    fun transition() { accumulator.reset(); nativeAccumulator.reset(); nowPlayingId = null; externalNowPlayingId = null }
+    fun transition() { local?.transition(); accumulator.reset(); nativeAccumulator.reset(); nowPlayingId = null; externalNowPlayingId = null }
 
-    fun sample(track: NavidromeTrack?, playing: Boolean) {
+    fun sample(track: NavidromeTrack?, playing: Boolean, positionMs: Long? = null) {
         val current = settings.state.value
         val connection = current.sendingConnection
         val owner = connection?.revision.takeIf { current.canSubmit }
@@ -52,6 +56,8 @@ class ListeningPlaybackTracker @Inject constructor(
         if (identity != ownerKey) { accumulator.reset(); externalNowPlayingId = null; ownerKey = identity }
         val eligible = track?.takeIf { it.durationSeconds != null && it.durationSeconds > 0 && it.artistName.isNotBlank() }
         val session = sessionKey
+        local?.sample(eligible, playing, session, current.loaded && current.localRecordingEnabled,
+            SystemClock.elapsedRealtime(), System.currentTimeMillis() / 1000, positionMs)
         if (eligible == null || session == null) { transition(); return }
         val duration = eligible.durationSeconds ?: return
         val now = System.currentTimeMillis() / 1000

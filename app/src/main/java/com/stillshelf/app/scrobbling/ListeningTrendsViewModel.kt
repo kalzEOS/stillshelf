@@ -14,7 +14,8 @@ import org.json.JSONObject
 data class TrendsUiState(val data: ListeningTrends? = null, val loading: Boolean = false, val error: String? = null, val cached: Boolean = false)
 @HiltViewModel
 class ListeningTrendsViewModel @Inject constructor(private val settings: ListeningSettingsStore,
-    private val repository: NavidromeRepository, private val client: ListeningTrendsClient, private val storage: SecureTokenStorage) : ViewModel() {
+    private val repository: NavidromeRepository, private val client: ListeningTrendsClient, private val storage: SecureTokenStorage,
+    private val localHistory: LocalListeningRepository? = null) : ViewModel() {
     private val mutableState = MutableStateFlow(TrendsUiState())
     val state = mutableState.asStateFlow()
     private var range = TrendRange.MONTH
@@ -22,7 +23,11 @@ class ListeningTrendsViewModel @Inject constructor(private val settings: Listeni
     private var job: Job? = null
     private var generation = 0
     private val memory = linkedMapOf<String, Pair<Long, ListeningTrends>>()
-    init { viewModelScope.launch {
+    init {
+        localHistory?.let { history -> viewModelScope.launch {
+            history.changes.collect { if (settings.state.value.statisticsSource == StatisticsSource.LOCAL) load(range, true) }
+        } }
+        viewModelScope.launch {
         try { settings.load() } catch (e: CancellationException) { throw e } catch (_: Exception) {
             mutableState.value = TrendsUiState(error = "Secure statistics settings could not be loaded."); return@launch
         }
@@ -40,6 +45,12 @@ class ListeningTrendsViewModel @Inject constructor(private val settings: Listeni
         job = viewModelScope.launch {
             var previous = cached?.second
             try {
+                if (settings.state.value.statisticsSource == StatisticsSource.LOCAL) {
+                    require(settings.state.value.localRecordingEnabled)
+                    val data = checkNotNull(localHistory).trends(selected)
+                    if (version == generation) mutableState.value = TrendsUiState(data)
+                    return@launch
+                }
                 if (previous == null) {
                     val saved = runCatching { storage.getNamedSecret("trends-$key")?.let(::JSONObject) }.getOrNull()
                     if (saved != null) {

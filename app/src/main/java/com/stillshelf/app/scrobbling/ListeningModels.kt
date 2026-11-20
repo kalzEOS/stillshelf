@@ -5,7 +5,7 @@ import java.util.UUID
 
 enum class ScrobblingMethod { STILL_SHELF, NAVIDROME }
 enum class ScrobblingSelection { OFF, NAVIDROME, DIRECT }
-enum class StatisticsSource { EXTERNAL, NAVIDROME }
+enum class StatisticsSource { EXTERNAL, NAVIDROME, LOCAL }
 enum class ListeningProvider(val label: String) {
     KOITO("Koito"), MALOJA("Maloja"), LAST_FM("Last.fm"), LISTEN_BRAINZ("ListenBrainz")
 }
@@ -52,7 +52,9 @@ data class ListeningSettings(
     val connection: ListeningConnection? = null,
     val connections: List<ListeningConnection> = emptyList(),
     val sendingConnectionId: String? = null,
-    val multipleConnections: Boolean = false
+    val multipleConnections: Boolean = false,
+    val localRecordingEnabled: Boolean = false,
+    val previousStatisticsSource: StatisticsSource = StatisticsSource.NAVIDROME
 ) {
     // connection remains the selected statistics connection for existing statistics/cache consumers.
     val savedConnections: List<ListeningConnection> get() = (connections + listOfNotNull(connection)).distinctBy { it.revision }

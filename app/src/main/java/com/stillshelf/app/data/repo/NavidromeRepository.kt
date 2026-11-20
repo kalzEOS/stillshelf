@@ -1540,6 +1540,12 @@ class NavidromeRepository @Inject constructor(
         navidromeApi.coverArtUrl(it, coverArtId, size = 200)
     }
 
+    internal suspend fun listeningCoverArtUrls(ids: Set<String>): Map<String, String> {
+        if (ids.isEmpty()) return emptyMap()
+        val auth = currentAuth() ?: return emptyMap()
+        return ids.mapNotNull { id -> navidromeApi.coverArtUrl(auth, id, size = 200)?.let { id to it } }.toMap()
+    }
+
     internal suspend fun currentAuth(requireFreshConnection: Boolean = false): NavidromeAuth? {
         ensureMigratedLegacySession()
         val state = sessionPreferences.state.first()

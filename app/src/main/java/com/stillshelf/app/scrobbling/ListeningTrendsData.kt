@@ -14,6 +14,11 @@ enum class TrendRange(val label: String) {
     }
 }
 data class TrendPoint(val date: LocalDate, val count: Long, val seconds: Long? = null, val end: LocalDate = date)
+internal fun trendDurationUnit(points: List<TrendPoint>): Pair<Double, String> = when {
+    (points.maxOfOrNull { it.seconds ?: 0 } ?: 0) >= 3600 -> 3600.0 to "h"
+    (points.maxOfOrNull { it.seconds ?: 0 } ?: 0) >= 60 -> 60.0 to "min"
+    else -> 1.0 to "s"
+}
 data class ListeningTrends(val points: List<TrendPoint>, val daily: Boolean, val complete: Boolean,
     val note: String, val streak: Int? = null, val hour: Int? = null, val heatmap: List<TrendPoint> = emptyList(), val durationNote: String? = null)
 

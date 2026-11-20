@@ -113,10 +113,11 @@ private fun InteractiveTrendChart(points: List<TrendPoint>, duration: Boolean) {
     val ink = MaterialTheme.colorScheme.onSurfaceVariant
     val grid = MaterialTheme.colorScheme.outlineVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val values = points.map { if (duration) it.seconds!!.toDouble() / 3600 else it.count.toDouble() }
+    val durationUnit = trendDurationUnit(points)
+    val values = points.map { if (duration) it.seconds!!.toDouble() / durationUnit.first else it.count.toDouble() }
     val rawMax = values.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
     val scale = Math.pow(10.0, kotlin.math.floor(kotlin.math.log10(rawMax)))
-    val maximum = kotlin.math.ceil(rawMax / scale) * scale
+    val maximum = if (duration) kotlin.math.ceil(rawMax / scale) * scale else kotlin.math.ceil(rawMax / 4).coerceAtLeast(1.0) * 4
     Column {
         Box(Modifier.fillMaxWidth()) {
             Canvas(Modifier.fillMaxWidth().height(190.dp).testTag("trend-chart")
@@ -137,7 +138,7 @@ private fun InteractiveTrendChart(points: List<TrendPoint>, duration: Boolean) {
                     val y = bottom - (bottom - top) * tick / 4
                     drawLine(grid.copy(alpha = .55f), Offset(left, y), Offset(right, y), 1.dp.toPx())
                     paint.textAlign = android.graphics.Paint.Align.RIGHT
-                    drawContext.canvas.nativeCanvas.drawText(if (duration) "%.1fh".format(maximum * tick / 4) else "%.0f".format(maximum * tick / 4), left - 6.dp.toPx(), y + 3.dp.toPx(), paint)
+                    drawContext.canvas.nativeCanvas.drawText(if (duration) "%.1f%s".format(maximum * tick / 4, durationUnit.second) else "%.0f".format(maximum * tick / 4), left - 6.dp.toPx(), y + 3.dp.toPx(), paint)
                 }
                 val step = (right - left) / points.size
                 fun xy(index: Int) = Offset(left + step * (index + .5f), bottom - ((bottom - top) * values[index] / maximum).toFloat())
@@ -171,7 +172,7 @@ private fun InteractiveTrendChart(points: List<TrendPoint>, duration: Boolean) {
             selected?.let {
                 Surface(Modifier.align(Alignment.TopCenter).testTag("trend-tooltip").semantics(mergeDescendants = true) {}, shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.inverseSurface) {
-                    Text("${it.date.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}${if (it.end != it.date) " – ${it.end}" else ""}\n${if (duration) "%.2f h".format(it.seconds!! / 3600.0) else "${it.count} scrobbles"}",
+                    Text("${it.date.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}${if (it.end != it.date) " – ${it.end}" else ""}\n${if (duration) "%.2f %s".format(it.seconds!! / durationUnit.first, durationUnit.second) else "${it.count} scrobbles"}",
                         Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.inverseOnSurface)
                 }
             }

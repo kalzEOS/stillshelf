@@ -15,6 +15,37 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
 class ListeningSettingsStoreTest {
+    @Test fun localRecordingDefaultsOffAndRestoresIndependentPreviousSource() = runTest {
+        val store = ListeningSettingsStore(secrets)
+        store.load()
+        assertFalse(store.state.value.localRecordingEnabled)
+        val connection = ListeningConnection(ListeningProvider.KOITO, "https://koito.invalid", "reader", "saved")
+        store.update { it.saveConnection(connection, selectStatistics = true).copy(showStatistics = true,
+            scrobblingEnabled = true, sendingConnectionId = connection.revision) }
+        store.update { it.copy(localRecordingEnabled = true) }
+        assertEquals(StatisticsSource.EXTERNAL, store.state.value.statisticsSource)
+        store.update { it.copy(statisticsSource = StatisticsSource.LOCAL) }
+        val reopened = ListeningSettingsStore(secrets)
+        reopened.load()
+        assertTrue(reopened.state.value.localRecordingEnabled)
+        assertEquals(StatisticsSource.LOCAL, reopened.state.value.statisticsSource)
+        reopened.update { it.copy(localRecordingEnabled = false) }
+        assertEquals(StatisticsSource.EXTERNAL, reopened.state.value.statisticsSource)
+        assertTrue(reopened.state.value.canSubmit)
+        assertTrue(reopened.state.value.showStatistics)
+        assertEquals("saved", reopened.state.value.connection?.token)
+    }
+
+    @Test fun disablingLocalWithRemovedPreviousConnectionSafelyUsesNativeHistory() = runTest {
+        val store = ListeningSettingsStore(secrets)
+        store.update { it.copy(localRecordingEnabled = true, statisticsSource = StatisticsSource.EXTERNAL,
+            connection = ListeningConnection(ListeningProvider.LISTEN_BRAINZ, username = "reader")) }
+        store.update { it.copy(statisticsSource = StatisticsSource.LOCAL) }
+        store.removeConnection()
+        store.update { it.copy(localRecordingEnabled = false) }
+        assertEquals(StatisticsSource.NAVIDROME, store.state.value.statisticsSource)
+    }
+
     @Test fun legacyMigrationPreservesAllProvidersAndOnlyValidDirectSelectionsStayEnabled() = runTest {
         for (provider in ListeningProvider.entries) for (mode in ScrobblingSelection.entries) {
             val conn = ListeningConnection(provider, "https://service.invalid", "reader", "session", "api-key", "shared-secret")

@@ -27,6 +27,12 @@ class ListeningSettingsScreenTest {
     private val busyState = MutableStateFlow(false)
     private val messageState = MutableStateFlow<String?>(null)
     private val saveEvents = MutableStateFlow<Pair<Long, String>?>(null)
+    private val localVm = mockk<LocalListeningViewModel>(relaxed = true) {
+        every { busy } returns MutableStateFlow(false)
+        every { message } returns MutableStateFlow(null)
+        every { storageError } returns MutableStateFlow(null)
+        every { enabled(any()) } answers { state.value = state.value.copy(localRecordingEnabled = firstArg()) }
+    }
 
     private fun viewModel(settings: ListeningSettings = ListeningSettings(loaded = true, connection = koito,
         connections = listOf(koito), multipleConnections = true, showStatistics = true, statisticsSource = StatisticsSource.EXTERNAL)): ListeningSettingsViewModel {
@@ -61,7 +67,7 @@ class ListeningSettingsScreenTest {
         compose.setContent { MaterialTheme(colorScheme = if (dark) androidx.compose.material3.darkColorScheme() else androidx.compose.material3.lightColorScheme()) {
             androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides androidx.compose.material3.MaterialTheme.colorScheme.onBackground) {
                 Box(Modifier.width(320.dp).fillMaxSize().statusBarsPadding()) {
-            ListeningSettingsScreen(onBack = back, onHome = home, viewModel = vm)
+            ListeningSettingsScreen(onBack = back, onHome = home, viewModel = vm, localViewModel = localVm)
         } } } }
         dismissTestAgentWarning()
     }
@@ -85,6 +91,36 @@ class ListeningSettingsScreenTest {
         } finally { info.flags = previousFlags; automation.serviceInfo = info }
     }
     private fun main(text: String) = compose.onNodeWithText(text).performScrollTo()
+    @Test fun localSourceOnlyAppearsWhileRecordingEnabledAndCardIsSeparate() {
+        val vm = viewModel()
+        show(vm)
+        main("Statistics from").performClick()
+        compose.onNodeWithTag("choice-Statistics from").performClick()
+        compose.onNodeWithText("Local Listening History").assertDoesNotExist()
+        compose.onNodeWithTag("option-Navidrome history").performClick()
+        toggle("Save listening history on this device").performClick()
+        assertTrue(state.value.localRecordingEnabled)
+        main("Statistics from")
+        compose.onNodeWithTag("choice-Statistics from").performClick()
+        compose.onNodeWithText("Local Listening History").assertIsDisplayed().performClick()
+        assertEquals(StatisticsSource.LOCAL, state.value.statisticsSource)
+        toggle("Save listening history on this device").performClick()
+        assertFalse(state.value.localRecordingEnabled)
+        main("Statistics from")
+        compose.onNodeWithTag("choice-Statistics from").performClick()
+        compose.onNodeWithTag("option-Local Listening History").assertDoesNotExist()
+    }
+
+    @Test fun localDeletionRequiresConfirmationAndCancelPreservesHistory() {
+        show(viewModel())
+        main("Delete Local History").performClick()
+        compose.onNodeWithText("Delete local listening history?").assertIsDisplayed()
+        compose.onNodeWithText("Cancel").performClick()
+        verify(exactly = 0) { localVm.delete() }
+        main("Delete Local History").performClick()
+        compose.onNodeWithText("Delete", useUnmergedTree = true).performClick()
+        verify(exactly = 1) { localVm.delete() }
+    }
     private fun toggle(text: String) = compose.onNodeWithContentDescription(text).performScrollTo()
     private fun openManager() { main("Manage Connection").performClick() }
     private fun editUrlWithKeyboard() {

@@ -1745,7 +1745,7 @@ class NavidromePlayerController @Inject constructor(
             ?: fallbackIndex.takeIf { queueTracks.isNotEmpty() }
             ?: -1
         val currentTrack = queueTracks.getOrNull(currentIndex)
-        listeningTracker.sample(currentTrack, activePlayer.isPlaying)
+        listeningTracker.sample(currentTrack, activePlayer.isPlaying, activePlayer.currentPosition)
         if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
             recentTracks = buildList {
                 add(currentTrack)

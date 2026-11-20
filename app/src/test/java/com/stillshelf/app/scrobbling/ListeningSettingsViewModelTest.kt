@@ -81,6 +81,20 @@ class ListeningSettingsViewModelTest {
         assertEquals(2, state.value.savedConnections.size)
     }
 
+    @Test fun editingSendingConnectionReusesOneAccountAndKeepsStatisticsSelection() = runTest {
+        val sender = ListeningConnection(ListeningProvider.KOITO, "https://koito.invalid", "reader", "koito-token")
+        state.value = state.value.copy(connections = listOf(connection, sender), multipleConnections = true,
+            sendingConnectionId = sender.revision, scrobblingEnabled = true, statisticsSource = StatisticsSource.EXTERNAL)
+        val vm = vm()
+        vm.saveManaged(ListeningConnection(sender.provider, sender.serverUrl, sender.username, sender.token), sender.revision, false)
+        assertSame(connection, state.value.connection)
+        assertEquals("koito-token", state.value.sendingConnection?.token)
+        assertEquals(sender.revision, state.value.sendingConnection?.revision)
+        assertEquals(2, state.value.savedConnections.size)
+        assertTrue(state.value.canSubmit)
+        coVerify { client.validate(match { it.provider == ListeningProvider.KOITO && it.token == "koito-token" }) }
+    }
+
     @Test fun readOnlyOrRejectedSendingCredentialsCannotEnableDirect() = runTest {
         val readOnly = ListeningConnection(ListeningProvider.LISTEN_BRAINZ, username = "reader")
         state.value = state.value.copy(connection = readOnly)

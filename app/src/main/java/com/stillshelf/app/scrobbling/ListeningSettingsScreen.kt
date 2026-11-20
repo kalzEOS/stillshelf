@@ -56,6 +56,7 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
     val busy by viewModel.busy.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val authorizationUrl by viewModel.authorizationUrl.collectAsStateWithLifecycle()
+    val directStatus by viewModel.directSubmissionStatus.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -119,7 +120,7 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                         statisticsSetup = connections.isEmpty()
                         manageId = settings.connection?.revision ?: settings.sendingConnection?.revision ?: connections.firstOrNull()?.revision
                         manageOpen = true
-                    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Manage Connection") }
+                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("manage-statistics-connection")) { Text("Manage Connection") }
                     androidx.compose.material3.HorizontalDivider()
                     Text("Direct Scrobbling (Optional)", style = MaterialTheme.typography.titleMedium)
                     ListeningToggle("Send scrobbles from StillShelf", "Off by default. Navidrome can handle scrobbling instead.", settings.canSubmit, !busy) { enabled ->
@@ -131,10 +132,12 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                             else { statisticsSetup = connections.isEmpty(); manageId = sender?.revision; manageOpen = true }
                         }
                     }
-                    if (connections.size > 1) ListeningChoice("Send to", settings.sendingConnection?.revision ?: "choose",
+                    ListeningChoice("Send to", settings.sendingConnection?.revision ?: "choose",
                         linkedMapOf("choose" to "Choose a connection").apply {
                             connections.forEach { put(it.revision, it.choiceLabel(connections)) }
+                            put("add", "Add Connection…")
                         }, !busy) { id ->
+                        if (id == "add") { manageId = null; statisticsSetup = false; manageOpen = true }
                         val selected = connections.firstOrNull { it.revision == id }
                         if (selected != null) {
                             if (settings.scrobblingEnabled) {
@@ -143,9 +146,20 @@ fun ListeningSettingsScreen(onBack: () -> Unit, onHome: () -> Unit = {}, viewMod
                             } else viewModel.update { it.copy(sendingConnectionId = id, multipleConnections = true) }
                         }
                     }
-                    if (settings.canSubmit) Text("StillShelf sends scrobbles directly to the connected service.", style = MaterialTheme.typography.bodySmall)
-                    else if (connections.isEmpty() || settings.sendingConnection?.hasSubmissionCredentials == false)
-                        Text("Connect a service with scrobbling credentials before enabling submissions.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = {
+                        statisticsSetup = false
+                        manageId = settings.sendingConnection?.revision
+                        manageOpen = true
+                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("manage-sending-connection")) { Text("Manage Connection") }
+                    Text(when {
+                        settings.sendingConnection == null -> "Choose a saved connection in Send to, or add one in Manage Connection."
+                        settings.sendingConnection?.hasSubmissionCredentials != true -> "Add scrobbling credentials in Manage Connection before enabling submissions."
+                        settings.canSubmit -> "Direct scrobbling enabled for ${settings.sendingConnection!!.provider.label}."
+                        else -> "Connection saved. Enable direct scrobbling to send listens."
+                    }, style = MaterialTheme.typography.bodySmall)
+                    directStatus?.takeIf { it.first == settings.sendingConnection?.revision }?.let {
+                        Text(it.second, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("direct-submission-status"))
+                    }
                 }
             }
             item(key = "local-listening-settings") {

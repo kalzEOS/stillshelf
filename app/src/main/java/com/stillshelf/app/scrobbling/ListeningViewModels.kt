@@ -25,6 +25,7 @@ class ListeningSettingsViewModel @Inject constructor(
 ) : ViewModel() {
     val settings = store.state
     val submissionStatus = queue.status
+    val directSubmissionStatus = queue.directStatus
     private val mutableMessage = MutableStateFlow<String?>(null)
     val message = mutableMessage.asStateFlow()
     private val mutableBusy = MutableStateFlow(false)

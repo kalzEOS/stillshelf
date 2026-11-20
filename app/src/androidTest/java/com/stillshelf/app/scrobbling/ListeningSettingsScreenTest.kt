@@ -45,6 +45,7 @@ class ListeningSettingsScreenTest {
             every { authorizationUrl } returns MutableStateFlow(null)
             every { awaitingAuthorization } returns MutableStateFlow(false)
             every { savedConnection } returns saveEvents
+            every { directSubmissionStatus } returns MutableStateFlow(null)
             every { setScrobblingEnabled(false) } answers { state.value = state.value.copy(scrobblingEnabled = false) }
             every { enableDirect(any()) } answers {
                 val id = firstArg<String>()
@@ -90,7 +91,10 @@ class ListeningSettingsScreenTest {
             }
         } finally { info.flags = previousFlags; automation.serviceInfo = info }
     }
-    private fun main(text: String) = compose.onNodeWithText(text).performScrollTo()
+    private fun main(text: String): SemanticsNodeInteraction {
+        compose.onNodeWithTag("listening-settings-list").performScrollToNode(hasText(text))
+        return compose.onNodeWithText(text).performScrollTo()
+    }
     @Test fun localSourceOnlyAppearsWhileRecordingEnabledAndCardIsSeparate() {
         val vm = viewModel()
         show(vm)
@@ -121,8 +125,68 @@ class ListeningSettingsScreenTest {
         compose.onNodeWithText("Delete", useUnmergedTree = true).performClick()
         verify(exactly = 1) { localVm.delete() }
     }
-    private fun toggle(text: String) = compose.onNodeWithContentDescription(text).performScrollTo()
-    private fun openManager() { main("Manage Connection").performClick() }
+    private fun toggle(text: String): SemanticsNodeInteraction {
+        compose.onNodeWithTag("listening-settings-list").performScrollToNode(hasContentDescription(text))
+        return compose.onNodeWithContentDescription(text).performScrollTo()
+    }
+    private fun openManager() { compose.onNodeWithTag("manage-statistics-connection").performScrollTo().performClick() }
+    private fun openSendingManager() { compose.onNodeWithTag("manage-sending-connection").performScrollTo().performClick() }
+
+    @Test fun sendingManagerFocusesKoitoAndReusesCredentialsWithoutChangingListenBrainzStatistics() {
+        val vm = viewModel(ListeningSettings(loaded = true, connection = lb, connections = listOf(lb, koito),
+            multipleConnections = true, sendingConnectionId = koito.revision, scrobblingEnabled = true,
+            showStatistics = true, statisticsSource = StatisticsSource.EXTERNAL))
+        show(vm)
+        openSendingManager()
+        compose.onNodeWithTag("choice-Connection").assertTextContains("Koito")
+        compose.onNodeWithText("https://koito.invalid").assertIsDisplayed()
+        compose.onNodeWithText("Verify Connection").performScrollTo().performClick()
+        verify(exactly = 1) { vm.verifyConnection(koito.revision) }
+        compose.onNodeWithText("Edit Configuration").performScrollTo().performClick()
+        compose.onNodeWithText("Save Configuration").performScrollTo().performClick()
+        verify { vm.saveManaged(match { it.token == "saved-token" }, koito.revision, false) }
+        assertEquals(lb.revision, state.value.connection?.revision)
+        assertEquals(koito.revision, state.value.sendingConnection?.revision)
+        assertTrue(state.value.canSubmit)
+        compose.onNodeWithText("Remove Connection").performScrollTo().performClick()
+        compose.onNodeWithText("Remove").performClick()
+        assertFalse(state.value.canSubmit)
+        assertEquals(lb.revision, state.value.connection?.revision)
+        assertEquals(1, state.value.savedConnections.size)
+    }
+
+    @Test fun addingSenderUsesSharedManagerAndDoesNotSelectItForStatisticsOrEnableSending() {
+        val vm = viewModel(ListeningSettings(loaded = true, connection = lb, connections = listOf(lb),
+            multipleConnections = true, showStatistics = true, statisticsSource = StatisticsSource.EXTERNAL))
+        show(vm)
+        compose.onNodeWithTag("choice-Send to").performScrollTo().assertExists()
+        openSendingManager()
+        compose.onNodeWithText("Add Connection").assertIsDisplayed()
+        compose.onNodeWithText("Server URL").performScrollTo().performTextInput("https://koito.invalid")
+        compose.onNodeWithText("API token").performScrollTo().performTextInput("new-token")
+        compose.onNodeWithText("Save Configuration").performScrollTo().performClick()
+        verify { vm.saveManaged(match { it.provider == ListeningProvider.KOITO && it.token == "new-token" }, null, false) }
+        assertEquals(lb.revision, state.value.connection?.revision)
+        assertFalse(state.value.canSubmit)
+        assertEquals(2, state.value.savedConnections.size)
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("choice-Send to").performScrollTo().performClick()
+        compose.onNodeWithTag("option-Koito").performClick()
+        assertEquals(ListeningProvider.KOITO, state.value.sendingConnection?.provider)
+        assertEquals(lb.revision, state.value.connection?.revision)
+        assertFalse(state.value.scrobblingEnabled)
+    }
+
+    @Test fun directStatusOnlyShowsTheSelectedSendingAccount() {
+        val vm = viewModel(ListeningSettings(loaded = true, connection = lb, connections = listOf(lb, koito),
+            multipleConnections = true, sendingConnectionId = koito.revision, scrobblingEnabled = true))
+        val status = MutableStateFlow<Pair<String, String>?>(koito.revision to "Koito rejected this API token.")
+        every { vm.directSubmissionStatus } returns status
+        show(vm)
+        compose.onNodeWithTag("direct-submission-status").performScrollTo().assertTextEquals("Koito rejected this API token.")
+        compose.runOnIdle { status.value = lb.revision to "Other account status" }
+        compose.onNodeWithTag("direct-submission-status").assertDoesNotExist()
+    }
     private fun editUrlWithKeyboard() {
         compose.onNodeWithText("https://koito.invalid").performScrollTo().performClick()
             .performTextReplacement("https://koito.invalid/draft")
@@ -149,7 +213,7 @@ class ListeningSettingsScreenTest {
         }
     }
 
-    @Test fun statisticsFirstLayoutHasOnlyOneMainManagementAction() {
+    @Test fun statisticsFirstLayoutKeepsManagementActionsInTheirSections() {
         show(viewModel())
         screenshot("statistics-first-initial-320dp")
         val statisticsTop = main("Listening Statistics").fetchSemanticsNode().positionOnScreen.y
@@ -289,7 +353,7 @@ class ListeningSettingsScreenTest {
         toggle("Show Listening Statistics").performClick()
         assertFalse(state.value.showStatistics)
         assertEquals("saved-token", state.value.connection?.token)
-        main("Manage Connection").assertIsDisplayed()
+        compose.onNodeWithTag("manage-statistics-connection").performScrollTo().assertIsDisplayed()
         toggle("Send scrobbles from StillShelf").performClick()
         compose.onNodeWithText("Continue").performClick()
         assertTrue(state.value.canSubmit)

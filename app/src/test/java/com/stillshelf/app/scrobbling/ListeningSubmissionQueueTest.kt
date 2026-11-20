@@ -81,6 +81,8 @@ class ListeningSubmissionQueueTest {
         assertFalse(queue.drain())
         coVerify(exactly = 1) { navidrome.report(any(), any(), true) }
         assertEquals("owner", JSONArray(records.getValue("listening_pending_v1")).getJSONObject(0).getString("owner"))
+        assertEquals("owner" to "Invalid token", queue.directStatus.value)
+        assertEquals("Last listen submitted successfully.", queue.status.value) // Native success cannot hide the direct failure.
     }
 
     @Test fun statisticsSourceSwitchDoesNotRedirectQueuedDirectSubmission() = runTest {
@@ -91,6 +93,8 @@ class ListeningSubmissionQueueTest {
         assertFalse(queue.drain())
         coVerify(exactly = 1) { client.submit(connection, any()) }
         coVerify(exactly = 0) { client.submit(stats, any()) }
+        assertSame(stats, store.state.value.connection)
+        assertEquals("owner" to "Last listen submitted successfully.", queue.directStatus.value)
     }
 
     @Test fun accountAndConnectionChangesCannotReplayToAnotherAccount() = runTest {

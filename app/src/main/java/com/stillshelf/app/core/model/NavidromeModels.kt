@@ -105,7 +105,8 @@ data class NavidromeArtist(
     val name: String,
     val albumCount: Int,
     val coverUrl: String?,
-    val imageUrl: String?
+    val imageUrl: String?,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeAlbum(
@@ -117,7 +118,8 @@ data class NavidromeAlbum(
     val songCount: Int,
     val durationSeconds: Int?,
     val coverUrl: String?,
-    val genre: String?
+    val genre: String?,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeTrack(
@@ -133,7 +135,8 @@ data class NavidromeTrack(
     val streamUrl: String,
     val formatLabel: String?,
     val bitRateKbps: Int?,
-    val sizeBytes: Long? = null
+    val sizeBytes: Long? = null,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeLyricsLine(

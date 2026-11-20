@@ -183,6 +183,7 @@ private fun MainShell() {
     }
 
     val showMiniPlayer = !playerVisible &&
+        !isSettingsAreaRoute(currentRoute) &&
         currentRoute != MainTab.Search.route &&
         currentRoute != MainTab.Settings.route &&
         currentRoute != MainRoute.SETTINGS &&
@@ -405,6 +406,7 @@ private fun MainTabsNavHost(
         }
         composable(MainTab.Settings.route) {
             SettingsScreen(
+                onOpenListeningSettings = { navController.navigate(MainRoute.LISTENING_SETTINGS) },
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
@@ -423,6 +425,7 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.SETTINGS) {
             SettingsScreen(
+                onOpenListeningSettings = { navController.navigate(MainRoute.LISTENING_SETTINGS) },
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
@@ -436,6 +439,20 @@ private fun MainTabsNavHost(
                 },
                 onManageServers = {
                     navController.navigate(MainRoute.SERVERS) { launchSingleTop = true }
+                }
+            )
+        }
+        composable(MainRoute.LISTENING_STATISTICS) {
+            com.stillshelf.app.scrobbling.ListeningStatisticsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(MainRoute.LISTENING_SETTINGS) {
+            com.stillshelf.app.scrobbling.ListeningSettingsScreen(
+                onBack = { navController.popBackStack() },
+                onHome = {
+                    if (onHomeClick != null) onHomeClick() else navController.navigate(MainTab.Home.route) {
+                        popUpTo(MainTab.Home.route) { inclusive = false }
+                        launchSingleTop = true
+                    }
                 }
             )
         }

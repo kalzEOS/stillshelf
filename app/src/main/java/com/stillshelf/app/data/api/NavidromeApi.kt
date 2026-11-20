@@ -42,7 +42,8 @@ data class NavidromeArtistDto(
     val name: String,
     val albumCount: Int,
     val coverArtId: String?,
-    val artistImageUrl: String?
+    val artistImageUrl: String?,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeAlbumDto(
@@ -54,7 +55,8 @@ data class NavidromeAlbumDto(
     val songCount: Int,
     val durationSeconds: Int?,
     val coverArtId: String?,
-    val genre: String?
+    val genre: String?,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeTrackDto(
@@ -70,7 +72,8 @@ data class NavidromeTrackDto(
     val suffix: String?,
     val contentType: String?,
     val bitRateKbps: Int?,
-    val sizeBytes: Long? = null
+    val sizeBytes: Long? = null,
+    val musicBrainzId: String? = null
 )
 
 data class NavidromeLyricsLineDto(
@@ -685,7 +688,8 @@ class NavidromeApi @Inject constructor(
             name = item.optString("name").normalizeNavidromeText().ifBlank { "Unknown artist" },
             albumCount = item.optInt("albumCount", 0),
             coverArtId = item.optString("coverArt").ifBlank { null },
-            artistImageUrl = item.optString("artistImageUrl").ifBlank { null }
+            artistImageUrl = item.optString("artistImageUrl").ifBlank { null },
+            musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" }
         )
     }
 
@@ -742,7 +746,8 @@ class NavidromeApi @Inject constructor(
                     ?.optString("name")
                     ?.normalizeNavidromeText()
                     ?.ifBlank { null }
-            }
+            },
+            musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" }
         )
     }
 
@@ -776,7 +781,8 @@ class NavidromeApi @Inject constructor(
             suffix = item.optString("suffix").ifBlank { null },
             contentType = item.optString("contentType").ifBlank { null },
             bitRateKbps = bitRateKbps,
-            sizeBytes = sizeBytes
+            sizeBytes = sizeBytes,
+            musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" }
         )
     }
 

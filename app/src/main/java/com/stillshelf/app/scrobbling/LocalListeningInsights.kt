@@ -54,10 +54,11 @@ class LocalListeningInsights @Inject constructor(private val database: LocalList
                 InsightPeriod.THIS_YEAR, InsightPeriod.LAST_YEAR -> "CAST(strftime('%m', l.startedAtSeconds, 'unixepoch', 'localtime') AS INTEGER)"
                 InsightPeriod.ALL -> "(CAST(strftime('%Y', l.startedAtSeconds, 'unixepoch', 'localtime') AS INTEGER) * 12 + CAST(strftime('%m', l.startedAtSeconds, 'unixepoch', 'localtime') AS INTEGER))"
             }
-            val evolution = query("SELECT l.artist AS label, '' AS detail, $bucket AS bucket, COUNT(*) AS count, l.artistKey AS identity " +
-                "FROM local_listens l WHERE $where AND l.artistKey IN (SELECT artistKey FROM local_listens " +
-                "WHERE startedAtSeconds >= ? AND startedAtSeconds < ? GROUP BY artistKey ORDER BY COUNT(*) DESC LIMIT 10) " +
-                "GROUP BY l.artistKey, $bucket", from, until, from, until).filter { it.identity in artistKeys }
+            // Reuse the exact ranked selection, including ties, instead of choosing a second top ten.
+            val evolution = if (artistKeys.isEmpty()) emptyList() else query(
+                "SELECT l.artist AS label, '' AS detail, $bucket AS bucket, COUNT(*) AS count, l.artistKey AS identity " +
+                "FROM local_listens l WHERE $where AND l.artistKey IN (${artistKeys.joinToString { "?" }}) " +
+                "GROUP BY l.artistKey, $bucket", from, until, *artistKeys.toTypedArray())
             val monthFormat = DateTimeFormatter.ofPattern("MMM yy")
             fun order(date: LocalDate) = when (period) {
                 InsightPeriod.THIS_WEEK, InsightPeriod.LAST_WEEK -> date.dayOfWeek.value

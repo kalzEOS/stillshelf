@@ -67,4 +67,15 @@ class LocalListeningInsightsTest {
         assertTrue(data.rows.first().bucket.contains("25"))
         assertTrue(data.rows.last().bucket.contains("26"))
     }
+
+    @Test fun tiedArtistRankingsAndEvolutionUseTheExactSameTopTen() = runTest {
+        val today = LocalDate.of(2026, 11, 20)
+        repeat(11) { listen("tie-$it", today, artist = "Artist %02d".format(it)) }
+        val data = insights.load(InsightPeriod.THIS_MONTH, today)
+        assertEquals(10, data.artists.size)
+        val totals = data.results.getValue(InsightKind.EVOLUTION).data!!.rows.groupBy { it.identity }
+            .mapValues { (_, rows) -> rows.sumOf { it.count } }
+        assertEquals(data.artists.associate { it.identity to it.count }, totals)
+        assertTrue(totals.values.all { it == 1L })
+    }
 }

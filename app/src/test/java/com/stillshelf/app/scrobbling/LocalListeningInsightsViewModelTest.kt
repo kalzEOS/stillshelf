@@ -11,6 +11,34 @@ import org.junit.Assert.*
 class LocalListeningInsightsViewModelTest {
     @Before fun setup() { Dispatchers.setMain(UnconfinedTestDispatcher()) }
     @After fun cleanup() { Dispatchers.resetMain() }
+    @Test fun failedPeriodChangesNeverExposePreviousArtistDiscoveryOrCoverageData() = runTest {
+        val saved = MutableStateFlow(ListeningSettings(loaded = true, showStatistics = true,
+            localRecordingEnabled = true, statisticsSource = StatisticsSource.LOCAL))
+        val store = mockk<ListeningSettingsStore> { every { state } returns saved; coEvery { load() } returns Unit }
+        val history = mockk<LocalListeningRepository> { every { insightChanges } returns MutableStateFlow(1L) }
+        val client = mockk<LocalListeningInsights>()
+        val old = LocalInsights(artists = listOf(InsightRow("Old artist", 3)),
+            discovery = listOf(InsightRow("Old discovery", 1)), coverage = "Old coverage")
+        coEvery { client.load(any(), any(), any()) } returns old
+        val vm = LocalListeningInsightsViewModel(store, history, client)
+        vm.show(InsightPeriod.THIS_MONTH)
+        assertEquals(old, vm.details.value)
+        coEvery { client.load(any(), any(), any()) } throws java.io.IOException("Unavailable")
+        vm.show(InsightPeriod.LAST_MONTH)
+        assertEquals(InsightPeriod.LAST_MONTH, vm.state.value.period)
+        assertTrue(vm.state.value.results.values.any { it.error })
+        assertEquals(LocalInsights(), vm.details.value)
+        coEvery { client.load(any(), any(), any()) } returns old
+        vm.show(InsightPeriod.THIS_MONTH)
+        coEvery { client.load(any(), any(), any()) } coAnswers { delay(30_000); LocalInsights() }
+        vm.show(InsightPeriod.LAST_YEAR)
+        assertEquals(LocalInsights(), vm.details.value)
+        advanceTimeBy(15_001); runCurrent()
+        assertFalse(vm.state.value.loading)
+        assertTrue(vm.state.value.results.values.any { it.error })
+        assertEquals(LocalInsights(), vm.details.value)
+        vm.hide()
+    }
     @Test fun disposingAnOlderLazyCompositionDoesNotCancelTheVisibleQuery() = runTest {
         val saved = MutableStateFlow(ListeningSettings(loaded = true, showStatistics = true,
             localRecordingEnabled = true, statisticsSource = StatisticsSource.LOCAL))

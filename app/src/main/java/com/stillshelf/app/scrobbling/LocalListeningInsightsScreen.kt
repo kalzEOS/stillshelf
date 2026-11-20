@@ -52,6 +52,7 @@ class LocalListeningInsightsViewModel @Inject constructor(private val settings: 
     private fun load() {
         val version = ++generation
         job?.cancel()
+        mutableDetails.value = LocalInsights()
         mutableState.value = InsightsUiState(enabled = true, period = period, loading = true)
         val selected = period
         job = viewModelScope.launch {

@@ -1522,7 +1522,10 @@ class SessionPreferences @Inject constructor(
                                     streamUrl = streamUrl,
                                     formatLabel = item.optString("formatLabel").ifBlank { null },
                                     bitRateKbps = item.takeIf { it.has("bitRateKbps") }?.optInt("bitRateKbps"),
-                                    sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes")
+                                    sizeBytes = item.takeIf { it.has("sizeBytes") }?.optLong("sizeBytes"),
+                                    musicBrainzId = item.optString("musicBrainzId").takeUnless { it.isBlank() || it == "null" },
+                                    genres = item.optJSONArray("genres")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotBlank) } }.orEmpty(),
+                                    releaseYear = item.optInt("releaseYear").takeIf { it > 0 }
                                 )
                             )
                         }
@@ -1624,6 +1627,9 @@ class SessionPreferences @Inject constructor(
                         .put("formatLabel", track.formatLabel)
                         .put("bitRateKbps", track.bitRateKbps)
                         .put("sizeBytes", track.sizeBytes)
+                        .put("musicBrainzId", track.musicBrainzId)
+                        .put("genres", JSONArray(track.genres))
+                        .put("releaseYear", track.releaseYear)
                 )
             }
             if (array.length() > 0) {

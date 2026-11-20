@@ -20,6 +20,7 @@ class LocalListeningRepository @Inject constructor(private val database: LocalLi
     private val mutableEpoch = MutableStateFlow(0L)
     val epoch = mutableEpoch.asStateFlow()
     val changes = dao.changes()
+    val insightChanges = dao.insightChanges()
     private val mutableError = MutableStateFlow<String?>(null)
     val error = mutableError.asStateFlow()
     fun storageFailure() { mutableError.value = "Local history could not be saved. Check available device storage." }
@@ -28,6 +29,8 @@ class LocalListeningRepository @Inject constructor(private val database: LocalLi
         // An already queued write must never resurrect history after an explicit deletion.
         if (epoch == mutableEpoch.value) database.withTransaction {
             dao.insert(listen)
+            val genres = org.json.JSONArray(listen.genresJson)
+            dao.genres((0 until genres.length()).map { LocalListenGenre(listen.id, genres.getString(it)) })
             dao.duration(listen.id, listen.listenedMs, listen.positionMs, listen.ended)
             mutableError.value = null
         }

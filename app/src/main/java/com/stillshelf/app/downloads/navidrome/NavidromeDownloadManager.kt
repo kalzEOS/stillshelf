@@ -564,7 +564,8 @@ class NavidromeDownloadManager @Inject constructor(
             workId = request.id.toString(),
             localPath = targetFile.absolutePath,
             errorMessage = null,
-            isPlaybackCache = isPlaybackCache
+            isPlaybackCache = isPlaybackCache,
+            musicBrainzId = track.musicBrainzId, genres = track.genres, releaseYear = track.releaseYear
         )
     }
 

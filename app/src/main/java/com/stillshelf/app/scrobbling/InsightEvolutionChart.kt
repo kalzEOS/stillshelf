@@ -23,7 +23,7 @@ import java.time.format.TextStyle
 import java.util.Locale
 
 @Composable
-internal fun InsightEvolution(data: InsightDataset, period: InsightPeriod) {
+internal fun InsightEvolution(data: InsightDataset, period: InsightPeriod, useBucketLabels: Boolean = false) {
     var limit by rememberSaveable { mutableStateOf(5) }
     var selected by remember(data, limit) { mutableStateOf<Int?>(null) }
     val artists = data.rows.groupBy { it.identity }.entries.sortedByDescending { it.value.sumOf(InsightRow::count) }.take(limit)
@@ -35,7 +35,9 @@ internal fun InsightEvolution(data: InsightDataset, period: InsightPeriod) {
         InsightPeriod.THIS_YEAR, InsightPeriod.LAST_YEAR -> 1..maximum
         InsightPeriod.ALL -> minimum..maximum
     }.toList()
-    fun label(bucket: Int, short: Boolean = false): String = when (period) {
+    fun label(bucket: Int, short: Boolean = false): String = if (useBucketLabels)
+        data.rows.firstOrNull { it.index == bucket }?.bucket ?: java.time.YearMonth.of((bucket - 1) / 12, (bucket - 1) % 12 + 1).format(java.time.format.DateTimeFormatter.ofPattern("MMM yy"))
+        else when (period) {
         InsightPeriod.THIS_WEEK, InsightPeriod.LAST_WEEK -> DayOfWeek.of(bucket).getDisplayName(if (short) TextStyle.SHORT else TextStyle.FULL, Locale.getDefault())
         InsightPeriod.THIS_YEAR, InsightPeriod.LAST_YEAR -> Month.of(bucket).getDisplayName(if (short) TextStyle.SHORT else TextStyle.FULL, Locale.getDefault())
         else -> bucket.toString()

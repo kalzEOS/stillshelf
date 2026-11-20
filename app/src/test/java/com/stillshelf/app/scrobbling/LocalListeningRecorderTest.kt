@@ -8,6 +8,8 @@ import org.junit.Test
 import org.junit.Assert.*
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+@org.robolectric.annotation.Config(sdk = [28])
 class LocalListeningRecorderTest {
     private val epoch = MutableStateFlow(0L)
     private val writes = mutableListOf<LocalListen>()

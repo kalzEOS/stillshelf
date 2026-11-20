@@ -3598,7 +3598,8 @@ internal fun buildNavidromeHomeDownloadEntries(
                     coverUrl = item.coverUrl,
                     streamUrl = "",
                     formatLabel = item.formatLabel,
-                    bitRateKbps = null
+                    bitRateKbps = null,
+                    musicBrainzId = item.musicBrainzId, genres = item.genres, releaseYear = item.releaseYear
                 ),
                 subtitle = listOfNotNull(
                     item.artistName.takeIf { it.isNotBlank() },

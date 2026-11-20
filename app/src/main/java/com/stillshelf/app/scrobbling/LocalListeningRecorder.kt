@@ -79,7 +79,9 @@ class LocalListeningRecorder internal constructor(private val history: LocalList
             qualified = LocalListen(UUID.randomUUID().toString(), localIdentity(session!!), track.id, track.artistId, track.albumId,
                 track.title, track.artistName, track.albumName, track.musicBrainzId?.takeIf { runCatching { UUID.fromString(it) }.isSuccess },
                 track.durationSeconds, started, accumulator.listenedMs,
-                key(track.artistName), key(track.artistName, track.albumName), key(track.artistName, track.albumName, track.title))
+                key(track.artistName), key(track.artistName, track.albumName), key(track.artistName, track.albumName, track.title),
+                genresJson = org.json.JSONArray(track.genres.map { it.trim() }.filter(String::isNotBlank).distinctBy { it.lowercase(Locale.ROOT) }.take(32)).toString(),
+                releaseYear = track.releaseYear?.takeIf { it in 1000..java.time.LocalDate.now().year + 1 })
             if (!pendingResume && record == null) record = qualified
             flush(); writeAt = elapsed
         } else if (record != null && ((!playing && wasPlaying) || elapsed - writeAt >= 5_000)) { flush(); writeAt = elapsed }

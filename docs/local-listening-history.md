@@ -35,6 +35,15 @@ and hour aggregation uses the device's current local time zone, including daylig
 saving boundaries. These are statistics for recorded local listens, not a claim to
 complete listening history from other devices or times when recording was off.
 
+Local Trends also reuses the ListenBrainz insight charts for local day/hour activity,
+artist evolution, albums by artist, period artist/album/track rankings, tagged genres,
+release decades/years, and first-recorded artist discovery. Periods use local calendar
+boundaries. Genre and release-year snapshots are captured from supplied library tags
+and retained through queues and downloads. Partial tag coverage is displayed; missing
+metadata is not guessed. Artist origins are omitted because reliable country metadata
+is not available from the current library integration. No third-party enrichment is
+required or contacted. No imported or invented past listens fill sparse histories.
+
 ## Storage and portability
 
 A separate versioned Room database is kept in the application's private

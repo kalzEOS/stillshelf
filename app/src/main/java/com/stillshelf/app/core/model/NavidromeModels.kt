@@ -136,7 +136,9 @@ data class NavidromeTrack(
     val formatLabel: String?,
     val bitRateKbps: Int?,
     val sizeBytes: Long? = null,
-    val musicBrainzId: String? = null
+    val musicBrainzId: String? = null,
+    val genres: List<String> = emptyList(),
+    val releaseYear: Int? = null
 )
 
 data class NavidromeLyricsLine(

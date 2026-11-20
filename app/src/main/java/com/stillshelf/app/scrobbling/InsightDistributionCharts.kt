@@ -56,12 +56,12 @@ internal fun InsightTooltip(text: String, tag: String) {
 }
 
 @Composable
-internal fun InsightHourGrid(data: InsightDataset) {
+internal fun InsightHourGrid(data: InsightDataset, zoneLabel: String = "UTC") {
     var selected by remember(data) { mutableStateOf<InsightRow?>(null) }
     val rows = data.rows.associateBy { it.label to it.index }
     val maximum = data.rows.maxOf { it.count }.coerceAtLeast(1)
-    Text("Day and hour (UTC)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    selected?.let { InsightTooltip("${it.label} · %02d:00 UTC\n${it.count} listens".format(it.index), "insight-hour-tooltip") }
+    Text("Day and hour ($zoneLabel)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    selected?.let { InsightTooltip("${it.label} · %02d:00 $zoneLabel\n${it.count} listens".format(it.index), "insight-hour-tooltip") }
     Row(Modifier.fillMaxWidth()) {
         Column(Modifier.width(40.dp)) {
             Spacer(Modifier.height(24.dp))
@@ -82,7 +82,7 @@ internal fun InsightHourGrid(data: InsightDataset) {
                             else MaterialTheme.colorScheme.primary.copy(alpha = .2f + .8f * row.count.toFloat() / maximum)
                         Box(Modifier.size(24.dp).padding(1.dp).background(tint, RoundedCornerShape(3.dp))
                             .testTag("insight-hour-${day.value}-$hour")
-                            .semantics { contentDescription = "$name $hour:00 UTC: ${row?.count?.toString() ?: "unavailable"} listens" }
+                            .semantics { contentDescription = "$name $hour:00 $zoneLabel: ${row?.count?.toString() ?: "unavailable"} listens" }
                             .clickable(enabled = row != null) { selected = row })
                     }
                 }

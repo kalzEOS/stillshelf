@@ -33,8 +33,16 @@ data class LocalListen(
     val albumKey: String,
     val trackKey: String,
     val positionMs: Long? = null,
-    @ColumnInfo(defaultValue = "0") val ended: Boolean = false
+    @ColumnInfo(defaultValue = "0") val ended: Boolean = false,
+    @ColumnInfo(defaultValue = "'[]'") val genresJson: String = "[]",
+    val releaseYear: Int? = null
 )
+
+@Entity(tableName = "local_listen_genres", primaryKeys = ["listenId", "genre"],
+    foreignKeys = [ForeignKey(entity = LocalListen::class, parentColumns = ["id"], childColumns = ["listenId"], onDelete = ForeignKey.CASCADE)])
+data class LocalListenGenre(val listenId: String, val genre: String)
+
+data class LocalInsightAggregate(val label: String, val detail: String, val bucket: Int, val count: Long, val identity: String)
 
 data class LocalListenRank(@Embedded val listen: LocalListen, val plays: Long)
 data class LocalListenSummary(val count: Long, val milliseconds: Long, val first: Long?)
@@ -45,6 +53,11 @@ interface LocalListeningDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(listen: LocalListen)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun genres(values: List<LocalListenGenre>)
+
+    @RawQuery suspend fun insights(query: SupportSQLiteQuery): List<LocalInsightAggregate>
+
     @Query("UPDATE local_listens SET listenedMs = MAX(listenedMs, :milliseconds), positionMs = :position, ended = MAX(ended, :ended) WHERE id = :id")
     suspend fun duration(id: String, milliseconds: Long, position: Long?, ended: Boolean)
 
@@ -53,6 +66,9 @@ interface LocalListeningDao {
 
     @Query("SELECT COUNT(*) + COALESCE(SUM(listenedMs), 0) FROM local_listens")
     fun changes(): Flow<Long>
+
+    @Query("SELECT COUNT(*) + COALESCE(MAX(rowid), 0) FROM local_listens")
+    fun insightChanges(): Flow<Long>
 
     @Query("SELECT COUNT(*) AS `count`, COALESCE(SUM(listenedMs), 0) AS `milliseconds`, MIN(startedAtSeconds) AS `first` FROM local_listens")
     suspend fun summary(): LocalListenSummary
@@ -82,7 +98,7 @@ interface LocalListeningDao {
     suspend fun rowNumber(id: String): Long
 }
 
-@Database(entities = [LocalListen::class], version = 2, exportSchema = false)
+@Database(entities = [LocalListen::class, LocalListenGenre::class], version = 3, exportSchema = false)
 abstract class LocalListeningDatabase : RoomDatabase() {
     abstract fun listens(): LocalListeningDao
 }
@@ -90,6 +106,13 @@ abstract class LocalListeningDatabase : RoomDatabase() {
 @Module
 @InstallIn(SingletonComponent::class)
 object LocalListeningModule {
+    internal val migration2To3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE local_listens ADD COLUMN genresJson TEXT NOT NULL DEFAULT '[]'")
+            db.execSQL("ALTER TABLE local_listens ADD COLUMN releaseYear INTEGER")
+            db.execSQL("CREATE TABLE IF NOT EXISTS local_listen_genres (listenId TEXT NOT NULL, genre TEXT NOT NULL, PRIMARY KEY(listenId, genre), FOREIGN KEY(listenId) REFERENCES local_listens(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+        }
+    }
     internal val migration1To2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE local_listens ADD COLUMN positionMs INTEGER")
@@ -99,7 +122,7 @@ object LocalListeningModule {
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): LocalListeningDatabase = Room.databaseBuilder(
         context, LocalListeningDatabase::class.java, File(context.noBackupFilesDir, "local-listening.db").absolutePath
-    ).addMigrations(migration1To2).build()
+    ).addMigrations(migration1To2, migration2To3).build()
 
     @Provides fun dao(database: LocalListeningDatabase): LocalListeningDao = database.listens()
 }

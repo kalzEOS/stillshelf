@@ -138,4 +138,31 @@ class LocalListeningRepositoryTest {
         try { assertEquals(1L, LocalListeningRepository(reopened, reopened.listens()).statistics(null).totalScrobbles) }
         finally { reopened.close(); context.deleteDatabase(path) }
     }
+
+    @Test fun metadataMigrationRetainsVersionTwoHistoryWithoutInventingTags() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val path = java.io.File(context.noBackupFilesDir, "test-migration-${java.util.UUID.randomUUID()}.db").absolutePath
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(path, null).use { old ->
+            old.execSQL("CREATE TABLE local_listens (id TEXT NOT NULL PRIMARY KEY, libraryKey TEXT NOT NULL, trackId TEXT NOT NULL, " +
+                "artistId TEXT, albumId TEXT, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL, recordingMbid TEXT, " +
+                "durationSeconds INTEGER, startedAtSeconds INTEGER NOT NULL, listenedMs INTEGER NOT NULL, artistKey TEXT NOT NULL, " +
+                "albumKey TEXT NOT NULL, trackKey TEXT NOT NULL, positionMs INTEGER, ended INTEGER NOT NULL DEFAULT 0)")
+            listOf("startedAtSeconds", "artistKey", "albumKey", "trackKey").forEach { column ->
+                old.execSQL("CREATE INDEX index_local_listens_$column ON local_listens ($column)")
+            }
+            old.execSQL("INSERT INTO local_listens (id,libraryKey,trackId,title,artist,album,startedAtSeconds,listenedMs,artistKey,albumKey,trackKey) " +
+                "VALUES ('old','library','track','Song','Artist','Album',1700000000,35000,'Artist','Album','Song')")
+            old.version = 2
+        }
+        val migrated = Room.databaseBuilder(context, LocalListeningDatabase::class.java, path)
+            .addMigrations(LocalListeningModule.migration2To3).build()
+        try {
+            val history = LocalListeningRepository(migrated, migrated.listens())
+            assertEquals(1L, history.statistics(null).totalScrobbles)
+            val row = migrated.listens().recent().single()
+            assertEquals("[]", row.genresJson)
+            assertNull(row.releaseYear)
+            assertEquals(35_000L, row.listenedMs)
+        } finally { migrated.close(); context.deleteDatabase(path) }
+    }
 }

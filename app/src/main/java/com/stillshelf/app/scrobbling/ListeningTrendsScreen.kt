@@ -31,6 +31,7 @@ internal fun ListeningTrendsScreen(refresh: Int, viewModel: ListeningTrendsViewM
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         ListeningTrendsDashboard(state, range) { range = it }
         ListenBrainzInsightsScreen(refresh)
+        LocalListeningInsightsScreen(refresh)
     }
 }
 

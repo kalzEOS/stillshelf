@@ -39,6 +39,7 @@ internal object LocalListeningExport {
         .put("title", row.title).put("artist", row.artist).put("album", row.album).put("recording_mbid", row.recordingMbid)
         .put("started_at", row.startedAtSeconds).put("track_duration_seconds", row.durationSeconds).put("listened_ms", row.listenedMs)
         .put("position_ms", row.positionMs).put("ended", row.ended)
+        .put("genres", org.json.JSONArray(row.genresJson)).put("release_year", row.releaseYear)
 
     internal fun listenBrainz(row: LocalListen): JSONObject {
         val info = JSONObject().put("listening_from", "StillShelf").put("media_player", "StillShelf")

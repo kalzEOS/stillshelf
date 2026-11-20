@@ -2674,7 +2674,9 @@ class NavidromeRepository @Inject constructor(
                     ?.uppercase(),
             bitRateKbps = bitRateKbps,
             sizeBytes = sizeBytes,
-            musicBrainzId = musicBrainzId
+            musicBrainzId = musicBrainzId,
+            genres = genres,
+            releaseYear = releaseYear
         )
     }
 

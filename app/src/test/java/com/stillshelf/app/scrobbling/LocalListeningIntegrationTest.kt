@@ -31,6 +31,7 @@ class LocalListeningIntegrationTest {
 
     @Test fun localRefreshesFromDatabaseAndDeletionCannotRestoreNetworkCache() = runTest {
         var count = 1L
+        coEvery { local.summary() } answers { LocalListenSummary(count, count * 30_000, null) }
         coEvery { local.statistics("library") } answers { ListeningStatistics("Local", count, count * 30) }
         val cache = mockk<ListeningStatisticsCache>(relaxed = true)
         val clients = mockk<ListeningClients>(relaxed = true)
@@ -44,6 +45,33 @@ class LocalListeningIntegrationTest {
         coVerify(exactly = 0) { cache.put(any(), any()) }
         coVerify(exactly = 0) { native.statistics() }
         verify(exactly = 0) { clients.forProvider(any()) }
+    }
+
+    @Test fun durationUpdatesPreserveLoadedPagesAndInFlightLoadMore() = runTest {
+        var seconds = 30L
+        coEvery { local.summary() } answers { LocalListenSummary(300, seconds * 1000, null) }
+        val rows = (0 until 300).map { ListeningEntry("Artist $it", plays = 1) }
+        coEvery { local.statistics(any()) } returns ListeningStatistics("Local", 300, 30,
+            topArtists = rows.take(100), moreCharts = setOf(ListeningChart.ARTISTS))
+        coEvery { local.chartPage(ListeningChart.ARTISTS, 100, any()) } returns ListeningChartPage(rows.subList(100, 200), true)
+        val gate = kotlinx.coroutines.CompletableDeferred<ListeningChartPage>()
+        coEvery { local.chartPage(ListeningChart.ARTISTS, 200, any()) } coAnswers { gate.await() }
+        val vm = ListeningStatisticsViewModel(store, mockk(relaxed = true), mockk(relaxed = true), repository,
+            mockk(relaxed = true), localHistory = local)
+        clearMocks(local, answers = false)
+        vm.loadMore(ListeningChart.ARTISTS)
+        assertEquals(200, vm.state.value.statistics!!.topArtists.size)
+        vm.loadMore(ListeningChart.ARTISTS)
+        seconds = 35; changes.value++
+        assertEquals(200, vm.state.value.statistics!!.topArtists.size)
+        assertEquals(35L, vm.state.value.statistics!!.listeningSeconds)
+        assertEquals(ListeningChart.ARTISTS, vm.state.value.loadingMore)
+        gate.complete(ListeningChartPage(rows.drop(200), false))
+        assertEquals(300, vm.state.value.statistics!!.topArtists.size)
+        seconds = 40; changes.value++
+        assertEquals(300, vm.state.value.statistics!!.topArtists.size)
+        assertEquals(40L, vm.state.value.statistics!!.listeningSeconds)
+        coVerify(exactly = 0) { local.statistics(any()) }
     }
 
     @Test fun localTrendsBypassProviderCacheAndKeepTheRequestedRange() = runTest {

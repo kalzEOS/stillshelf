@@ -25,6 +25,8 @@ class LocalListeningRepository @Inject constructor(private val database: LocalLi
     val error = mutableError.asStateFlow()
     fun storageFailure() { mutableError.value = "Local history could not be saved. Check available device storage." }
 
+    suspend fun summary(): LocalListenSummary = withContext(Dispatchers.IO) { dao.summary() }
+
     suspend fun record(listen: LocalListen, epoch: Long) = withContext(Dispatchers.IO) { lock.withLock {
         // An already queued write must never resurrect history after an explicit deletion.
         if (epoch == mutableEpoch.value) database.withTransaction {
@@ -103,10 +105,15 @@ class LocalListeningRepository @Inject constructor(private val database: LocalLi
                     TrendPoint(date, day?.count ?: 0, (day?.milliseconds ?: 0) / 1000) }
             }
             val selected = points(start)
-            val active = days.filterValues { it.count > 0 }.keys
-            var date = if (today in active) today else today.minusDays(1)
+            // A streak is independent of the chart/heatmap window. Read distinct dates,
+            // rather than downloading individual records or limiting it to one year.
+            val active = dao.activityDates(until)
+            var date = if (active.firstOrNull() == today.toString()) today else today.minusDays(1)
             var streak = 0
-            while (date in active) { streak++; date = date.minusDays(1) }
+            for (day in active) {
+                if (day != date.toString()) break
+                streak++; date = date.minusDays(1)
+            }
             ListeningTrends(selected, true, true, "", streak = streak,
                 hour = dao.activeHour(start.atStartOfDay(zone).toEpochSecond(), until), heatmap = points(heatmapStart),
                 durationNote = "Observed playback time for recorded listens")

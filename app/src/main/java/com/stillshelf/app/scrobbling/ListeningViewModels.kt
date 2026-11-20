@@ -315,7 +315,19 @@ class ListeningStatisticsViewModel @Inject constructor(
 
     init {
         localHistory?.let { history -> viewModelScope.launch {
-            history.changes.collect { if (store.state.value.statisticsSource == StatisticsSource.LOCAL) refresh() }
+            history.changes.collect {
+                if (store.state.value.statisticsSource != StatisticsSource.LOCAL) return@collect
+                val generation = requestGeneration
+                val summary = try { history.summary() }
+                    catch (e: CancellationException) { throw e } catch (_: Exception) { refresh(); return@collect }
+                if (generation != requestGeneration || store.state.value.statisticsSource != StatisticsSource.LOCAL) return@collect
+                val current = mutableState.value
+                val stats = current.statistics
+                if (stats != null && stats.totalScrobbles == summary.count) {
+                    // Duration checkpoints must not discard ranking pages or cancel load-more.
+                    mutableState.value = current.copy(statistics = stats.copy(listeningSeconds = summary.milliseconds / 1000))
+                } else refresh()
+            }
         } }
         viewModelScope.launch {
             try { store.load() } catch (_: Exception) {

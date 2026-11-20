@@ -82,6 +82,9 @@ interface LocalListeningDao {
     @Query("SELECT strftime('%Y-%m-%d', startedAtSeconds, 'unixepoch', 'localtime') AS date, COUNT(*) AS count, SUM(listenedMs) AS milliseconds FROM local_listens WHERE startedAtSeconds >= :from AND startedAtSeconds < :until GROUP BY date ORDER BY date")
     suspend fun days(from: Long, until: Long): List<LocalListenDay>
 
+    @Query("SELECT DISTINCT strftime('%Y-%m-%d', startedAtSeconds, 'unixepoch', 'localtime') FROM local_listens WHERE startedAtSeconds < :until ORDER BY 1 DESC")
+    suspend fun activityDates(until: Long): List<String>
+
     @Query("SELECT CAST(strftime('%H', startedAtSeconds, 'unixepoch', 'localtime') AS INTEGER) FROM local_listens WHERE startedAtSeconds >= :from AND startedAtSeconds < :until GROUP BY strftime('%H', startedAtSeconds, 'unixepoch', 'localtime') ORDER BY COUNT(*) DESC LIMIT 1")
     suspend fun activeHour(from: Long, until: Long): Int?
 

@@ -91,6 +91,23 @@ class LocalListeningRepositoryTest {
         assertEquals(2, trends.heatmap.size)
     }
 
+    @Test fun streakUsesAllRecordedDatesRegardlessOfChartRangeAndStopsAtGaps() = runTest {
+        val today = LocalDate.of(2026, 11, 20)
+        repeat(400) { offset ->
+            val day = today.minusDays(offset.toLong())
+            db.listens().insert(row("day-$offset").copy(startedAtSeconds = day.atTime(12, 0)
+                .atZone(ZoneId.systemDefault()).toEpochSecond()))
+        }
+        for (range in TrendRange.entries) assertEquals("Range $range", 400, repo.trends(range, today).streak)
+        // No listen today is allowed; the streak can end yesterday.
+        assertEquals(400, repo.trends(TrendRange.MONTH, today.plusDays(1)).streak)
+        assertEquals(0, repo.trends(TrendRange.MONTH, today.plusDays(2)).streak)
+        repo.delete()
+        for (offset in listOf(0, 1, 3, 4)) db.listens().insert(row("gap-$offset").copy(
+            startedAtSeconds = today.minusDays(offset.toLong()).atTime(12, 0).atZone(ZoneId.systemDefault()).toEpochSecond()))
+        assertEquals(2, repo.trends(TrendRange.ALL, today).streak)
+    }
+
     @Test fun localMidnightBoundariesAndDstDatesDoNotLoseOrDoubleCountRecords() = runTest {
         val zone = ZoneId.systemDefault()
         val day = LocalDate.of(2026, 3, 8)

@@ -42,7 +42,8 @@ boundaries. Genre and release-year snapshots are captured from supplied library 
 and retained through queues and downloads. Partial tag coverage is displayed; missing
 metadata is not guessed. Artist origins are omitted because reliable country metadata
 is not available from the current library integration. No third-party enrichment is
-required or contacted. No imported or invented past listens fill sparse histories.
+required or contacted. No past listens are invented or fetched automatically to fill
+sparse histories; a backup can restore previously recorded listens.
 
 ## Storage and portability
 
@@ -71,7 +72,8 @@ After confirmation, it merges the native records in one database transaction.
 Existing event IDs are skipped, preserving newer playback checkpoints and preventing
 duplicates when the same backup is imported again. Original timestamps, observed
 durations, metadata, genre tags and release years are retained. Restored events are
-closed rather than resumed as unfinished playback sessions. Library identifiers are
+closed and marked as imported, so they cannot become playback recovery checkpoints.
+Recording order is retained independently of wall-clock corrections. Library identifiers are
 used for navigation only when they belong to the current library.
 
 Import never changes recording preferences, statistics selections, credentials or

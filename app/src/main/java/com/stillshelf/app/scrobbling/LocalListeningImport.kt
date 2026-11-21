@@ -79,7 +79,9 @@ internal object LocalListeningImport {
     private fun text(json: JSONObject, key: String, required: Boolean = false): String {
         val value = json.get(key)
         valid(value is String)
-        return (value as String).also { valid(it.length <= 4096 && (!required || it.isNotBlank()) && '\u0000' !in it) }
+        // The complete JSON record is already bounded before parsing. Metadata in existing
+        // exports has no separate field-length cap, so do not reject otherwise valid titles.
+        return (value as String).also { valid((!required || it.isNotBlank()) && '\u0000' !in it) }
     }
     private fun optionalText(json: JSONObject, key: String) = if (!json.has(key) || json.isNull(key)) null else text(json, key)
     private fun optionalNumber(json: JSONObject, key: String) = if (!json.has(key) || json.isNull(key)) null else number(json, key)
@@ -97,12 +99,12 @@ internal object LocalListeningImport {
         valid(year == null || year in 1000..java.time.LocalDate.now().year.toLong() + 1)
         val genres = if (!json.has("genres")) JSONArray() else json.getJSONArray("genres")
         valid(genres.length() <= 32)
-        val tags = (0 until genres.length()).map { i -> genres.get(i).also { valid(it is String && it.length <= 4096) } as String }
+        val tags = (0 until genres.length()).map { i -> genres.get(i).also { valid(it is String) } as String }
             .map(String::trim).filter(String::isNotBlank).distinctBy { it.lowercase(Locale.ROOT) }
         return LocalListen(text(json, "id", true), text(json, "library_key", true), text(json, "track_id", true),
             optionalText(json, "artist_id"), optionalText(json, "album_id"), title, artist, album,
             optionalText(json, "recording_mbid"), duration?.toInt(), timestamp, observed,
             key(artist), key(artist, album), key(artist, album, title), position, ended = true,
-            genresJson = JSONArray(tags).toString(), releaseYear = year?.toInt())
+            genresJson = JSONArray(tags).toString(), releaseYear = year?.toInt(), imported = true)
     }
 }

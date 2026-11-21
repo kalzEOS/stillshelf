@@ -55,6 +55,7 @@ class LocalListeningImportTest {
         assertEquals(row().genresJson, restored.genresJson)
         assertEquals(1999, restored.releaseYear)
         assertTrue(restored.ended) // A restored backup never resumes an old playback session.
+        assertTrue(restored.imported)
         assertEquals(LocalHistoryImportResult(0, 1), history.importArchive(backup))
         assertEquals(1L, history.statistics("library").totalScrobbles)
         val insights = LocalListeningInsights(db, db.listens()).load(InsightPeriod.ALL)
@@ -69,6 +70,46 @@ class LocalListeningImportTest {
         assertEquals(LocalHistoryImportResult(0, 1), history.importArchive(backup))
         assertEquals(2L, history.summary().count)
         assertEquals(90_000L, history.summary().milliseconds)
+    }
+    @Test fun restoringOlderListensDoesNotHideTheCurrentPlaybackCheckpoint() = runTest {
+        val older = row("older")
+        history.record(older, history.epoch.value)
+        val backup = backup()
+        history.delete()
+        val current = row("current").copy(startedAtSeconds = older.startedAtSeconds + 1000)
+        history.record(current, history.epoch.value)
+        assertEquals(current.id, history.resumable("library", "track", 35_000)?.id)
+        assertEquals(LocalHistoryImportResult(1, 0), history.importArchive(backup))
+        assertEquals(current.id, history.resumable("library", "track", 35_000)?.id)
+        assertEquals(2L, history.summary().count)
+        // Recovery must not fall back to an older unfinished listen after a newer one ends.
+        history.record(current.copy(ended = true), history.epoch.value)
+        assertNull(history.resumable("library", "track", 35_000))
+    }
+    @Test fun exportedLongMetadataRestoresWithoutTruncationWhileRecordSizeRemainsBounded() = runTest {
+        val listen = row().copy(title = "Title".repeat(1500), artist = "Artist".repeat(1000),
+            album = "Album".repeat(1000), genresJson = org.json.JSONArray(listOf("Genre".repeat(1000))).toString())
+        history.record(listen, history.epoch.value)
+        val backup = backup()
+        history.delete()
+        assertEquals(LocalHistoryImportResult(1, 0), history.importArchive(backup))
+        val restored = db.listens().recent().single()
+        assertEquals(listen.title, restored.title)
+        assertEquals(listen.artist, restored.artist)
+        assertEquals(listen.album, restored.album)
+        assertEquals(listen.genresJson, restored.genresJson)
+    }
+    @Test fun importsDoNotOverrideCheckpointOrderAfterClockCorrectionsOrTimestampTies() = runTest {
+        history.record(row("backup"), history.epoch.value)
+        val backup = backup()
+        history.delete()
+        // The earlier completed event has a later wall-clock timestamp.
+        history.record(row("completed").copy(startedAtSeconds = row().startedAtSeconds + 1000, ended = true), history.epoch.value)
+        history.record(row("current"), history.epoch.value)
+        history.importArchive(backup) // Same timestamp as current; later insertion must not hide it.
+        assertEquals("current", history.resumable("library", "track", 35_000)?.id)
+        history.record(row("current").copy(ended = true), history.epoch.value)
+        assertNull(history.resumable("library", "track", 35_000))
     }
     @Test fun malformedRecordRollsBackAllEarlierRowsAndPreservesExistingData() = runTest {
         history.record(row("existing"), 0)

@@ -172,7 +172,7 @@ class LocalListeningRepositoryTest {
             old.version = 2
         }
         val migrated = Room.databaseBuilder(context, LocalListeningDatabase::class.java, path)
-            .addMigrations(LocalListeningModule.migration2To3).build()
+            .addMigrations(LocalListeningModule.migration2To3, LocalListeningModule.migration3To4).build()
         try {
             val history = LocalListeningRepository(migrated, migrated.listens())
             assertEquals(1L, history.statistics(null).totalScrobbles)
@@ -180,6 +180,7 @@ class LocalListeningRepositoryTest {
             assertEquals("[]", row.genresJson)
             assertNull(row.releaseYear)
             assertEquals(35_000L, row.listenedMs)
+            assertFalse(row.imported)
         } finally { migrated.close(); context.deleteDatabase(path) }
     }
 }

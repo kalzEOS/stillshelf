@@ -115,6 +115,15 @@ class ListeningSettingsScreenTest {
         compose.onNodeWithTag("option-Local Listening History").assertDoesNotExist()
     }
 
+    @Test fun localImportUsesTheExistingCardAndDisablesActionsWhileBusy() {
+        every { localVm.busy } returns MutableStateFlow(true)
+        show(viewModel())
+        main("Import Local History").assertIsDisplayed().assertIsNotEnabled()
+        main("Export Local History").assertIsNotEnabled()
+        main("Delete Local History").assertIsNotEnabled()
+        verify(exactly = 0) { localVm.importBackup(any()) }
+    }
+
     @Test fun localDeletionRequiresConfirmationAndCancelPreservesHistory() {
         show(viewModel())
         main("Delete Local History").performClick()

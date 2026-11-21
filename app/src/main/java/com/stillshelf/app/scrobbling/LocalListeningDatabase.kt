@@ -35,7 +35,8 @@ data class LocalListen(
     val positionMs: Long? = null,
     @ColumnInfo(defaultValue = "0") val ended: Boolean = false,
     @ColumnInfo(defaultValue = "'[]'") val genresJson: String = "[]",
-    val releaseYear: Int? = null
+    val releaseYear: Int? = null,
+    @ColumnInfo(defaultValue = "0") val imported: Boolean = false
 )
 
 @Entity(tableName = "local_listen_genres", primaryKeys = ["listenId", "genre"],
@@ -51,7 +52,7 @@ data class LocalListenDay(val date: String, val count: Long, val milliseconds: L
 @Dao
 interface LocalListeningDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(listen: LocalListen)
+    suspend fun insert(listen: LocalListen): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun genres(values: List<LocalListenGenre>)
@@ -61,7 +62,9 @@ interface LocalListeningDao {
     @Query("UPDATE local_listens SET listenedMs = MAX(listenedMs, :milliseconds), positionMs = :position, ended = MAX(ended, :ended) WHERE id = :id")
     suspend fun duration(id: String, milliseconds: Long, position: Long?, ended: Boolean)
 
-    @Query("SELECT * FROM local_listens WHERE libraryKey = :library AND trackId = :track ORDER BY rowid DESC LIMIT 1")
+    // Imported listens are history, never playback checkpoints. Preserve recording order even
+    // when the wall clock moves backwards or restored timestamps match a current listen.
+    @Query("SELECT * FROM local_listens WHERE libraryKey = :library AND trackId = :track AND imported = 0 ORDER BY rowid DESC LIMIT 1")
     suspend fun latest(library: String, track: String): LocalListen?
 
     @Query("SELECT COUNT(*) + COALESCE(SUM(listenedMs), 0) FROM local_listens")
@@ -101,7 +104,7 @@ interface LocalListeningDao {
     suspend fun rowNumber(id: String): Long
 }
 
-@Database(entities = [LocalListen::class, LocalListenGenre::class], version = 3, exportSchema = false)
+@Database(entities = [LocalListen::class, LocalListenGenre::class], version = 4, exportSchema = false)
 abstract class LocalListeningDatabase : RoomDatabase() {
     abstract fun listens(): LocalListeningDao
 }
@@ -109,6 +112,11 @@ abstract class LocalListeningDatabase : RoomDatabase() {
 @Module
 @InstallIn(SingletonComponent::class)
 object LocalListeningModule {
+    internal val migration3To4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE local_listens ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
+        }
+    }
     internal val migration2To3 = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE local_listens ADD COLUMN genresJson TEXT NOT NULL DEFAULT '[]'")
@@ -125,7 +133,7 @@ object LocalListeningModule {
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): LocalListeningDatabase = Room.databaseBuilder(
         context, LocalListeningDatabase::class.java, File(context.noBackupFilesDir, "local-listening.db").absolutePath
-    ).addMigrations(migration1To2, migration2To3).build()
+    ).addMigrations(migration1To2, migration2To3, migration3To4).build()
 
     @Provides fun dao(database: LocalListeningDatabase): LocalListeningDao = database.listens()
 }

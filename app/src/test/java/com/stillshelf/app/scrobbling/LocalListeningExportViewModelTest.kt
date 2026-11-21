@@ -47,6 +47,15 @@ class LocalListeningExportViewModelTest {
             }
             assertEquals("Local listening history exported.", vm.message.value)
             assertEquals(1L, history.statistics(null).totalScrobbles)
+            history.delete()
+            vm.importBackup(Uri.fromFile(destination))
+            vm.busy.first { !it }
+            assertEquals(1L, history.summary().count)
+            assertEquals("Import complete: 1 listens added, 0 already saved.", vm.message.value)
+            vm.importBackup(Uri.fromFile(destination))
+            vm.busy.first { !it }
+            assertEquals("Import complete: 0 listens added, 1 already saved.", vm.message.value)
+            assertEquals(1L, history.summary().count)
             coVerify(exactly = 0) { settings.update(any()) }
         } finally { destination.delete() }
     }

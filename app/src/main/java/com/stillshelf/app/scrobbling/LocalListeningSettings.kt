@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 @HiltViewModel
@@ -35,9 +36,11 @@ class LocalListeningViewModel @Inject constructor(private val settings: Listenin
     private fun action(block: suspend () -> Unit) {
         if (mutableBusy.value) return
         mutableBusy.value = true
+        mutableMessage.value = null
         viewModelScope.launch {
             try { block() }
             catch (e: CancellationException) { throw e }
+            catch (e: LocalHistoryImportException) { mutableMessage.value = e.message }
             catch (_: Exception) { mutableMessage.value = "Could not save local history changes. Check available device storage and try again." }
             finally { mutableBusy.value = false }
         }
@@ -51,6 +54,28 @@ class LocalListeningViewModel @Inject constructor(private val settings: Listenin
         }
         mutableMessage.value = "Local listening history exported."
     }
+    fun importBackup(uri: Uri) = action {
+        val result = withContext(Dispatchers.IO) {
+            val file = java.io.File.createTempFile("local-history-import-", ".zip", context.cacheDir)
+            try {
+                val input = context.contentResolver.openInputStream(uri) ?: error("Backup unavailable")
+                input.use { source -> file.outputStream().use { target ->
+                    val buffer = ByteArray(32 * 1024)
+                    var total = 0L
+                    while (true) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        val size = source.read(buffer)
+                        if (size < 0) break
+                        total += size
+                        if (total > 256L * 1024 * 1024) throw LocalHistoryImportException("This backup is too large to import. Existing history is unchanged.")
+                        target.write(buffer, 0, size)
+                    }
+                } }
+                history.importArchive(file)
+            } finally { file.delete() }
+        }
+        mutableMessage.value = "Import complete: ${result.added} listens added, ${result.skipped} already saved."
+    }
 }
 
 @Composable
@@ -59,6 +84,8 @@ internal fun LocalListeningSettings(settings: ListeningSettings, viewModel: Loca
     val message by viewModel.message.collectAsStateWithLifecycle()
     val storageError by viewModel.storageError.collectAsStateWithLifecycle()
     var confirmDelete by remember { mutableStateOf(false) }
+    var pendingImport by remember { mutableStateOf<Uri?>(null) }
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> pendingImport = uri }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         uri?.let(viewModel::export)
     }
@@ -70,14 +97,21 @@ internal fun LocalListeningSettings(settings: ListeningSettings, viewModel: Loca
             style = MaterialTheme.typography.bodySmall)
         OutlinedButton(onClick = { export.launch("stillshelf-listening-history-${java.time.LocalDate.now()}.zip") },
             enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("export-local-history")) { Text("Export Local History") }
+        OutlinedButton(onClick = { import.launch(arrayOf("application/zip", "application/octet-stream", "application/x-zip-compressed")) },
+            enabled = !busy, modifier = Modifier.fillMaxWidth().testTag("import-local-history")) { Text("Import Local History") }
         OutlinedButton(onClick = { confirmDelete = true }, enabled = !busy,
             modifier = Modifier.fillMaxWidth().testTag("delete-local-history")) { Text("Delete Local History") }
-        Text("Stored only on this device. Export regularly: uninstalling StillShelf or losing your device may remove this history.", style = MaterialTheme.typography.bodySmall)
+        Text("Stored only on this device. Export a backup before uninstalling or changing phones, then use Import Local History to restore it.", style = MaterialTheme.typography.bodySmall)
         Text("Exports include a complete StillShelf record and ListenBrainz-format listens. Direct ZIP upload compatibility is not guaranteed.", style = MaterialTheme.typography.bodySmall)
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         storageError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     }
+    if (pendingImport != null) AlertDialog(onDismissRequest = { pendingImport = null },
+        title = { Text("Import local listening history?") },
+        text = { Text("Add listens from a StillShelf backup ZIP to the history on this device. Existing listens are kept and duplicates are skipped. Nothing is sent to connected services or enabled automatically.") },
+        confirmButton = { TextButton(onClick = { pendingImport?.let(viewModel::importBackup); pendingImport = null }, enabled = !busy) { Text("Import") } },
+        dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("Cancel") } })
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false },
         title = { Text("Delete local listening history?") },
         text = { Text("This permanently deletes the history saved on this device. Your connections and remote listening history will remain unchanged.") },

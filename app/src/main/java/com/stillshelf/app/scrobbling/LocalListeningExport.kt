@@ -68,6 +68,7 @@ Direct ZIP upload compatibility is not guaranteed. Nothing is uploaded by export
 
 Keep this archive private. It contains your listening history. Export regularly:
 uninstalling StillShelf or losing this device may remove the on-device history.
-This version exports history; restoring an archive into StillShelf is not supported.
+Restore this ZIP using Import Local History in StillShelf's local-history settings.
+Import merges saved listens without replacing existing records or sending them online.
 """
 }

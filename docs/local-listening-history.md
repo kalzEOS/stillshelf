@@ -64,7 +64,23 @@ The ListenBrainz records use documented integer UNIX `listened_at` timestamps an
 `listen_type=import`. Track length is exported as `duration_ms`, separately from
 StillShelf's observed `listened_ms`. No missing MusicBrainz IDs are invented.
 Direct upload of this ZIP to ListenBrainz has **not** been verified and is not
-guaranteed. Archive restoration into StillShelf is not implemented in this version.
+guaranteed.
+
+Import Local History opens Android's document picker for a StillShelf backup ZIP.
+After confirmation, it merges the native records in one database transaction.
+Existing event IDs are skipped, preserving newer playback checkpoints and preventing
+duplicates when the same backup is imported again. Original timestamps, observed
+durations, metadata, genre tags and release years are retained. Restored events are
+closed rather than resumed as unfinished playback sessions. Library identifiers are
+used for navigation only when they belong to the current library.
+
+Import never changes recording preferences, statistics selections, credentials or
+external submission queues. It does not submit restored listens to online services.
+Invalid or unsupported archives roll back completely. Version 1 StillShelf backups
+are supported, including earlier exports without optional tags. Plain ListenBrainz
+JSON and other applications' exports are not supported. To bound storage and memory
+use, imports allow at most 256 MiB of ZIP data, one million records, 512 MiB of native
+record text and 64 KiB per record. Keep the original backup after restoring it.
 
 Format references: [ListenBrainz JSON](https://listenbrainz.readthedocs.io/en/latest/users/json.html)
 and [Core import API](https://listenbrainz.readthedocs.io/en/latest/users/api/core.html).

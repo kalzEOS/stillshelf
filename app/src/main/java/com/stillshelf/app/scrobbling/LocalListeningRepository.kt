@@ -122,6 +122,19 @@ class LocalListeningRepository @Inject constructor(private val database: LocalLi
     suspend fun export(output: java.io.OutputStream) = withContext(Dispatchers.IO) {
         database.withTransaction { LocalListeningExport.write(dao, output) }
     }
+
+    suspend fun importArchive(file: java.io.File): LocalHistoryImportResult = withContext(Dispatchers.IO) { lock.withLock {
+        database.withTransaction {
+            LocalListeningImport.read(file) { listen ->
+                val inserted = dao.insert(listen) != -1L
+                if (inserted) {
+                    val genres = org.json.JSONArray(listen.genresJson)
+                    dao.genres((0 until genres.length()).map { LocalListenGenre(listen.id, genres.getString(it)) })
+                }
+                inserted
+            }
+        }
+    } }
 }
 
 internal fun localIdentity(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

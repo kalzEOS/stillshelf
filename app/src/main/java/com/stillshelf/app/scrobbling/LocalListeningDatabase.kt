@@ -51,7 +51,7 @@ data class LocalListenDay(val date: String, val count: Long, val milliseconds: L
 @Dao
 interface LocalListeningDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(listen: LocalListen)
+    suspend fun insert(listen: LocalListen): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun genres(values: List<LocalListenGenre>)

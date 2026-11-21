@@ -17,6 +17,8 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.stillshelf.app.ui.navigation.retiredAbsMusicRoutes
+import androidx.navigation.compose.composable
 
 @RunWith(AndroidJUnit4::class)
 class ListeningSettingsScreenTest {
@@ -115,6 +117,22 @@ class ListeningSettingsScreenTest {
         compose.onNodeWithTag("option-Local Listening History").assertDoesNotExist()
     }
 
+    @Test fun absSettingsDoesNotExposeMusicScrobblingOrStatistics() {
+        val absVm = mockk<com.stillshelf.app.ui.screens.SettingsViewModel>(relaxed = true) {
+            every { uiState } returns MutableStateFlow(com.stillshelf.app.ui.screens.SettingsUiState(
+                selectedBackend = com.stillshelf.app.core.model.BackendProvider.AUDIOBOOKSHELF,
+                appUpdatesEnabled = true))
+        }
+        compose.setContent { MaterialTheme {
+            com.stillshelf.app.ui.screens.SettingsScreen(viewModel = absVm)
+        } }
+        dismissTestAgentWarning()
+        compose.onNodeWithText("APP UPDATES").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Scrobbling & Statistics").assertDoesNotExist()
+        compose.onNodeWithText("LISTENING HISTORY").assertDoesNotExist()
+        compose.onNodeWithText("LOCK SCREEN CONTROLS").assertExists()
+    }
+
     @Test fun localImportUsesTheExistingCardAndDisablesActionsWhileBusy() {
         every { localVm.busy } returns MutableStateFlow(true)
         show(viewModel())
@@ -122,6 +140,24 @@ class ListeningSettingsScreenTest {
         main("Export Local History").assertIsNotEnabled()
         main("Delete Local History").assertIsNotEnabled()
         verify(exactly = 0) { localVm.importBackup(any()) }
+    }
+
+    @Test fun retiredAbsMusicSettingsRouteReturnsToAbsSettings() = checkRetiredAbsRoute("main/settings/listening")
+    @Test fun retiredAbsStatisticsRouteReturnsToAbsSettings() = checkRetiredAbsRoute("main/listening-statistics")
+
+    private fun checkRetiredAbsRoute(route: String) {
+        compose.setContent {
+            val nav = androidx.navigation.compose.rememberNavController()
+            androidx.navigation.compose.NavHost(navController = nav, startDestination = route) {
+                retiredAbsMusicRoutes(nav)
+                composable(com.stillshelf.app.ui.navigation.MainRoute.SETTINGS) {
+                    androidx.compose.material3.Text("Audiobookshelf settings")
+                }
+            }
+        }
+        dismissTestAgentWarning()
+        compose.onNodeWithText("Audiobookshelf settings").assertIsDisplayed()
+        compose.onNodeWithText("Scrobbling & Statistics").assertDoesNotExist()
     }
 
     @Test fun localDeletionRequiresConfirmationAndCancelPreservesHistory() {

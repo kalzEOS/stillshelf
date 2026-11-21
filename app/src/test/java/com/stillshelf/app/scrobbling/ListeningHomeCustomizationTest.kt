@@ -26,8 +26,8 @@ class ListeningHomeCustomizationTest {
     @Before fun setUp() { Dispatchers.setMain(UnconfinedTestDispatcher()) }
     @After fun tearDown() { Dispatchers.resetMain() }
 
-    @Test fun existingAbsOrderAndHiddenChoicesSurviveNewSectionAndReorderPersists() = runTest {
-        val state = MutableStateFlow(SessionPreferenceState(activeServerId = null, activeLibraryId = null, homeSectionOrder = listOf(HomeSectionIds.DISCOVER, HomeSectionIds.CONTINUE),
+    @Test fun absIgnoresLegacyMusicStatisticsChoiceAndPreservesBookCustomization() = runTest {
+        val state = MutableStateFlow(SessionPreferenceState(activeServerId = null, activeLibraryId = null, homeSectionOrder = listOf(HomeSectionIds.DISCOVER, "listening_statistics", HomeSectionIds.CONTINUE),
             hiddenHomeSectionIds = setOf(HomeSectionIds.RECENT_SERIES)))
         val preferences = mockk<SessionPreferences> {
             every { this@mockk.state } returns state
@@ -36,10 +36,10 @@ class ListeningHomeCustomizationTest {
         }
         val vm = CustomizeViewModel(preferences)
         assertEquals(listOf(HomeSectionIds.DISCOVER, HomeSectionIds.CONTINUE), vm.uiState.value.personalizedSections.take(2).map { it.id })
-        assertEquals(HomeSectionIds.LISTENING_STATISTICS, vm.uiState.value.personalizedSections.last().id)
+        assertFalse(vm.uiState.value.personalizedSections.any { it.id == "listening_statistics" || it.title == "Listening Statistics" })
         assertTrue(vm.uiState.value.hiddenPersonalizedSectionIds.contains(HomeSectionIds.RECENT_SERIES))
-        vm.setHiddenPersonalizedSectionIds(setOf(HomeSectionIds.LISTENING_STATISTICS))
-        coVerify { preferences.setHiddenHomeSectionIds(setOf(HomeSectionIds.LISTENING_STATISTICS)) }
+        vm.setHiddenPersonalizedSectionIds(setOf(HomeSectionIds.RECENTLY_ADDED))
+        coVerify { preferences.setHiddenHomeSectionIds(setOf(HomeSectionIds.RECENTLY_ADDED)) }
     }
 
     @Test fun navidromeHasIndependentOrderAndListeningStatisticsVisibility() = runTest {

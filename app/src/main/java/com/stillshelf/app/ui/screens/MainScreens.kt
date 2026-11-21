@@ -976,12 +976,6 @@ fun HomeScreen(
                     return@forEach
                 }
                 when (section.id) {
-                    HomeSectionIds.LISTENING_STATISTICS -> {
-                        item(key = section.id) {
-                            com.stillshelf.app.scrobbling.ListeningStatisticsSection(
-                                onSeeAll = { onNavigateToRoute(MainRoute.LISTENING_STATISTICS) })
-                        }
-                    }
                     HomeSectionIds.CONTINUE -> {
                         item(key = "${section.id}-title") {
                             SectionTitle(
@@ -4786,7 +4780,6 @@ fun DownloadsScreen(
 @Composable
 fun SettingsScreen(
     onManageServers: () -> Unit = {},
-    onOpenListeningSettings: () -> Unit = {},
     onOpenAdvanced: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenPodcastSettings: () -> Unit = {},
@@ -4961,10 +4954,6 @@ fun SettingsScreen(
             )
         }
 
-        Text("LISTENING HISTORY", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Card(colors = CardDefaults.cardColors(containerColor = sectionCardColor), shape = RoundedCornerShape(18.dp), border = sectionCardBorder) {
-            SettingsRow(title = "Scrobbling & Statistics", onClick = onOpenListeningSettings)
-        }
         if (uiState.appUpdatesEnabled) {
             Text(
                 text = "APP UPDATES",

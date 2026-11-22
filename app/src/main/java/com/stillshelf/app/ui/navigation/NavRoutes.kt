@@ -34,6 +34,8 @@ object MainRoute {
     const val SHELL = "main/shell"
     const val CUSTOMIZE = "main/customize"
     const val SETTINGS = "main/settings"
+    const val ABS_STATISTICS = "main/audiobook-statistics"
+    const val ABS_STATISTICS_SETTINGS = "main/settings/audiobook-statistics"
     const val ABOUT = "main/settings/about"
     const val ADVANCED = "main/settings/advanced"
     const val PODCAST_SETTINGS = "main/settings/podcasts"

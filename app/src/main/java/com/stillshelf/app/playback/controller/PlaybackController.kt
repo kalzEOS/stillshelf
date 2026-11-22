@@ -157,7 +157,8 @@ class PlaybackController @Inject constructor(
     private val sessionRepository: SessionRepository,
     private val sessionPreferences: SessionPreferences,
     private val bookDownloadManager: BookDownloadManager,
-    private val diagnosticLogManager: DiagnosticLogManager
+    private val diagnosticLogManager: DiagnosticLogManager,
+    private val absSessionRecorder: com.stillshelf.app.absstats.AbsSessionRecorder
 ) {
     companion object {
         private const val CHANNEL_ID = "stillshelf_playback_v4"
@@ -192,6 +193,7 @@ class PlaybackController @Inject constructor(
     private var playerInitialReadyHandled = false
     private val oomFallbackStreamingBookIds = mutableSetOf<String>()
     private var currentBookId: String? = null
+    private var recordingServerId: String? = null
     private var currentPlaybackSource: PlaybackSource? = null
     private var currentTrackStartOffsetMs: Long = 0L
     private var currentBookDurationMs: Long = 0L
@@ -1304,6 +1306,7 @@ class PlaybackController @Inject constructor(
         val player = createAbsPlayer(trackSelection.streamUrl)
         mediaPlayer = player
         currentBookId = bookId
+        recordingServerId = observedActiveServerId
         currentPlaybackSource = playbackSource
         currentTrackStartOffsetMs = trackSelection.trackStartOffsetMs
         currentBookDurationMs = trackSelection.bookDurationMs
@@ -1393,6 +1396,7 @@ class PlaybackController @Inject constructor(
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (player !== mediaPlayer) return
+                observeListeningSession(player, isPlaying)
                 logPlaybackTrace(
                     "playback_flag_changed is_playing=$isPlaying state=${describePlaybackState(player.playbackState)} " +
                         "position_ms=${safePosition(player)}"
@@ -1737,6 +1741,7 @@ class PlaybackController @Inject constructor(
 
     private fun updateProgress(player: ExoPlayer) {
         if (player !== mediaPlayer) return
+        observeListeningSession(player, player.isPlaying)
         val rawPositionMs = safePosition(player)
         val guardedPositionMs = applyPendingAutoAdvanceUiGuard(rawPositionMs)
         updateUiState {
@@ -1830,6 +1835,7 @@ class PlaybackController @Inject constructor(
     }
 
     private fun releasePlayer(syncProgressBeforeRelease: Boolean) {
+        mediaPlayer?.let { observeListeningSession(it, false) }
         cancelPausedPlayerRelease()
         playbackReadinessTimeoutJob?.cancel()
         playbackReadinessTimeoutJob = null
@@ -1856,6 +1862,12 @@ class PlaybackController @Inject constructor(
         currentBookDurationMs = 0L
         abandonAudioFocus()
         updatePlaybackSurface()
+    }
+
+    private fun observeListeningSession(player: ExoPlayer, playing: Boolean) {
+        val book = uiState.value.book?.takeIf { it.id == currentBookId }
+        absSessionRecorder.observe(recordingServerId, currentBookId, safePosition(player), playing, currentPlaybackSpeed,
+            book?.libraryId, book?.title.orEmpty(), book?.authorName.orEmpty(), book?.genres.orEmpty(), book?.narratorNames.orEmpty())
     }
 
     fun saveProgressSnapshot() {

@@ -976,6 +976,10 @@ fun HomeScreen(
                     return@forEach
                 }
                 when (section.id) {
+                    HomeSectionIds.ABS_STATISTICS -> item(key = section.id) {
+                        com.stillshelf.app.absstats.AbsStatisticsHomeCard(
+                            onSeeAll = { onNavigateToRoute(MainRoute.ABS_STATISTICS) })
+                    }
                     HomeSectionIds.CONTINUE -> {
                         item(key = "${section.id}-title") {
                             SectionTitle(
@@ -4780,6 +4784,7 @@ fun DownloadsScreen(
 @Composable
 fun SettingsScreen(
     onManageServers: () -> Unit = {},
+    onOpenAbsStatistics: () -> Unit = {},
     onOpenAdvanced: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenPodcastSettings: () -> Unit = {},
@@ -4954,6 +4959,10 @@ fun SettingsScreen(
             )
         }
 
+        Text("LISTENING STATISTICS", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Card(colors = CardDefaults.cardColors(containerColor = sectionCardColor), shape = RoundedCornerShape(18.dp), border = sectionCardBorder) {
+            SettingsRow(title = "Listening History & Statistics", onClick = onOpenAbsStatistics)
+        }
         if (uiState.appUpdatesEnabled) {
             Text(
                 text = "APP UPDATES",
@@ -12178,7 +12187,7 @@ private fun CircleActionButton(
 }
 
 @Composable
-private fun BackTitle(
+internal fun BackTitle(
     title: String,
     onBackClick: (() -> Unit)?,
     onHomeClick: (() -> Unit)? = null,

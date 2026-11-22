@@ -406,6 +406,7 @@ private fun MainTabsNavHost(
         }
         composable(MainTab.Settings.route) {
             SettingsScreen(
+                onOpenAbsStatistics = { navController.navigate(MainRoute.ABS_STATISTICS_SETTINGS) },
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
@@ -424,6 +425,7 @@ private fun MainTabsNavHost(
         }
         composable(MainRoute.SETTINGS) {
             SettingsScreen(
+                onOpenAbsStatistics = { navController.navigate(MainRoute.ABS_STATISTICS_SETTINGS) },
                 onBackClick = { navController.popBackStack() },
                 onHomeClick = onHomeClick,
                 onOpenAdvanced = {
@@ -441,6 +443,17 @@ private fun MainTabsNavHost(
             )
         }
         retiredAbsMusicRoutes(navController)
+        composable(MainRoute.ABS_STATISTICS_SETTINGS) {
+            com.stillshelf.app.absstats.AbsStatisticsSettings(onBack = { navController.popBackStack() },
+                onHome = onHomeClick,
+                onViewStatistics = { navController.navigate(MainRoute.ABS_STATISTICS) },
+                onManageServers = { navController.navigate(MainRoute.SERVERS) })
+        }
+        composable(MainRoute.ABS_STATISTICS) {
+            com.stillshelf.app.absstats.AbsStatisticsScreen(onBack = { navController.popBackStack() },
+                onOpenItem = { item, episode -> navController.navigate(if (episode != null)
+                    MainRoute.podcastEpisode(item, episode) else DetailRoute.book(item)) })
+        }
         composable(MainRoute.ABOUT) {
             AboutScreen(
                 onBackClick = { navController.popBackStack() },

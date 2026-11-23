@@ -4,6 +4,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.stillshelf.app.core.model.BookBookmark
 import com.stillshelf.app.core.model.BookChapter
@@ -15,6 +19,8 @@ import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
+import org.junit.Assert.assertEquals
+import io.mockk.verify
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -91,6 +97,38 @@ class PlayerScreenTest {
         composeTestRule.onNodeWithText("The Hobbit").assertIsDisplayed()
     }
 
+    @Test
+    fun goToBookUsesThePlayingBookRatherThanPreviewMetadata() {
+        var destination: String? = null
+        val vm = stubPlayerViewModel(
+            playbackUiState = PlaybackUiState(book = testBook(id = "playing", title = "Playing book")),
+            previewItem = ContinueListeningItem(testBook(id = "preview"), null, null)
+        )
+        composeTestRule.setContent {
+            PlayerScreen(viewModel = vm, collectionPickerViewModel = stubCollectionPickerViewModel(),
+                appearanceViewModel = stubAppearanceViewModel(), onGoToBook = { destination = it })
+        }
+        composeTestRule.onNodeWithText("More").performClick()
+        composeTestRule.onNodeWithText("Go to Book").performClick()
+        composeTestRule.runOnIdle { assertEquals("playing", destination) }
+    }
+
+    @Test
+    fun playerDownloadRemovalRequiresConfirmationAndCancelKeepsTheFile() {
+        val vm = stubPlayerViewModel(playbackUiState = PlaybackUiState(book = testBook()))
+        every { vm.downloadedBookKeys } returns MutableStateFlow(setOf("lib1|book1"))
+        composeTestRule.setContent {
+            PlayerScreen(viewModel = vm, collectionPickerViewModel = stubCollectionPickerViewModel(),
+                appearanceViewModel = stubAppearanceViewModel())
+        }
+        composeTestRule.onNodeWithText("Remove").performClick()
+        composeTestRule.onNodeWithText("Cancel").performClick()
+        verify(exactly = 0) { vm.toggleDownload() }
+        composeTestRule.onNodeWithText("Remove").performClick()
+        composeTestRule.onNode(hasText("Remove") and hasAnyAncestor(isDialog())).performClick()
+        verify(exactly = 1) { vm.toggleDownload() }
+    }
+
     // region stubs
 
     private fun stubPlayerViewModel(
@@ -105,6 +143,7 @@ class PlayerScreenTest {
         every { controlPrefs } returns MutableStateFlow(PlayerControlPrefs())
         every { downloadedBookKeys } returns MutableStateFlow(emptySet())
         every { downloadProgressPercent } returns MutableStateFlow(null)
+        every { downloadProgressByUiKey } returns MutableStateFlow(emptyMap())
         every { markFinishedUndoEvents } returns MutableSharedFlow()
     }
 

@@ -126,6 +126,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.ActionConfirmation
 import com.stillshelf.app.ui.components.PlaybackLoadingIndicator
 import com.stillshelf.app.ui.components.UpdateNotesDialogContent
 import androidx.compose.material3.HorizontalDivider
@@ -1121,6 +1122,7 @@ fun HomeScreen(
                                                         }
                                                     )
                                                     AppDropdownMenuItem(
+                                                        confirmation = ActionConfirmation.ListeningProgress,
                                                         text = {
                                                             Text(
                                                                 if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
@@ -1154,9 +1156,11 @@ fun HomeScreen(
                                                         }
                                                     )
                                                     AppDropdownMenuItem(
+                                                        confirmation = ActionConfirmation.RemoveDownload.takeIf { uiState.downloadedBookIds.containsDownloadedBook(book) || uiState.downloadProgressByBookId.downloadProgressForBook(book) != null },
                                                         text = {
                                                             Text(
-                                                                if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
+                                                                if (uiState.downloadedBookIds.containsDownloadedBook(book) ||
+                                                                    uiState.downloadProgressByBookId.downloadProgressForBook(book) != null) {
                                                                     "Remove Download"
                                                                 } else {
                                                                     "Download"
@@ -1172,6 +1176,7 @@ fun HomeScreen(
                                                         }
                                                     )
                                                     AppDropdownMenuItem(
+                                                        confirmation = ActionConfirmation.RemoveFromList,
                                                         text = { Text("Remove from Listen Again") },
                                                         leadingIcon = {
                                                             Icon(Icons.Outlined.RemoveCircleOutline, contentDescription = null)
@@ -1276,6 +1281,7 @@ fun HomeScreen(
                                                                 }
                                                             )
                                                             AppDropdownMenuItem(
+                                                                confirmation = ActionConfirmation.ListeningProgress,
                                                                 text = {
                                                                     Text(
                                                                         if (book.hasFinishedProgress()) {
@@ -1313,9 +1319,11 @@ fun HomeScreen(
                                                                 }
                                                             )
                                                             AppDropdownMenuItem(
+                                                        confirmation = ActionConfirmation.RemoveDownload.takeIf { uiState.downloadedBookIds.containsDownloadedBook(book) || uiState.downloadProgressByBookId.downloadProgressForBook(book) != null },
                                                                 text = {
                                                                     Text(
-                                                                        if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
+                                                                        if (uiState.downloadedBookIds.containsDownloadedBook(book) ||
+                                                                    uiState.downloadProgressByBookId.downloadProgressForBook(book) != null) {
                                                                             "Remove Download"
                                                                         } else {
                                                                             "Download"
@@ -1448,6 +1456,7 @@ fun HomeScreen(
                                                             }
                                                         )
                                                         AppDropdownMenuItem(
+                                                            confirmation = ActionConfirmation.ListeningProgress,
                                                             text = {
                                                                 Text(
                                                                     if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished"
@@ -1481,9 +1490,11 @@ fun HomeScreen(
                                                             }
                                                         )
                                                         AppDropdownMenuItem(
+                                                        confirmation = ActionConfirmation.RemoveDownload.takeIf { uiState.downloadedBookIds.containsDownloadedBook(book) || uiState.downloadProgressByBookId.downloadProgressForBook(book) != null },
                                                             text = {
                                                                 Text(
-                                                                    if (uiState.downloadedBookIds.containsDownloadedBook(book)) {
+                                                                    if (uiState.downloadedBookIds.containsDownloadedBook(book) ||
+                                                                    uiState.downloadProgressByBookId.downloadProgressForBook(book) != null) {
                                                                         "Remove Download"
                                                                     } else {
                                                                         "Download"
@@ -1538,6 +1549,7 @@ fun HomeScreen(
                                         AuthorCircleChip(
                                             name = author,
                                             imageUrl = uiState.authorImageUrls[author.trim().lowercase()],
+                                            bookCount = uiState.authorBookCounts[author.trim().lowercase()],
                                             chipWidth = newestAuthorsChipWidth,
                                             avatarSize = newestAuthorsAvatarSize,
                                             onClick = { onOpenAuthor(author) }
@@ -2128,6 +2140,7 @@ internal fun BookGridItem(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {
@@ -2136,6 +2149,7 @@ internal fun BookGridItem(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                         leadingIcon = {
                             Icon(
@@ -2286,6 +2300,7 @@ private fun SeriesStackGridItem(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = {
                             Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished")
                         },
@@ -2313,6 +2328,7 @@ private fun SeriesStackGridItem(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {
@@ -2393,6 +2409,7 @@ internal fun BookListItem(
                 onDismissRequest = { menuExpanded = false }
             ) {
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                     text = { Text(downloadLabel) },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = {
@@ -2401,6 +2418,7 @@ internal fun BookListItem(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.ListeningProgress,
                     text = { Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                     leadingIcon = {
                         Icon(
@@ -2555,6 +2573,7 @@ private fun SeriesStackListItem(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.ListeningProgress,
                     text = { Text(if (lead.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished") },
                     leadingIcon = {
                         Icon(
@@ -2580,6 +2599,7 @@ private fun SeriesStackListItem(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                     text = { Text(downloadLabel) },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = {
@@ -4116,7 +4136,10 @@ fun SearchScreen(
                                     style = MaterialTheme.typography.titleLarge,
                                     modifier = Modifier.weight(1f)
                                 )
-                                TextButton(onClick = viewModel::clearRecentSearchTerms) {
+                                TextButton(onClick = com.stillshelf.app.ui.components.rememberConfirmedAction(
+                                    ActionConfirmation.ClearSearch,
+                                    onConfirmed = viewModel::clearRecentSearchTerms
+                                )) {
                                     Text("Clear")
                                 }
                             }
@@ -4433,6 +4456,7 @@ private fun SearchBookRow(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.ListeningProgress,
                     text = {
                         Text(if (book.hasFinishedProgress()) "Mark as Unfinished" else "Mark as Finished")
                     },
@@ -4453,6 +4477,7 @@ private fun SearchBookRow(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                     text = { Text(downloadLabel) },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = {
@@ -4670,6 +4695,7 @@ fun DownloadsScreen(
                                         }
                                     )
                                     AppDropdownMenuItem(
+                                        confirmation = ActionConfirmation.RemoveDownload,
                                         text = { Text("Remove Download") },
                                         onClick = {
                                             menuExpanded = false
@@ -4753,6 +4779,7 @@ fun DownloadsScreen(
                                             }
                                         )
                                         AppDropdownMenuItem(
+                                            confirmation = ActionConfirmation.RemoveDownload,
                                             text = { Text("Remove Download") },
                                             onClick = {
                                                 menuExpanded = false
@@ -6777,7 +6804,12 @@ private fun AutomaticServerRoutingDialogs(
                     SettingsRow(
                         title = "Clear",
                         showChevronWhenUnselected = false,
-                        onClick = { onClearUrl(target) }
+                        onClick = com.stillshelf.app.ui.components.rememberConfirmedAction(
+                            ActionConfirmation("Clear server address?",
+                                "This removes the saved $dialogTitle address used for automatic routing.", "Clear"),
+                            targetKey = target,
+                            onConfirmed = { onClearUrl(target) }
+                        )
                     )
                 }
             },
@@ -7018,6 +7050,7 @@ fun BookDetailScreen(
                         onDismissRequest = { actionsExpanded = false }
                     ) {
                         AppDropdownMenuItem(
+                            confirmation = ActionConfirmation.RemoveDownload.takeIf { uiState.downloadedBookIds.containsDownloadedBook(uiState.detail?.book) || (uiState.downloadProgressPercent ?: -1) in 0..99 },
                             text = {
                                 val hasActiveDownload = (uiState.downloadProgressPercent ?: -1) in 0..99
                                 Text(
@@ -7044,6 +7077,7 @@ fun BookDetailScreen(
                             }
                         )
                         AppDropdownMenuItem(
+                            confirmation = ActionConfirmation.ListeningProgress,
                             text = {
                                 Text(
                                     if (effectiveDetailFinished) {
@@ -8591,7 +8625,11 @@ fun PlayerScreen(
                         showIconBubble = toolsShowIconBubble,
                         showSecondaryLabelWhenValue = false,
                         isHighlighted = isBookDownloaded || hasActivePlayerDownload,
-                        onClick = { viewModel.toggleDownload() }
+                        onClick = com.stillshelf.app.ui.components.rememberConfirmedAction(
+                            ActionConfirmation.RemoveDownload.takeIf { isBookDownloaded || hasActivePlayerDownload },
+                            targetKey = bookId,
+                            onConfirmed = { viewModel.toggleDownload() }
+                        )
                     )
                     Box(modifier = Modifier.weight(1f)) {
                         PlayerBottomToolItem(
@@ -8722,6 +8760,8 @@ fun PlayerScreen(
                             }
                         )
                         AppDropdownMenuItem(
+                            confirmation = ActionConfirmation.ListeningProgress,
+                            confirmationTarget = bookId,
                             text = {
                                 Text(
                                     if (effectivePlayerFinished) {
@@ -11657,6 +11697,7 @@ private fun SeriesStackCard(
 private fun AuthorCircleChip(
     name: String,
     imageUrl: String?,
+    bookCount: Int?,
     chipWidth: Dp = 100.dp,
     avatarSize: Dp = 80.dp,
     onClick: () -> Unit
@@ -11697,8 +11738,8 @@ private fun AuthorCircleChip(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        Text(
-            text = "1 book",
+        if (bookCount != null) Text(
+            text = if (bookCount == 1) "1 book" else "$bookCount books",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -11865,6 +11906,7 @@ private fun ContinueListeningCard(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = {
                             Text(
                                 if (item.book.hasFinishedProgress()) {
@@ -11898,6 +11940,7 @@ private fun ContinueListeningCard(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveFromContinueListening,
                         text = { Text("Remove from Continue Listening") },
                         leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
                         onClick = {
@@ -11906,6 +11949,7 @@ private fun ContinueListeningCard(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         onClick = {

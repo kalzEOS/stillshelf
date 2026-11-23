@@ -208,8 +208,13 @@ class HomeViewModel @Inject constructor(
                     listenAgain = normalizedSections.listenAgain,
                     recentSeries = normalizedSections.recentSeries,
                     discoverBooks = normalizedSections.discoverBooks,
-                    authorImageUrls = cachedResult.value.authorImageUrls
+                    authorImageUrls = cachedResult.value.authorImageUrls,
+                    authorBookCounts = cachedResult.value.authorBookCounts
                 )
+            }
+            // Older feed caches predate author counts. Refresh them once without hiding Home.
+            if (cachedResult.value.authorBookCounts.isEmpty() && cachedResult.value.recentlyAdded.isNotEmpty()) {
+                refreshNetwork(showLoading = false)
             }
             return
         }
@@ -381,7 +386,8 @@ class HomeViewModel @Inject constructor(
                             listenAgain = normalizedSections.listenAgain,
                             recentSeries = normalizedSections.recentSeries,
                             discoverBooks = normalizedSections.discoverBooks,
-                            authorImageUrls = result.value.authorImageUrls
+                            authorImageUrls = result.value.authorImageUrls,
+                            authorBookCounts = result.value.authorBookCounts
                         )
                     }
                 }
@@ -747,6 +753,7 @@ data class HomeUiState(
     val recentSeries: List<SeriesStackSummary> = emptyList(),
     val discoverBooks: List<BookSummary> = emptyList(),
     val authorImageUrls: Map<String, String> = emptyMap(),
+    val authorBookCounts: Map<String, Int> = emptyMap(),
     val downloadedBookIds: Set<String> = emptySet(),
     val downloadProgressByBookId: Map<String, Int> = emptyMap(),
     val staleDataMessage: String? = null,

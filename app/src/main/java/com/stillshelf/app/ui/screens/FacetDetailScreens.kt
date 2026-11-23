@@ -48,6 +48,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.ActionConfirmation
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -2583,6 +2584,7 @@ private fun AuthorGridBookItem(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false
@@ -2590,6 +2592,7 @@ private fun AuthorGridBookItem(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -2766,6 +2769,7 @@ private fun AuthorBookRow(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false
@@ -2773,6 +2777,7 @@ private fun AuthorBookRow(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -3990,6 +3995,7 @@ private fun CollectionBookRow(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveFromList,
                         text = { Text("Remove from collection") },
                         onClick = {
                             menuExpanded = false
@@ -4079,6 +4085,7 @@ private fun PlaylistBookRow(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveFromList,
                         text = { Text("Remove from playlist") },
                         onClick = {
                             menuExpanded = false
@@ -4168,6 +4175,7 @@ private fun FacetBookGridCard(
                             }
                         )
                         AppDropdownMenuItem(
+                            confirmation = ActionConfirmation.RemoveFromList,
                             text = { Text(removeActionLabel) },
                             onClick = {
                                 menuExpanded = false
@@ -5474,6 +5482,7 @@ private fun SeriesDetailBookRow(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.ListeningProgress,
                     text = {
                         Text(
                             if (book.hasFinishedStatusProgress()) {
@@ -5496,6 +5505,7 @@ private fun SeriesDetailBookRow(
                     }
                 )
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                     text = { Text(downloadLabel) },
                     onClick = {
                         menuExpanded = false
@@ -5629,6 +5639,7 @@ private fun SeriesDetailGridCard(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = {
                             Text(
                                 if (book.hasFinishedStatusProgress()) {
@@ -5651,6 +5662,7 @@ private fun SeriesDetailGridCard(
                         }
                     )
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         onClick = {
                             menuExpanded = false

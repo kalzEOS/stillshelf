@@ -118,12 +118,15 @@ fun AppDropdownMenuItem(
     enabled: Boolean = true,
     colors: MenuItemColors? = null,
     contentPadding: PaddingValues = MenuDefaults.DropdownMenuItemContentPadding,
-    interactionSource: MutableInteractionSource? = null
+    interactionSource: MutableInteractionSource? = null,
+    confirmation: ActionConfirmation? = null,
+    confirmationTarget: Any? = Unit
 ) {
     val resolvedColors = colors ?: appMenuItemColors()
+    val confirmedClick = rememberConfirmedAction(confirmation, confirmationTarget, onClick)
     M3DropdownMenuItem(
         text = text,
-        onClick = onClick,
+        onClick = confirmedClick,
         modifier = modifier,
         leadingIcon = leadingIcon,
         trailingIcon = trailingIcon,

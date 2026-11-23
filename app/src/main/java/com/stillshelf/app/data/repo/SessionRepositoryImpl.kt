@@ -3618,7 +3618,13 @@ class SessionRepositoryImpl @Inject constructor(
                     recentlyAdded = recentlyAdded,
                     listenAgain = listenAgain,
                     recentSeries = dedupedRecentSeries,
-                    authorImageUrls = authorImageUrls
+                    authorImageUrls = authorImageUrls,
+                    authorBookCounts = homeAuthorBookCounts(getAnyCache(booksCache, contentCacheKey(
+                        serverId = connection.server.id, libraryId = library.id, suffix = "books:all"
+                    )).orEmpty()) + authorsResult.getOrNull().orEmpty().mapNotNull { author ->
+                        val count = author.subtitle?.substringBefore(' ')?.toIntOrNull()
+                        count?.takeIf { it >= 0 }?.let { normalizeAuthorKey(author.name) to it }
+                    }.toMap()
                 )
                 runCatching {
                     sessionPreferences.setCachedHomeFeed(
@@ -5100,6 +5106,7 @@ class SessionRepositoryImpl @Inject constructor(
     private fun serializeHomeFeed(feed: HomeFeed): String {
         val root = JSONObject()
         root.put("libraryName", feed.libraryName)
+        root.put("authorBookCounts", JSONObject(feed.authorBookCounts))
         root.put(
             "authorImageUrls",
             JSONObject().apply {
@@ -5223,6 +5230,13 @@ class SessionRepositoryImpl @Inject constructor(
             recentlyAdded = recentItems,
             listenAgain = listenAgainItems,
             recentSeries = recentSeries,
+            authorBookCounts = buildMap {
+                val source = root.optJSONObject("authorBookCounts") ?: JSONObject()
+                source.keys().forEach { key ->
+                    val count = source.optInt(key, -1)
+                    if (key.isNotBlank() && count >= 0) put(key.trim().lowercase(), count)
+                }
+            },
             authorImageUrls = buildMap {
                 val source = root.optJSONObject("authorImageUrls") ?: JSONObject()
                 val keys = source.keys()

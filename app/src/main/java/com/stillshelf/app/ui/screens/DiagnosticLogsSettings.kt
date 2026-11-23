@@ -297,7 +297,13 @@ fun DiagnosticLogsBrowserDialog(
                                     Text("Share")
                                 }
                                 Button(
-                                    onClick = { onDeleteLogClick(file) },
+                                    onClick = com.stillshelf.app.ui.components.rememberConfirmedAction(
+                                        com.stillshelf.app.ui.components.ActionConfirmation(
+                                            "Delete diagnostic log?", "This deletes ${file.name} from this device.", "Delete"
+                                        ),
+                                        targetKey = file,
+                                        onConfirmed = { onDeleteLogClick(file) }
+                                    ),
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.error,

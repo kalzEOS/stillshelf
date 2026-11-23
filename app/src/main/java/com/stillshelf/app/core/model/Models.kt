@@ -139,7 +139,8 @@ data class HomeFeed(
     val recentlyAdded: List<BookSummary>,
     val listenAgain: List<BookSummary> = emptyList(),
     val recentSeries: List<SeriesStackSummary> = emptyList(),
-    val authorImageUrls: Map<String, String> = emptyMap()
+    val authorImageUrls: Map<String, String> = emptyMap(),
+    val authorBookCounts: Map<String, Int> = emptyMap()
 )
 
 data class SeriesStackSummary(

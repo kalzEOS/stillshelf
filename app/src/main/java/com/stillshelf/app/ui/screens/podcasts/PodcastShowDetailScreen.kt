@@ -101,6 +101,7 @@ import com.stillshelf.app.core.util.resolvedProgressFraction
 import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.ActionConfirmation
 import com.stillshelf.app.ui.screens.PlayerViewModel
 import kotlin.math.PI
 import kotlin.math.roundToInt
@@ -1040,6 +1041,7 @@ private fun EpisodeRow(
             ) {
                 if (!episode.isFinished) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = { Text("Mark as played") },
                         leadingIcon = {
                             Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1048,6 +1050,7 @@ private fun EpisodeRow(
                     )
                 } else {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = { Text("Mark as unplayed") },
                         leadingIcon = {
                             Icon(Icons.Outlined.RadioButtonUnchecked, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1056,6 +1059,7 @@ private fun EpisodeRow(
                     )
                 }
                 AppDropdownMenuItem(
+                    confirmation = ActionConfirmation.ResetProgress,
                     text = { Text("Reset progress") },
                     leadingIcon = {
                         Icon(Icons.Outlined.RadioButtonUnchecked, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1064,6 +1068,7 @@ private fun EpisodeRow(
                 )
                 if (showDownloadAction) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { showDownloaded || hasActiveDownload },
                         text = { Text(if (showDownloaded || hasActiveDownload) "Remove Download" else "Download") },
                         leadingIcon = {
                             Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp))

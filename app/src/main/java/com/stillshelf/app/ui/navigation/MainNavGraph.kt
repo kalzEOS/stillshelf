@@ -250,9 +250,7 @@ private fun MainShell() {
                 onGoToBook = { bookId ->
                     closePlayer(
                         afterClose = {
-                            tabsNavController.navigate(DetailRoute.book(bookId)) {
-                                launchSingleTop = true
-                            }
+                            tabsNavController.navigateToPlayingBook(bookId)
                         }
                     )
                 },

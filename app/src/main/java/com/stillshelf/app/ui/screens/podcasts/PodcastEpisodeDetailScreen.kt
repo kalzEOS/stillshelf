@@ -74,6 +74,7 @@ import com.stillshelf.app.ui.common.FramedCoverImage
 import com.stillshelf.app.ui.common.rememberCoverImageModel
 import com.stillshelf.app.ui.components.AppDropdownMenu
 import com.stillshelf.app.ui.components.AppDropdownMenuItem
+import com.stillshelf.app.ui.components.ActionConfirmation
 import com.stillshelf.app.ui.screens.PlayerViewModel
 import com.stillshelf.app.ui.theme.LocalMaterialDesignEnabled
 import kotlin.math.max
@@ -505,6 +506,7 @@ private fun PodcastEpisodeDetailTopBar(
                 HorizontalDivider()
                 if (showDownloadAction) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.RemoveDownload.takeIf { downloadLabel == "Remove Download" },
                         text = { Text(downloadLabel) },
                         leadingIcon = {
                             Icon(Icons.Outlined.Download, contentDescription = null)
@@ -519,6 +521,7 @@ private fun PodcastEpisodeDetailTopBar(
                 }
                 if (episode?.isFinished != true) {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = { Text("Mark as Played") },
                         leadingIcon = {
                             Icon(Icons.Outlined.CheckCircle, contentDescription = null)
@@ -531,6 +534,7 @@ private fun PodcastEpisodeDetailTopBar(
                     )
                 } else {
                     AppDropdownMenuItem(
+                        confirmation = ActionConfirmation.ListeningProgress,
                         text = { Text("Mark as Unplayed") },
                         leadingIcon = {
                             Icon(Icons.Outlined.RadioButtonUnchecked, contentDescription = null)

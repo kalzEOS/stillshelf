@@ -59,10 +59,24 @@ jobs:
               for key, value in props.items():
                   out.write(key + '=' + escape(value) + '\n')
           PY
-      - name: Build and test both variants
+      - name: Configure CI build memory
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testGithubDebugUnitTest assembleGithubRelease assembleFdroidRelease
+          free -h
+          mkdir -p "$HOME/.gradle"
+          cat >> "$HOME/.gradle/gradle.properties" <<'EOF'
+
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx4g
+          org.gradle.workers.max=2
+          org.gradle.parallel=false
+          EOF
+      - name: Run unit tests
+        run: ./gradlew --no-daemon --max-workers=2 --no-parallel testGithubDebugUnitTest
+      - name: Build GitHub release
+        run: ./gradlew --no-daemon --max-workers=2 --no-parallel assembleGithubRelease
+      - name: Build F-Droid release
+        run: ./gradlew --no-daemon --max-workers=2 --no-parallel assembleFdroidRelease
       - name: Remove signing material
         if: always()
         run: rm -f keystore.properties "$RUNNER_TEMP/stillshelf-release.jks"

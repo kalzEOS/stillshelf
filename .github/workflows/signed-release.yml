@@ -105,6 +105,12 @@ jobs:
         with:
           name: signed-apks
           path: release
+      - name: Package F-Droid APK separately
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          cd release
+          zip -0 "StillShelf-$TAG-fdroid.zip" "StillShelf-$TAG-fdroid.apk"
       - name: Create draft release without replacing existing assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -115,4 +121,4 @@ jobs:
             echo "Release already exists; refusing to replace it."
             exit 1
           fi
-          gh release create "$TAG" "release/StillShelf-$TAG.apk" "release/StillShelf-$TAG-fdroid.apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title "StillShelf $TAG" --notes "Add release notes before publishing."
+          gh release create "$TAG" "release/StillShelf-$TAG.apk" "release/StillShelf-$TAG-fdroid.zip" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title "StillShelf $TAG" --notes "Add release notes before publishing."

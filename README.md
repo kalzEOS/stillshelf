@@ -21,7 +21,7 @@ Both m4b and mp3 formats are supported on the Audiobooks part.
 Install StillShelf through its developer-maintained F-Droid repository. This is a separate repository from the official F-Droid catalog.
 
 <p align="center">
-  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="https://api.qrserver.com/v1/create-qr-code/?size=320x320&amp;margin=16&amp;data=https%3A%2F%2Fkalzeos.github.io%2Fstillshelf-fdroid%2Frepo%2F%3Ffingerprint%3D416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0" width="260" alt="Scan to add the StillShelf F-Droid repository" /></a>
+  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="docs/fdroid-qr.svg" width="260" alt="Scan to add the StillShelf F-Droid repository" /></a>
 </p>
 
 1. Install [F-Droid](https://f-droid.org/) if you do not already have it.

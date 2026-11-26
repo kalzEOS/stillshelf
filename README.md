@@ -10,6 +10,42 @@ The goal is a smooth, practical Android experience for browsing, managing, and l
 
 Both m4b and mp3 formats are supported on the Audiobooks part. 
 
+## Download and install
+
+<p align="center">
+  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="docs/fdroid-banner.svg" width="340" alt="Available via F-Droid, StillShelf repository" /></a>
+</p>
+
+### F-Droid
+
+Install StillShelf through its developer-maintained F-Droid repository. This is a separate repository from the official F-Droid catalog.
+
+<p align="center">
+  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="https://api.qrserver.com/v1/create-qr-code/?size=320x320&amp;margin=16&amp;data=https%3A%2F%2Fkalzeos.github.io%2Fstillshelf-fdroid%2Frepo%2F%3Ffingerprint%3D416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0" width="260" alt="Scan to add the StillShelf F-Droid repository" /></a>
+</p>
+
+1. Install [F-Droid](https://f-droid.org/) if you do not already have it.
+2. [Add the StillShelf repository](https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0) or scan the QR code above. Alternatively, open F-Droid settings, select Repositories and add the following address:
+
+   ```text
+   https://kalzeos.github.io/stillshelf-fdroid/repo/
+   ```
+
+3. Confirm the repository fingerprint, refresh the repository list and search for StillShelf.
+4. Install StillShelf. Future updates are managed by F-Droid.
+
+Repository SHA-256 fingerprint:
+
+```text
+416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0
+```
+
+### GitHub
+
+Prefer direct APK downloads and the built-in updater? Download the regular APK from [GitHub Releases](https://github.com/kalzEOS/stillshelf/releases/latest).
+
+Both distributions use the same package name and developer signing key. You can switch between them by installing a compatible version over your existing installation, without uninstalling or clearing your data. The F-Droid ZIP release asset is intended for repository publishing; F-Droid users do not need to extract it manually.
+
 ## Maintenance Status
 ​StillShelf is stable and feature-complete! I use this app daily, so it is actively maintained for bugs, API breaks, and Android OS compatibility, even if there are long gaps between commits. Feel free to open an issue if you encounter any bugs.
 

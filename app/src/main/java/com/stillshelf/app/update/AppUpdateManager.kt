@@ -234,7 +234,7 @@ class AppUpdateManager @Inject constructor(
                 for (assetIndex in 0 until assets.length()) {
                     val asset = assets.optJSONObject(assetIndex) ?: continue
                     val name = asset.optString("name").trim()
-                    if (!name.endsWith(".apk", ignoreCase = true)) continue
+                    if (!isGithubReleaseApk(name, tagName)) continue
                     val browserDownloadUrl = asset.optString("browser_download_url").trim()
                     if (browserDownloadUrl.isNotBlank()) {
                         apkUrl = browserDownloadUrl
@@ -273,3 +273,6 @@ class AppUpdateManager @Inject constructor(
         }
     }
 }
+
+internal fun isGithubReleaseApk(name: String, tagName: String): Boolean =
+    name.equals("StillShelf-$tagName.apk", ignoreCase = true)

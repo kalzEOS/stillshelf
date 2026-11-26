@@ -13,7 +13,7 @@ Both m4b and mp3 formats are supported on the Audiobooks part.
 ## Download and install
 
 <p align="center">
-  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="docs/fdroid-banner.svg" width="340" alt="Available via F-Droid, StillShelf repository" /></a>
+  <a href="https://kalzeos.github.io/stillshelf-fdroid/repo/?fingerprint=416566D6E30D37FA5D0EB8875D075CEF7B03AC5F5750A387FF669CFA3DF5CDD0"><img src="docs/fdroid-banner.svg" width="340" alt="Add to F-Droid, StillShelf repository" /></a>
 </p>
 
 ### F-Droid
@@ -136,3 +136,5 @@ The generated APKs will be located at:
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).
+
+The F-Droid logo is by William Theaker and Robert Martinez, from the [F-Droid artwork project](https://gitlab.com/fdroid/artwork). The custom F-Droid banner incorporates that logo and is licensed under [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).

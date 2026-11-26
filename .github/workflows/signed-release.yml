@@ -1,0 +1,118 @@
+name: Signed Android release
+on:
+  workflow_dispatch:
+    inputs:
+      create_draft:
+        description: Create a new draft GitHub release (leave unchecked to test signing only)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: signed-android-release
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Prepare signing configuration
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STILLSHELF_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STILLSHELF_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.STILLSHELF_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$KEYSTORE_BASE64"
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/stillshelf-release.jks"
+          python3 - <<'PY'
+          import os
+          def escape(value):
+              data = value.encode('utf-16-be')
+              return ''.join('\\u%04x' % int.from_bytes(data[i:i+2], 'big') for i in range(0, len(data), 2))
+          props = {
+              'storeFile': os.path.join(os.environ['RUNNER_TEMP'], 'stillshelf-release.jks'),
+              'storePassword': os.environ['STORE_PASSWORD'],
+              'keyAlias': 'stillshelf',
+              'keyPassword': os.environ['KEY_PASSWORD'],
+          }
+          with open('keystore.properties', 'w') as out:
+              for key, value in props.items():
+                  out.write(key + '=' + escape(value) + '\n')
+          PY
+      - name: Build and test both variants
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testGithubDebugUnitTest assembleGithubRelease assembleFdroidRelease
+      - name: Remove signing material
+        if: always()
+        run: rm -f keystore.properties "$RUNNER_TEMP/stillshelf-release.jks"
+      - name: Verify and name release APKs
+        id: verify
+        run: |
+          set -euo pipefail
+          sdk="$ANDROID_HOME/build-tools/36.0.0"
+          github_apk=app/build/outputs/apk/github/release/app-github-release.apk
+          fdroid_apk=app/build/outputs/apk/fdroid/release/app-fdroid-release.apk
+          expected=7c11480ade8034453fd12540fcac2c59bef21996160bc61826c8392eac7f2d24
+          for apk in "$github_apk" "$fdroid_apk"; do
+            cert=$("$sdk/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+            test "$cert" = "$expected"
+          done
+          github_info=$("$sdk/aapt" dump badging "$github_apk" | sed -n '1p')
+          fdroid_info=$("$sdk/aapt" dump badging "$fdroid_apk" | sed -n '1p')
+          test "$github_info" = "$fdroid_info"
+          [[ "$github_info" == "package: name='com.stillshelf.app'"* ]]
+          version=$(awk -F"'" '{print $6}' <<< "$github_info")
+          [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]
+          "$sdk/aapt" dump permissions "$github_apk" > "$RUNNER_TEMP/github-permissions.txt"
+          "$sdk/aapt" dump permissions "$fdroid_apk" > "$RUNNER_TEMP/fdroid-permissions.txt"
+          grep -q REQUEST_INSTALL_PACKAGES "$RUNNER_TEMP/github-permissions.txt"
+          if grep -q REQUEST_INSTALL_PACKAGES "$RUNNER_TEMP/fdroid-permissions.txt"; then exit 1; fi
+          tag="v$version"
+          mkdir -p release
+          cp "$github_apk" "release/StillShelf-$tag.apk"
+          cp "$fdroid_apk" "release/StillShelf-$tag-fdroid.apk"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: signed-apks
+          path: release/*.apk
+          if-no-files-found: error
+          retention-days: 7
+  draft:
+    needs: build
+    if: inputs.create_draft && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: signed-apks
+          path: release
+      - name: Create draft release without replacing existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to replace it."
+            exit 1
+          fi
+          gh release create "$TAG" "release/StillShelf-$TAG.apk" "release/StillShelf-$TAG-fdroid.apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title "StillShelf $TAG" --notes "Add release notes before publishing."

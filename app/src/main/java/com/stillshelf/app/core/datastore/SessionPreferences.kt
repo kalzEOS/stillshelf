@@ -16,6 +16,7 @@ import com.stillshelf.app.core.model.NavidromeEqualizerProfile
 import com.stillshelf.app.core.model.NavidromeLyricsSource
 import com.stillshelf.app.core.model.NavidromeCacheSizeOption
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.core.model.NavidromeContinuousPlaybackMode
 import com.stillshelf.app.core.model.flatNavidromeEqualizerBandLevels
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
@@ -74,6 +75,8 @@ class SessionPreferences @Inject constructor(
     private val navidromeMaterialDesignEnabledKey = booleanPreferencesKey("navidrome_material_design_enabled")
     private val navidromeImmersivePlayerEnabledKey = booleanPreferencesKey("navidrome_immersive_player_enabled")
     private val navidromeKeepScreenOnForLyricsKey = booleanPreferencesKey("navidrome_keep_screen_on_for_lyrics")
+    private val navidromeContinuousPlaybackEnabledKey = booleanPreferencesKey("navidrome_continuous_playback_enabled")
+    private val navidromeContinuousPlaybackModeKey = stringPreferencesKey("navidrome_continuous_playback_mode")
     private val cachedNavidromeHomeSessionKey = stringPreferencesKey("cached_navidrome_home_session")
     private val cachedNavidromeHomePayloadKey = stringPreferencesKey("cached_navidrome_home_payload")
     private val cachedNavidromeHomeSavedAtKey = longPreferencesKey("cached_navidrome_home_saved_at")
@@ -708,6 +711,14 @@ class SessionPreferences @Inject constructor(
         dataStore.edit { prefs ->
             prefs[navidromeKeepScreenOnForLyricsKey] = enabled
         }
+    }
+
+    suspend fun setNavidromeContinuousPlaybackEnabled(enabled: Boolean) {
+        dataStore.edit { it[navidromeContinuousPlaybackEnabledKey] = enabled }
+    }
+
+    suspend fun setNavidromeContinuousPlaybackMode(mode: NavidromeContinuousPlaybackMode) {
+        dataStore.edit { it[navidromeContinuousPlaybackModeKey] = mode.key }
     }
 
     suspend fun setNavidromeEqualizerEnabled(enabled: Boolean) {
@@ -2016,6 +2027,8 @@ class SessionPreferences @Inject constructor(
             navidromeMaterialDesignEnabled = this[navidromeMaterialDesignEnabledKey] ?: false,
             navidromeImmersivePlayerEnabled = this[navidromeImmersivePlayerEnabledKey] ?: false,
             navidromeKeepScreenOnForLyrics = this[navidromeKeepScreenOnForLyricsKey] ?: false,
+            navidromeContinuousPlaybackEnabled = this[navidromeContinuousPlaybackEnabledKey] ?: false,
+            navidromeContinuousPlaybackMode = NavidromeContinuousPlaybackMode.fromKey(this[navidromeContinuousPlaybackModeKey]),
             requiresLibrarySelection = this[requiresLibrarySelectionKey] ?: false,
             lastPlayedBookId = this[lastPlayedBookIdKey],
             hiddenBrowseSectionIds = parseCsv(this[hiddenBrowseSectionsKey]),
@@ -2100,6 +2113,8 @@ data class SessionPreferenceState(
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,
     val navidromeKeepScreenOnForLyrics: Boolean = false,
+    val navidromeContinuousPlaybackEnabled: Boolean = false,
+    val navidromeContinuousPlaybackMode: NavidromeContinuousPlaybackMode = NavidromeContinuousPlaybackMode.SAME_ARTIST,
     val requiresLibrarySelection: Boolean = false,
     val lastPlayedBookId: String? = null,
     val hiddenBrowseSectionIds: Set<String> = emptySet(),

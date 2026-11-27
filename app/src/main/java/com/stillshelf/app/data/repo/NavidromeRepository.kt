@@ -28,6 +28,7 @@ import com.stillshelf.app.core.model.NavidromeServer
 import com.stillshelf.app.core.model.NavidromeServerScanStatus
 import com.stillshelf.app.core.model.NavidromeSession
 import com.stillshelf.app.core.model.NavidromeTrack
+import com.stillshelf.app.core.model.NavidromeContinuousPlaybackMode
 import com.stillshelf.app.core.model.ServerConnectionMode
 import com.stillshelf.app.core.model.ServerConnectionRoute
 import com.stillshelf.app.core.model.ServerEndpointSwitchingConfig
@@ -44,6 +45,7 @@ import com.stillshelf.app.data.api.NavidromePlaylistDetailDto
 import com.stillshelf.app.data.api.NavidromeGenreDto
 import com.stillshelf.app.data.api.NavidromeRadioDto
 import com.stillshelf.app.data.api.NavidromeStructuredLyricsDto
+import com.stillshelf.app.data.api.NavidromeTrackDto
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -1307,6 +1309,49 @@ class NavidromeRepository @Inject constructor(
             throw result.exceptionOrNull() ?: IllegalStateException("Unable to load songs.")
         }
         AppResult.Success(result.getOrThrow().map { it.toModel(auth) })
+    }
+
+    suspend fun fetchContinuousPlaybackTracks(
+        reference: NavidromeTrack,
+        mode: NavidromeContinuousPlaybackMode
+    ): AppResult<List<NavidromeTrack>> = withAuth { auth ->
+        val tracks = when (mode) {
+            NavidromeContinuousPlaybackMode.SAME_ARTIST -> {
+                val artistId = reference.artistId?.takeIf { it.isNotBlank() }
+                    ?: return@withAuth AppResult.Success(emptyList())
+                fun matchesArtist(track: NavidromeTrackDto): Boolean =
+                    if (track.artistId.isNullOrBlank()) {
+                        track.artistName.equals(reference.artistName, ignoreCase = true)
+                    } else {
+                        track.artistId == artistId
+                    }
+                // Bound work for large discographies, and vary the albums on each continuation.
+                val albums = navidromeApi.getArtist(auth, artistId).getOrThrow().albums.shuffled().take(10)
+                val artistTracks = albums.flatMap { album -> navidromeApi.getAlbum(auth, album.id).getOrThrow().tracks }
+                    .filter(::matchesArtist)
+                if (artistTracks.any { it.id != reference.id }) {
+                    artistTracks
+                } else {
+                    // getArtist can omit compilation appearances when the performer is not the album artist.
+                    // Reuse the library-scoped song search, then discard unrelated search hits.
+                    val searchTracks = navidromeApi.getSongs(
+                        auth, query = reference.artistName, songCount = 500
+                    ).getOrThrow().filter(::matchesArtist)
+                    (artistTracks + searchTracks).distinctBy { it.id }
+                }
+            }
+            NavidromeContinuousPlaybackMode.SAME_GENRE -> {
+                val genre = reference.genres.firstOrNull { it.isNotBlank() }
+                    ?: return@withAuth AppResult.Success(emptyList())
+                navidromeApi.getRandomSongs(auth, size = 100, genre = genre).getOrThrow()
+            }
+            NavidromeContinuousPlaybackMode.SIMILAR_ARTISTS ->
+                navidromeApi.getSimilarSongs(auth, reference.artistId ?: reference.id).getOrThrow()
+            NavidromeContinuousPlaybackMode.RANDOM ->
+                navidromeApi.getRandomSongs(auth, size = 100).getOrThrow()
+        }
+        // Discovery may finish after a LAN/remote switch. Bind streams to the current route.
+        refreshPlayableTracks(tracks.map { it.toModel(auth) })
     }
 
     suspend fun fetchGenres(): AppResult<List<String>> = withAuth { auth ->

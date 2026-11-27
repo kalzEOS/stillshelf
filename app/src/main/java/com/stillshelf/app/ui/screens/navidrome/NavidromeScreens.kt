@@ -2,6 +2,11 @@
 
 package com.stillshelf.app.ui.screens.navidrome
 
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.RadioButton
+import com.stillshelf.app.core.model.NavidromeContinuousPlaybackMode
+
 import android.annotation.SuppressLint
 import android.view.WindowManager
 import android.app.Activity
@@ -5328,6 +5333,38 @@ private fun NavidromeSettingsRoute(
                     checked = appearanceUiState.navidromeKeepScreenOnForLyrics,
                     onCheckedChange = { appearanceViewModel.setNavidromeKeepScreenOnForLyrics(it) }
                 )
+                DividerLine()
+                SettingsSwitchRow(
+                    title = "Continuous playback",
+                    description = "Keep playing music after the current queue ends.",
+                    checked = appearanceUiState.navidromeContinuousPlaybackEnabled,
+                    onCheckedChange = appearanceViewModel::setNavidromeContinuousPlaybackEnabled
+                )
+                if (appearanceUiState.navidromeContinuousPlaybackEnabled) {
+                    DividerLine()
+                    Column(Modifier.selectableGroup().padding(vertical = 8.dp)) {
+                        Text(
+                            text = "Continue playing from",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        NavidromeContinuousPlaybackMode.entries.forEach { mode ->
+                            val selected = appearanceUiState.navidromeContinuousPlaybackMode == mode
+                            Row(
+                                modifier = Modifier.fillMaxWidth().selectable(
+                                    selected = selected,
+                                    role = androidx.compose.ui.semantics.Role.RadioButton,
+                                    onClick = { appearanceViewModel.setNavidromeContinuousPlaybackMode(mode) }
+                                ).padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = selected, onClick = null)
+                                Spacer(Modifier.width(12.dp))
+                                Text(mode.label, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                }
             }
         }
         item {
@@ -10538,6 +10575,7 @@ private fun SettingsSwitchRow(
     title: String,
     checked: Boolean,
     enabled: Boolean = true,
+    description: String? = null,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
@@ -10547,16 +10585,25 @@ private fun SettingsSwitchRow(
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
-            color = if (enabled) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            if (description != null) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, end = 12.dp)
+                )
             }
-        )
+        }
         Switch(
             checked = checked,
             onCheckedChange = if (enabled) onCheckedChange else null

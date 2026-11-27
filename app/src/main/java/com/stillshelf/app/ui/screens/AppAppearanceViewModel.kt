@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.stillshelf.app.core.datastore.SessionPreferences
 import com.stillshelf.app.core.model.BackendProvider
+import com.stillshelf.app.core.model.NavidromeContinuousPlaybackMode
 import com.stillshelf.app.ui.theme.AppThemeMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -21,6 +22,8 @@ data class AppAppearanceUiState(
     val navidromeMaterialDesignEnabled: Boolean = false,
     val navidromeImmersivePlayerEnabled: Boolean = false,
     val navidromeKeepScreenOnForLyrics: Boolean = false,
+    val navidromeContinuousPlaybackEnabled: Boolean = false,
+    val navidromeContinuousPlaybackMode: NavidromeContinuousPlaybackMode = NavidromeContinuousPlaybackMode.SAME_ARTIST,
     val immersivePlayerEnabled: Boolean = false,
     val playerBottomToolsStyle: String = "dock"
 ) {
@@ -59,6 +62,8 @@ class AppAppearanceViewModel @Inject constructor(
                         navidromeMaterialDesignEnabled = state.navidromeMaterialDesignEnabled,
                         navidromeImmersivePlayerEnabled = state.navidromeImmersivePlayerEnabled,
                         navidromeKeepScreenOnForLyrics = state.navidromeKeepScreenOnForLyrics,
+                        navidromeContinuousPlaybackEnabled = state.navidromeContinuousPlaybackEnabled,
+                        navidromeContinuousPlaybackMode = state.navidromeContinuousPlaybackMode,
                         immersivePlayerEnabled = state.immersivePlayerEnabled,
                         playerBottomToolsStyle = state.playerBottomToolsStyle
                     )
@@ -104,6 +109,14 @@ class AppAppearanceViewModel @Inject constructor(
         viewModelScope.launch {
             sessionPreferences.setNavidromeKeepScreenOnForLyrics(enabled)
         }
+    }
+
+    fun setNavidromeContinuousPlaybackEnabled(enabled: Boolean) {
+        viewModelScope.launch { sessionPreferences.setNavidromeContinuousPlaybackEnabled(enabled) }
+    }
+
+    fun setNavidromeContinuousPlaybackMode(mode: NavidromeContinuousPlaybackMode) {
+        viewModelScope.launch { sessionPreferences.setNavidromeContinuousPlaybackMode(mode) }
     }
 
     fun setImmersivePlayerEnabled(enabled: Boolean) {

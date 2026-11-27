@@ -516,6 +516,20 @@ class NavidromeApi @Inject constructor(
         }
     }
 
+    suspend fun getSimilarSongs(
+        auth: NavidromeAuth,
+        id: String,
+        count: Int = 100
+    ): Result<List<NavidromeTrackDto>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = execute(buildRequest(
+                auth, "rest/getSimilarSongs2.view",
+                queryWithMusicFolder(auth, "id" to id, "count" to count.coerceIn(1, 500).toString())
+            ))
+            parseTrackArray(root.optJSONObject("similarSongs2")?.optJSONArray("song"))
+        }
+    }
+
     suspend fun getGenres(auth: NavidromeAuth): Result<List<NavidromeGenreDto>> =
         withContext(Dispatchers.IO) {
             runCatching {

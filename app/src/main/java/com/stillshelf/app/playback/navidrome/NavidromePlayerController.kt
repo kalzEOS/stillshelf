@@ -62,6 +62,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -71,8 +72,11 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -461,6 +465,10 @@ class NavidromePlayerController @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var progressJob: Job? = null
+    private val continuationRequest = NavidromeContinuationRequest()
+    private var continuationJob: Job? = null
+    private var continuousPlaybackArmed = false
+    private val continuousPlaybackRecentIds = linkedSetOf<String>()
     private var pausedReleaseJob: Job? = null
     private var outputRecoveryJob: Job? = null
     private var playbackCacheWarmupJob: Job? = null
@@ -523,9 +531,11 @@ class NavidromePlayerController @Inject constructor(
                     "position_ms=${mutableState.value.positionMs}"
             )
             updateStateFromPlayer()
+            if (playbackState == Player.STATE_ENDED) continueAfterNaturalQueueEnd()
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) continuousPlaybackArmed = true
             logPlaybackTrace(
                 "playback_flag_changed is_playing=$isPlaying state=${describePlaybackState(player?.playbackState ?: Player.STATE_IDLE)} " +
                     "current_index=${mutableState.value.currentIndex} position_ms=${mutableState.value.positionMs}"
@@ -534,6 +544,7 @@ class NavidromePlayerController @Inject constructor(
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            cancelContinuousPlayback()
             diagnosticLogManager.logPlaybackError(
                 tag = TAG,
                 errorType = error::class.java.simpleName,
@@ -593,11 +604,18 @@ class NavidromePlayerController @Inject constructor(
         mediaSession.setCallback(object : MediaSessionCompat.Callback() {
             override fun onPlay() = play()
             override fun onPause() = pause()
+            override fun onStop() = stop()
             override fun onSkipToPrevious() = playPrevious()
             override fun onSkipToNext() = playNext()
         })
         mediaSession.isActive = false
         observeEqualizerPreferences()
+        scope.launch {
+            sessionPreferences.state.map {
+                listOf(it.selectedBackend, it.activeNavidromeServerId, it.navidromeActiveLibraryIds,
+                    it.navidromeContinuousPlaybackEnabled, it.navidromeContinuousPlaybackMode)
+            }.distinctUntilChanged().collect { cancelContinuousPlayback(resetPlaybackIntent = false) }
+        }
         observeActiveConnectionChanges()
         refreshAudioOutputDevices(reason = OutputRefreshReason.General)
         restorePlaybackSnapshot()
@@ -756,6 +774,7 @@ class NavidromePlayerController @Inject constructor(
         queueDisplayMode: NavidromeQueueDisplayMode = NavidromeQueueDisplayMode.FULL
     ) {
         if (tracks.isEmpty()) return
+        cancelContinuousPlayback()
         logPlaybackTrace(
             "playback_command=play_tracks queue_size=${tracks.size} start_index=${startIndex.coerceIn(0, tracks.lastIndex)} " +
                 "queue_mode=${queueDisplayMode.name.lowercase()}"
@@ -795,6 +814,7 @@ class NavidromePlayerController @Inject constructor(
     fun playTracksNext(tracks: List<NavidromeTrack>) {
         val normalizedTracks = tracks.filter { it.id.isNotBlank() }
         if (normalizedTracks.isEmpty()) return
+        cancelContinuousPlayback()
         logPlaybackTrace(
             "playback_command=play_tracks_next queue_size=${normalizedTracks.size}"
         )
@@ -823,6 +843,7 @@ class NavidromePlayerController @Inject constructor(
     fun appendTracksToQueue(tracks: List<NavidromeTrack>) {
         val normalizedTracks = tracks.filter { it.id.isNotBlank() }
         if (normalizedTracks.isEmpty()) return
+        cancelContinuousPlayback()
         if (queueTracks.isEmpty()) {
             playTracks(normalizedTracks, startIndex = 0)
             return
@@ -838,6 +859,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun removeTrackFromQueue(index: Int): Boolean {
+        cancelContinuousPlayback()
         val currentIndex = resolveCurrentQueueIndex()
             .takeIf { it in queueTracks.indices }
             ?: mutableState.value.currentIndex.takeIf { it in queueTracks.indices }
@@ -890,6 +912,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun play() {
+        cancelContinuousPlayback()
         logPlaybackTrace(
             "playback_command=play queue_size=${queueTracks.size} current_index=${mutableState.value.currentIndex} " +
                 "has_player=${player != null} is_playing=${mutableState.value.isPlaying}"
@@ -915,6 +938,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun pause() {
+        cancelContinuousPlayback()
         logPlaybackTrace(
             "playback_command=pause queue_size=${queueTracks.size} current_index=${mutableState.value.currentIndex} " +
                 "has_player=${player != null} is_playing=${mutableState.value.isPlaying}"
@@ -982,6 +1006,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun cycleRepeatMode(): Int {
+        cancelContinuousPlayback()
         repeatMode = when (repeatMode) {
             REPEAT_MODE_OFF -> REPEAT_MODE_ALL
             REPEAT_MODE_ALL -> REPEAT_MODE_ONE
@@ -995,7 +1020,64 @@ class NavidromePlayerController @Inject constructor(
 
     fun currentRepeatMode(): Int = repeatMode
 
+    private fun cancelContinuousPlayback(resetPlaybackIntent: Boolean = true) {
+        if (resetPlaybackIntent) continuousPlaybackArmed = false
+        continuationRequest.invalidate()
+        continuationJob?.cancel()
+        continuationJob = null
+    }
+
+    private fun continueAfterNaturalQueueEnd() {
+        val endedPlayer = player ?: return
+        if (!continuousPlaybackArmed) return
+        continuousPlaybackArmed = false
+        if (!endedPlayer.playWhenReady || endedPlayer.playerError != null || repeatMode != REPEAT_MODE_OFF) return
+        val index = endedPlayer.currentMediaItemIndex
+        val reference = queueTracks.getOrNull(index) ?: return
+        if (index != queueTracks.lastIndex || reference.isRadioTrack()) return
+        val token = continuationRequest.begin() ?: return
+        continuationJob = scope.launch {
+            try {
+                val preferences = sessionPreferences.state.first()
+                if (!preferences.navidromeContinuousPlaybackEnabled ||
+                    preferences.selectedBackend != BackendProvider.NAVIDROME) return@launch
+                val result = withTimeoutOrNull(30_000) {
+                    navidromeRepository.fetchContinuousPlaybackTracks(reference, preferences.navidromeContinuousPlaybackMode)
+                }
+                val latest = sessionPreferences.state.first()
+                if (!isActive || !continuationRequest.isCurrent(token) || player !== endedPlayer ||
+                    endedPlayer.currentMediaItemIndex != index || index != queueTracks.lastIndex ||
+                    queueTracks.getOrNull(index)?.id != reference.id ||
+                    endedPlayer.playbackState != Player.STATE_ENDED ||
+                    !endedPlayer.playWhenReady || repeatMode != REPEAT_MODE_OFF ||
+                    !latest.navidromeContinuousPlaybackEnabled || latest.selectedBackend != BackendProvider.NAVIDROME ||
+                    latest.activeNavidromeServerId != preferences.activeNavidromeServerId ||
+                    latest.navidromeActiveLibraryIds != preferences.navidromeActiveLibraryIds ||
+                    latest.navidromeContinuousPlaybackMode != preferences.navidromeContinuousPlaybackMode) return@launch
+                val candidates = (result as? com.stillshelf.app.core.util.AppResult.Success)?.value.orEmpty()
+                val tracks = selectNavidromeContinuationTracks(
+                    candidates, reference.id, continuousPlaybackRecentIds + recentTracks.map { it.id }
+                )
+                if (tracks.isEmpty()) {
+                    logPlaybackTrace("continuous_playback=no_recommendations")
+                    return@launch
+                }
+                // The previous queue is finished. Use the normal player path and checkpoint logic.
+                continuationRequest.finish(token)
+                continuationJob = null
+                playTracks(tracks, startIndex = 0)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                logPlaybackTrace("continuous_playback=request_failed")
+            } finally {
+                continuationRequest.finish(token)
+            }
+        }
+    }
+
     fun stop() {
+        cancelContinuousPlayback()
         logPlaybackTrace(
             "playback_command=stop queue_size=${queueTracks.size} current_index=${mutableState.value.currentIndex}"
         )
@@ -1035,6 +1117,7 @@ class NavidromePlayerController @Inject constructor(
     }
 
     fun seekTo(positionMs: Int) {
+        cancelContinuousPlayback()
         val durationMs = resolvePlayerDurationMs()
         val clampedPosition = positionMs.coerceIn(0, durationMs.coerceAtLeast(0))
         logPlaybackTrace(
@@ -1443,6 +1526,7 @@ class NavidromePlayerController @Inject constructor(
         positionMs: Int,
         playWhenReady: Boolean
     ) {
+        cancelContinuousPlayback()
         if (index !in queueTracks.indices) return
         val safePositionMs = positionMs.coerceAtLeast(0)
         logPlaybackTrace(
@@ -1757,6 +1841,14 @@ class NavidromePlayerController @Inject constructor(
             ?: -1
         val currentTrack = queueTracks.getOrNull(currentIndex)
         listeningTracker.sample(currentTrack, activePlayer.isPlaying, activePlayer.currentPosition)
+        if (currentTrack != null && activePlayer.isPlaying) {
+            continuousPlaybackArmed = true
+            continuousPlaybackRecentIds.remove(currentTrack.id)
+            continuousPlaybackRecentIds.add(currentTrack.id)
+            if (continuousPlaybackRecentIds.size > 100) {
+                continuousPlaybackRecentIds.remove(continuousPlaybackRecentIds.first())
+            }
+        }
         if (currentTrack != null && currentTrack.id != lastRecordedTrackId) {
             recentTracks = buildList {
                 add(currentTrack)
@@ -1873,6 +1965,7 @@ class NavidromePlayerController @Inject constructor(
                 PlaybackStateCompat.ACTION_PLAY or
                     PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                    PlaybackStateCompat.ACTION_STOP or
                     PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                     PlaybackStateCompat.ACTION_SKIP_TO_NEXT
             )
